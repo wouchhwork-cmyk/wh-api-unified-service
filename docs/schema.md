@@ -711,7 +711,7 @@ The stored value is `secret_hash`, not `code_hash`, because it is not always a c
 | attempt_count           | INTEGER      | NOT NULL, DEFAULT 0                         | Wrong guesses so far                                          |
 | max_attempts            | INTEGER      | NOT NULL, DEFAULT 5                         | Exhausted = dead, from config                                 |
 | resend_count            | INTEGER      | NOT NULL, DEFAULT 0                         | How many times the *same* code was re-sent                    |
-| last_sent_at            | TIMESTAMPTZ  | NOT NULL                                    | Drives the resend cooldown                                    |
+| last_sent_at            | TIMESTAMPTZ  | NOT NULL, DEFAULT now()                     | Drives the resend cooldown. Defaulted because a row is always created by a send |
 | outbound_event_id       | BIGINT       | FK → outbound_events(id)                    | The send itself — answers "did it leave our system"            |
 | delivery_status         | VARCHAR(30)  | NOT NULL, DEFAULT 'pending'                 | `pending` · `sent` · `delivered` · `failed` — provider truth, not derivable |
 | requested_ip            | INET         |                                             | Who asked, for abuse investigation                            |

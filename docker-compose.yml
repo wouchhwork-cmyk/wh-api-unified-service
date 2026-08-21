@@ -1,0 +1,73 @@
+# Local development stack. One command gets the whole system.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: wouchh-postgres
+    environment:
+      POSTGRES_DB: wouchh
+      POSTGRES_USER: wouchh
+      POSTGRES_PASSWORD: wouchh_dev_local
+    ports:
+      # 5544 on the host: PostgreSQL 17 and 18 are already installed locally and
+      # occupy 5432/5433, so this avoids a silent connection to the wrong database.
+      - '5544:5432'
+    volumes:
+      # Postgres 18+ wants ONE mount at /var/lib/postgresql (data lands in a
+      # subdirectory), not the pre-18 /var/lib/postgresql/data. Mounting the old
+      # path makes the container refuse to start.
+      - wouchh-pgdata:/var/lib/postgresql
+      - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wouchh -d wouchh']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command:
+      # pg_trgm is required for customer name search (schema.md §16).
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: wouchh-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: '5432'
+    env_file:
+      - .env.dev
+    ports:
+      - '3000:3000'
+    read_only: true
+    tmpfs:
+      - /tmp
+    profiles: ['containerised']
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    container_name: wouchh-worker
+    command: ['node', 'dist/workers/main.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: '5432'
+    env_file:
+      - .env.dev
+    read_only: true
+    tmpfs:
+      - /tmp
+    profiles: ['containerised']
+
+volumes:
+  wouchh-pgdata:

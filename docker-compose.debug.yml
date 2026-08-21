@@ -1,0 +1,9 @@
+# Debug override: enables the Node inspector so .vscode/launch.json's
+# "Attach to running container" configuration can connect (§4.3, §14).
+# The inspector is NEVER enabled in the production deployment.
+services:
+  api:
+    command: ['node', '--inspect=0.0.0.0:9229', 'dist/main.js']
+    ports:
+      - '3000:3000'
+      - '9229:9229'

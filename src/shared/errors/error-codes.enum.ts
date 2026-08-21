@@ -1,0 +1,85 @@
+/**
+ * The machine-readable error catalogue (backend-design.md §8.2).
+ *
+ * Adding a code is backward compatible; changing or removing one is BREAKING,
+ * because these strings are part of the public contract that clients branch on.
+ */
+export enum ErrorCode {
+  // --- authentication ---------------------------------------------------
+  AuthInvalidCredentials = 'AUTH_INVALID_CREDENTIALS',
+  AuthCodeInvalid = 'AUTH_CODE_INVALID',
+  AuthCodeExpired = 'AUTH_CODE_EXPIRED',
+  AuthCodeAttemptsExceeded = 'AUTH_CODE_ATTEMPTS_EXCEEDED',
+  AuthCodeAlreadyUsed = 'AUTH_CODE_ALREADY_USED',
+  AuthAccountLocked = 'AUTH_ACCOUNT_LOCKED',
+  AuthAccountDisabled = 'AUTH_ACCOUNT_DISABLED',
+  AuthTokenInvalid = 'AUTH_TOKEN_INVALID',
+  AuthTokenExpired = 'AUTH_TOKEN_EXPIRED',
+  AuthSessionRevoked = 'AUTH_SESSION_REVOKED',
+  AuthResendTooSoon = 'AUTH_RESEND_TOO_SOON',
+  /** Authenticated, but no active business — 403, not 401. */
+  AuthNoActiveMembership = 'AUTH_NO_ACTIVE_MEMBERSHIP',
+  AuthEnterpriseNotSelected = 'AUTH_ENTERPRISE_NOT_SELECTED',
+
+  // --- authorisation ----------------------------------------------------
+  PermissionDenied = 'PERMISSION_DENIED',
+  FeatureNotEnabled = 'FEATURE_NOT_ENABLED',
+  EnterpriseSuspended = 'ENTERPRISE_SUSPENDED',
+
+  // --- validation -------------------------------------------------------
+  ValidationFailed = 'VALIDATION_FAILED',
+  InvalidEmail = 'INVALID_EMAIL',
+  InvalidMobile = 'INVALID_MOBILE',
+  CredentialRequired = 'CREDENTIAL_REQUIRED',
+
+  // --- conflicts --------------------------------------------------------
+  EmailAlreadyRegistered = 'EMAIL_ALREADY_REGISTERED',
+  MobileAlreadyRegistered = 'MOBILE_ALREADY_REGISTERED',
+  EnterpriseSlugTaken = 'ENTERPRISE_SLUG_TAKEN',
+  MemberAlreadyExists = 'MEMBER_ALREADY_EXISTS',
+  RoleNameTaken = 'ROLE_NAME_TAKEN',
+  IdentifierAlreadyLinked = 'IDENTIFIER_ALREADY_LINKED',
+  DuplicateMessage = 'DUPLICATE_MESSAGE',
+  SyncAlreadyRunning = 'SYNC_ALREADY_RUNNING',
+  FeatureAlreadyRequested = 'FEATURE_ALREADY_REQUESTED',
+  InvalidStateTransition = 'INVALID_STATE_TRANSITION',
+
+  // --- not found --------------------------------------------------------
+  /** An unknown route. Distinct from a missing domain entity. */
+  RouteNotFound = 'ROUTE_NOT_FOUND',
+  EnterpriseNotFound = 'ENTERPRISE_NOT_FOUND',
+  MemberNotFound = 'MEMBER_NOT_FOUND',
+  RoleNotFound = 'ROLE_NOT_FOUND',
+  FeatureNotFound = 'FEATURE_NOT_FOUND',
+  ConnectionNotFound = 'CONNECTION_NOT_FOUND',
+  ChannelNotFound = 'CHANNEL_NOT_FOUND',
+  CustomerNotFound = 'CUSTOMER_NOT_FOUND',
+  ConversationNotFound = 'CONVERSATION_NOT_FOUND',
+  MessageNotFound = 'MESSAGE_NOT_FOUND',
+  PostNotFound = 'POST_NOT_FOUND',
+  VerificationNotFound = 'VERIFICATION_NOT_FOUND',
+
+  // --- domain -----------------------------------------------------------
+  ChannelReauthRequired = 'CHANNEL_REAUTH_REQUIRED',
+  ChannelNotManaged = 'CHANNEL_NOT_MANAGED',
+  /** Meta's 24-hour messaging window has closed — proven mapping, §18.3. */
+  MessagingWindowClosed = 'MESSAGING_WINDOW_CLOSED',
+  CustomerBlocked = 'CUSTOMER_BLOCKED',
+  ConversationClosed = 'CONVERSATION_CLOSED',
+
+  // --- integration ------------------------------------------------------
+  MetaNotConfigured = 'META_NOT_CONFIGURED',
+  OauthStateInvalid = 'OAUTH_STATE_INVALID',
+  OauthDenied = 'OAUTH_DENIED',
+  OauthExchangeFailed = 'OAUTH_EXCHANGE_FAILED',
+  WebhookSignatureInvalid = 'WEBHOOK_SIGNATURE_INVALID',
+  NoPagesFound = 'NO_PAGES_FOUND',
+
+  // --- infrastructure ---------------------------------------------------
+  RateLimited = 'RATE_LIMITED',
+  UpstreamUnavailable = 'UPSTREAM_UNAVAILABLE',
+  UpstreamRateLimited = 'UPSTREAM_RATE_LIMITED',
+  RequestTimeout = 'REQUEST_TIMEOUT',
+  PayloadTooLarge = 'PAYLOAD_TOO_LARGE',
+  InternalError = 'INTERNAL_ERROR',
+}
