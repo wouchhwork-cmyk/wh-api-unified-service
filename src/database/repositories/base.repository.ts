@@ -46,6 +46,39 @@ export abstract class BaseRepository {
   }
 
   /**
+   * For INSERT / UPDATE / DELETE with a RETURNING clause.
+   *
+   * This exists because TypeORM does NOT return the same shape as for a SELECT:
+   * a data-modifying statement yields the tuple `[rows, affectedCount]`, while a
+   * SELECT yields a flat row array. Reading `rows[0]` on the tuple silently
+   * gives the inner array, and `rows.length` silently gives 2 — so a caller that
+   * treats "did this update match?" as `rows.length === 1` is always wrong.
+   *
+   * Normalising it once, here, is the concrete payoff of having a single data
+   * access path: the trap is disarmed for every repository rather than
+   * rediscovered in each one.
+   */
+  protected async mutate<T = unknown>(
+    sql: string,
+    parameters: readonly unknown[] = [],
+  ): Promise<{ rows: T[]; affected: number }> {
+    try {
+      const result = (await this.manager.query(sql, parameters as unknown[])) as unknown;
+
+      if (Array.isArray(result) && Array.isArray(result[0]) && typeof result[1] === 'number') {
+        return { rows: result[0] as T[], affected: result[1] };
+      }
+      // A statement with no RETURNING clause reports only an affected count.
+      if (Array.isArray(result)) {
+        return { rows: result as T[], affected: result.length };
+      }
+      return { rows: [], affected: typeof result === 'number' ? result : 0 };
+    } catch (error) {
+      throw this.translate(error);
+    }
+  }
+
+  /**
    * Turns a unique violation on a NAMED index into a typed domain error, once,
    * here — so callers never string-match driver output.
    */

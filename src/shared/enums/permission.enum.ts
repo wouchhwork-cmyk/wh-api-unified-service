@@ -22,6 +22,8 @@ export enum PermissionAction {
   Manage = 'manage',
   Invite = 'invite',
   Request = 'request',
+  /** Staff-side approval or refusal of an enterprise's feature request. */
+  Decide = 'decide',
 }
 
 /**

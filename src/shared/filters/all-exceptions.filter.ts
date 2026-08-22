@@ -6,7 +6,7 @@ import {
   HttpStatus,
   Injectable,
 } from '@nestjs/common';
-import { PinoLogger } from 'nestjs-pino';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import type { Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { RequestContext } from '@/shared/context';
@@ -30,8 +30,7 @@ import type { ErrorEnvelope, ResponseMeta } from '@/shared/contracts/envelope';
 @Catch()
 @Injectable()
 export class AllExceptionsFilter implements ExceptionFilter {
-  constructor(private readonly logger: PinoLogger) {
-    this.logger.setContext(AllExceptionsFilter.name);
+  constructor(@InjectPinoLogger(AllExceptionsFilter.name) private readonly logger: PinoLogger) {
   }
 
   catch(exception: unknown, host: ArgumentsHost): void {

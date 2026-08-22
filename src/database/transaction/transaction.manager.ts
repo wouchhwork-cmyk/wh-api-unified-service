@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { PinoLogger } from 'nestjs-pino';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { DataSource, type EntityManager } from 'typeorm';
 import type { IsolationLevel } from 'typeorm/driver/types/IsolationLevel';
 import { RequestContext } from '@/shared/context';
@@ -31,10 +32,9 @@ export interface TransactionOptions {
 @Injectable()
 export class TransactionManager {
   constructor(
-    private readonly dataSource: DataSource,
-    private readonly logger: PinoLogger,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    @InjectPinoLogger(TransactionManager.name) private readonly logger: PinoLogger,
   ) {
-    this.logger.setContext(TransactionManager.name);
   }
 
   async runInTransaction<T>(

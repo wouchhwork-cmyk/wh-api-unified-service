@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import swc from 'unplugin-swc';
 import { defineConfig } from 'vitest/config';
 
@@ -44,6 +45,9 @@ export default defineConfig({
     ],
   },
   resolve: {
-    alias: { '@': new URL('./src/', import.meta.url).pathname },
+    // fileURLToPath, not URL.pathname: the repository path contains a space and
+    // pathname would hand vitest a percent-encoded directory that resolves to
+    // nothing.
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
 });

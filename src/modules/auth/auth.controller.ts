@@ -1,0 +1,229 @@
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { AppConfigService } from '@/config';
+import { CurrentActor, Public } from '@/shared/decorators';
+import { VerificationKind } from '@/shared/enums';
+import { AppException, ErrorCode } from '@/shared/errors';
+import type { ActorContext } from '@/shared/context';
+import {
+  LoginRequestSchema,
+  SelectEnterpriseRequestSchema,
+  SwitchEnterpriseRequestSchema,
+  VerifyRequestSchema,
+  type LoginRequest,
+  type LoginResponse,
+  type SelectEnterpriseRequest,
+  type SwitchEnterpriseRequest,
+  type VerifyRequest,
+} from '@/shared/contracts/auth/login.contract';
+import { AuthService, type SessionIssue } from './auth.service';
+import { VerificationService } from './verification.service';
+import { VerificationDeliveryService } from './verification-delivery.service';
+
+const REFRESH_COOKIE = 'refreshToken';
+
+const LOGIN_EXAMPLES = {
+  byEmail: {
+    summary: 'By email address',
+    value: { email: 'owner@acmecoffee.com', password: 'a-long-enough-password' },
+  },
+  byMobile: {
+    summary: 'By mobile number, with an explicit country',
+    value: {
+      mobile: { number: '9876543210', countryCode: 'IN' },
+      password: 'a-long-enough-password',
+    },
+  },
+  byE164: {
+    summary: 'By mobile number already in E.164 form',
+    value: { mobile: { number: '+919876543210' }, password: 'a-long-enough-password' },
+  },
+};
+
+/**
+ * Controllers parse, call, map, and nothing else. The response envelope is added
+ * by an interceptor, so nothing here constructs one.
+ */
+@ApiTags('auth')
+@Controller({ path: 'auth', version: '1' })
+export class AuthController {
+  constructor(
+    private readonly auth: AuthService,
+    private readonly verifications: VerificationService,
+    private readonly delivery: VerificationDeliveryService,
+    private readonly config: AppConfigService,
+  ) {}
+
+  @Post('login')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign in with an email address or a mobile number',
+    description:
+      'Returns one of three outcomes: authenticated, enterprise_selection_required, or ' +
+      'verification_required. Verification is NOT an error — it is a 200 carrying what the ' +
+      'client needs next, and never the code itself.',
+  })
+  @ApiBody({ schema: { type: 'object' }, examples: LOGIN_EXAMPLES })
+  async login(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const parsed: LoginRequest = LoginRequestSchema.parse(body);
+    const outcome = await this.auth.login(parsed, requestMetadata(request));
+
+    if (outcome.session) this.setRefreshCookie(response, outcome.session);
+    if (outcome.deliverySecret !== undefined && outcome.response.outcome === 'verification_required') {
+      await this.delivery.deliver(outcome.response.verificationRefId, outcome.deliverySecret);
+    }
+    return outcome.response;
+  }
+
+  @Post('verify')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Submit a verification code and receive a session',
+    description:
+      'The client posts back the opaque verificationRefId, never the destination — which keeps ' +
+      'the address out of a second request and makes it impossible to verify a code against a ' +
+      'different address than it was sent to.',
+  })
+  async verify(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const parsed: VerifyRequest = VerifyRequestSchema.parse(body);
+
+    const subject = await this.verifications.verify(
+      parsed.verificationRefId,
+      parsed.code,
+      VerificationKind.FirstLogin,
+    );
+    if (subject.identityId === null) throw new AppException(ErrorCode.VerificationNotFound);
+
+    const outcome = await this.auth.completeVerifiedLogin(
+      subject.identityId,
+      requestMetadata(request),
+    );
+    if (outcome.session) this.setRefreshCookie(response, outcome.session);
+    return outcome.response;
+  }
+
+  @Post('select-enterprise')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Exchange a selection token for a session in one business' })
+  async selectEnterprise(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const parsed: SelectEnterpriseRequest = SelectEnterpriseRequestSchema.parse(body);
+    const outcome = await this.auth.selectEnterprise(
+      parsed.selectionToken,
+      parsed.enterpriseRefId,
+      requestMetadata(request),
+    );
+    if (outcome.session) this.setRefreshCookie(response, outcome.session);
+    return outcome.response;
+  }
+
+  @Post('refresh')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Exchange the refresh cookie for a new access token',
+    description:
+      'Every refresh re-checks that the membership is still active, so removing someone takes ' +
+      'effect within the access-token lifetime rather than whenever their session ends.',
+  })
+  async refresh(@Req() request: Request): Promise<{
+    accessToken: string;
+    expiresInSeconds: number;
+    enterprise: unknown;
+  }> {
+    const token = readRefreshCookie(request);
+    const enterpriseRefId =
+      typeof request.query.enterpriseRefId === 'string' ? request.query.enterpriseRefId : null;
+    return this.auth.refresh(token, enterpriseRefId);
+  }
+
+  @Post('switch-enterprise')
+  @ApiOperation({ summary: 'Move the session to another business the actor belongs to' })
+  async switchEnterprise(
+    @CurrentActor() actor: ActorContext,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const parsed: SwitchEnterpriseRequest = SwitchEnterpriseRequestSchema.parse(body);
+    return this.auth.switchEnterprise(actor.identityId, parsed.enterpriseRefId);
+  }
+
+  @Post('logout')
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Revoke the session and clear the cookie' })
+  async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response): Promise<void> {
+    const token = request.cookies?.[REFRESH_COOKIE];
+    if (typeof token === 'string' && token) await this.auth.logout(token);
+    response.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'The current actor, its scope, and its resolved permissions' })
+  me(@CurrentActor() actor: ActorContext): {
+    identityId: number;
+    enterpriseId: number | null;
+    actorKind: string;
+    isImpersonated: boolean;
+    permissions: string[];
+  } {
+    return {
+      identityId: actor.identityId,
+      enterpriseId: actor.enterpriseId,
+      actorKind: actor.actorKind,
+      isImpersonated: actor.isImpersonated,
+      permissions: [...actor.permissions].sort(),
+    };
+  }
+
+  /**
+   * The refresh token lives in an httpOnly cookie, never in a response body, so
+   * script running on the page cannot read it.
+   */
+  private setRefreshCookie(response: Response, session: SessionIssue): void {
+    response.cookie(REFRESH_COOKIE, session.refreshToken, {
+      ...this.cookieOptions(),
+      expires: session.expiresAt,
+    });
+  }
+
+  private cookieOptions() {
+    return {
+      httpOnly: true,
+      // Secure everywhere except plain-HTTP local development.
+      secure: this.config.app.env !== 'dev',
+      // Strict assumes the web app and the API share a site. If the frontend
+      // ever moves to another registrable domain this must become 'none' plus
+      // an explicit CSRF token, or refresh silently stops working.
+      sameSite: 'strict' as const,
+      path: '/',
+    };
+  }
+}
+
+function requestMetadata(request: Request): { ipAddress: string | null; userAgent: string | null } {
+  return {
+    ipAddress: request.ip ?? null,
+    userAgent: request.get('user-agent') ?? null,
+  };
+}
+
+function readRefreshCookie(request: Request): string {
+  const token = request.cookies?.[REFRESH_COOKIE];
+  if (typeof token !== 'string' || !token) throw new AppException(ErrorCode.AuthSessionRevoked);
+  return token;
+}

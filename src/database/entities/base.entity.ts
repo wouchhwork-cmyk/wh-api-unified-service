@@ -2,9 +2,10 @@ import {
   Column,
   CreateDateColumn,
   Generated,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { bigintTransformer } from '../bigint.transformer';
 
 /**
  * What schema.md says EVERY table has: id, created_at, updated_at, is_deleted.
@@ -15,9 +16,16 @@ import {
  * still stamps it.
  */
 export abstract class BaseEntity {
-  // No transformer here: PrimaryGeneratedColumn's numeric options do not accept
-  // one. The global int8 parser in pg-types.ts converts every BIGINT instead.
-  @PrimaryGeneratedColumn({ type: 'bigint' })
+  /*
+   * PrimaryColumn + @Generated rather than @PrimaryGeneratedColumn, because only
+   * this form accepts a transformer — and it is needed: TypeORM hydrates a
+   * generated BIGINT from its RETURNING clause as a STRING, so without the
+   * transformer every freshly-inserted id would be a string while every id read
+   * back through the driver's int8 parser would be a number. One entity would
+   * then compare unequal to itself depending on how it was loaded.
+   */
+  @PrimaryColumn({ type: 'bigint', transformer: bigintTransformer })
+  @Generated('increment')
   id!: number;
 
   /** Soft delete, and ONLY soft delete. No status enum anywhere contains 'deleted'. */
