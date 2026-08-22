@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  HANDLE_IDENTIFIER_KINDS,
   CustomerFirstSource,
   CustomerStatus,
   IdentifierKind,
@@ -36,6 +37,14 @@ export interface CustomerDirectoryRow {
   readonly id: number;
   readonly refId: string;
   readonly displayName: string | null;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  /**
+   * The platform handle, read from customer_identifiers rather than the customer
+   * row — it IS an identifier, and duplicating it onto customers would leave two
+   * copies to disagree.
+   */
+  readonly handle: string | null;
   readonly avatarUrl: string | null;
   readonly firstSource: string | null;
   readonly conversationCount: number;
@@ -229,14 +238,42 @@ export class CustomerRepository extends BaseRepository {
     limit: number;
     cursor: { lastSeenAt: Date | null; id: number } | null;
   }): Promise<CustomerDirectoryRow[]> {
-    const params: unknown[] = [this.requireEnterprise(input.enterpriseId), input.limit];
+    /*
+     * The handle kinds are parameter $3 ALWAYS, before any conditional filter.
+     * Numbering them after the optional search term made $3 mean different
+     * things depending on the arguments, which is how a query silently reads the
+     * wrong parameter.
+     */
+    const params: unknown[] = [
+      this.requireEnterprise(input.enterpriseId),
+      input.limit,
+      [...HANDLE_IDENTIFIER_KINDS],
+    ];
     const filters: string[] = [];
 
     if (input.search) {
       // A CONTAINS match, which normally forbids an index — customers_name_trgm_idx
       // (gin_trgm_ops) exists precisely for this shape.
       params.push(`%${input.search}%`);
-      filters.push(`AND display_name ILIKE $${params.length}`);
+      /*
+       * Handles are searched as well as names. Somebody looking for a customer
+       * types what they saw, and on Instagram what they saw was the handle —
+       * matching only display_name would miss anyone whose name we know but
+       * whose handle was what the agent remembered.
+       */
+      filters.push(
+        `AND (
+             display_name ILIKE $${params.length}
+          OR EXISTS (
+               SELECT 1 FROM customer_identifiers ci
+                WHERE ci.customer_id = customers.id
+                  AND ci.enterprise_id = customers.enterprise_id
+                  AND ci.identifier_kind = ANY($3)
+                  AND ci.identifier_value ILIKE $${params.length}
+                  AND ci.is_deleted = false
+             )
+        )`,
+      );
     }
     if (input.cursor) {
       params.push(input.cursor.lastSeenAt, input.cursor.id);
@@ -260,6 +297,20 @@ export class CustomerRepository extends BaseRepository {
 
     return this.query<CustomerDirectoryRow>(
       `SELECT id, ref_id AS "refId", display_name AS "displayName",
+              first_name AS "firstName", last_name AS "lastName",
+              /*
+               * The handle, taken from the identifier that holds it. LIMIT 1 with
+               * a deterministic order so a customer who somehow has two never
+               * returns a different one per request.
+               */
+              (SELECT ci.identifier_value
+                 FROM customer_identifiers ci
+                WHERE ci.customer_id = customers.id
+                  AND ci.enterprise_id = customers.enterprise_id
+                  AND ci.identifier_kind = ANY($3)
+                  AND ci.is_deleted = false
+                ORDER BY ci.is_primary DESC, ci.id
+                LIMIT 1)                    AS "handle",
               avatar_url AS "avatarUrl", first_source AS "firstSource",
               /*
                * COUNTED, not read from customers.conversation_count: that column

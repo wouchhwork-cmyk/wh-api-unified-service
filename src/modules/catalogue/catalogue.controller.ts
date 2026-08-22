@@ -112,6 +112,14 @@ function toCustomerSummary(row: CustomerDirectoryRow): Record<string, unknown> {
   return {
     refId: row.refId,
     displayName: row.displayName,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    /*
+     * Exposed separately from displayName even though they often carry the same
+     * text: a client that wants to render "@handle" needs to know it IS a
+     * handle, and one that wants to greet somebody needs the given name.
+     */
+    handle: row.handle,
     avatarUrl: row.avatarUrl,
     firstSource: row.firstSource,
     conversationCount: Number(row.conversationCount),

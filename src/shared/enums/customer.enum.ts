@@ -12,6 +12,16 @@ export enum IdentifierKind {
   ExternalRef = 'external_ref',
 }
 
+/**
+ * The kinds that hold a HANDLE rather than an opaque id.
+ *
+ * A list rather than a single value because every platform added later brings
+ * its own — and because the directory searches all of them at once.
+ */
+export const HANDLE_IDENTIFIER_KINDS: readonly IdentifierKind[] = [
+  IdentifierKind.InstagramUsername,
+] as const;
+
 /** The kinds stored as a decomposed phone number (schema.md phone storage). */
 export const PHONE_IDENTIFIER_KINDS: readonly IdentifierKind[] = [
   IdentifierKind.Mobile,

@@ -51,6 +51,10 @@ export const CustomerDirectoryQuerySchema = z
 export const CustomerSummarySchema = z.object({
   refId: z.uuid(),
   displayName: z.string().nullable(),
+  firstName: z.string().nullable(),
+  lastName: z.string().nullable(),
+  /** A platform handle, when the platform issues one. Facebook does not. */
+  handle: z.string().nullable(),
   avatarUrl: z.string().nullable(),
   firstSource: z.string().nullable(),
   conversationCount: z.number().int(),
