@@ -6,6 +6,8 @@ import { SessionRepository } from '@/database/repositories/session.repository';
 import { VerificationRepository } from '@/database/repositories/verification.repository';
 
 const SWEEP_BATCH = 500;
+/** Caps one nightly run at 100k rows per table, so it cannot run unbounded. */
+const MAX_SWEEP_PASSES = 200;
 /** Long enough to answer a support question, short enough not to be an archive. */
 const VERIFICATION_RETENTION_DAYS = 7;
 const SESSION_RETENTION_DAYS = 30;
@@ -32,11 +34,15 @@ export class SweeperWorker {
       const verificationCutoff = daysAgo(VERIFICATION_RETENTION_DAYS);
       const sessionCutoff = daysAgo(SESSION_RETENTION_DAYS);
 
-      const verifications = await this.verifications.deleteSettledBefore(
-        verificationCutoff,
-        SWEEP_BATCH,
+      // Drains in batches rather than stopping after one. A single capped batch
+      // per day cannot keep up with a service issuing more rows than that, so
+      // the tables would grow for ever while the sweep looked like it ran.
+      const verifications = await drain((limit) =>
+        this.verifications.deleteSettledBefore(verificationCutoff, limit),
       );
-      const sessions = await this.sessions.deleteExpiredBefore(sessionCutoff, SWEEP_BATCH);
+      const sessions = await drain((limit) =>
+        this.sessions.deleteExpiredBefore(sessionCutoff, limit),
+      );
 
       this.logger.info({ verifications, sessions }, 'retention sweep complete');
     } catch (error) {
@@ -63,4 +69,18 @@ export class SweeperWorker {
 
 function daysAgo(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Repeats a batched delete until it stops finding rows, bounded by a pass count
+ * so a bug cannot turn the sweep into an endless loop holding the connection.
+ */
+async function drain(deleteBatch: (limit: number) => Promise<number>): Promise<number> {
+  let total = 0;
+  for (let pass = 0; pass < MAX_SWEEP_PASSES; pass += 1) {
+    const deleted = await deleteBatch(SWEEP_BATCH);
+    total += deleted;
+    if (deleted < SWEEP_BATCH) break;
+  }
+  return total;
 }

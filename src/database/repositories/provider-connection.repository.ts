@@ -106,17 +106,26 @@ export class ProviderConnectionRepository extends BaseRepository {
    * waiting for the expiry sweep. Flagging the parent CASCADES to its channels,
    * because channel tokens derive from this grant.
    */
-  async markReauthRequired(connectionId: number, status: ConnectionStatus): Promise<void> {
+  async markReauthRequired(
+    enterpriseId: number,
+    connectionId: number,
+    status: ConnectionStatus,
+  ): Promise<void> {
+    // enterprise_id in BOTH statements: this was the one tenant-scoped write in
+    // the repository layer without it, which meant a mistyped id could revoke
+    // another tenant's connection and the database could not object.
+    const enterprise = this.requireEnterprise(enterpriseId);
+
     await this.mutate(
       `UPDATE provider_connections
           SET reauth_required = true, token_status = $2, status = $3
-        WHERE id = $1`,
-      [connectionId, TokenStatus.Revoked, status],
+        WHERE id = $1 AND enterprise_id = $4`,
+      [connectionId, TokenStatus.Revoked, status, enterprise],
     );
     await this.mutate(
       `UPDATE channels SET reauth_required = true, token_status = $2
-        WHERE provider_connection_id = $1 AND is_deleted = false`,
-      [connectionId, TokenStatus.Revoked],
+        WHERE provider_connection_id = $1 AND enterprise_id = $3 AND is_deleted = false`,
+      [connectionId, TokenStatus.Revoked, enterprise],
     );
   }
 }

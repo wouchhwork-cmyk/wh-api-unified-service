@@ -1,5 +1,6 @@
 import { Controller, Get, Header, Headers, HttpCode, HttpStatus, Post, Query, Req } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { Public, RawResponse } from '@/shared/decorators';
 import { MetaWebhookService } from './meta-webhook.service';
@@ -12,6 +13,13 @@ import { MetaWebhookService } from './meta-webhook.service';
  * Meta, not our clients.
  */
 @ApiExcludeController()
+/*
+ * NEVER throttled. The global limiter would answer a delivery burst with 429 and
+ * store nothing, which makes Meta redeliver and — on sustained non-2xx —
+ * disable the subscription. Abuse protection here is the HMAC signature, which
+ * an attacker cannot forge, not a request count.
+ */
+@SkipThrottle()
 @Controller('webhooks/meta')
 export class MetaWebhookController {
   constructor(private readonly webhooks: MetaWebhookService) {}

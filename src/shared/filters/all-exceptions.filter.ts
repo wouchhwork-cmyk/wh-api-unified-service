@@ -135,6 +135,30 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
+    /*
+     * --- body-parser and other http-errors -------------------------------
+     * A payload that is too large, an unsupported encoding, or an aborted
+     * request arrives as an `http-errors` instance, NOT a Nest HttpException.
+     * Without this branch every one of them became a 500, so a client sending a
+     * 2 MB body was told the server had failed.
+     */
+    const httpError = asHttpError(exception);
+    if (httpError) {
+      const code = FRAMEWORK_STATUS_CODE[httpError.status] ?? ErrorCode.ValidationFailed;
+      return {
+        status: httpError.status,
+        body: {
+          success: false,
+          error: {
+            code,
+            // The library's own messages are generic and client-safe
+            // ("request entity too large"); they name nothing internal.
+            message: httpError.status >= 500 ? ERROR_MESSAGE[ErrorCode.InternalError] : httpError.message,
+          },
+        },
+      };
+    }
+
     // --- framework exceptions --------------------------------------------
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -166,6 +190,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
       },
     };
   }
+}
+
+/**
+ * An `http-errors` instance, as thrown by body-parser and friends: a plain Error
+ * carrying a numeric `status` in the HTTP range and an `expose` flag.
+ */
+function asHttpError(exception: unknown): { status: number; message: string } | null {
+  if (!(exception instanceof Error)) return null;
+  const candidate = exception as Error & { status?: unknown; statusCode?: unknown; expose?: unknown };
+  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
+  if (typeof status !== 'number' || status < 400 || status > 599) return null;
+  // `expose` is how the library marks a message as safe to show a client.
+  if (candidate.expose !== true && status >= 500) return { status, message: '' };
+  return { status, message: exception.message };
 }
 
 /** Framework-raised statuses that deserve a specific code rather than INTERNAL_ERROR. */

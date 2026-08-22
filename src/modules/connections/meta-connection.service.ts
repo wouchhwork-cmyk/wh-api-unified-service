@@ -85,9 +85,13 @@ export class MetaConnectionService {
 
     // No pages means nothing to manage. Surfaced as a clear 422 rather than a
     // "successful" connection with an empty channel list.
-    if (discovered.pages.length === 0) throw new AppException(ErrorCode.NoPagesFound);
-
     const usablePages = discovered.pages.filter((page) => page.error === null);
+
+    // Judged on the USABLE pages, not the raw list: if every discovered page
+    // failed its detail lookup there is nothing to manage, and committing a
+    // connection with zero channels while reporting success is exactly the
+    // behaviour §18.3 says not to port.
+    if (usablePages.length === 0) throw new AppException(ErrorCode.NoPagesFound);
 
     const persisted = await this.tx.runInTransaction(async () => {
       const connection = await this.connections.upsert({
@@ -104,6 +108,9 @@ export class MetaConnectionService {
       });
 
       const channelIds: number[] = [];
+      // Page id -> our channel id, so the post-commit subscribe step does not
+      // have to look the channel up again with an untenanted query.
+      const channelIdByPageId = new Map<string, number>();
       let instagramCount = 0;
 
       for (const page of usablePages) {
@@ -122,6 +129,7 @@ export class MetaConnectionService {
           status: ChannelStatus.Active,
         });
         channelIds.push(pageChannel.id);
+        channelIdByPageId.set(page.pageId, pageChannel.id);
 
         // The Instagram account hangs off its Page: parentChannelId is what lets
         // the send path find the Page token that authorises Instagram calls, and
@@ -157,13 +165,17 @@ export class MetaConnectionService {
         }
       }
 
-      return { connection, instagramCount, pageChannelIds: channelIds };
+      return { connection, instagramCount, channelIdByPageId };
     });
 
     // AFTER commit: subscribing is a network call, so it must not sit inside the
     // transaction. A failure here is recorded on the channel, not swallowed —
     // socialLift reported success with an empty page list when this went wrong.
-    const subscribeFailures = await this.subscribePages(enterpriseId, usablePages);
+    const subscribeFailures = await this.subscribePages(
+      enterpriseId,
+      usablePages,
+      persisted.channelIdByPageId,
+    );
 
     this.logger.info(
       {
@@ -192,6 +204,7 @@ export class MetaConnectionService {
   private async subscribePages(
     enterpriseId: number,
     pages: readonly DiscoveredPage[],
+    channelIdByPageId: ReadonlyMap<string, number>,
   ): Promise<number> {
     let failures = 0;
 
@@ -205,11 +218,15 @@ export class MetaConnectionService {
           await this.graph.subscribePageToApp(page.pageId, page.pageAccessToken);
         } catch (error) {
           failures += 1;
-          const channel = await this.channels.findByPlatformId(Platform.Facebook, page.pageId);
-          if (channel) {
-            // A channel we cannot subscribe will silently receive nothing, so it
-            // is marked in error rather than left looking healthy.
-            await this.channels.markStatus(enterpriseId, channel.id, ChannelStatus.Error);
+          // The id written moments ago in OUR transaction, not a fresh
+          // untenanted lookup: that lookup can return another enterprise's row
+          // for the same Page, and the tenant-scoped update would then match
+          // nothing and discard the failure silently.
+          const channelId = channelIdByPageId.get(page.pageId);
+          if (channelId !== undefined) {
+            // A channel we cannot subscribe receives nothing, so it is marked in
+            // error rather than left looking healthy.
+            await this.channels.markStatus(enterpriseId, channelId, ChannelStatus.Error);
           }
           this.logger.warn(
             { pageId: page.pageId, err: error instanceof Error ? error.message : 'unknown' },

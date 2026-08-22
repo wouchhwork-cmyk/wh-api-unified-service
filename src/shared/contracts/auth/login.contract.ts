@@ -69,8 +69,11 @@ export const SelectEnterpriseRequestSchema = z
   })
   .strict();
 
-export const SwitchEnterpriseRequestSchema = z
-  .object({ enterpriseRefId: z.uuid() })
+export const SwitchEnterpriseRequestSchema = z.object({ enterpriseRefId: z.uuid() }).strict();
+
+/** Refresh may name an enterprise; a malformed value must be a 422, not a 500. */
+export const RefreshQuerySchema = z
+  .object({ enterpriseRefId: z.uuid().optional() })
   .strict();
 
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;

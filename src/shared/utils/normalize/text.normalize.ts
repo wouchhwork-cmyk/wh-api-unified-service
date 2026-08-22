@@ -33,14 +33,26 @@ export function normalizeOptionalText(value: string | null | undefined): string 
  * Slug: trim, lower-case, non-alphanumerics to `-`, collapse repeats, strip
  * leading and trailing `-`.
  */
+/**
+ * enterprises.slug is VARCHAR(100), and a business name may be up to 255
+ * characters, so the result is bounded here — the one place slugs are made.
+ * Truncating leaves room for the `-2` disambiguation suffix a collision adds.
+ */
+const MAX_SLUG_LENGTH = 90;
+
 export function normalizeSlug(value: string): string {
-  return value
+  const slug = value
     .normalize('NFKD')
     .replace(INVISIBLE, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+
+  // Trim at the boundary, then strip a hyphen the cut may have left dangling.
+  return slug.length <= MAX_SLUG_LENGTH
+    ? slug
+    : slug.slice(0, MAX_SLUG_LENGTH).replace(/-$/, '');
 }
 
 /** URL: lower-case scheme and host, strip a default port, KEEP path case. */

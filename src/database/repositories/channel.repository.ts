@@ -35,6 +35,13 @@ export interface ChannelRow {
 /** What the send path needs: the token that actually authorises the call. */
 export interface ChannelSendContext {
   readonly channelId: number;
+  /**
+   * The PARENT connection's id. Carried because flagging a dead credential
+   * targets provider_connections, and passing a channels.id there would update
+   * an unrelated row — both ids are BIGSERIAL and both are `number`, so nothing
+   * else would catch the swap.
+   */
+  readonly providerConnectionId: number;
   readonly platform: Platform;
   readonly platformChannelId: string;
   /** The channel's own token, or its parent's — Instagram uses the Page token. */
@@ -115,6 +122,7 @@ export class ChannelRepository extends BaseRepository {
   async findSendContext(enterpriseId: number, channelId: number): Promise<ChannelSendContext | null> {
     const rows = await this.query<ChannelSendContext>(
       `SELECT c.id                                            AS "channelId",
+              c.provider_connection_id                        AS "providerConnectionId",
               c.platform,
               c.platform_channel_id                           AS "platformChannelId",
               COALESCE(c.access_token, parent.access_token)    AS "effectiveAccessToken",
@@ -131,22 +139,30 @@ export class ChannelRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-  /** Resolves an inbound webhook's Page/IG id to a channel. */
-  async findByPlatformId(
+  /**
+   * Resolves an inbound webhook's Page/IG id to EVERY channel that holds it.
+   *
+   * Deliberately NOT tenant-scoped: a webhook arrives with no tenant context,
+   * and this lookup is how the enterprise is DERIVED. Every subsequent query
+   * uses an enterpriseId returned here.
+   *
+   * It returns a LIST because channels_platform_uniq is
+   * (platform, platform_channel_id, provider_connection_id) — no enterprise
+   * component — so the same Page legitimately exists once per connecting
+   * enterprise. schema.md names the case: an agency and the brand it manages can
+   * both connect the same Page, and each must process the event independently.
+   * Taking only the first row silently dropped every other tenant's copy.
+   */
+  async findAllByPlatformId(
     platform: Platform,
     platformChannelId: string,
-  ): Promise<{ id: number; enterpriseId: number } | null> {
-    // Deliberately NOT tenant-scoped: a webhook arrives with no tenant context,
-    // and this lookup is how the enterprise is DERIVED. Every subsequent query
-    // uses the enterpriseId returned here.
-    const rows = await this.query<{ id: number; enterpriseId: number }>(
+  ): Promise<{ id: number; enterpriseId: number }[]> {
+    return this.query<{ id: number; enterpriseId: number }>(
       `SELECT id, enterprise_id AS "enterpriseId" FROM channels
         WHERE platform = $1 AND platform_channel_id = $2 AND is_deleted = false
-        ORDER BY id
-        LIMIT 1`,
+        ORDER BY id`,
       [platform, platformChannelId],
     );
-    return rows[0] ?? null;
   }
 
   async markStatus(enterpriseId: number, channelId: number, status: ChannelStatus): Promise<void> {

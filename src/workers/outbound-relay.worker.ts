@@ -103,9 +103,35 @@ export class OutboundRelayWorker extends BasePoller {
       return;
     }
 
+    /*
+     * Re-check the lease immediately before the send. A batch of 20 sends, each
+     * allowed 10 s, can run for 200 s against a stalling platform — longer than
+     * the 120 s lease — after which the reaper re-queues the row and another
+     * worker may already be sending it. Checking here shrinks that window to one
+     * call, and the fenced write-back below closes it.
+     */
+    if (!(await this.outbound.stillHoldsLease(event.id, this.leaseOwner))) {
+      this.logger.warn(
+        { eventId: event.id },
+        'lease lapsed before sending — another worker owns this row now',
+      );
+      return;
+    }
+
     try {
       const platformId = await this.send(event, channel.platformChannelId, token);
-      await this.outbound.markSent(event.id, platformId);
+      const settled = await this.outbound.markSent(event.id, this.leaseOwner, platformId);
+
+      if (!settled) {
+        // The send happened but the lease was gone, so another worker may send
+        // it again. Loud, because it is the one case that can duplicate a
+        // customer-visible message.
+        this.logger.error(
+          { eventId: event.id },
+          'sent AFTER the lease lapsed — a duplicate send is possible',
+        );
+        return;
+      }
 
       /*
        * The delivery write-back, keyed on the LEDGER row rather than the message:
@@ -197,7 +223,14 @@ export class OutboundRelayWorker extends BasePoller {
     if (mapped.requiresReauth && event.enterpriseId !== null && event.channelId !== null) {
       const channel = await this.channels.findSendContext(event.enterpriseId, event.channelId);
       if (channel) {
-        await this.connections.markReauthRequired(channel.channelId, ConnectionStatus.Revoked);
+        // The CONNECTION's id, and the enterprise, so the flag lands on the
+        // credential that actually died rather than on whatever row shares the
+        // number.
+        await this.connections.markReauthRequired(
+          event.enterpriseId,
+          channel.providerConnectionId,
+          ConnectionStatus.Revoked,
+        );
       }
       await this.settleAsFailed(event.id, 'the provider rejected the credential');
       return;

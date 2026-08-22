@@ -1347,16 +1347,22 @@ const ALL_TABLES = [
   'audit_logs',
 ] as const;
 
+/*
+ * Reverse dependency order. CASCADE is deliberately not used, so this order has
+ * to be right: customer_engagements references conversations, and verifications
+ * references customers and customer_identifiers, so those dependents must go
+ * first.
+ */
 const DROP_ORDER = [
   'audit_logs',
   'message_attachments',
   'messages',
+  'verifications',
+  'customer_engagements',
   'conversations',
   'posts',
-  'customer_engagements',
   'customer_identifiers',
   'customers',
-  'verifications',
   'outbound_events',
   'inbound_events',
   'sync_jobs',

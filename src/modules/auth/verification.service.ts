@@ -126,14 +126,20 @@ export class VerificationService {
     if (verification.expiresAt.getTime() <= Date.now()) {
       throw new AppException(ErrorCode.AuthCodeExpired);
     }
-    if (verification.attemptCount >= verification.maxAttempts) {
-      throw new AppException(ErrorCode.AuthCodeAttemptsExceeded);
-    }
+    /*
+     * SPEND THE ATTEMPT FIRST, then compare.
+     *
+     * Comparing against the snapshot's counter let N concurrent requests all
+     * pass the check before any increment committed, so the real number of
+     * guesses was max_attempts plus in-flight concurrency. The atomic
+     * conditional UPDATE is the budget: it returns null once the row is spent,
+     * and no comparison happens at all in that case.
+     */
+    const attempts = await this.verifications.spendAttempt(verification.id);
+    if (attempts === null) throw new AppException(ErrorCode.AuthCodeAttemptsExceeded);
 
     if (!this.hasher.verifySecret(verification.secretHash, submittedSecret)) {
-      const attempts = await this.verifications.recordFailedAttempt(verification.id);
-      // Exhausting the budget kills the code; the user must request a new one.
-      if (attempts === null || attempts >= verification.maxAttempts) {
+      if (attempts >= verification.maxAttempts) {
         throw new AppException(ErrorCode.AuthCodeAttemptsExceeded);
       }
       throw new AppException(ErrorCode.AuthCodeInvalid);

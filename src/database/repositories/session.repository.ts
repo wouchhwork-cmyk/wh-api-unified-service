@@ -54,17 +54,33 @@ export class SessionRepository extends BaseRepository {
   }
 
   /** The cleanup sweep. Hard-deletes rows no one can present any more. */
+  /**
+   * Two statements rather than one OR.
+   *
+   * `(expires_at < $1) OR (revoked_at < $1)` cannot use
+   * sessions_expiry_idx — the OR defeats the partial predicate — so it was a
+   * sequential scan of the whole table on every run. Split, each half uses an
+   * index.
+   */
   async deleteExpiredBefore(cutoff: Date, limit: number): Promise<number> {
-    const { affected } = await this.mutate(
+    const expired = await this.mutate(
+      `DELETE FROM sessions
+        WHERE id IN (
+          SELECT id FROM sessions WHERE expires_at < $1 LIMIT $2
+        )
+        RETURNING id`,
+      [cutoff, limit],
+    );
+    const revoked = await this.mutate(
       `DELETE FROM sessions
         WHERE id IN (
           SELECT id FROM sessions
-           WHERE (expires_at < $1) OR (revoked_at IS NOT NULL AND revoked_at < $1)
+           WHERE revoked_at IS NOT NULL AND revoked_at < $1
            LIMIT $2
         )
         RETURNING id`,
       [cutoff, limit],
     );
-    return affected;
+    return expired.affected + revoked.affected;
   }
 }

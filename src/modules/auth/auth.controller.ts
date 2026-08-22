@@ -9,6 +9,7 @@ import type { ActorContext } from '@/shared/context';
 import {
   LoginRequestSchema,
   SelectEnterpriseRequestSchema,
+  RefreshQuerySchema,
   SwitchEnterpriseRequestSchema,
   VerifyRequestSchema,
   type LoginRequest,
@@ -107,6 +108,9 @@ export class AuthController {
 
     const outcome = await this.auth.completeVerifiedLogin(
       subject.identityId,
+      // The destination the code was actually sent to, so the credential marked
+      // verified is the one that was proven.
+      subject.destination,
       requestMetadata(request),
     );
     if (outcome.session) this.setRefreshCookie(response, outcome.session);
@@ -147,9 +151,10 @@ export class AuthController {
     enterprise: unknown;
   }> {
     const token = readRefreshCookie(request);
-    const enterpriseRefId =
-      typeof request.query.enterpriseRefId === 'string' ? request.query.enterpriseRefId : null;
-    return this.auth.refresh(token, enterpriseRefId);
+    // Validated like every other input: ref_id is a UUID column, so an
+    // arbitrary string reached the driver and surfaced as a 500 instead of a 422.
+    const query = RefreshQuerySchema.parse(request.query);
+    return this.auth.refresh(token, query.enterpriseRefId ?? null);
   }
 
   @Post('switch-enterprise')

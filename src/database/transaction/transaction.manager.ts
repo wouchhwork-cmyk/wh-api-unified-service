@@ -79,10 +79,14 @@ export class TransactionManager {
     isolation: IsolationLevel | undefined,
   ): Promise<T> {
     const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction(isolation ?? 'READ COMMITTED');
 
+    // connect() checks a client OUT OF THE POOL, so everything after it must be
+    // inside the try: if startTransaction() rejects — a dead connection, a bad
+    // isolation level — the client would otherwise never be returned, and a
+    // handful of those exhausts the pool and takes the service down.
     try {
+      await queryRunner.connect();
+      await queryRunner.startTransaction(isolation ?? 'READ COMMITTED');
       const result = await RequestContext.runInTransaction(queryRunner.manager, () =>
         work(queryRunner.manager),
       );

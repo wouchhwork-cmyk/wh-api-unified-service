@@ -258,7 +258,17 @@ export class GraphApiClient {
       throw GraphApiError.fromTransport(cause, `graph ${method} ${path} did not complete`);
     }
 
-    const text = await response.text();
+    // Inside the guard: the abort signal also cancels body streaming, and a
+    // reset can arrive after the headers, so this can reject on its own. Letting
+    // that escape as a non-GraphApiError would make the relay treat a possibly
+    // delivered send as a plain failure and retry it.
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      throw GraphApiError.fromTransport(cause, `graph ${method} ${path} body was interrupted`);
+    }
+
     const parsed: unknown = text ? safeJsonParse(text) : {};
 
     if (!response.ok) {

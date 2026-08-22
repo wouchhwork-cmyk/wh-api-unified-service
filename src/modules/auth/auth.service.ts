@@ -42,6 +42,9 @@ export interface LoginOutcome {
 
 @Injectable()
 export class AuthService {
+  /** Computed once on first use; see decoyHash(). */
+  private decoy: Promise<string> | undefined;
+
   constructor(
     private readonly identities: IdentityRepository,
     private readonly members: EnterpriseMemberRepository,
@@ -67,16 +70,23 @@ export class AuthService {
     const credential = this.resolveCredential(request);
     const identity = await this.findIdentity(credential);
 
-    // Compare a hash even when no identity exists, so a missing account and a
-    // wrong password take the same time. Without this the endpoint is a timing
-    // oracle for which addresses are registered.
+    // Compare against a REAL argon2 hash when no identity exists, so a missing
+    // account and a wrong password cost the same work. A malformed placeholder
+    // would be rejected by the parser in microseconds, which is precisely the
+    // timing oracle this is meant to remove.
     if (!identity) {
-      await this.hasher.verifyPassword(DUMMY_ARGON2_HASH, request.password);
+      await this.hasher.verifyPassword(await this.decoyHash(), request.password);
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
-    this.assertLoginable(identity);
-
+    /*
+     * The password is checked FIRST, before any account state is revealed.
+     *
+     * Checking lockout or disablement first told an unauthenticated caller
+     * whether an address is registered, and which state it is in — a 403 for a
+     * known account against a 401 for an unknown one. The work is done either
+     * way, so the order costs nothing and closes the disclosure.
+     */
     const passwordOk = await this.hasher.verifyPassword(identity.passwordHash, request.password);
     if (!passwordOk) {
       await this.identities.recordFailedLogin(
@@ -86,6 +96,10 @@ export class AuthService {
       );
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
+
+    // Only now, with the password proven, is it safe to say why a valid
+    // credential still cannot sign in.
+    this.assertLoginable(identity);
 
     // --- the password is proven from here on ------------------------------
 
@@ -124,10 +138,31 @@ export class AuthService {
    * Called after a first-login code verifies. Stamps the credential, activates
    * any pending membership, and only then issues a session.
    */
-  async completeVerifiedLogin(identityId: number, meta: RequestMetadata): Promise<LoginOutcome> {
+  async completeVerifiedLogin(
+    identityId: number,
+    verifiedDestination: string,
+    meta: RequestMetadata,
+  ): Promise<LoginOutcome> {
     const identity = await this.identities.findById(identityId);
     if (!identity) throw new AppException(ErrorCode.AuthInvalidCredentials);
     this.assertLoginable(identity);
+
+    /*
+     * Stamp the credential that was just proven. Without this,
+     * needsVerification() stays true forever: every login issues another code,
+     * and once the hourly per-destination cap is reached the account cannot be
+     * signed into at all.
+     *
+     * The column is chosen by matching the verified DESTINATION against the
+     * identity's own values, so verifying an email can never mark a mobile
+     * verified.
+     */
+    if (identity.email !== null && identity.email === verifiedDestination) {
+      await this.identities.markCredentialVerified(identity.id, 'email');
+    } else if (identity.mobile !== null && identity.mobile === verifiedDestination) {
+      await this.identities.markCredentialVerified(identity.id, 'mobile');
+    }
+
     return this.completeLogin(identity, meta);
   }
 
@@ -354,6 +389,17 @@ export class AuthService {
     throw new AppException(ErrorCode.CredentialRequired);
   }
 
+  /**
+   * A genuine argon2id hash of a random value, produced with the configured
+   * parameters and reused. It must be real: verifyPassword on a malformed hash
+   * returns false immediately, leaving the no-such-account path measurably
+   * faster than the wrong-password path.
+   */
+  private async decoyHash(): Promise<string> {
+    this.decoy ??= this.hasher.hashPassword(this.hasher.generateOpaqueToken(16));
+    return this.decoy;
+  }
+
   private async findIdentity(credential: {
     kind: 'email' | 'mobile';
     value: string;
@@ -405,9 +451,4 @@ function isImpersonated(membership: MembershipSummary | null, staffId: number | 
   return staffId !== null && membership === null;
 }
 
-/**
- * A real argon2id hash of a random value, compared against when no identity
- * exists so that timing does not reveal whether an address is registered.
- */
-const DUMMY_ARGON2_HASH =
-  '$argon2id$v=19$m=19456,t=2,p=1$c29tZS1zdGF0aWMtc2FsdA$8Q0vJ0uFq7Kx6vJ5xN3mQwXyZ1aB2cD3eF4gH5iJ6kL';
+

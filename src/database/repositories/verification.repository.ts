@@ -82,11 +82,18 @@ export class VerificationRepository extends BaseRepository {
   }
 
   /**
-   * A wrong guess costs an attempt. Done as one conditional statement so two
-   * concurrent guesses cannot both slip past the limit via a read-modify-write.
-   * Returns the new count, or null when the row was already exhausted.
+   * Spends one attempt from the budget, atomically.
+   *
+   * Called BEFORE the secret is compared, which is what makes the limit real:
+   * comparing first and incrementing after let concurrent requests all pass the
+   * check against a stale count. Returns the new count, or null when the budget
+   * was already spent — in which case no comparison should happen at all.
+   *
+   * A successful verification also spends an attempt. That is harmless: the row
+   * is consumed in the same breath, and it keeps the budget honest for the
+   * concurrent case.
    */
-  async recordFailedAttempt(id: number): Promise<number | null> {
+  async spendAttempt(id: number): Promise<number | null> {
     const { rows } = await this.mutate<{ attempt_count: number }>(
       `UPDATE verifications
           SET attempt_count = attempt_count + 1

@@ -109,6 +109,22 @@ export class ConnectionsController {
       'parent Page, because the Page token is what authorises Instagram calls.',
   })
   async listChannels(@CurrentScopedActor() actor: ScopedActor): Promise<unknown> {
-    return this.channels.listForEnterprise(actor.enterpriseId);
+    const channels = await this.channels.listForEnterprise(actor.enterpriseId);
+    // Mapped, never returned raw: the row carries internal numeric ids, and the
+    // numeric id is never sent to a client. parentChannelId becomes the parent's
+    // refId so the Page/Instagram relationship is still expressible.
+    const refById = new Map(channels.map((channel) => [channel.id, channel.refId]));
+    return channels.map((channel) => ({
+      refId: channel.refId,
+      platform: channel.platform,
+      channelKind: channel.channelKind,
+      name: channel.name,
+      username: channel.username,
+      status: channel.status,
+      reauthRequired: channel.reauthRequired,
+      isManaged: channel.isManaged,
+      parentChannelRefId:
+        channel.parentChannelId === null ? null : refById.get(channel.parentChannelId) ?? null,
+    }));
   }
 }

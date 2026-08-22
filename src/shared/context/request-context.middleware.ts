@@ -33,8 +33,18 @@ export class RequestContextMiddleware implements NestMiddleware {
   }
 }
 
+/**
+ * Bounded by the COLUMN that stores it: inbound_events.correlation_id and
+ * outbound_events.correlation_id are VARCHAR(100). Accepting 128 characters
+ * meant a long client header produced a 22001 string-truncation error when the
+ * ledger row was written — turning a cosmetic header into a failed webhook.
+ */
+const MAX_CORRELATION_ID_LENGTH = 100;
+
 function firstHeader(request: Request, name: string): string | undefined {
   const value = request.headers[name];
-  if (typeof value === 'string' && value.length > 0 && value.length <= 128) return value;
+  if (typeof value === 'string' && value.length > 0 && value.length <= MAX_CORRELATION_ID_LENGTH) {
+    return value;
+  }
   return undefined;
 }

@@ -101,5 +101,12 @@ export function mapGraphError(error: GraphApiError): MappedGraphError {
  * retrying. A clean 4xx is NOT ambiguous: nothing was created.
  */
 export function isAmbiguousFailure(error: GraphApiError): boolean {
-  return error.httpStatus === 0 || error.httpStatus >= 500 || error.httpStatus === 429;
+  /*
+   * 429 is deliberately NOT ambiguous. Meta rejected the call at its edge, so
+   * nothing was created and a retry cannot duplicate anything — treating it as
+   * ambiguous made the relay cancel rate-limited sends permanently, which is the
+   * opposite of what a rate limit asks for. Ambiguity means a timeout, a 5xx, or
+   * a reset: the cases where the request may have been processed.
+   */
+  return error.httpStatus === 0 || error.httpStatus >= 500;
 }

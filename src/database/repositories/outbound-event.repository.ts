@@ -133,14 +133,39 @@ export class OutboundEventRepository extends BaseRepository {
     }));
   }
 
-  async markSent(id: number, platformEventId: string | null): Promise<void> {
-    await this.mutate(
+  /**
+   * Settles a sent row, but ONLY while we still hold the lease.
+   *
+   * Returns false when the lease was lost — the batch outlived it and the reaper
+   * re-queued the row, so another worker now owns it. Without this fence both
+   * workers would write back and the send could be duplicated with neither
+   * noticing.
+   */
+  async markSent(
+    id: number,
+    leaseOwner: string,
+    platformEventId: string | null,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE outbound_events
           SET status = $2, sent_at = now(), platform_event_id = $3,
               lease_owner = NULL, lease_expires_at = NULL
-        WHERE id = $1`,
-      [id, OutboundEventStatus.Sent, platformEventId],
+        WHERE id = $1 AND lease_owner = $4
+        RETURNING id`,
+      [id, OutboundEventStatus.Sent, platformEventId, leaseOwner],
     );
+    return affected === 1;
+  }
+
+  /** True while this worker still owns the row; false once the lease lapsed. */
+  async stillHoldsLease(id: number, leaseOwner: string): Promise<boolean> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM outbound_events
+        WHERE id = $1 AND lease_owner = $2 AND lease_expires_at > now()
+        LIMIT 1`,
+      [id, leaseOwner],
+    );
+    return rows.length === 1;
   }
 
   async markFailed(id: number, error: string, nextAttemptAt: Date | null): Promise<void> {

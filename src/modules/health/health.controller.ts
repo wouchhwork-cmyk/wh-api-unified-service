@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
@@ -35,7 +35,12 @@ export class HealthController {
       'load balancer without killing the process.',
   })
   async ready(): Promise<HealthReport> {
-    return this.health.readiness();
+    const report = await this.health.readiness();
+    // The STATUS CODE is what an orchestrator reads. Reporting "degraded" in a
+    // 200 body means the instance is never pulled from the load balancer, which
+    // defeats the entire point of a readiness probe.
+    if (report.status !== 'ok') throw new ServiceUnavailableException(report);
+    return report;
   }
 
   @Get('startup')
@@ -45,7 +50,9 @@ export class HealthController {
     description: 'Separate from liveness so a slow start does not trigger premature restarts.',
   })
   async startup(): Promise<HealthReport> {
-    return this.health.startup();
+    const report = await this.health.startup();
+    if (report.status !== 'ok') throw new ServiceUnavailableException(report);
+    return report;
   }
 
   @Get('detail')

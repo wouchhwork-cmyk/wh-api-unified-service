@@ -6,6 +6,7 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { RequestContext } from '@/shared/context';
 import { InboundEventType, Platform, SourceKind } from '@/shared/enums';
+import { inboundDedupKey, inboundDedupKeyFromPayload } from '@/modules/ledger/dedup-key.util';
 import { AppException, ErrorCode } from '@/shared/errors';
 
 interface WebhookEntry {
@@ -35,8 +36,22 @@ export class MetaWebhookService {
     @InjectPinoLogger(MetaWebhookService.name) private readonly logger: PinoLogger,
   ) {}
 
+  /**
+   * Refuses everything when the integration is not configured.
+   *
+   * With META_ENABLED=false the app secret and verify token are empty strings,
+   * and an HMAC under an empty key is one an attacker can compute. The route is
+   * registered unconditionally, so the guard has to live here.
+   */
+  private assertConfigured(): void {
+    if (!this.config.meta.enabled || !this.config.meta.appSecret) {
+      throw new AppException(ErrorCode.MetaNotConfigured);
+    }
+  }
+
   /** The subscription handshake. Meta expects the bare challenge as text/plain. */
   verifySubscription(mode: string | undefined, token: string | undefined, challenge: string | undefined): string {
+    this.assertConfigured();
     if (mode !== 'subscribe' || !challenge) {
       throw new AppException(ErrorCode.WebhookSignatureInvalid);
     }
@@ -60,6 +75,7 @@ export class MetaWebhookService {
    * bootstrapped with rawBody: true.
    */
   verifySignature(rawBody: Buffer | undefined, header: string | undefined): void {
+    this.assertConfigured();
     if (!rawBody || !header) throw new AppException(ErrorCode.WebhookSignatureInvalid);
 
     const [algorithm, provided] = header.split('=');
@@ -100,35 +116,39 @@ export class MetaWebhookService {
       // The enterprise is DERIVED from the channel: a webhook carries no tenant
       // context, and trusting anything in the payload for it would be a
       // cross-tenant write primitive.
-      const channel = entry.id
-        ? await this.channels.findByPlatformId(platform, entry.id)
-        : null;
+      const channels = entry.id ? await this.channels.findAllByPlatformId(platform, entry.id) : [];
 
-      if (!channel) {
+      if (channels.length === 0) {
         // Not ours, or not connected yet. Counted and dropped: storing events we
         // cannot attribute would be an unbounded, untenanted table.
         unmatched += 1;
         continue;
       }
 
-      const items = this.flatten(entry);
-      for (const item of items) {
-        const result = await this.inbound.insertIgnoringDuplicate({
-          enterpriseId: channel.enterpriseId,
-          channelId: channel.id,
-          sourceKind: SourceKind.Channel,
-          sourceId: entry.id ?? null,
-          platform,
-          eventType: item.eventType,
-          platformEventId: item.platformEventId,
-          dedupKey: item.dedupKey,
-          correlationId,
-          payload: item.payload,
-          receivedAt: entry.time ? new Date(entry.time * 1000) : null,
-        });
+      const items = this.flatten(entry, platform);
 
-        if (result.duplicate) duplicates += 1;
-        else accepted += 1;
+      // One ledger row per item PER CHANNEL. Two enterprises connected to the
+      // same Page each get their own copy, and the dedup key is scoped by
+      // enterprise, so the copies do not collide with each other.
+      for (const channel of channels) {
+        for (const item of items) {
+          const result = await this.inbound.insertIgnoringDuplicate({
+            enterpriseId: channel.enterpriseId,
+            channelId: channel.id,
+            sourceKind: SourceKind.Channel,
+            sourceId: entry.id ?? null,
+            platform,
+            eventType: item.eventType,
+            platformEventId: item.platformEventId,
+            dedupKey: item.dedupKey,
+            correlationId,
+            payload: item.payload,
+            receivedAt: entry.time ? new Date(entry.time * 1000) : null,
+          });
+
+          if (result.duplicate) duplicates += 1;
+          else accepted += 1;
+        }
       }
     }
 
@@ -139,7 +159,10 @@ export class MetaWebhookService {
   }
 
   /** One entry becomes one ledger row per change or per message. */
-  private flatten(entry: WebhookEntry): {
+  private flatten(
+    entry: WebhookEntry,
+    platform: Platform,
+  ): {
     eventType: InboundEventType;
     platformEventId: string | null;
     dedupKey: string;
@@ -155,10 +178,11 @@ export class MetaWebhookService {
     for (const change of entry.changes ?? []) {
       const eventType = mapChangeField(change.field);
       const platformEventId = extractId(change.value);
+      const verb = extractVerb(change.value);
       items.push({
         eventType,
         platformEventId,
-        dedupKey: composeDedupKey(entry, eventType, platformEventId, change.value),
+        dedupKey: composeDedupKey(platform, eventType, platformEventId, verb, change),
         payload: change,
       });
     }
@@ -168,7 +192,14 @@ export class MetaWebhookService {
       items.push({
         eventType: InboundEventType.DirectMessage,
         platformEventId,
-        dedupKey: composeDedupKey(entry, InboundEventType.DirectMessage, platformEventId, message),
+        // A message id already identifies one event; there is no verb.
+        dedupKey: composeDedupKey(
+          platform,
+          InboundEventType.DirectMessage,
+          platformEventId,
+          null,
+          message,
+        ),
         payload: message,
       });
     }
@@ -194,26 +225,37 @@ function mapChangeField(field: string | undefined): InboundEventType {
 
 
 /**
- * `{platform}:{event_type}:{platform_event_id}` when the platform gives an id,
- * and a payload hash when it does not.
+ * Composes the dedup key using the SHARED scheme, so a backfill fetching the
+ * same item produces the same key and the second copy collides. A second,
+ * private implementation here was the bug: it diverged from
+ * dedup-key.util.ts and from schema.md.
  *
- * CRITICAL: a backfill fetching the same item must compose the SAME key, which
- * is why this depends only on the item's own identity — never on the route it
- * arrived by. If a backfill invented its own event type, every overlapping item
- * would silently duplicate.
+ * An id alone is not enough for a Facebook `feed` change. One comment id can
+ * carry several distinct events over its life — added, edited, hidden, removed —
+ * so keying on the id alone made every event after the first collide and be
+ * discarded. The verb is therefore part of the key.
  */
 function composeDedupKey(
-  entry: WebhookEntry,
+  platform: Platform,
   eventType: InboundEventType,
   platformEventId: string | null,
+  verb: string | null,
   payload: unknown,
 ): string {
-  if (platformEventId) return `meta:${eventType}:${platformEventId}`;
-  const hash = createHmac('sha256', 'dedup')
-    .update(JSON.stringify({ entryId: entry.id, payload }))
-    .digest('hex')
-    .slice(0, 40);
-  return `meta:${eventType}:h:${hash}`;
+  if (platformEventId) {
+    const identity = verb ? `${platformEventId}:${verb}` : platformEventId;
+    return inboundDedupKey(platform, eventType, identity);
+  }
+  // No id: collapse identical payloads, which is correct — two identical
+  // notifications mean the same refresh.
+  return inboundDedupKeyFromPayload(platform, eventType, payload);
+}
+
+/** `add` / `edit` / `hide` / `remove` — what HAPPENED, not just to what. */
+function extractVerb(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const verb = (value as Record<string, unknown>).verb;
+  return typeof verb === 'string' && verb ? verb : null;
 }
 
 function extractId(value: unknown): string | null {
