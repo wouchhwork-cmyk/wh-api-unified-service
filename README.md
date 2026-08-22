@@ -119,10 +119,32 @@ decorator metadata, so every type-reflected injection resolves to `undefined`
 
 ### Meta integration
 
-Off by default. To enable it, put real credentials in `.env.local` (gitignored)
-with `META_ENABLED=true`; see `.env.example` for the variable names. With it off
-the service runs normally and the webhook routes refuse to authenticate, because
-an HMAC under an empty secret is one anybody can compute.
+Off by default. To enable it, set `META_ENABLED=true` with `FB_APP_ID`,
+`FB_APP_SECRET` and `FB_LOGIN_CONFIG_ID`. With it off the service runs normally
+and the webhook routes refuse to authenticate, because an HMAC under an empty
+secret is one anybody can compute.
+
+`FB_LOGIN_CONFIG_ID` is the one people miss: it is not the app id. It comes from
+**App Dashboard → Facebook Login for Business → Configurations**, and it is what
+decides the permissions — our authorization URL sends `config_id` and no `scope`.
+
+```bash
+pnpm meta:setup     # prints exactly what to paste into the Meta dashboard
+```
+
+**`META_WEBHOOK_VERIFY_TOKEN` is optional.** Left empty it is derived from the app
+secret, so there is no string to invent, and it is stable across restarts. Meta's
+handshake needs both sides to know the same value; it does not need a human to
+choose it. `pnpm meta:setup` prints the one in force.
+
+It is also no longer required to boot. Requiring it coupled "I want to test
+Facebook login" to "I have already configured webhooks", which are weeks apart —
+and only the OAuth redirect URI is needed to connect a Page. Webhooks are what
+put customer messages into the inbox.
+
+The verify token is not the security boundary either way: every delivery is
+authenticated by an HMAC-SHA256 over the raw body under the app secret. The verify
+token only guards the one-time subscription handshake.
 
 ## Tests
 

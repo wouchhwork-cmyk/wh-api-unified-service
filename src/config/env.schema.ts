@@ -70,6 +70,13 @@ export const EnvSchema = z
       .regex(/^v\d+\.\d+$/, 'expected a Graph version like v25.0')
       .default('v25.0'),
     META_OAUTH_REDIRECT_URI: z.string().default(''),
+    /**
+     * OPTIONAL. Left empty, one is DERIVED from the app secret — see
+     * MetaWebhookVerifyToken. Meta's handshake requires the two sides to share a
+     * string, but nothing requires a human to invent it, and requiring it before
+     * boot coupled "I want to test Facebook login" to "I have already set up
+     * webhooks", which are weeks apart in practice.
+     */
     META_WEBHOOK_VERIFY_TOKEN: z.string().default(''),
     FRONTEND_DASHBOARD_URL: z.string().default(''),
 
@@ -112,7 +119,6 @@ export const EnvSchema = z
         'FB_APP_SECRET',
         'FB_LOGIN_CONFIG_ID',
         'META_OAUTH_REDIRECT_URI',
-        'META_WEBHOOK_VERIFY_TOKEN',
         'FRONTEND_DASHBOARD_URL',
       ] as const;
       for (const key of required) {

@@ -8,6 +8,7 @@ import { RequestContext } from '@/shared/context';
 import { InboundEventType, Platform, SourceKind } from '@/shared/enums';
 import { inboundDedupKey, inboundDedupKeyFromPayload } from '@/modules/ledger/dedup-key.util';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { resolveWebhookVerifyToken } from './webhook-verify-token';
 
 interface WebhookEntry {
   readonly id?: string;
@@ -59,7 +60,16 @@ export class MetaWebhookService {
     if (mode !== 'subscribe' || !challenge) {
       throw new AppException(ErrorCode.WebhookSignatureInvalid);
     }
-    const expected = Buffer.from(this.config.meta.webhookVerifyToken, 'utf8');
+    // Configured if there is one, derived from the app secret otherwise — so
+    // nobody has to invent a string, and the handshake works as soon as Meta is
+    // configured at all.
+    const resolved = resolveWebhookVerifyToken(
+      this.config.meta.webhookVerifyToken,
+      this.config.meta.appSecret,
+    );
+    if (!resolved) throw new AppException(ErrorCode.MetaNotConfigured);
+
+    const expected = Buffer.from(resolved, 'utf8');
     const actual = Buffer.from(token ?? '', 'utf8');
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
       throw new AppException(ErrorCode.WebhookSignatureInvalid);

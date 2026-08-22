@@ -37,7 +37,8 @@
     "db:reset": "pnpm db:drop && pnpm db:migrate && pnpm db:seed",
     "db:check": "node --env-file=.env.dev --import tsx scripts/schema-check.ts",
     "openapi:export": "node --env-file=.env.dev --import tsx scripts/export-openapi.ts",
-    "db:status": "node --env-file=.env.dev --import tsx scripts/db.ts status"
+    "db:status": "node --env-file=.env.dev --import tsx scripts/db.ts status",
+    "meta:setup": "node --env-file=.env.dev --import tsx scripts/meta-setup.ts"
   },
   "dependencies": {
     "@nestjs/common": "11.2.1",
