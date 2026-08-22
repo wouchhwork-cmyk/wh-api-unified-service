@@ -39,6 +39,8 @@ describe('normalizeComment', () => {
           createdAt: new Date(1_700_000_000 * 1000),
           authorPlatformId: 'FB_USER',
           authorName: 'Ada',
+          // Facebook exposes no handle on a comment.
+          authorHandle: null,
         },
       });
     });
@@ -107,6 +109,8 @@ describe('normalizeComment', () => {
           createdAt: new Date('2026-06-21T08:58:00+0000'),
           authorPlatformId: 'IG_USER',
           authorName: 'ada',
+          // Instagram does, and it is stored as an identifier of its own.
+          authorHandle: 'ada',
         },
       });
     });

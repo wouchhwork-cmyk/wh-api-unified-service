@@ -277,6 +277,8 @@ export class GraphApiClient {
       // Without status_type every post is indistinguishable and lands as
       // post_kind 'text' — a photo album included.
       'status_type',
+      'full_picture',
+      'attachments{type,media}',
       ...(options.withComments
         ? [
             `comments.limit(${SYNC_COMMENTS_PER_POST}){id,message,created_time,from{id,name},parent{id}}`,
@@ -340,7 +342,7 @@ export class GraphApiClient {
     return this.request<GraphEdge<GraphInstagramMedia>>('GET', `${instagramUserId}/media`, {
       accessToken,
       params: {
-        fields: `id,caption,media_type,permalink,timestamp,comments_count,${commentFields}`,
+        fields: `id,caption,media_type,permalink,timestamp,comments_count,media_url,thumbnail_url,${commentFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
       },
@@ -371,6 +373,34 @@ export class GraphApiClient {
         ...(after ? { after } : {}),
       },
     });
+  }
+
+  /**
+   * A channel's public profile.
+   *
+   * One method for both platforms because the shapes overlap enough to be worth
+   * it and differ only in the field names: a Page has `name` and
+   * `followers_count`, an Instagram account `username` and `followers_count`.
+   * Requesting a field the platform does not have is an error, not an omission,
+   * which is why the list is chosen per platform.
+   */
+  async getChannelProfile(
+    platformChannelId: string,
+    accessToken: string,
+    platform: Platform,
+  ): Promise<{
+    name?: string;
+    username?: string;
+    followers_count?: number;
+    fan_count?: number;
+    profile_picture_url?: string;
+  }> {
+    const fields =
+      platform === Platform.Instagram
+        ? 'username,followers_count,profile_picture_url'
+        : 'name,username,followers_count,fan_count';
+
+    return this.request('GET', platformChannelId, { accessToken, params: { fields } });
   }
 
   private async request<T>(

@@ -24,6 +24,7 @@ import { LeaseReaperWorker } from './lease-reaper.worker';
 import { OutboundRelayWorker } from './outbound-relay.worker';
 import { QueueGaugeWorker } from './queue-gauge.worker';
 import { QueueListenerService } from './queue-listener.service';
+import { RefreshSchedulerWorker } from './refresh-scheduler.worker';
 import { SweeperWorker } from './sweeper.worker';
 
 /**
@@ -71,6 +72,7 @@ import { SweeperWorker } from './sweeper.worker';
     LeaseReaperWorker,
     QueueGaugeWorker,
     QueueListenerService,
+    RefreshSchedulerWorker,
     SweeperWorker,
   ],
 })

@@ -90,3 +90,22 @@ export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
  * dead-lettered — which tells the agent "sent" and the truth only later.
  */
 export const MESSAGING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Live inbox updates.
+ *
+ * One channel for every tenant, filtered per subscriber in the API process. A
+ * channel per enterprise would mean a LISTEN per tenant on every instance, which
+ * does not scale and cannot be unsubscribed cheaply.
+ *
+ * The payload carries IDS ONLY. Postgres notifications are not tenant-scoped and
+ * cap at 8000 bytes, so message text and customer names never travel this way —
+ * the client re-reads through the authorised endpoint instead.
+ */
+export const NOTIFY_INBOX_CHANNEL = 'wouchh_inbox_changed';
+
+/** Keeps a stream alive through proxies that drop an idle connection. */
+export const SSE_HEARTBEAT_MS = 25_000;
+
+/** Per-enterprise cap, so one tenant cannot pin every connection on an instance. */
+export const SSE_MAX_STREAMS_PER_ENTERPRISE = 20;

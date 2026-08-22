@@ -51,6 +51,12 @@ export interface CanonicalComment {
   readonly createdAt: Date | null;
   readonly authorPlatformId: string;
   readonly authorName: string | null;
+  /**
+   * A platform HANDLE, when the platform gives one. Instagram does; Facebook
+   * does not. Kept separate from the display name because it is an identifier
+   * the person can be addressed and searched by, not just a label.
+   */
+  readonly authorHandle: string | null;
 }
 
 export type NormalizedComment = { readonly comment: CanonicalComment } | { readonly skip: string };
@@ -102,6 +108,8 @@ function normalizeFacebook(change: FacebookCommentChange): NormalizedComment {
       createdAt: value.created_time ? new Date(value.created_time * 1000) : null,
       authorPlatformId: value.from.id,
       authorName: value.from.name ?? null,
+      // Facebook exposes no handle on a comment.
+      authorHandle: null,
     },
   };
 }
@@ -137,6 +145,7 @@ function normalizeInstagram(change: InstagramCommentChange): NormalizedComment {
       createdAt: parseInstagramTimestamp(value.timestamp),
       authorPlatformId: value.from.id,
       authorName: value.from.username ?? value.username ?? null,
+      authorHandle: value.from.username ?? value.username ?? null,
     },
   };
 }
@@ -230,6 +239,7 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
       createdAt: value.created_time ? new Date(value.created_time * 1000) : null,
       authorPlatformId: value.sender_id,
       authorName: value.sender_name ?? null,
+      authorHandle: null,
     },
   };
 }

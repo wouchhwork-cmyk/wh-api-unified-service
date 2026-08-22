@@ -216,6 +216,17 @@ export class InboxService {
         occurredAt: new Date(),
       });
 
+      /*
+       * A reply is announced too, so a colleague watching the same conversation
+       * sees it without reloading — and so two agents are less likely to answer
+       * the same customer twice.
+       */
+      await this.conversations.notifyChanged({
+        enterpriseId: actor.enterpriseId,
+        conversationRefId: conversation.refId,
+        kind: 'outbound',
+      });
+
       if (conversation.customerId) {
         await this.customers.recordEngagement({
           enterpriseId: actor.enterpriseId,

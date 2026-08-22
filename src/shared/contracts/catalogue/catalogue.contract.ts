@@ -27,6 +27,13 @@ export const PostSummarySchema = z.object({
   likeCount: z.number().int(),
   channelRefId: z.uuid(),
   channelName: z.string().nullable(),
+  media: z
+    .object({
+      url: z.string().optional(),
+      thumbnailUrl: z.string().optional(),
+      type: z.string().optional(),
+    })
+    .nullable(),
 });
 
 export const CustomerDirectoryQuerySchema = z

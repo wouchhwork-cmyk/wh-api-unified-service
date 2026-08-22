@@ -145,6 +145,16 @@ export class DirectMessageProjectorService {
         conversationId: conversation.id,
       });
 
+      /*
+       * Announced inside the transaction, so a live inbox is told only about a
+       * projection that actually committed.
+       */
+      await this.conversations.notifyChanged({
+        enterpriseId,
+        conversationRefId: conversation.refId,
+        kind: 'inbound',
+      });
+
       this.logger.debug(
         { enterpriseId, conversationId: conversation.id, newCustomer: customer.created },
         'direct message projected',

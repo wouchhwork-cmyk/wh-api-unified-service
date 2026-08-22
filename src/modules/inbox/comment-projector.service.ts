@@ -132,6 +132,21 @@ export class CommentProjectorService {
         verificationStatus: IdentifierVerificationStatus.Verified,
       });
 
+      /*
+       * The handle is stored as an identifier, not only as a name: Instagram
+       * gives one on every comment, and it is how a person is addressed and
+       * searched for. Non-primary, because the numeric id is what survives a
+       * rename.
+       */
+      if (comment.authorHandle) {
+        await this.customers.linkIdentifier({
+          enterpriseId,
+          customerId: customer.customerId,
+          identifierKind: IdentifierKind.InstagramUsername,
+          identifierValue: comment.authorHandle,
+        });
+      }
+
       const conversation = await this.conversations.upsert({
         enterpriseId,
         channelId,
@@ -182,6 +197,16 @@ export class CommentProjectorService {
         platform,
         inbound: true,
         conversationId: conversation.id,
+      });
+
+      /*
+       * Announced inside the transaction, so a live inbox is told only about a
+       * projection that actually committed.
+       */
+      await this.conversations.notifyChanged({
+        enterpriseId,
+        conversationRefId: conversation.refId,
+        kind: 'inbound',
       });
 
       // No message text, no author name: those are the customer's words.

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationKind, ConversationStatus, Platform, THREAD_KEY_PREFIX } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { NOTIFY_INBOX_CHANNEL } from '@/shared/constants';
 
 export interface UpsertConversationInput {
   readonly enterpriseId: number;
@@ -242,6 +243,32 @@ export class ConversationRepository extends BaseRepository {
         WHERE enterprise_id = $1 AND conversation_id = $2
           AND direction = 'inbound' AND is_read = false AND is_deleted = false`,
       [enterpriseId, conversationId],
+    );
+  }
+
+  /**
+   * Announces that a conversation changed, for the live inbox.
+   *
+   * Called INSIDE the projection's transaction on purpose: Postgres holds a
+   * notification until commit, so a subscriber is never told about a
+   * conversation that then rolled back.
+   *
+   * Ids only — no message text, no customer name. The notification says "look
+   * again", and the client looks through the authorised endpoint, which is the
+   * only place tenant checks live.
+   */
+  async notifyChanged(input: {
+    enterpriseId: number;
+    conversationRefId: string;
+    kind: 'inbound' | 'outbound';
+  }): Promise<void> {
+    await this.notifyQueue(
+      NOTIFY_INBOX_CHANNEL,
+      JSON.stringify({
+        enterpriseId: input.enterpriseId,
+        conversationRefId: input.conversationRefId,
+        kind: input.kind,
+      }),
     );
   }
 }

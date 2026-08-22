@@ -323,12 +323,30 @@ export class CustomerRepository extends BaseRepository {
     identifierKind: IdentifierKind;
     identifierValue: string;
     displayName: string;
+    /**
+     * Split by the CALLER, not derived here: only the caller knows whether the
+     * string is a person's name or a handle, and decomposing
+     * "some_handle_99" into a first name is nonsense.
+     */
+    firstName?: string | null;
+    lastName?: string | null;
   }): Promise<boolean> {
     const { affected } = await this.mutate(
+      /*
+       * COALESCE per column rather than one blanket overwrite, so a walk fills
+       * the gaps it finds without discarding anything already held.
+       *
+       * last_name is deliberately absent from the WHERE predicate: plenty of
+       * people legitimately have none, and including it would make this update
+       * fire on every re-walk forever.
+       */
       `UPDATE customers cu
-          SET display_name = $4, updated_at = now()
+          SET display_name = COALESCE(cu.display_name, $4),
+              first_name   = COALESCE(cu.first_name, $5),
+              last_name    = COALESCE(cu.last_name, $6),
+              updated_at   = now()
         WHERE cu.enterprise_id = $1
-          AND cu.display_name IS NULL
+          AND (cu.display_name IS NULL OR cu.first_name IS NULL)
           AND cu.is_deleted = false
           AND EXISTS (
             SELECT 1 FROM customer_identifiers ci
@@ -343,6 +361,75 @@ export class CustomerRepository extends BaseRepository {
         input.identifierKind,
         input.identifierValue,
         input.displayName,
+        input.firstName ?? null,
+        input.lastName ?? null,
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Resolves a customer by one of their platform identifiers.
+   *
+   * Separate from resolveOrCreate because this must NOT create: it answers "do
+   * we already know this person" for callers that only want to enrich a record
+   * they did not open.
+   */
+  async findIdByIdentifier(input: {
+    enterpriseId: number;
+    identifierKind: IdentifierKind;
+    identifierValue: string;
+  }): Promise<number | null> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT cu.id
+         FROM customers cu
+         JOIN customer_identifiers ci ON ci.customer_id = cu.id
+                                     AND ci.enterprise_id = cu.enterprise_id
+        WHERE cu.enterprise_id = $1
+          AND cu.is_deleted = false
+          AND ci.identifier_kind = $2
+          AND ci.identifier_value = $3
+          AND ci.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(input.enterpriseId), input.identifierKind, input.identifierValue],
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * Records an ADDITIONAL way to reach the same person — an Instagram handle
+   * alongside the numeric id, say.
+   *
+   * Never primary: the id is what the platform keys on and what survives a
+   * rename, so a handle is a label, not the identity. The schema anticipated
+   * instagram_username and nothing had ever written one.
+   *
+   * ON CONFLICT DO NOTHING against the same partial unique index resolveOrCreate
+   * uses, so re-walking a thread is idempotent. A handle that later belongs to
+   * somebody else is a known limitation of storing handles at all, which is
+   * exactly why it is not the identity.
+   */
+  async linkIdentifier(input: {
+    enterpriseId: number;
+    customerId: number;
+    identifierKind: IdentifierKind;
+    identifierValue: string;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `INSERT INTO customer_identifiers
+         (enterprise_id, customer_id, identifier_kind, identifier_value, identifier_value_raw,
+          is_primary, verification_status, source, first_seen_at, last_seen_at, status)
+       VALUES ($1, $2, $3, $4, $4, false, $5, $6, now(), now(), 'active')
+       ON CONFLICT (enterprise_id, identifier_kind, identifier_value)
+         WHERE status = 'active' AND is_deleted = false
+       DO NOTHING`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.customerId,
+        input.identifierKind,
+        input.identifierValue,
+        IdentifierVerificationStatus.Verified,
+        IdentifierSource.Platform,
       ],
     );
     return affected > 0;

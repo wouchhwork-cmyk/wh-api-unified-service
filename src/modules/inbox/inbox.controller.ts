@@ -1,7 +1,23 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
+import { RawResponse } from '@/shared/decorators/raw-response.decorator';
+import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
+import { SSE_HEARTBEAT_MS } from '@/shared/constants';
+import { InboxEventsService } from './inbox-events.service';
 import { ConversationKind, ConversationStatus, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
@@ -25,6 +41,7 @@ export class InboxController {
   constructor(
     private readonly inbox: InboxService,
     private readonly employees: EnterpriseEmployeeRepository,
+    private readonly events: InboxEventsService,
   ) {}
 
   @Get()
@@ -52,6 +69,86 @@ export class InboxController {
       nextCursor: result.nextCursor,
       hasMore: result.hasMore,
     });
+  }
+
+  /**
+   * A live feed of conversation changes for this business.
+   *
+   * Server-Sent Events, not WebSockets: the inbox needs one direction, SSE
+   * reconnects on its own, and it needs no gateway or second protocol.
+   *
+   * THE EVENT IS A NUDGE, NOT THE DATA. It carries a conversation ref and
+   * nothing else, and the client re-reads through the ordinary endpoints. That
+   * keeps every tenant and permission check in one place instead of duplicating
+   * them on a push path, and means no message text or customer name is ever
+   * pushed to a session that has since lost access.
+   */
+  @Get('stream')
+  @RequirePermission(Permission.ConversationsView)
+  @SkipThrottle()
+  @SkipTimeout()
+  @RawResponse()
+  @ApiOperation({
+    summary: 'Live conversation changes (text/event-stream)',
+    description:
+      'Emits an `inbox` event carrying a conversation ref whenever one changes. The payload is ' +
+      'deliberately id-only: re-read the conversation through GET /conversations/:refId.',
+  })
+  stream(@CurrentScopedActor() actor: ScopedActor, @Res() response: Response): void {
+    let unsubscribe: (() => void) | null = null;
+
+    try {
+      unsubscribe = this.events.subscribe(actor.enterpriseId, (change) => {
+        write('inbox', change);
+      });
+    } catch {
+      // At the per-tenant cap. 503 rather than 429: the request is fine, this
+      // instance simply has no room, and a client should retry elsewhere later.
+      response.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+        success: false,
+        error: { code: 'TOO_MANY_STREAMS', message: 'Too many open streams for this business.' },
+      });
+      return;
+    }
+
+    response.writeHead(HttpStatus.OK, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      // Tells nginx and friends not to buffer, which would hold every event
+      // until the response ended — i.e. forever.
+      'x-accel-buffering': 'no',
+    });
+
+    function write(event: string, data: unknown): void {
+      response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+
+    // Sent immediately so a client can tell "connected" from "still connecting".
+    write('ready', { at: new Date().toISOString() });
+
+    /*
+     * A comment line, which SSE ignores. Without it an idle stream is
+     * indistinguishable from a dead one and proxies close it.
+     */
+    const heartbeat = setInterval(() => {
+      response.write(`: ping ${Date.now()}\n\n`);
+    }, SSE_HEARTBEAT_MS);
+    heartbeat.unref();
+
+    const close = (): void => {
+      clearInterval(heartbeat);
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+      response.end();
+    };
+
+    // Both events matter: 'close' covers a browser tab closing, 'error' a
+    // network drop. Leaking a subscriber per reconnect would grow without bound.
+    response.on('close', close);
+    response.on('error', close);
   }
 
   @Get(':refId')

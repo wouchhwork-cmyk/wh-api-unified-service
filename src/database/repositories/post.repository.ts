@@ -12,6 +12,7 @@ export interface PostFeedRow {
   readonly publishedAt: Date | null;
   readonly commentCount: number;
   readonly likeCount: number;
+  readonly media: { url?: string; thumbnailUrl?: string; type?: string } | null;
   readonly status: PostStatus;
   readonly channelRefId: string;
   readonly channelName: string | null;
@@ -27,6 +28,12 @@ export interface UpsertPostInput {
   readonly permalinkUrl: string | null;
   readonly publishedAt: Date | null;
   readonly commentCount: number | null;
+  /**
+   * `{ url, thumbnailUrl, type }`, or null when the platform offered no
+   * preview. Stored as jsonb because the shape differs per platform and per
+   * media kind, and a column per variant would be a migration each time.
+   */
+  readonly media: { url?: string; thumbnailUrl?: string; type?: string } | null;
 }
 
 @Injectable()
@@ -47,8 +54,8 @@ export class PostRepository extends BaseRepository {
     const { rows } = await this.mutate<{ id: number; created: boolean }>(
       `INSERT INTO posts
          (enterprise_id, channel_id, platform, platform_post_id, post_kind,
-          caption, permalink_url, published_at, comment_count, status, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 0), $10, now())
+          caption, permalink_url, published_at, comment_count, media, status, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 0), COALESCE($10, '{}'::jsonb), $11, now())
        ON CONFLICT (channel_id, platform_post_id)
        DO UPDATE SET
          post_kind     = EXCLUDED.post_kind,
@@ -56,6 +63,12 @@ export class PostRepository extends BaseRepository {
          permalink_url = COALESCE(EXCLUDED.permalink_url, posts.permalink_url),
          published_at  = COALESCE(EXCLUDED.published_at, posts.published_at),
          comment_count = GREATEST(EXCLUDED.comment_count, posts.comment_count),
+         /*
+          * Only overwritten by something non-empty. An Instagram media url
+          * expires, so a refresh that returns one must replace the stale one —
+          * but a walk that asked for no media must not blank what we hold.
+          */
+         media         = CASE WHEN EXCLUDED.media = '{}'::jsonb THEN posts.media ELSE EXCLUDED.media END,
          synced_at     = now(),
          updated_at    = now(),
          is_deleted    = false
@@ -70,6 +83,7 @@ export class PostRepository extends BaseRepository {
         input.permalinkUrl,
         input.publishedAt,
         input.commentCount,
+        input.media === null ? null : JSON.stringify(input.media),
         PostStatus.Published,
       ],
     );
@@ -130,6 +144,7 @@ export class PostRepository extends BaseRepository {
               p.permalink_url      AS "permalinkUrl",
               p.published_at       AS "publishedAt",
               p.comment_count      AS "commentCount",
+              p.media,
               p.like_count         AS "likeCount",
               p.status,
               c.ref_id             AS "channelRefId",

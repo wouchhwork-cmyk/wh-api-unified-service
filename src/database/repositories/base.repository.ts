@@ -127,11 +127,11 @@ export abstract class BaseRepository {
    * Postgres holds the notification until commit, so a listener is never woken
    * for a row that then rolls back.
    */
-  protected async notifyQueue(channel: string): Promise<void> {
+  protected async notifyQueue(channel: string, payload = ''): Promise<void> {
     try {
       // pg_notify() rather than NOTIFY: the channel is a parameter, not
       // interpolated SQL.
-      await this.manager.query('SELECT pg_notify($1, $2)', [channel, '']);
+      await this.manager.query('SELECT pg_notify($1, $2)', [channel, payload]);
     } catch {
       // Deliberately swallowed — see above. The poll timer is the guarantee.
     }

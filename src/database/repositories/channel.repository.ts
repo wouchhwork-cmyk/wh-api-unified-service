@@ -264,4 +264,63 @@ export class ChannelRepository extends BaseRepository {
     );
     return rows[0] ?? null;
   }
+
+  /**
+   * Every channel a scheduler should refresh, across all tenants.
+   *
+   * NOT tenant-scoped, and it cannot be: a cron belongs to no business. Safe
+   * because it returns only the ids a job needs, and every job it enqueues
+   * carries the enterprise_id from this row — so the tenant is re-established
+   * before anything is read or written.
+   */
+  async listAllForRefresh(limit: number): Promise<{ id: number; enterpriseId: number }[]> {
+    return this.query<{ id: number; enterpriseId: number }>(
+      `SELECT id, enterprise_id AS "enterpriseId"
+         FROM channels
+        WHERE is_deleted = false
+          AND is_managed = true
+          AND reauth_required = false
+          AND status = $1
+        ORDER BY COALESCE(profile_synced_at, to_timestamp(0)), id
+        LIMIT $2`,
+      [ChannelStatus.Active, limit],
+    );
+  }
+
+  /**
+   * Writes back what a profile refresh learned.
+   *
+   * COALESCE on every field: a refresh that could not read the follower count
+   * must not zero the one we hold. profile_synced_at moves regardless, because
+   * the attempt happened and the scheduler orders on it — without that a channel
+   * whose profile never resolves would be retried ahead of everything else
+   * forever.
+   */
+  async updateProfile(input: {
+    enterpriseId: number;
+    channelId: number;
+    name: string | null;
+    username: string | null;
+    followerCount: number | null;
+    profilePictureUrl: string | null;
+  }): Promise<void> {
+    await this.mutate(
+      `UPDATE channels
+          SET name                = COALESCE($3, name),
+              username            = COALESCE($4, username),
+              follower_count      = COALESCE($5, follower_count),
+              profile_picture_url = COALESCE($6, profile_picture_url),
+              profile_synced_at   = now(),
+              updated_at          = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.channelId,
+        input.name,
+        input.username,
+        input.followerCount,
+        input.profilePictureUrl,
+      ],
+    );
+  }
 }

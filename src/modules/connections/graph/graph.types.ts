@@ -128,6 +128,9 @@ export interface GraphFeedPost {
   permalink_url?: string;
   /** added_photos / added_video / shared_story / mobile_status_update / ... */
   status_type?: string;
+  /** A ready-made preview image, when the post has one. */
+  full_picture?: string;
+  attachments?: { data?: { type?: string; media?: { image?: { src?: string } } }[] };
   comments?: GraphEdge<GraphComment>;
 }
 
@@ -177,6 +180,14 @@ export interface GraphInstagramMedia {
   caption?: string;
   media_type?: string;
   permalink?: string;
+  /**
+   * A SIGNED CDN url that EXPIRES. Stored for display, never treated as
+   * permanent: a thumbnail that 404s months later is expected, which is why the
+   * permalink is kept alongside it as the durable way back to the post.
+   */
+  media_url?: string;
+  /** Videos only — media_url is the video itself, which is not a thumbnail. */
+  thumbnail_url?: string;
   timestamp?: string;
   comments_count?: number;
   comments?: GraphEdge<GraphInstagramComment>;

@@ -38,6 +38,7 @@ import {
 } from '@/shared/enums';
 import { ErrorCode } from '@/shared/errors';
 import { BasePoller } from './base-poller';
+import { splitPersonName } from '@/shared/utils/person-name';
 
 /**
  * The kinds this worker can actually walk. Anything else is paused rather than
@@ -47,6 +48,8 @@ const IMPLEMENTED_JOB_KINDS: ReadonlySet<SyncJobKind> = new Set([
   SyncJobKind.BackfillPosts,
   SyncJobKind.BackfillComments,
   SyncJobKind.BackfillConversations,
+  SyncJobKind.RefreshProfile,
+  SyncJobKind.RefreshPostMetrics,
 ]);
 
 interface ClaimedSyncJob {
@@ -179,6 +182,17 @@ export class BackfillWorker extends BasePoller {
     const correlationId = randomUUID();
 
     try {
+      /*
+       * A profile refresh is one call, not a walk: there is no cursor and
+       * nothing to page, so it settles immediately rather than going through
+       * the slice machinery.
+       */
+      if (job.jobKind === SyncJobKind.RefreshProfile) {
+        await this.refreshProfile(job, channel, token);
+        await this.syncJobs.markCompleted(job.id, this.leaseOwner, 1);
+        return;
+      }
+
       const result = await this.walk(job, channel, token, correlationId, leaseSeconds);
 
       if (result.finished) {
@@ -253,7 +267,8 @@ export class BackfillWorker extends BasePoller {
     correlationId: string,
     cursor: string | null,
   ): Promise<SliceResult> {
-    const posts = job.jobKind === SyncJobKind.BackfillPosts;
+    const posts =
+      job.jobKind === SyncJobKind.BackfillPosts || job.jobKind === SyncJobKind.RefreshPostMetrics;
 
     if (channel.platform === Platform.Instagram) {
       // Guarded when the job was claimed.
@@ -305,6 +320,7 @@ export class BackfillWorker extends BasePoller {
           publishedAt: media.timestamp ?? null,
           kind: media.media_type ?? null,
           commentCount: media.comments_count ?? null,
+          media: instagramMedia(media),
         });
         if (stored) added += 1;
         continue;
@@ -440,6 +456,7 @@ export class BackfillWorker extends BasePoller {
               publishedAt: post.created_time ?? null,
               kind: post.status_type ?? null,
               commentCount: null,
+              media: facebookMedia(post),
             }),
           )
         : await this.emitComments(job, post, correlationId);
@@ -561,7 +578,14 @@ export class BackfillWorker extends BasePoller {
      */
     const namesById = new Map<string, string>();
     for (const participant of conversation.participants?.data ?? []) {
-      const name = participant.name ?? participant.username;
+      /*
+       * A NAME and a HANDLE are different things and only one of them splits.
+       * Facebook returns a person's name, Instagram a handle; the display name
+       * falls back to whichever exists, but only a real name is decomposed.
+       */
+      const personName = participant.name ?? null;
+      const handle = participant.username ?? null;
+      const name = personName ?? handle;
       if (!participant.id || !name) continue;
       namesById.set(participant.id, name);
 
@@ -572,6 +596,7 @@ export class BackfillWorker extends BasePoller {
        * This runs on every walk and fills gaps without overwriting.
        */
       if (participant.id === selfPlatformId) continue;
+      const split = splitPersonName(personName);
       const named = await this.customers.nameByIdentifier({
         enterpriseId: job.enterpriseId,
         identifierKind:
@@ -580,6 +605,8 @@ export class BackfillWorker extends BasePoller {
             : IdentifierKind.FacebookUserId,
         identifierValue: participant.id,
         displayName: name,
+        firstName: split.firstName,
+        lastName: split.lastName,
       });
       if (named) {
         // No name in the log: it identifies a person.
@@ -587,6 +614,28 @@ export class BackfillWorker extends BasePoller {
           { channelId: job.channelId, platform },
           'named a customer from the conversation participants',
         );
+      }
+
+      /*
+       * An Instagram handle is a SECOND IDENTIFIER, not just a label: it is how
+       * a person is addressed and searched for, and it belongs in
+       * customer_identifiers next to the numeric id rather than only inside
+       * display_name. Facebook exposes no handle on this edge.
+       */
+      if (platform === Platform.Instagram && handle) {
+        const customerId = await this.customers.findIdByIdentifier({
+          enterpriseId: job.enterpriseId,
+          identifierKind: IdentifierKind.InstagramUserId,
+          identifierValue: participant.id,
+        });
+        if (customerId !== null) {
+          await this.customers.linkIdentifier({
+            enterpriseId: job.enterpriseId,
+            customerId,
+            identifierKind: IdentifierKind.InstagramUsername,
+            identifierValue: handle,
+          });
+        }
       }
     }
 
@@ -650,6 +699,40 @@ export class BackfillWorker extends BasePoller {
   }
 
   /**
+   * Re-reads a channel's profile: its name, handle and follower count.
+   *
+   * Nothing else refreshes these. Without it a Page renamed after connecting
+   * keeps its old name in the product forever, and the follower count stays at
+   * the zero it was created with.
+   */
+  private async refreshProfile(
+    job: ClaimedSyncJob,
+    channel: ChannelBackfillContext,
+    token: string,
+  ): Promise<void> {
+    const profile = await this.graph.getChannelProfile(
+      channel.platformChannelId,
+      token,
+      channel.platform,
+    );
+
+    await this.channels.updateProfile({
+      enterpriseId: job.enterpriseId,
+      channelId: job.channelId,
+      name: profile.name ?? profile.username ?? null,
+      username: profile.username ?? null,
+      // A Page reports fan_count, an Instagram account followers_count.
+      followerCount: profile.followers_count ?? profile.fan_count ?? null,
+      profilePictureUrl: profile.profile_picture_url ?? null,
+    });
+
+    this.logger.info(
+      { channelId: job.channelId, platform: channel.platform },
+      'channel profile refreshed',
+    );
+  }
+
+  /**
    * Appends a post_update event in ONE canonical shape.
    *
    * The two platforms name everything differently — message vs caption,
@@ -668,6 +751,7 @@ export class BackfillWorker extends BasePoller {
       publishedAt: string | null;
       kind: string | null;
       commentCount: number | null;
+      media: { url?: string; thumbnailUrl?: string; type?: string } | null;
     },
   ): Promise<boolean> {
     if (!post.postId) return false;
@@ -681,6 +765,7 @@ export class BackfillWorker extends BasePoller {
         published_at: post.publishedAt,
         post_kind: post.kind,
         comment_count: post.commentCount,
+        media: post.media,
       },
     };
 
@@ -692,7 +777,20 @@ export class BackfillWorker extends BasePoller {
       platform,
       eventType: InboundEventType.PostUpdate,
       platformEventId: post.postId,
-      dedupKey: inboundDedupKey(platform, InboundEventType.PostUpdate, post.postId),
+      /*
+       * A REFRESH needs a new key or nothing happens. The backfill key is the
+       * post id alone, which is right — a post is copied once — but it means a
+       * second walk inserts nothing, the projector never runs, and captions and
+       * counts can never be updated. A refresh therefore scopes its key to the
+       * day, so it refreshes once per day per post rather than never.
+       */
+      dedupKey: inboundDedupKey(
+        platform,
+        InboundEventType.PostUpdate,
+        job.jobKind === SyncJobKind.RefreshPostMetrics
+          ? `${post.postId}:${new Date().toISOString().slice(0, 10)}`
+          : post.postId,
+      ),
       correlationId,
       payload,
       priority: EventPriority.Low,
@@ -781,4 +879,35 @@ function parseTimestamp(value: string | undefined): Date | null {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Facebook's preview image.
+ *
+ * `full_picture` is what the platform itself renders, so it is preferred; the
+ * attachment's image is a fallback for posts that have one without the other.
+ */
+function facebookMedia(post: GraphFeedPost): { url?: string; type?: string } | null {
+  const attachment = post.attachments?.data?.[0];
+  const url = post.full_picture ?? attachment?.media?.image?.src;
+  if (!url) return null;
+  return { url, ...(attachment?.type ? { type: attachment.type } : {}) };
+}
+
+/**
+ * Instagram's preview.
+ *
+ * thumbnail_url exists only for video, where media_url is the video file — using
+ * media_url for everything would put a playable video where a thumbnail belongs.
+ */
+function instagramMedia(
+  media: GraphInstagramMedia,
+): { url?: string; thumbnailUrl?: string; type?: string } | null {
+  const url = media.thumbnail_url ?? media.media_url;
+  if (!url) return null;
+  return {
+    url,
+    ...(media.thumbnail_url ? { thumbnailUrl: media.thumbnail_url } : {}),
+    ...(media.media_type ? { type: media.media_type } : {}),
+  };
 }

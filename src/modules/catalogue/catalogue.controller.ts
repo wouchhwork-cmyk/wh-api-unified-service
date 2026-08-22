@@ -97,6 +97,12 @@ function toPostSummary(row: PostFeedRow): Record<string, unknown> {
     publishedAt: row.publishedAt,
     commentCount: Number(row.commentCount),
     likeCount: Number(row.likeCount),
+    /*
+     * Null rather than an empty object when there is no preview, so a client can
+     * branch on presence. An Instagram url is signed and expires, so a client
+     * must treat a broken image as normal and fall back to the permalink.
+     */
+    media: row.media && Object.keys(row.media).length > 0 ? row.media : null,
     channelRefId: row.channelRefId,
     channelName: row.channelName,
   };

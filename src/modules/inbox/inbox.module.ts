@@ -8,11 +8,13 @@ import { PostRepository } from '@/database/repositories/post.repository';
 import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
 import { InboxController } from './inbox.controller';
+import { InboxEventsService } from './inbox-events.service';
 import { InboxService } from './inbox.service';
 import { PostProjectorService } from './post-projector.service';
 
 const PROVIDERS = [
   InboxService,
+  InboxEventsService,
   CommentProjectorService,
   DirectMessageProjectorService,
   PostProjectorService,
