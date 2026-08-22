@@ -1,7 +1,8 @@
-import { join } from 'node:path';
 import { DataSource, type DataSourceOptions } from 'typeorm';
 import { loadConfiguration } from '@/config/configuration';
 import type { DatabaseConfig } from '@/config/config.types';
+import { ENTITIES } from './entities';
+import { InitialSchema1756000000000 } from './migrations/1756000000000-InitialSchema';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -30,8 +31,10 @@ export function buildDataSourceOptions(db: DatabaseConfig): DataSourceOptions {
     // Migrations run as a separate job, never on boot: N instances would race.
     migrationsRun: false,
 
-    entities: [join(__dirname, 'entities', '*.entity.{ts,js}')],
-    migrations: [join(__dirname, 'migrations', '*.{ts,js}')],
+    // Explicit lists, never globs: TypeORM resolves globs at runtime and
+    // requires the files itself, which bypasses the build's transform.
+    entities: [...ENTITIES],
+    migrations: [InitialSchema1756000000000],
     migrationsTableName: 'schema_migrations',
 
     // Implements schema.md's snake_case ↔ camelCase contract in ONE place.

@@ -1,7 +1,7 @@
 {
   "name": "wh-api-unified-service",
   "version": "0.1.0",
-  "description": "Wouchh unified API — social inbox, comments and posts for connected enterprises",
+  "description": "Wouchh unified API \u2014 social inbox, comments and posts for connected enterprises",
   "private": true,
   "license": "UNLICENSED",
   "engines": {

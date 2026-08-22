@@ -24,6 +24,7 @@ export default defineConfig({
           name: 'integration',
           include: ['test/integration/**/*.spec.ts'],
           environment: 'node',
+          setupFiles: ['test/env-setup.ts'],
           // Real Postgres via Testcontainers: every interesting constraint in this
           // schema is a Postgres feature a mock cannot reproduce (§16).
           testTimeout: 120_000,
@@ -37,6 +38,7 @@ export default defineConfig({
           name: 'e2e',
           include: ['test/e2e/**/*.spec.ts'],
           environment: 'node',
+          setupFiles: ['test/env-setup.ts'],
           testTimeout: 120_000,
           hookTimeout: 180_000,
           fileParallelism: false,
