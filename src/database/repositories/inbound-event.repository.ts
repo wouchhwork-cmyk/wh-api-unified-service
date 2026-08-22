@@ -7,6 +7,7 @@ import {
   SourceKind,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { NOTIFY_INBOUND_CHANNEL } from '@/shared/constants';
 
 export interface InboundEventInput {
   readonly enterpriseId: number | null;
@@ -63,6 +64,9 @@ export class InboundEventRepository extends BaseRepository {
     );
 
     const row = rows[0];
+    // Only a NEW row is worth a wake-up; a duplicate means the work already
+    // exists and something has already been woken for it.
+    if (row !== undefined) await this.notifyQueue(NOTIFY_INBOUND_CHANNEL);
     return { id: row?.id ?? null, duplicate: row === undefined };
   }
 

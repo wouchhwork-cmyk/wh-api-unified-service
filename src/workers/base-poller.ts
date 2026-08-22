@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import type { PinoLogger } from 'nestjs-pino';
+import { NOTIFY_DEBOUNCE_MS } from '@/shared/constants';
 import type { AppConfigService } from '@/config';
 
 /**
@@ -24,6 +25,8 @@ export abstract class BasePoller implements OnModuleInit, OnApplicationShutdown 
   private running = false;
   private stopping = false;
   private inFlight: Promise<void> | null = null;
+  /** Set by wake(): the next scheduling decision polls immediately. */
+  private wakeRequested = false;
 
   protected abstract readonly name: string;
   protected abstract readonly config: AppConfigService;
@@ -51,6 +54,9 @@ export abstract class BasePoller implements OnModuleInit, OnApplicationShutdown 
 
   private schedule(delayMs: number): void {
     if (this.stopping) return;
+    // Replace, never stack: wake() reschedules an already-pending timer, and two
+    // live timers would run two overlapping polls.
+    if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       void this.tick();
     }, delayMs);
@@ -58,9 +64,36 @@ export abstract class BasePoller implements OnModuleInit, OnApplicationShutdown 
     this.timer.unref();
   }
 
+  /**
+   * Poll now rather than at the next timer, because something was just enqueued.
+   *
+   * Called from the LISTEN/NOTIFY listener. Two cases, both handled:
+   *   - idle: the pending timer is replaced with a short debounced one, so a
+   *     burst of ten inserts causes one poll rather than ten;
+   *   - mid-poll: the flag is recorded and honoured when the current batch
+   *     finishes, because a row inserted while we were claiming may not have
+   *     been visible to that claim.
+   *
+   * Safe to call at any rate. Losing a wake costs latency, never work.
+   */
+  wake(): void {
+    if (this.stopping) return;
+    this.wakeRequested = true;
+    if (this.running) return;
+    this.schedule(NOTIFY_DEBOUNCE_MS);
+  }
+
   private async tick(): Promise<void> {
     if (this.running || this.stopping) return;
     this.running = true;
+    /*
+     * THIS poll services whatever wake is outstanding, so the flag is cleared
+     * here rather than after the batch. Clearing it afterwards made every wake
+     * cost two polls: the one it triggered, then a second one because the flag
+     * still looked unserviced. A wake arriving DURING the batch sets it again
+     * and is honoured below, which is the case that actually needs it.
+     */
+    this.wakeRequested = false;
 
     let handled = 0;
     this.inFlight = (async () => {
@@ -79,7 +112,15 @@ export abstract class BasePoller implements OnModuleInit, OnApplicationShutdown 
 
     // A full batch probably means more is waiting, so poll again immediately.
     const { pollIntervalMs, idlePollIntervalMs, batchSize } = this.config.worker;
-    const delay = handled >= batchSize ? 0 : handled > 0 ? pollIntervalMs : idlePollIntervalMs;
+    let delay = handled >= batchSize ? 0 : handled > 0 ? pollIntervalMs : idlePollIntervalMs;
+
+    // Something arrived while this batch was running: do not sit out the idle
+    // interval when we have already been told there is work.
+    if (this.wakeRequested) {
+      this.wakeRequested = false;
+      delay = 0;
+    }
+
     this.schedule(delay);
   }
 }

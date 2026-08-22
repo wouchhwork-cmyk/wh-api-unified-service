@@ -1,11 +1,19 @@
 import { createHmac } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '@/config';
-import { PLATFORM_REQUEST_TIMEOUT_MS } from '@/shared/constants';
+import {
+  PLATFORM_REQUEST_TIMEOUT_MS,
+  SYNC_COMMENTS_PER_POST,
+  SYNC_MESSAGES_PER_CONVERSATION,
+  SYNC_PAGE_SIZE,
+} from '@/shared/constants';
 import { GraphApiError } from './graph-api.error';
 import type {
   GraphAccountsResponse,
+  GraphConversation,
   GraphDebugTokenResponse,
+  GraphEdge,
+  GraphFeedPost,
   GraphMeResponse,
   GraphTokenResponse,
   SendResult,
@@ -217,6 +225,77 @@ export class GraphApiClient {
    */
   private appSecretProof(accessToken: string): string {
     return createHmac('sha256', this.config.meta.appSecret).update(accessToken).digest('hex');
+  }
+
+  /**
+   * One page of the Page's OWN posts, optionally with each post's first comments.
+   *
+   * `published_posts`, NOT `feed`, and the difference is not cosmetic: /feed
+   * also contains posts made by other people on the Page, so Meta gates it
+   * behind the "Page Public Content Access" feature — an App Review item. With
+   * pages_read_engagement alone /feed returns error #10 and the walk dies, while
+   * /published_posts returns the Page's own posts and their comments, which is
+   * what an inbox is about. Verified against a live Page: /feed 400,
+   * /published_posts 200.
+   *
+   * The trade-off is explicit: comments on visitor posts are not backfilled.
+   * Live webhooks still deliver them, because the `feed` WEBHOOK field is a
+   * different mechanism from the /feed read edge.
+   *
+   * `withComments` exists so the posts and comments walks share ONE cursor:
+   * asking for comments as a nested edge costs one round trip instead of one per
+   * post, which is the difference between a backfill that finishes and one that
+   * exhausts the rate limit.
+   */
+  async listPagePosts(
+    pageId: string,
+    pageAccessToken: string,
+    options: { after?: string; withComments?: boolean } = {},
+  ): Promise<GraphEdge<GraphFeedPost>> {
+    const fields = [
+      'id',
+      'message',
+      'story',
+      'created_time',
+      'permalink_url',
+      ...(options.withComments
+        ? [
+            `comments.limit(${SYNC_COMMENTS_PER_POST}){id,message,created_time,from{id,name},parent{id}}`,
+          ]
+        : []),
+    ].join(',');
+
+    return this.request<GraphEdge<GraphFeedPost>>('GET', `${pageId}/published_posts`, {
+      accessToken: pageAccessToken,
+      params: {
+        fields,
+        limit: String(SYNC_PAGE_SIZE),
+        ...(options.after ? { after: options.after } : {}),
+      },
+    });
+  }
+
+  /**
+   * One page of a Page's message threads, each with its most recent messages.
+   *
+   * Messages come back newest-first from Graph, which is why the projector keys
+   * on the platform message id rather than arrival order.
+   */
+  async listPageConversations(
+    pageId: string,
+    pageAccessToken: string,
+    after?: string,
+  ): Promise<GraphEdge<GraphConversation>> {
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}}}`;
+
+    return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
+      accessToken: pageAccessToken,
+      params: {
+        fields: `id,updated_time,${messageFields}`,
+        limit: String(SYNC_PAGE_SIZE),
+        ...(after ? { after } : {}),
+      },
+    });
   }
 
   private async request<T>(

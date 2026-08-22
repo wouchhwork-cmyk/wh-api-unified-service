@@ -7,6 +7,7 @@ import {
   Platform,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { NOTIFY_OUTBOUND_CHANNEL } from '@/shared/constants';
 
 export interface EnqueueOutboundInput {
   readonly enterpriseId: number | null;
@@ -75,6 +76,14 @@ export class OutboundEventRepository extends BaseRepository {
       ],
     );
     const row = rows[0];
+    /*
+     * A SCHEDULED send is deliberately not notified: it is not due yet, so
+     * waking the relay would only make it claim nothing. The poll timer picks it
+     * up when its time arrives.
+     */
+    if (row !== undefined && !input.scheduledAt) {
+      await this.notifyQueue(NOTIFY_OUTBOUND_CHANNEL);
+    }
     return { id: row?.id ?? null, duplicate: row === undefined };
   }
 

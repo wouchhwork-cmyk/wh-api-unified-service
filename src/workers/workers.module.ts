@@ -10,13 +10,18 @@ import { InboundEventRepository } from '@/database/repositories/inbound-event.re
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
+import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { InboxModule } from '@/modules/inbox/inbox.module';
 import { CryptoModule } from '@/shared/crypto';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
+import { BackfillWorker } from './backfill.worker';
 import { InboundProjectorWorker } from './inbound-projector.worker';
 import { LeaseReaperWorker } from './lease-reaper.worker';
 import { OutboundRelayWorker } from './outbound-relay.worker';
+import { QueueGaugeWorker } from './queue-gauge.worker';
+import { QueueListenerService } from './queue-listener.service';
 import { SweeperWorker } from './sweeper.worker';
 
 /**
@@ -53,10 +58,15 @@ import { SweeperWorker } from './sweeper.worker';
     MessageRepository,
     ChannelRepository,
     ProviderConnectionRepository,
+    SyncJobRepository,
+    QueueMetricsRepository,
     GraphApiClient,
     InboundProjectorWorker,
     OutboundRelayWorker,
+    BackfillWorker,
     LeaseReaperWorker,
+    QueueGaugeWorker,
+    QueueListenerService,
     SweeperWorker,
   ],
 })

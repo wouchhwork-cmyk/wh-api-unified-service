@@ -86,3 +86,57 @@ export interface GraphErrorBody {
 export interface SendResult {
   readonly platformId: string;
 }
+
+/* ------------------------------------------------------------------ *
+ * Read edges, used by backfill. Every field is optional except the id
+ * because Graph omits rather than nulls: a post with no text has no
+ * `message` key at all, and treating absence as an error would abandon
+ * a walk over a photo post.
+ * ------------------------------------------------------------------ */
+
+export interface GraphPaging {
+  cursors?: { before?: string; after?: string };
+  next?: string;
+}
+
+/** Any Graph edge: a page of `data` plus the cursor to continue it. */
+export interface GraphEdge<T> {
+  data?: T[];
+  paging?: GraphPaging;
+}
+
+export interface GraphActor {
+  id: string;
+  name?: string;
+}
+
+export interface GraphComment {
+  id: string;
+  message?: string;
+  created_time?: string;
+  from?: GraphActor;
+  parent?: { id?: string };
+}
+
+export interface GraphFeedPost {
+  id: string;
+  message?: string;
+  story?: string;
+  created_time?: string;
+  permalink_url?: string;
+  comments?: GraphEdge<GraphComment>;
+}
+
+export interface GraphConversationMessage {
+  id: string;
+  message?: string;
+  created_time?: string;
+  from?: GraphActor;
+  to?: { data?: GraphActor[] };
+}
+
+export interface GraphConversation {
+  id: string;
+  updated_time?: string;
+  messages?: GraphEdge<GraphConversationMessage>;
+}

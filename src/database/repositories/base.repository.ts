@@ -112,6 +112,31 @@ export abstract class BaseRepository {
    * the composite foreign keys make a cross-tenant WRITE unrepresentable, but a
    * missing scope on a READ would return another tenant's rows.
    */
+  /**
+   * Wakes a worker that is LISTENing, so newly enqueued work is picked up in
+   * milliseconds instead of waiting out the poll timer.
+   *
+   * BEST EFFORT BY DESIGN. The notification is an optimisation layered on top of
+   * polling, never the delivery mechanism: if it is lost — no listener attached,
+   * the transaction rolls back, the connection drops — the work is still in the
+   * table and the next poll finds it. So a failure here is logged nowhere and
+   * changes nothing, whereas letting it throw would fail an insert that already
+   * succeeded.
+   *
+   * Called INSIDE the caller's transaction when one is open, which is correct:
+   * Postgres holds the notification until commit, so a listener is never woken
+   * for a row that then rolls back.
+   */
+  protected async notifyQueue(channel: string): Promise<void> {
+    try {
+      // pg_notify() rather than NOTIFY: the channel is a parameter, not
+      // interpolated SQL.
+      await this.manager.query('SELECT pg_notify($1, $2)', [channel, '']);
+    } catch {
+      // Deliberately swallowed — see above. The poll timer is the guarantee.
+    }
+  }
+
   protected requireEnterprise(enterpriseId: number | null | undefined): number {
     if (typeof enterpriseId !== 'number' || !Number.isInteger(enterpriseId) || enterpriseId <= 0) {
       throw new AppException(ErrorCode.AuthEnterpriseNotSelected, {

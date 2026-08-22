@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { AppConfigService } from '@/config';
+import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 
 export interface LivenessReport {
   readonly status: 'ok';
@@ -20,6 +21,7 @@ export class HealthService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly config: AppConfigService,
+    private readonly queueMetrics: QueueMetricsRepository,
   ) {}
 
   /**
@@ -69,7 +71,24 @@ export class HealthService {
         enabled: this.config.meta.enabled,
         graphApiVersion: this.config.meta.graphApiVersion,
       },
+      /*
+       * Queue lag belongs on a health route, not only in a log: "are the workers
+       * behind?" is the first question during an incident, and answering it
+       * should not require shell access to grep a worker's stdout.
+       *
+       * A failure to read the gauges must not fail the whole diagnostic
+       * response — the gauges are the least important thing on it.
+       */
+      queues: await this.queueGauges(),
     };
+  }
+
+  private async queueGauges(): Promise<unknown> {
+    try {
+      return await this.queueMetrics.gauges();
+    } catch {
+      return { status: 'unavailable' };
+    }
   }
 
   private async canQuery(): Promise<'ok' | 'failed'> {
