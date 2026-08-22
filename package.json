@@ -28,6 +28,7 @@
     "test:e2e": "vitest run --project e2e",
     "test:all": "vitest run",
     "db:migrate": "node --env-file=.env.dev --import tsx scripts/db.ts migrate",
+    "db:sync": "node --env-file=.env.dev --import tsx scripts/db.ts sync",
     "db:revert": "node --env-file=.env.dev --import tsx scripts/db.ts revert",
     "db:drop": "node scripts/assert-not-prod.js && node --env-file=.env.dev --import tsx scripts/db.ts drop",
     "db:seed": "node --env-file=.env.dev --import tsx scripts/seed.ts",

@@ -4,7 +4,7 @@ services:
     image: postgres:18-alpine
     container_name: wouchh-postgres
     environment:
-      POSTGRES_DB: wouchh
+      POSTGRES_DB: wouchh_dev
       POSTGRES_USER: wouchh
       POSTGRES_PASSWORD: wouchh_dev_local
     ports:

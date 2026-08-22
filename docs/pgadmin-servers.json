@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Wouchh — local (docker)",
+      "Group": "Wouchh",
+      "Host": "localhost",
+      "Port": 5544,
+      "MaintenanceDB": "wouchh_dev",
+      "Username": "wouchh",
+      "SSLMode": "prefer",
+      "Comment": "The compose Postgres. Port 5544, not 5432: local PostgreSQL installations already hold the usual ports. Password is DB_PASSWORD in .env.dev; pgAdmin will prompt for it."
+    }
+  }
+}

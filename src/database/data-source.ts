@@ -10,8 +10,16 @@ import './pg-types';
 /**
  * One options factory, used by both the Nest application and the CLI, so the
  * two can never disagree about how they connect or which migrations exist.
+ *
+ * Narrowed to postgres rather than returning the bare DataSourceOptions union.
+ * That union spans every driver TypeORM supports, so spreading the result to
+ * override one field — which the parity test does to point at a scratch database
+ * — widens it back across all of them, and `database` becomes a Uint8Array in
+ * the sql.js branch.
  */
-export function buildDataSourceOptions(db: DatabaseConfig): DataSourceOptions {
+export function buildDataSourceOptions(
+  db: DatabaseConfig,
+): DataSourceOptions & { type: 'postgres' } {
   return {
     type: 'postgres',
     host: db.host,

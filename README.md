@@ -16,16 +16,63 @@ from one place.
 Requires Node 24, pnpm 10, and Docker.
 
 ```bash
-pnpm install                 # exact versions, install scripts off (see design §2)
-docker compose up -d postgres # Postgres 18 on host port 5544
-pnpm db:migrate              # hand-written SQL migrations
-pnpm db:seed                 # features, permissions, system role templates
-pnpm build && node --env-file=.env.dev dist/main.js
+pnpm install                  # exact versions, install scripts off (see design §2)
+docker compose up -d postgres # Postgres 18 on host port 5544, database wouchh_dev
+pnpm db:migrate               # hand-written SQL migrations
+pnpm db:seed                  # features, permissions, system role templates
+pnpm build && pnpm start:local
 ```
 
 The API listens on `http://localhost:3000/api/v1`, with Swagger at
 `http://localhost:3000/api/docs`. Workers are a separate process sharing the same
 image: `node --env-file=.env.dev dist/workers/main.js`.
+
+### Changing the schema while developing
+
+Two ways in, and which one you use depends on where you are.
+
+```bash
+pnpm db:sync      # dev only: edit an entity, run this, carry on
+pnpm db:migrate   # qa and prod: hand-written SQL, reviewed, ordered
+```
+
+`db:sync` lets TypeORM create and alter the TABLES to match the entities, then
+re-applies the 88 objects entity metadata cannot express — 34 unique indexes
+(several of them partial), 55 supporting indexes, 69 foreign keys routed through
+`enterprise_id`, 2 CHECK constraints, the `updated_at` triggers, and the grant
+that makes `audit_logs` append-only.
+
+**Synchronize alone would be destructive here, not merely incomplete.** Run
+against a database built by the migration it emits 176 statements, of which 103
+are `DROP INDEX` and 69 are `DROP CONSTRAINT`. It would take out every unique
+constraint, every foreign key and both CHECKs — including the composite keys that
+make a cross-tenant row impossible — and leave a database that still boots. That
+is why `synchronize` stays `false` in the DataSource and lives behind a command
+instead: sync-on-boot would do this on every start.
+
+Both paths run the same module, `src/database/schema/schema-objects.ts`, and
+`test/integration/schema-parity.spec.ts` builds a database each way and compares
+the index definitions, foreign keys, checks, triggers and columns — so the two
+cannot drift apart quietly.
+
+`db:sync` refuses to run unless `NODE_ENV=dev`.
+
+### Looking at the database
+
+Port **5544**, not 5432: local PostgreSQL installations already hold the usual
+ports.
+
+| | |
+| --- | --- |
+| Host | `localhost` |
+| Port | `5544` |
+| Database | `wouchh_dev` |
+| User | `wouchh` |
+| Password | `DB_PASSWORD` in `.env.dev` |
+
+For pgAdmin, `docs/pgadmin-servers.json` is importable as-is: **Object → Import/
+Export Servers → Import**, pick the file. It carries no password; pgAdmin will
+prompt.
 
 **Build with SWC, not tsx.** tsx transpiles with esbuild, which does not emit
 decorator metadata, so every type-reflected injection resolves to `undefined`
