@@ -1,4 +1,5 @@
 import { DataSource } from 'typeorm';
+import { seedCatalogue } from '@/database/seed/catalogue.seed';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
 
@@ -39,6 +40,15 @@ export async function truncateTenantData(dataSource: DataSource): Promise<void> 
   // its own copies of the templates and must go too — without removing the
   // templates themselves, which have enterprise_id IS NULL.
   await dataSource.query(`DELETE FROM roles WHERE enterprise_id IS NOT NULL`);
+
+  /*
+   * Re-seed the catalogue. TRUNCATE on enterprises CASCADEs into roles — which
+   * carries a nullable enterprise_id — so the NULL-enterprise role TEMPLATES go
+   * with it. Signup then fails with "the owner template is missing", which is
+   * correct behaviour rather than a test artefact, so the fix is to restore the
+   * catalogue instead of weakening the check.
+   */
+  await dataSource.transaction((manager) => seedCatalogue(manager));
 }
 
 /** A minimal enterprise, for tests that need a tenant but not a whole signup. */
