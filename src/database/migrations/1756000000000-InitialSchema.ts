@@ -346,6 +346,11 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         metadata               JSONB         NOT NULL DEFAULT '{}',
         status                 VARCHAR(30)   NOT NULL DEFAULT 'active',
         profile_synced_at      TIMESTAMPTZ,
+        -- Present = this Page is subscribed to our webhook fields, so events
+        -- will arrive. A FACT, not a status: a channel can hold a perfectly good
+        -- token (and send) while receiving nothing, and one column cannot say
+        -- both without lying about one of them.
+        webhook_subscribed_at  TIMESTAMPTZ,
         is_deleted             BOOLEAN       NOT NULL DEFAULT false,
         created_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
         updated_at             TIMESTAMPTZ   NOT NULL DEFAULT now()

@@ -279,23 +279,32 @@ export class MetaConnectionService implements ProviderConnector {
           failures += 1;
           return;
         }
+        // The id written moments ago in OUR transaction, not a fresh untenanted
+        // lookup: that lookup can return another enterprise's row for the same
+        // Page, and the tenant-scoped update would then match nothing and
+        // discard the outcome silently.
+        const channelId = channelIdByPageId.get(page.pageId);
+
         try {
           await this.graph.subscribePageToApp(page.pageId, page.pageAccessToken);
+          if (channelId !== undefined) {
+            await this.channels.markWebhookSubscribed(enterpriseId, channelId);
+          }
         } catch (error) {
           failures += 1;
-          // The id written moments ago in OUR transaction, not a fresh
-          // untenanted lookup: that lookup can return another enterprise's row
-          // for the same Page, and the tenant-scoped update would then match
-          // nothing and discard the failure silently.
-          const channelId = channelIdByPageId.get(page.pageId);
-          if (channelId !== undefined) {
-            // A channel we cannot subscribe receives nothing, so it is marked in
-            // error rather than left looking healthy.
-            await this.channels.markStatus(enterpriseId, channelId, ChannelStatus.Error);
-          }
+          /*
+           * The channel is NOT marked in error, which it used to be.
+           *
+           * A Page we could not subscribe still holds a valid token and can
+           * still send — it just receives nothing yet. Marking it `error` made a
+           * perfectly good connection look broken, and it did so most often in
+           * the ordinary case where the app has no webhook configured. The
+           * missing `webhook_subscribed_at` is what says "receives nothing", and
+           * it says only that.
+           */
           this.logger.warn(
             { pageId: page.pageId, err: error instanceof Error ? error.message : 'unknown' },
-            'could not subscribe a page to webhooks',
+            'could not subscribe a page to webhooks — it can send but will receive nothing',
           );
         }
       }),

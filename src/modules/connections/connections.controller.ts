@@ -225,6 +225,8 @@ export class ConnectionsController {
       status: channel.status,
       reauthRequired: channel.reauthRequired,
       isManaged: channel.isManaged,
+      // null means events will not arrive for this Page yet.
+      webhookSubscribedAt: channel.webhookSubscribedAt,
       parentChannelRefId:
         channel.parentChannelId === null ? null : (refById.get(channel.parentChannelId) ?? null),
     }));

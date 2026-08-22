@@ -97,4 +97,15 @@ export class Channel extends PublicEntity {
   /** Last profile/stats refresh — named for the one thing it covers, since §15 syncs more. */
   @Column({ type: 'timestamptz', nullable: true })
   profileSyncedAt!: Date | null;
+
+  /**
+   * When this Page was subscribed to our webhook fields, or null.
+   *
+   * Separate from `status` because sending and receiving are separate
+   * capabilities: a channel with a valid token can send while receiving nothing,
+   * and collapsing both into one status made an unsubscribed Page look broken —
+   * which it is not.
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  webhookSubscribedAt!: Date | null;
 }

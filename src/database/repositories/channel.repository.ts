@@ -30,6 +30,8 @@ export interface ChannelRow {
   readonly reauthRequired: boolean;
   readonly isManaged: boolean;
   readonly parentChannelId: number | null;
+  /** null = this Page is not subscribed, so no events will arrive. */
+  readonly webhookSubscribedAt: Date | null;
 }
 
 /** What the send path needs: the token that actually authorises the call. */
@@ -103,7 +105,8 @@ export class ChannelRepository extends BaseRepository {
       `SELECT id, ref_id AS "refId", platform, channel_kind AS "channelKind",
               platform_channel_id AS "platformChannelId", name, username, status,
               reauth_required AS "reauthRequired", is_managed AS "isManaged",
-              parent_channel_id AS "parentChannelId"
+              parent_channel_id AS "parentChannelId",
+              webhook_subscribed_at AS "webhookSubscribedAt"
          FROM channels
         WHERE enterprise_id = $1 AND is_deleted = false
         ORDER BY platform, name NULLS LAST`,
@@ -165,6 +168,20 @@ export class ChannelRepository extends BaseRepository {
         WHERE platform = $1 AND platform_channel_id = $2 AND is_deleted = false
         ORDER BY id`,
       [platform, platformChannelId],
+    );
+  }
+
+  /**
+   * Records that a Page is subscribed and will receive events.
+   *
+   * Stamped only on success, so null keeps meaning "receives nothing yet" rather
+   * than "we are not sure".
+   */
+  async markWebhookSubscribed(enterpriseId: number, channelId: number): Promise<void> {
+    await this.mutate(
+      `UPDATE channels SET webhook_subscribed_at = now(), updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), channelId],
     );
   }
 
