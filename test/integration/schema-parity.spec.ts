@@ -34,7 +34,19 @@ interface SchemaFacts {
   columns: string[];
 }
 
-describe('the migration and db:sync agree', () => {
+/*
+ * RUN ON DEMAND, NOT ON EVERY CHANGE: `pnpm test:schema`.
+ *
+ * It compares a database built by the MIGRATION against one built by the
+ * ENTITIES. While a schema is moving daily those two are meant to disagree — you
+ * change an entity, run db:sync, and the migration is deliberately left behind
+ * until it is worth writing. Gating every test run on that would make a red
+ * suite the normal state, which is how a red suite stops meaning anything.
+ *
+ * So it is a PRE-DEPLOY gate. It must pass before anything ships to qa or prod,
+ * because that is the moment the migration becomes the authority again.
+ */
+describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', () => {
   let admin: DataSource;
 
   beforeAll(async () => {

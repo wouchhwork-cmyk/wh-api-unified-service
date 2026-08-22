@@ -32,9 +32,14 @@ image: `node --env-file=.env.dev dist/workers/main.js`.
 Two ways in, and which one you use depends on where you are.
 
 ```bash
-pnpm db:sync      # dev only: edit an entity, run this, carry on
+pnpm dev          # db:sync + build + start — the whole loop, one command
+pnpm db:sync      # dev only: just the schema
 pnpm db:migrate   # qa and prod: hand-written SQL, reviewed, ordered
+pnpm test:schema  # pre-deploy: does the migration still match the entities?
 ```
+
+Day to day: change an entity, run `pnpm dev`. That is the only manual step, and
+it is idempotent — running it when nothing changed does nothing.
 
 `db:sync` lets TypeORM create and alter the TABLES to match the entities, then
 re-applies the 88 objects entity metadata cannot express — 34 unique indexes
@@ -50,10 +55,19 @@ make a cross-tenant row impossible — and leave a database that still boots. Th
 is why `synchronize` stays `false` in the DataSource and lives behind a command
 instead: sync-on-boot would do this on every start.
 
-Both paths run the same module, `src/database/schema/schema-objects.ts`, and
-`test/integration/schema-parity.spec.ts` builds a database each way and compares
-the index definitions, foreign keys, checks, triggers and columns — so the two
-cannot drift apart quietly.
+Both paths run the same module, `src/database/schema/schema-objects.ts`.
+
+`pnpm test:schema` builds a database each way and compares index definitions —
+definitions, not names, so a partial index that lost its `WHERE` clause fails —
+along with foreign keys, checks, triggers, columns and nullability.
+
+It is **not** part of `pnpm test:all`, on purpose. While the schema is moving the
+migration is deliberately left behind: you change an entity, run `pnpm dev`, and
+write the migration when it is worth writing. Gating every test run on that would
+make a red suite the normal state, which is how a red suite stops meaning
+anything. It is a pre-deploy gate instead, and it has to pass before anything
+reaches qa or prod — that is the moment the migration becomes the authority
+again.
 
 `db:sync` refuses to run unless `NODE_ENV=dev`.
 
