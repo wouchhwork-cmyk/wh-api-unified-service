@@ -6,6 +6,7 @@ import {
   ChannelRepository,
   type ChannelBackfillContext,
 } from '@/database/repositories/channel.repository';
+import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -27,7 +28,14 @@ import {
   SYNC_MAX_PAGES_PER_RUN,
   SYNC_RATE_LIMIT_PARK_MS,
 } from '@/shared/constants';
-import { EventPriority, InboundEventType, Platform, SourceKind, SyncJobKind } from '@/shared/enums';
+import {
+  EventPriority,
+  IdentifierKind,
+  InboundEventType,
+  Platform,
+  SourceKind,
+  SyncJobKind,
+} from '@/shared/enums';
 import { ErrorCode } from '@/shared/errors';
 import { BasePoller } from './base-poller';
 
@@ -84,6 +92,7 @@ export class BackfillWorker extends BasePoller {
     private readonly syncJobs: SyncJobRepository,
     private readonly channels: ChannelRepository,
     private readonly inbound: InboundEventRepository,
+    private readonly customers: CustomerRepository,
     private readonly graph: GraphApiClient,
     private readonly cipher: TokenCipherService,
     protected readonly config: AppConfigService,
@@ -545,6 +554,42 @@ export class BackfillWorker extends BasePoller {
   ): Promise<number> {
     let added = 0;
 
+    /*
+     * Names live on the THREAD, not on its messages: the participants edge is
+     * the only place Meta gives one, and a message carries just an id. Built
+     * once per thread rather than per message.
+     */
+    const namesById = new Map<string, string>();
+    for (const participant of conversation.participants?.data ?? []) {
+      const name = participant.name ?? participant.username;
+      if (!participant.id || !name) continue;
+      namesById.set(participant.id, name);
+
+      /*
+       * Written straight to the customer, not left to the message projection.
+       * A second walk of a thread inserts no new events — dedup — so a name
+       * carried only on an event never reaches a customer who already exists.
+       * This runs on every walk and fills gaps without overwriting.
+       */
+      if (participant.id === selfPlatformId) continue;
+      const named = await this.customers.nameByIdentifier({
+        enterpriseId: job.enterpriseId,
+        identifierKind:
+          platform === Platform.Instagram
+            ? IdentifierKind.InstagramUserId
+            : IdentifierKind.FacebookUserId,
+        identifierValue: participant.id,
+        displayName: name,
+      });
+      if (named) {
+        // No name in the log: it identifies a person.
+        this.logger.info(
+          { channelId: job.channelId, platform },
+          'named a customer from the conversation participants',
+        );
+      }
+    }
+
     for (const message of conversation.messages?.data ?? []) {
       if (!message.id) continue;
 
@@ -557,8 +602,22 @@ export class BackfillWorker extends BasePoller {
        */
       const isEcho = senderId !== null && senderId === selfPlatformId;
 
+      /*
+       * `sender.name` is an ADDITION to Meta's webhook shape, not a change to
+       * it: a real messaging webhook has no name, so the projector treats it as
+       * optional and falls back to null exactly as before. This is the only way
+       * a backfilled customer gets a name at all.
+       */
+      const senderName =
+        senderId !== null && !isEcho
+          ? (namesById.get(senderId) ?? message.from?.name ?? null)
+          : null;
+
       const payload = {
-        sender: { id: senderId ?? undefined },
+        sender: {
+          id: senderId ?? undefined,
+          ...(senderName ? { name: senderName } : {}),
+        },
         recipient: { id: selfPlatformId },
         timestamp: toUnixMilliseconds(message.created_time),
         message: {

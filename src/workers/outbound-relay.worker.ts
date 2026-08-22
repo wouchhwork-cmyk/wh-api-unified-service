@@ -136,7 +136,13 @@ export class OutboundRelayWorker extends BasePoller {
           ? (channel.parentPlatformChannelId ?? channel.platformChannelId)
           : channel.platformChannelId;
 
-      const platformId = await this.send(event, channel.platformChannelId, token, messagingTarget);
+      const platformId = await this.send(
+        event,
+        channel.platformChannelId,
+        token,
+        messagingTarget,
+        channel.platform,
+      );
       const settled = await this.outbound.markSent(event.id, this.leaseOwner, platformId);
 
       if (!settled) {
@@ -179,12 +185,19 @@ export class OutboundRelayWorker extends BasePoller {
     platformChannelId: string,
     token: string,
     messagingTarget: string,
+    platform: Platform,
   ): Promise<string | null> {
     switch (event.eventType) {
       case OutboundEventType.CommentReply: {
         const payload = event.payload as CommentReplyPayload;
         if (!payload.commentId || !payload.message) throw new Error('incomplete comment reply');
-        const result = await this.graph.replyToComment(payload.commentId, payload.message, token);
+        const result = await this.graph.replyToComment(
+          payload.commentId,
+          payload.message,
+          token,
+          // Instagram nests a reply under /replies, Facebook under /comments.
+          platform,
+        );
         return result.platformId;
       }
       case OutboundEventType.DirectMessage: {

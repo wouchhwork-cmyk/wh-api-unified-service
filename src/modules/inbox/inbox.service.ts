@@ -21,6 +21,7 @@ import {
 } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { outboundDedupKey } from '@/modules/ledger/dedup-key.util';
+import { evaluateReplyWindow } from './reply-window';
 
 export interface ReplyInput {
   readonly conversationRefId: string;
@@ -140,6 +141,25 @@ export class InboxService {
       // Fail fast, before a row is queued that the relay could only cancel.
       if (channel.reauthRequired) throw new AppException(ErrorCode.ChannelReauthRequired);
       if (!channel.isManaged) throw new AppException(ErrorCode.ChannelNotManaged);
+
+      /*
+       * The messaging window, refused HERE rather than discovered by the relay.
+       *
+       * Accepting this reply would return 202, queue a row, spend an attempt,
+       * and dead-letter it — after telling the agent it was on its way. The
+       * platform's answer is knowable before any of that, so it is answered
+       * before any of that.
+       */
+      const window = evaluateReplyWindow({
+        conversationKind: conversation.conversationKind,
+        lastInboundAt: conversation.lastInboundAt,
+      });
+      if (!window.canReply) {
+        throw new AppException(
+          ErrorCode.MessagingWindowClosed,
+          window.reason ? { message: window.reason } : {},
+        );
+      }
     }
 
     const employeeId = actor.employeeId;
@@ -154,6 +174,7 @@ export class InboxService {
         messageKind: MessageKind.Text,
         idempotencyKey: input.idempotencyKey,
         parentMessageId: null,
+        isInternalNote: input.internalNote,
       });
 
       if (!input.internalNote) {

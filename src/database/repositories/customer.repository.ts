@@ -305,4 +305,46 @@ export class CustomerRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), term, limit],
     );
   }
+
+  /**
+   * Fills in a customer's name, found by the platform id we already know them by.
+   *
+   * Separate from the message projection ON PURPOSE. A name comes from the
+   * conversation's participants edge, which is profile data about the thread, not
+   * content of any message — so tying it to a message event means dedup silences
+   * it: the second walk of a thread inserts no new events, the projector never
+   * runs, and the customer stays nameless forever.
+   *
+   * Guarded on display_name IS NULL, so a re-walk can fill a gap but never
+   * overwrite a name already held. Returns whether a row was actually named.
+   */
+  async nameByIdentifier(input: {
+    enterpriseId: number;
+    identifierKind: IdentifierKind;
+    identifierValue: string;
+    displayName: string;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE customers cu
+          SET display_name = $4, updated_at = now()
+        WHERE cu.enterprise_id = $1
+          AND cu.display_name IS NULL
+          AND cu.is_deleted = false
+          AND EXISTS (
+            SELECT 1 FROM customer_identifiers ci
+             WHERE ci.customer_id = cu.id
+               AND ci.enterprise_id = cu.enterprise_id
+               AND ci.identifier_kind = $2
+               AND ci.identifier_value = $3
+               AND ci.is_deleted = false
+          )`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.identifierKind,
+        input.identifierValue,
+        input.displayName,
+      ],
+    );
+    return affected > 0;
+  }
 }

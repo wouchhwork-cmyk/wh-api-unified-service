@@ -17,10 +17,19 @@ import {
   Platform,
 } from '@/shared/enums';
 import type { ProjectionOutcome } from './comment-projector.service';
+import { normalizeOptionalText } from '@/shared/utils/normalize';
 
 /** Meta's messaging entry shape. */
 interface MessagingEvent {
-  readonly sender?: { readonly id?: string };
+  readonly sender?: {
+    readonly id?: string;
+    /**
+     * Present only on a BACKFILLED event, where the participants edge supplied
+     * it. A live messaging webhook carries no name, which is why a customer
+     * first seen through a direct message used to have none at all.
+     */
+    readonly name?: string;
+  };
   readonly recipient?: { readonly id?: string };
   readonly timestamp?: number;
   readonly message?: {
@@ -78,7 +87,7 @@ export class DirectMessageProjectorService {
         identifierKind,
         identifierValue: senderId,
         identifierValueRaw: senderId,
-        displayName: null,
+        displayName: normalizeOptionalText(event.sender?.name ?? null),
         firstSource:
           platform === Platform.Instagram
             ? CustomerFirstSource.InstagramDm

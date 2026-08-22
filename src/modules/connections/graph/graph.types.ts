@@ -108,6 +108,8 @@ export interface GraphEdge<T> {
 export interface GraphActor {
   id: string;
   name?: string;
+  /** Instagram identifies people by handle; Facebook by name. */
+  username?: string;
 }
 
 export interface GraphComment {
@@ -141,6 +143,15 @@ export interface GraphConversation {
   id: string;
   updated_time?: string;
   messages?: GraphEdge<GraphConversationMessage>;
+  /**
+   * Both sides of the thread, and the ONLY place a name appears.
+   *
+   * Meta's messaging webhook carries a sender id and nothing else, so a customer
+   * first seen through a direct message has no name at all. This edge is how a
+   * backfill can know one: Facebook returns `name`, Instagram returns
+   * `username`.
+   */
+  participants?: { data?: GraphActor[] };
 }
 
 /* ------------------------------------------------------------------ *

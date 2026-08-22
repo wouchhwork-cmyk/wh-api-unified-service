@@ -6,6 +6,7 @@ import { AppConfigModule, AppConfigService } from '@/config';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { DatabaseModule } from '@/database/database.module';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
+import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
@@ -55,6 +56,7 @@ import { SweeperWorker } from './sweeper.worker';
   ],
   providers: [
     InboundEventRepository,
+    CustomerRepository,
     OutboundEventRepository,
     MessageRepository,
     ChannelRepository,

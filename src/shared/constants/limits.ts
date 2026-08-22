@@ -80,3 +80,13 @@ export const NOTIFY_DEBOUNCE_MS = 50;
 
 /** How often the queue gauge is sampled and logged. */
 export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
+
+/**
+ * Meta's messaging window: a business may reply to a direct message only within
+ * 24 hours of the customer's last message.
+ *
+ * Enforced on OUR side as well as Meta's, so a reply that cannot possibly be
+ * delivered is refused at the door rather than accepted, queued, attempted and
+ * dead-lettered — which tells the agent "sent" and the truth only later.
+ */
+export const MESSAGING_WINDOW_MS = 24 * 60 * 60 * 1000;

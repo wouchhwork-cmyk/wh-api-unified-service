@@ -27,6 +27,21 @@ export interface ConversationRow {
   readonly unreadCount: number;
   readonly messageCount: number;
   readonly lastMessageAt: Date | null;
+  /**
+   * When the CUSTOMER last wrote. Distinct from lastMessageAt, which moves when
+   * we reply — and a reply must never reopen the messaging window.
+   */
+  readonly lastInboundAt: Date | null;
+  /**
+   * Who the conversation is WITH.
+   *
+   * Joined rather than looked up per row: an inbox of fifty conversations would
+   * otherwise be fifty extra queries, and without it the list can only show a
+   * kind label — "direct_message" instead of a person.
+   */
+  readonly customerRefId: string | null;
+  readonly customerDisplayName: string | null;
+  readonly customerAvatarUrl: string | null;
 }
 
 /**
@@ -86,13 +101,18 @@ export class ConversationRepository extends BaseRepository {
 
   async findByRefId(enterpriseId: number, refId: string): Promise<ConversationRow | null> {
     const rows = await this.query<ConversationRow>(
-      `SELECT id, ref_id AS "refId", channel_id AS "channelId", customer_id AS "customerId",
-              platform, conversation_kind AS "conversationKind",
-              platform_thread_id AS "platformThreadId", status,
-              unread_count AS "unreadCount", message_count AS "messageCount",
-              last_message_at AS "lastMessageAt"
-         FROM conversations
-        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
+      `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
+              cv.customer_id AS "customerId", cv.platform,
+              cv.conversation_kind AS "conversationKind",
+              cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
+              cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
+              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
+              cu.avatar_url AS "customerAvatarUrl"
+         FROM conversations cv
+         LEFT JOIN customers cu ON cu.id = cv.customer_id
+                               AND cu.enterprise_id = cv.enterprise_id
+        WHERE cv.enterprise_id = $1 AND cv.ref_id = $2 AND cv.is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), refId],
     );
@@ -113,30 +133,40 @@ export class ConversationRepository extends BaseRepository {
     const params: unknown[] = [this.requireEnterprise(input.enterpriseId), input.limit];
     const filters: string[] = [];
 
+    /*
+     * EVERY column is qualified, because the customers join makes `id`,
+     * `ref_id`, `status` and `is_deleted` ambiguous — customers has all four.
+     * Unqualified, this query does not fail a type check, it fails at runtime.
+     */
     if (input.status) {
       params.push(input.status);
-      filters.push(`AND status = $${params.length}`);
+      filters.push(`AND cv.status = $${params.length}`);
     }
     if (input.assignedToEmployeeId !== null) {
       params.push(input.assignedToEmployeeId);
-      filters.push(`AND assigned_to_employee_id = $${params.length}`);
+      filters.push(`AND cv.assigned_to_employee_id = $${params.length}`);
     }
     if (input.cursor) {
       params.push(input.cursor.lastMessageAt, input.cursor.id);
-      filters.push(`AND (last_message_at, id) < ($${params.length - 1}, $${params.length})`);
+      filters.push(`AND (cv.last_message_at, cv.id) < ($${params.length - 1}, $${params.length})`);
     }
 
     return this.query<ConversationRow>(
-      `SELECT id, ref_id AS "refId", channel_id AS "channelId", customer_id AS "customerId",
-              platform, conversation_kind AS "conversationKind",
-              platform_thread_id AS "platformThreadId", status,
-              unread_count AS "unreadCount", message_count AS "messageCount",
-              last_message_at AS "lastMessageAt"
-         FROM conversations
-        WHERE enterprise_id = $1
-          AND is_deleted = false
+      `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
+              cv.customer_id AS "customerId", cv.platform,
+              cv.conversation_kind AS "conversationKind",
+              cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
+              cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
+              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
+              cu.avatar_url AS "customerAvatarUrl"
+         FROM conversations cv
+         LEFT JOIN customers cu ON cu.id = cv.customer_id
+                               AND cu.enterprise_id = cv.enterprise_id
+        WHERE cv.enterprise_id = $1
+          AND cv.is_deleted = false
           ${filters.join('\n          ')}
-        ORDER BY last_message_at DESC NULLS LAST, id DESC
+        ORDER BY cv.last_message_at DESC NULLS LAST, cv.id DESC
         LIMIT $2`,
       params,
     );

@@ -7,6 +7,7 @@ import {
   SYNC_MESSAGES_PER_CONVERSATION,
   SYNC_PAGE_SIZE,
 } from '@/shared/constants';
+import { Platform } from '@/shared/enums';
 import { GraphApiError } from './graph-api.error';
 import type {
   GraphAccountsResponse,
@@ -169,12 +170,26 @@ export class GraphApiClient {
     });
   }
 
+  /**
+   * Replies to a comment.
+   *
+   * THE EDGE DIFFERS BY PLATFORM, and using the wrong one fails in a way that
+   * reads like a missing object: Facebook nests a reply under
+   * `{comment-id}/comments`, Instagram under `{comment-id}/replies`. Posting
+   * Facebook's form to an Instagram comment returns "Unsupported post request.
+   * Object with ID ... does not exist, cannot be loaded due to missing
+   * permissions, or does not support this operation" — which sends you looking
+   * for a deleted comment or a permission problem, when the object is fine and
+   * only the edge is wrong.
+   */
   async replyToComment(
     commentId: string,
     message: string,
     pageAccessToken: string,
+    platform: Platform = Platform.Facebook,
   ): Promise<SendResult> {
-    const result = await this.request<{ id: string }>('POST', `${commentId}/comments`, {
+    const edge = platform === Platform.Instagram ? 'replies' : 'comments';
+    const result = await this.request<{ id: string }>('POST', `${commentId}/${edge}`, {
       accessToken: pageAccessToken,
       body: { message },
     });
@@ -295,7 +310,7 @@ export class GraphApiClient {
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken: pageAccessToken,
       params: {
-        fields: `id,updated_time,${messageFields}`,
+        fields: `id,updated_time,participants{id,name,username},${messageFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
       },
@@ -351,7 +366,7 @@ export class GraphApiClient {
       accessToken,
       params: {
         platform: 'instagram',
-        fields: `id,updated_time,${messageFields}`,
+        fields: `id,updated_time,participants{id,name,username},${messageFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
       },

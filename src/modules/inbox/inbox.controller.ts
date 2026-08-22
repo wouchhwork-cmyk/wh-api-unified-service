@@ -2,9 +2,10 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from 
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
-import { ConversationStatus, Permission } from '@/shared/enums';
+import { ConversationKind, ConversationStatus, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
+import { evaluateReplyWindow } from './reply-window';
 import type { ActorContext } from '@/shared/context';
 import {
   AssignRequestSchema,
@@ -157,13 +158,43 @@ function toConversationSummary(row: {
   unreadCount: number;
   messageCount: number;
   lastMessageAt: Date | null;
+  lastInboundAt: Date | null;
   platform: string;
+  customerRefId: string | null;
+  customerDisplayName: string | null;
+  customerAvatarUrl: string | null;
 }): Record<string, unknown> {
+  /*
+   * Told to the client, not just enforced on it. A reply box that accepts text
+   * and then answers 409 is worse than one that explains up front why it is
+   * disabled — and the client cannot work this out alone, because the rule
+   * depends on when the CUSTOMER last wrote, not on the last message.
+   */
+  const window = evaluateReplyWindow({
+    conversationKind: row.conversationKind as ConversationKind,
+    lastInboundAt: row.lastInboundAt,
+  });
+
   return {
     refId: row.refId,
     conversationKind: row.conversationKind,
     platform: row.platform,
     status: row.status,
+    canReply: window.canReply,
+    replyBlockedReason: window.reason,
+    /*
+     * Nested rather than flattened, so a client can tell "we have no name for
+     * this person" from "there is no person" — a comment thread always has an
+     * author, an unnamed customer is simply one we have not learned a name for
+     * yet.
+     */
+    customer: row.customerRefId
+      ? {
+          refId: row.customerRefId,
+          displayName: row.customerDisplayName,
+          avatarUrl: row.customerAvatarUrl,
+        }
+      : null,
     unreadCount: row.unreadCount,
     messageCount: row.messageCount,
     lastMessageAt: row.lastMessageAt,

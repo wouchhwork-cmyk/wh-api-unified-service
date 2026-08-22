@@ -25,6 +25,14 @@ export interface InsertOutboundMessageInput {
   /** Client-supplied, so a double-click cannot post twice. */
   readonly idempotencyKey: string | null;
   readonly parentMessageId: number | null;
+  /**
+   * A team-only note: stored, shown to colleagues, never sent anywhere.
+   *
+   * It was previously accepted by the service and then dropped here, so every
+   * note was stored as an ordinary customer-facing reply — indistinguishable in
+   * the data from something the customer can read.
+   */
+  readonly isInternalNote: boolean;
 }
 
 export interface MessageRow {
@@ -96,8 +104,9 @@ export class MessageRepository extends BaseRepository {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, customer_id, sent_by_employee_id,
-          message_kind, body, idempotency_key, parent_message_id, status, is_read)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+          message_kind, body, idempotency_key, parent_message_id, status, is_read,
+          is_internal_note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11)
        RETURNING id, ref_id`,
       [
         this.requireEnterprise(input.enterpriseId),
@@ -109,7 +118,13 @@ export class MessageRepository extends BaseRepository {
         input.body,
         input.idempotencyKey,
         input.parentMessageId,
-        MessageStatus.Pending,
+        /*
+         * A note is DELIVERED the moment it is stored: its audience is the team,
+         * and no relay will ever touch it. Left as Pending it sat in the thread
+         * looking like a reply stuck in the queue, forever.
+         */
+        input.isInternalNote ? MessageStatus.Delivered : MessageStatus.Pending,
+        input.isInternalNote,
       ],
     );
     const row = rows[0];

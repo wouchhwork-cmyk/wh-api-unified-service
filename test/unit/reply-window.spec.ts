@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest';
+import { evaluateReplyWindow } from '@/modules/inbox/reply-window';
+import { ConversationKind } from '@/shared/enums';
+
+/**
+ * Meta's 24-hour messaging window, decided before a reply is accepted.
+ *
+ * Worth testing precisely because the failure is invisible without it: accepting
+ * the reply returns 202 and the agent is told it was sent, and only a
+ * dead-lettered ledger row hours later says otherwise.
+ */
+const NOW = new Date('2026-08-23T12:00:00.000Z');
+const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 60 * 60 * 1000);
+
+describe('evaluateReplyWindow', () => {
+  it('allows a reply inside the window', () => {
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.DirectMessage,
+      lastInboundAt: hoursAgo(23),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(true);
+    expect(result.reason).toBeNull();
+  });
+
+  it('refuses a reply outside the window, and says how stale it is', () => {
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.DirectMessage,
+      lastInboundAt: hoursAgo(26),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(false);
+    expect(result.reason).toContain('26 hours ago');
+    // The agent is told what they CAN still do.
+    expect(result.reason).toContain('internal note');
+  });
+
+  it('allows a reply at exactly the boundary', () => {
+    // 24h is inside; only strictly older is refused. Meta rejects beyond the
+    // window, so the boundary itself must not be treated as expired.
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.DirectMessage,
+      lastInboundAt: new Date(NOW.getTime() - 24 * 60 * 60 * 1000),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(true);
+  });
+
+  it('refuses one millisecond past the boundary', () => {
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.DirectMessage,
+      lastInboundAt: new Date(NOW.getTime() - 24 * 60 * 60 * 1000 - 1),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(false);
+  });
+
+  it('refuses a thread the customer has never written to', () => {
+    // A business cannot open a message thread, so there is nothing to reply to.
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.DirectMessage,
+      lastInboundAt: null,
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(false);
+    expect(result.reason).toContain('has not messaged yet');
+  });
+
+  it.each([ConversationKind.CommentThread, ConversationKind.Mention, ConversationKind.StoryReply])(
+    'applies no window to %s',
+    (conversationKind) => {
+      // A comment can be answered years later. Applying the messaging window
+      // here would block replies the platform accepts perfectly well.
+      const result = evaluateReplyWindow({
+        conversationKind,
+        lastInboundAt: hoursAgo(24 * 365),
+        now: NOW,
+      });
+
+      expect(result.canReply).toBe(true);
+      expect(result.reason).toBeNull();
+    },
+  );
+
+  it('applies no window to a comment thread with no inbound message either', () => {
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.CommentThread,
+      lastInboundAt: null,
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(true);
+  });
+});
