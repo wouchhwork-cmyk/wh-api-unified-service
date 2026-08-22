@@ -29,12 +29,15 @@ export class ConnectionsController {
   @ApiOperation({
     summary: 'Begin connecting a Meta account',
     description:
-      'Returns the Facebook Login for Business dialog URL. The state parameter is a signed, ' +
-      'single-use token bound to this enterprise and employee, and expires in ten minutes.',
+      'Returns the Facebook Login for Business dialog URL. The state parameter is signed AND ' +
+      'single-use — minting it records a row, and the callback spends that row with one ' +
+      'conditional update — bound to this business and employee, expiring in ten minutes.',
   })
-  startMetaConnect(@CurrentScopedActor() actor: ScopedActor): { authorizationUrl: string } {
+  async startMetaConnect(
+    @CurrentScopedActor() actor: ScopedActor,
+  ): Promise<{ authorizationUrl: string }> {
     return {
-      authorizationUrl: this.meta.buildAuthorizationUrl(actor.enterpriseId, actor.employeeId),
+      authorizationUrl: await this.meta.buildAuthorizationUrl(actor.enterpriseId, actor.employeeId),
     };
   }
 

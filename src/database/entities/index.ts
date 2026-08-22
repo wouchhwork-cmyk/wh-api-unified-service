@@ -23,6 +23,7 @@ import { InboundEvent } from './inbound-event.entity';
 import { EmployeeRole } from './employee-role.entity';
 import { MessageAttachment } from './message-attachment.entity';
 import { Message } from './message.entity';
+import { OauthState } from './oauth-state.entity';
 import { OutboundEvent } from './outbound-event.entity';
 import { Permission } from './permission.entity';
 import { Post } from './post.entity';
@@ -50,6 +51,7 @@ export { InboundEvent } from './inbound-event.entity';
 export { EmployeeRole } from './employee-role.entity';
 export { MessageAttachment } from './message-attachment.entity';
 export { Message } from './message.entity';
+export { OauthState } from './oauth-state.entity';
 export { OutboundEvent } from './outbound-event.entity';
 export { Permission } from './permission.entity';
 export { Post } from './post.entity';
@@ -78,6 +80,7 @@ export const ENTITIES = [
   EmployeeRole,
   MessageAttachment,
   Message,
+  OauthState,
   OutboundEvent,
   Permission,
   Post,

@@ -53,10 +53,17 @@ export class MetaConnectionService {
     @InjectPinoLogger(MetaConnectionService.name) private readonly logger: PinoLogger,
   ) {}
 
-  /** Step 0: the URL the browser is redirected to. */
-  buildAuthorizationUrl(enterpriseId: number, employeeId: number | null): string {
+  /**
+   * Step 0: the URL the browser is redirected to.
+   *
+   * Async because minting the state now WRITES it — that is what makes it
+   * spendable exactly once. If the write fails the caller gets an error rather
+   * than a URL, which is the right way round: a state that cannot be consumed
+   * would send somebody through Facebook only to fail on the way back.
+   */
+  async buildAuthorizationUrl(enterpriseId: number, employeeId: number | null): Promise<string> {
     this.assertConfigured();
-    return this.graph.buildLoginDialogUrl(this.state.mint(enterpriseId, employeeId));
+    return this.graph.buildLoginDialogUrl(await this.state.mint(enterpriseId, employeeId));
   }
 
   /**
@@ -69,9 +76,10 @@ export class MetaConnectionService {
   async handleCallback(code: string, rawState: string): Promise<ConnectionResult> {
     this.assertConfigured();
 
-    // Verified first: an unsigned or expired state is rejected before we spend a
-    // single Graph call on it.
-    const { enterpriseId, employeeId } = this.state.verify(rawState);
+    // Spent first: an unsigned, expired or already-used state is rejected before
+    // a single Graph call is spent on it — and consuming it here means a
+    // replayed callback cannot get as far as Facebook a second time.
+    const { enterpriseId, employeeId } = await this.state.consume(rawState);
 
     const shortLived = await this.exchange(() => this.graph.exchangeCodeForToken(code));
     const longLived = await this.exchange(() =>

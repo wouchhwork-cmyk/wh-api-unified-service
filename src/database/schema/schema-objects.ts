@@ -333,6 +333,17 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       ALTER TABLE sessions
         ADD CONSTRAINT sessions_identity_fk FOREIGN KEY (identity_id) REFERENCES identities (id) ON DELETE CASCADE
     `);
+  /*
+   * employee_id is paired with enterprise_id in a COMPOSITE key, the same
+   * discipline as everywhere else: a state row naming one business's employee
+   * while claiming another business is unrepresentable, not merely discouraged.
+   */
+  await run(`
+      ALTER TABLE oauth_states
+        ADD CONSTRAINT oauth_states_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
+        ADD CONSTRAINT oauth_states_employee_fk FOREIGN KEY (employee_id, enterprise_id)
+            REFERENCES enterprise_employees (id, enterprise_id)
+    `);
   await run(`
       ALTER TABLE provider_connections
         ADD CONSTRAINT provider_connections_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
@@ -494,6 +505,16 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
   // --- sessions cleanup --------------------------------------------------
   await run(`CREATE INDEX sessions_identity_idx ON sessions (identity_id)`);
   await run(`CREATE INDEX sessions_expiry_idx ON sessions (expires_at) WHERE revoked_at IS NULL`);
+
+  /*
+   * The nonce is the single-use key, so its uniqueness is the guarantee rather
+   * than a convention the service is trusted to keep.
+   */
+  await run(
+    `CREATE UNIQUE INDEX oauth_states_nonce_uniq ON oauth_states (nonce) WHERE is_deleted = false`,
+  );
+  /* For the retention sweep, the only thing that reads these by age. */
+  await run(`CREATE INDEX oauth_states_expiry_idx ON oauth_states (expires_at)`);
 
   // --- verifications: rate limiting and cleanup --------------------------
   await run(

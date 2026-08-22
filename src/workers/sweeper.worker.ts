@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
+import { OauthStateRepository } from '@/database/repositories/oauth-state.repository';
 import { SessionRepository } from '@/database/repositories/session.repository';
 import { VerificationRepository } from '@/database/repositories/verification.repository';
 
@@ -11,6 +12,12 @@ const MAX_SWEEP_PASSES = 200;
 /** Long enough to answer a support question, short enough not to be an archive. */
 const VERIFICATION_RETENTION_DAYS = 7;
 const SESSION_RETENTION_DAYS = 30;
+/**
+ * Short, because an OAuth state is worthless the moment it is spent or expires
+ * and nothing ever reads one again. Kept for a day only so a support question
+ * about a failed connection can still be answered.
+ */
+const OAUTH_STATE_RETENTION_DAYS = 1;
 
 /**
  * Periodic housekeeping.
@@ -24,6 +31,7 @@ export class SweeperWorker {
   constructor(
     private readonly verifications: VerificationRepository,
     private readonly sessions: SessionRepository,
+    private readonly oauthStates: OauthStateRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,
   ) {}
@@ -43,8 +51,13 @@ export class SweeperWorker {
       const sessions = await drain((limit) =>
         this.sessions.deleteExpiredBefore(sessionCutoff, limit),
       );
+      // Otherwise this table only ever grows: a row per connection attempt,
+      // never read again once spent.
+      const oauthStates = await drain((limit) =>
+        this.oauthStates.deleteSettledBefore(daysAgo(OAUTH_STATE_RETENTION_DAYS), limit),
+      );
 
-      this.logger.info({ verifications, sessions }, 'retention sweep complete');
+      this.logger.info({ verifications, sessions, oauthStates }, 'retention sweep complete');
     } catch (error) {
       this.logger.error({ err: error }, 'retention sweep failed');
     }

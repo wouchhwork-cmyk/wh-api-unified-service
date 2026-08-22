@@ -240,6 +240,25 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       )
     `);
 
+    // --- 11b. oauth_states -------------------------------------------------
+    // One row per outstanding OAuth attempt, which is what makes `state`
+    // single-use: consumption is one conditional UPDATE, so of two callbacks
+    // carrying the same state exactly one wins. A signature alone leaves the
+    // token replayable for as long as it is valid.
+    await run(`
+      CREATE TABLE oauth_states (
+        id            BIGSERIAL     PRIMARY KEY,
+        nonce         VARCHAR(64)   NOT NULL,
+        enterprise_id BIGINT        NOT NULL,
+        employee_id   BIGINT,
+        expires_at    TIMESTAMPTZ   NOT NULL,
+        consumed_at   TIMESTAMPTZ,
+        is_deleted    BOOLEAN       NOT NULL DEFAULT false,
+        created_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),
+        updated_at    TIMESTAMPTZ   NOT NULL DEFAULT now()
+      )
+    `);
+
     // --- 12. verifications -------------------------------------------------
     // No status column: usability is derived from consumed_at / superseded_at /
     // expires_at / attempt_count. delivery_status IS stored, because it reflects
