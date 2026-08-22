@@ -6,6 +6,7 @@ import { ProviderConnectionRepository } from '@/database/repositories/provider-c
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import type { ProviderConnector } from './provider-connector';
 import { TokenCipherService } from '@/shared/crypto';
 import {
   ChannelKind,
@@ -41,7 +42,12 @@ const INITIAL_SYNCS: readonly SyncJobKind[] = [
 ] as const;
 
 @Injectable()
-export class MetaConnectionService {
+export class MetaConnectionService implements ProviderConnector {
+  /** Keyed on this in the connector registry. */
+  readonly provider = Provider.Meta;
+  /** One connector covers both: Instagram is reached through its parent Page. */
+  readonly label = 'Facebook & Instagram';
+
   constructor(
     private readonly graph: GraphApiClient,
     private readonly discovery: PageDiscoveryService,

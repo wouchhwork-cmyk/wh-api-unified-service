@@ -1,6 +1,6 @@
-import { Controller, Get, HttpStatus, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Res } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
-import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
@@ -10,6 +10,11 @@ import { CurrentScopedActor, Public, RequirePermission, SkipTimeout } from '@/sh
 import { Permission } from '@/shared/enums';
 import { AppException } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
+import {
+  StartConnectionRequestSchema,
+  type StartConnectionRequest,
+} from '@/shared/contracts/connections/connect.contract';
+import { ConnectionsService, type StartedConnection } from './connections.service';
 import { MetaConnectionService } from './meta-connection.service';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
@@ -24,32 +29,61 @@ interface ConnectionDto {
   readonly tokenExpiresAt: Date | null;
 }
 
+const START_EXAMPLES = {
+  meta: {
+    summary: 'Facebook and Instagram',
+    value: { provider: 'meta' },
+  },
+  notYetBuilt: {
+    summary: 'A platform we recognise but have not built — returns 501',
+    value: { provider: 'google' },
+  },
+};
+
 @ApiTags('connections')
 @Controller({ path: 'connections', version: '1' })
 export class ConnectionsController {
   constructor(
     private readonly meta: MetaConnectionService,
+    private readonly connectionsService: ConnectionsService,
     private readonly connections: ProviderConnectionRepository,
     private readonly channels: ChannelRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(ConnectionsController.name) private readonly logger: PinoLogger,
   ) {}
 
-  @Get('meta/connect')
-  @RequirePermission(Permission.ChannelsConnect)
+  @Get('providers')
+  @RequirePermission(Permission.ChannelsView)
   @ApiOperation({
-    summary: 'Begin connecting a Meta account',
+    summary: 'The platforms that can be connected',
     description:
-      'Returns the Facebook Login for Business dialog URL. The state parameter is signed AND ' +
-      'single-use — minting it records a row, and the callback spends that row with one ' +
-      'conditional update — bound to this business and employee, expiring in ten minutes.',
+      'So a client renders what is actually available rather than hardcoding a list that goes ' +
+      'stale the moment a platform is added or withdrawn. Only implemented providers appear.',
   })
-  async startMetaConnect(
+  providers(): { provider: string; label: string }[] {
+    return this.connectionsService.available();
+  }
+
+  @Post('start')
+  @RequirePermission(Permission.ChannelsConnect)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Begin connecting a platform',
+    description:
+      'One entry point for every platform: send the provider you want. Returns the URL to send ' +
+      'the browser to. Today only `meta` is implemented — a provider we recognise but have not ' +
+      'built returns 501, which is a different answer from one we do not recognise (422).\n\n' +
+      'POST rather than GET because it WRITES: the CSRF state is recorded so the callback can ' +
+      'spend it exactly once. A GET that mutates would let a link prefetch or a crawler burn ' +
+      'states.',
+  })
+  @ApiBody({ schema: { type: 'object' }, examples: START_EXAMPLES })
+  async start(
     @CurrentScopedActor() actor: ScopedActor,
-  ): Promise<{ authorizationUrl: string }> {
-    return {
-      authorizationUrl: await this.meta.buildAuthorizationUrl(actor.enterpriseId, actor.employeeId),
-    };
+    @Body() body: unknown,
+  ): Promise<StartedConnection> {
+    const parsed: StartConnectionRequest = StartConnectionRequestSchema.parse(body);
+    return this.connectionsService.start(parsed.provider, actor.enterpriseId, actor.employeeId);
   }
 
   /**

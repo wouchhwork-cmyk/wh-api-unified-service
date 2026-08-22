@@ -52,6 +52,13 @@ export enum ErrorCode {
   /** Signed up and verified, but not yet switched on by Wouchh. */
   EnterprisePendingActivation = 'ENTERPRISE_PENDING_ACTIVATION',
 
+  /**
+   * A provider we recognise but have not implemented. Distinct from a validation
+   * failure: the caller asked for something legitimate that does not exist yet,
+   * which is our gap and not their mistake.
+   */
+  ProviderNotSupported = 'PROVIDER_NOT_SUPPORTED',
+
   // --- not found --------------------------------------------------------
   /** An unknown route. Distinct from a missing domain entity. */
   RouteNotFound = 'ROUTE_NOT_FOUND',

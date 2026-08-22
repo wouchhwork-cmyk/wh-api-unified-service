@@ -84,15 +84,60 @@ describe('connecting a Meta account', () => {
   }
 
   it('refuses to start a connection without a token', async () => {
-    const response = await http().get('/api/v1/connections/meta/connect').expect(401);
+    const response = await http()
+      .post('/api/v1/connections/start')
+      .send({ provider: 'meta' })
+      .expect(401);
     expect(response.body.error.code).toBe('AUTH_TOKEN_INVALID');
+  });
+
+  it('tells a client which platforms it can offer', async () => {
+    const { token } = await business();
+    const response = await http()
+      .get('/api/v1/connections/providers')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    // Only what is implemented — a client should not have to hardcode this, and
+    // should not be shown a platform that would answer 501.
+    expect(response.body.data).toEqual([{ provider: 'meta', label: 'Facebook & Instagram' }]);
+  });
+
+  it('rejects a provider that is not a platform, and one that is not built yet', async () => {
+    const { token } = await business();
+
+    // Not a platform at all: the caller's mistake.
+    const nonsense = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'myspace' })
+      .expect(422);
+    expect(nonsense.body.error.code).toBe('VALIDATION_FAILED');
+
+    // A platform we recognise and have not built: OUR gap, and a different
+    // answer, so a client can say "coming soon" rather than "you sent nonsense".
+    const notBuilt = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'google' })
+      .expect(501);
+    expect(notBuilt.body.error.code).toBe('PROVIDER_NOT_SUPPORTED');
+    expect(notBuilt.body.error.details[0].issue).toContain('meta');
+
+    // Unknown extra fields are refused, like every other endpoint here.
+    await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta', enterpriseId: 999 })
+      .expect(422);
   });
 
   it('refuses to start a connection for a business that is not activated', async () => {
     const { token } = await business(false);
     const response = await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
       .expect(403);
     expect(response.body.error.code).toBe('ENTERPRISE_PENDING_ACTIVATION');
   });
@@ -100,8 +145,9 @@ describe('connecting a Meta account', () => {
   it('builds a Login for Business URL, with no scope list', async () => {
     const { token } = await business();
     const response = await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
       .expect(200);
 
     const url = new URL(response.body.data.authorizationUrl as string);
@@ -120,8 +166,9 @@ describe('connecting a Meta account', () => {
   it('records the state so it can be spent once', async () => {
     const { token } = await business();
     await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
       .expect(200);
 
     const rows: { count: string }[] = await db.query(
@@ -157,8 +204,9 @@ describe('connecting a Meta account', () => {
   it('spends the state exactly once, so the callback URL cannot be replayed', async () => {
     const { token } = await business();
     const start = await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
       .expect(200);
     const state = stateFrom(start.body.data.authorizationUrl as string);
 
@@ -186,8 +234,9 @@ describe('connecting a Meta account', () => {
   it('refuses to complete a connection for a business suspended mid-flow', async () => {
     const { token, refId } = await business();
     const start = await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
       .expect(200);
     const state = stateFrom(start.body.data.authorizationUrl as string);
 
@@ -253,8 +302,9 @@ describe('connecting a Meta account', () => {
     // An agent answers messages; connecting the business's accounts is not
     // theirs to do.
     const refused = await http()
-      .get('/api/v1/connections/meta/connect')
+      .post('/api/v1/connections/start')
       .set('Authorization', `Bearer ${accepted.body.data.accessToken}`)
+      .send({ provider: 'meta' })
       .expect(403);
     expect(refused.body.error.code).toBe('PERMISSION_DENIED');
   });

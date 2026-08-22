@@ -46,6 +46,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   // 409 — conflicts and invalid transitions
   [ErrorCode.EmailAlreadyRegistered]: HttpStatus.CONFLICT,
   [ErrorCode.MobileAlreadyRegistered]: HttpStatus.CONFLICT,
+  [ErrorCode.ProviderNotSupported]: HttpStatus.NOT_IMPLEMENTED,
   [ErrorCode.EnterpriseSlugTaken]: HttpStatus.CONFLICT,
   [ErrorCode.EnterpriseEmailAlreadyRegistered]: HttpStatus.CONFLICT,
   [ErrorCode.EmployeeAlreadyExists]: HttpStatus.CONFLICT,
@@ -119,6 +120,7 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
 
   [ErrorCode.EmailAlreadyRegistered]: 'An account already exists for that email address.',
   [ErrorCode.MobileAlreadyRegistered]: 'An account already exists for that mobile number.',
+  [ErrorCode.ProviderNotSupported]: 'That platform cannot be connected yet.',
   [ErrorCode.EnterpriseSlugTaken]: 'That business URL is already taken.',
   [ErrorCode.EnterpriseEmailAlreadyRegistered]:
     'A business is already registered with that email. Ask its owner to create an account for you.',
