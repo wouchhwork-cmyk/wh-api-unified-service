@@ -126,6 +126,26 @@ export class InboundEventRepository extends BaseRepository {
       .sort((a, b) => a.priority - b.priority || a.id - b.id);
   }
 
+  /**
+   * The tenant, channel and platform for a claimed row.
+   *
+   * Read from the ROW, never from the payload: the payload is attacker-supplied
+   * data from a webhook, and deriving a tenant from it would be a cross-tenant
+   * write primitive.
+   */
+  async findProjectionContext(
+    id: number,
+  ): Promise<{ enterpriseId: number; channelId: number; platform: Platform } | null> {
+    const rows = await this.query<{ enterpriseId: number; channelId: number; platform: Platform }>(
+      `SELECT enterprise_id AS "enterpriseId", channel_id AS "channelId", platform
+         FROM inbound_events
+        WHERE id = $1 AND enterprise_id IS NOT NULL AND channel_id IS NOT NULL
+        LIMIT 1`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
   async markProcessed(id: number): Promise<void> {
     await this.mutate(
       `UPDATE inbound_events

@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
+import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
-import { InboundEventType } from '@/shared/enums';
+import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
+import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
+import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
 
@@ -16,7 +19,17 @@ import { BasePoller } from './base-poller';
  * terminal, visible state: the row is kept and can be replayed once the handler
  * exists.
  */
-type Projector = (payload: unknown, eventId: number) => Promise<void>;
+interface ProjectionContext {
+  readonly enterpriseId: number;
+  readonly channelId: number;
+  readonly platform: Platform;
+  readonly inboundEventId: number;
+}
+
+type Projector = (
+  context: ProjectionContext,
+  payload: unknown,
+) => Promise<{ projected: boolean; reason?: string }>;
 
 @Injectable()
 export class InboundProjectorWorker extends BasePoller {
@@ -26,12 +39,34 @@ export class InboundProjectorWorker extends BasePoller {
 
   constructor(
     private readonly inbound: InboundEventRepository,
+    private readonly channels: ChannelRepository,
+    private readonly comments: CommentProjectorService,
+    private readonly directMessages: DirectMessageProjectorService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(InboundProjectorWorker.name) protected readonly logger: PinoLogger,
   ) {
     super();
-    // Handlers register here as the domain features land. Registration is
-    // explicit so an unhandled type is obvious rather than silently defaulted.
+
+    // Registration is explicit, so an unhandled event type is obvious rather
+    // than silently defaulted into the wrong projector.
+    this.projectors.set(InboundEventType.Comment, (context, payload) =>
+      this.comments.project(
+        context.enterpriseId,
+        context.channelId,
+        context.platform,
+        context.inboundEventId,
+        payload,
+      ),
+    );
+    this.projectors.set(InboundEventType.DirectMessage, (context, payload) =>
+      this.directMessages.project(
+        context.enterpriseId,
+        context.channelId,
+        context.platform,
+        context.inboundEventId,
+        payload,
+      ),
+    );
   }
 
   protected async pollOnce(): Promise<number> {
@@ -49,9 +84,34 @@ export class InboundProjectorWorker extends BasePoller {
         continue;
       }
 
+      // A projection needs the tenant and the channel, which live on the row
+      // rather than in the payload — deriving them from the payload would be a
+      // cross-tenant write primitive.
+      const context = await this.inbound.findProjectionContext(event.id);
+      if (!context) {
+        await this.inbound.markSkipped(event.id, 'the event names no enterprise or channel');
+        continue;
+      }
+
       try {
-        await projector(event.payload, event.id);
-        await this.inbound.markProcessed(event.id);
+        const outcome = await projector(
+          {
+            enterpriseId: context.enterpriseId,
+            channelId: context.channelId,
+            platform: context.platform,
+            inboundEventId: event.id,
+          },
+          event.payload,
+        );
+
+        if (outcome.projected) {
+          await this.inbound.markProcessed(event.id);
+        } else {
+          // Not an error: the event was understood and deliberately not
+          // projected — an echo of our own send, a like rather than a comment,
+          // or something already stored.
+          await this.inbound.markSkipped(event.id, outcome.reason ?? 'not projected');
+        }
       } catch (error) {
         // Per-row failure: the batch continues. Retry with jittered backoff, or
         // dead-letter when the budget is spent.

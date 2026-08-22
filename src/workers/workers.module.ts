@@ -10,6 +10,7 @@ import { InboundEventRepository } from '@/database/repositories/inbound-event.re
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { InboxModule } from '@/modules/inbox/inbox.module';
 import { CryptoModule } from '@/shared/crypto';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
 import { InboundProjectorWorker } from './inbound-projector.worker';
@@ -41,6 +42,9 @@ import { SweeperWorker } from './sweeper.worker';
     }),
     ScheduleModule.forRoot(),
     DatabaseModule,
+    // The projectors run here; the same code the API imports, in a process that
+    // serves no traffic.
+    InboxModule,
   ],
   providers: [
     InboundEventRepository,

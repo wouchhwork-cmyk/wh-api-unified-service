@@ -11,6 +11,7 @@ import { AuthModule } from '@/modules/auth/auth.module';
 import { ConnectionsModule } from '@/modules/connections/connections.module';
 import { EnterprisesModule } from '@/modules/enterprises/enterprises.module';
 import { HealthModule } from '@/modules/health/health.module';
+import { InboxModule } from '@/modules/inbox/inbox.module';
 import { CryptoModule } from '@/shared/crypto';
 import { EnterpriseScopeGuard, JwtAuthGuard, PermissionsGuard } from '@/shared/guards';
 import { AllExceptionsFilter } from '@/shared/filters/all-exceptions.filter';
@@ -49,6 +50,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     AuthModule,
     ConnectionsModule,
     EnterprisesModule,
+    InboxModule,
     HealthModule,
   ],
   providers: [

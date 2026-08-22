@@ -101,6 +101,25 @@ export class EnterpriseMemberRepository extends BaseRepository {
     );
   }
 
+  /**
+   * Resolves a member by its public refId WITHIN one enterprise, so a refId from
+   * another tenant simply does not resolve — which is what stops a conversation
+   * being assigned to someone outside the business.
+   */
+  async findByRefId(
+    enterpriseId: number,
+    refId: string,
+  ): Promise<{ memberId: number; identityId: number } | null> {
+    const rows = await this.query<{ memberId: number; identityId: number }>(
+      `SELECT id AS "memberId", identity_id AS "identityId"
+         FROM enterprise_members
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false AND status = $3
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), refId, MemberStatus.Active],
+    );
+    return rows[0] ?? null;
+  }
+
   async touchLastActive(memberId: number, enterpriseId: number): Promise<void> {
     await this.query(
       `UPDATE enterprise_members SET last_active_at = now() WHERE id = $1 AND enterprise_id = $2`,
