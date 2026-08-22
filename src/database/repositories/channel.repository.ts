@@ -46,6 +46,16 @@ export interface ChannelSendContext {
   readonly providerConnectionId: number;
   readonly platform: Platform;
   readonly platformChannelId: string;
+  /**
+   * The linked Page's platform id, when this channel hangs off one.
+   *
+   * Needed for SENDING, not just reading: an Instagram direct message is
+   * addressed to the Page, never to the Instagram account. Posting to the
+   * Instagram id returns "(#3) Application does not have the capability to make
+   * this API call" — which reads like a missing app permission and sent us
+   * looking in the wrong place entirely.
+   */
+  readonly parentPlatformChannelId: string | null;
   /** The channel's own token, or its parent's — Instagram uses the Page token. */
   readonly effectiveAccessToken: string | null;
   readonly reauthRequired: boolean;
@@ -146,6 +156,7 @@ export class ChannelRepository extends BaseRepository {
               c.provider_connection_id                        AS "providerConnectionId",
               c.platform,
               c.platform_channel_id                           AS "platformChannelId",
+              parent.platform_channel_id                      AS "parentPlatformChannelId",
               COALESCE(c.access_token, parent.access_token)    AS "effectiveAccessToken",
               (c.reauth_required OR COALESCE(parent.reauth_required, false)) AS "reauthRequired",
               c.is_managed                                    AS "isManaged"

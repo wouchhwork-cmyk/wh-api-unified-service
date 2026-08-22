@@ -18,6 +18,13 @@ const META = {
   CustomRateLimit: 613,
   /** Temporary Graph failure — retryable. */
   TemporaryIssue: 2,
+  /**
+   * The APP lacks the capability for this endpoint — not the user, and not the
+   * token. Sending an Instagram DM without approved Instagram messaging access
+   * returns this, and it is terminal until somebody changes the app's
+   * configuration or completes App Review.
+   */
+  CapabilityMissing: 3,
 } as const;
 
 const SUBCODE = {
@@ -86,6 +93,16 @@ export function mapGraphError(error: GraphApiError): MappedGraphError {
     if (/allowed window|24[- ]?hour/i.test(error.message)) {
       return { code: ErrorCode.MessagingWindowClosed, requiresReauth: false, retryable: false };
     }
+    return { code: ErrorCode.PermissionDenied, requiresReauth: false, retryable: false };
+  }
+
+  /*
+   * Mapped explicitly rather than left to the fallback below. Unmapped, code 3
+   * arrived as UPSTREAM_UNAVAILABLE — "the platform is unavailable" — which sent
+   * whoever read the log looking for a Meta outage, when the actual cause was a
+   * capability this app was never granted. Same terminal outcome, honest reason.
+   */
+  if (error.code === META.CapabilityMissing) {
     return { code: ErrorCode.PermissionDenied, requiresReauth: false, retryable: false };
   }
 

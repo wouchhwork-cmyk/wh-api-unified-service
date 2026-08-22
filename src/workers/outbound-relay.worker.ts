@@ -13,7 +13,7 @@ import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { TokenCipherService } from '@/shared/crypto';
-import { ConnectionStatus, MessageStatus, OutboundEventType } from '@/shared/enums';
+import { ConnectionStatus, MessageStatus, OutboundEventType, Platform } from '@/shared/enums';
 import { BasePoller } from './base-poller';
 
 interface CommentReplyPayload {
@@ -122,7 +122,21 @@ export class OutboundRelayWorker extends BasePoller {
     }
 
     try {
-      const platformId = await this.send(event, channel.platformChannelId, token);
+      /*
+       * INSTAGRAM SENDS GO TO THE PAGE. Addressing the Instagram account returns
+       * Meta error 3 — "Application does not have the capability" — which reads
+       * as a missing app permission and is not: the Instagram messaging surface
+       * lives on the linked Page. Verified against a live account: the Instagram
+       * id returns 3, the Page id reaches the real answer (the 24-hour window).
+       *
+       * Comments are NOT affected: a comment is addressed by its own id.
+       */
+      const messagingTarget =
+        channel.platform === Platform.Instagram
+          ? (channel.parentPlatformChannelId ?? channel.platformChannelId)
+          : channel.platformChannelId;
+
+      const platformId = await this.send(event, channel.platformChannelId, token, messagingTarget);
       const settled = await this.outbound.markSent(event.id, this.leaseOwner, platformId);
 
       if (!settled) {
@@ -164,6 +178,7 @@ export class OutboundRelayWorker extends BasePoller {
     event: ClaimedOutboundEvent,
     platformChannelId: string,
     token: string,
+    messagingTarget: string,
   ): Promise<string | null> {
     switch (event.eventType) {
       case OutboundEventType.CommentReply: {
@@ -178,7 +193,7 @@ export class OutboundRelayWorker extends BasePoller {
           throw new Error('incomplete direct message');
         }
         const result = await this.graph.sendDirectMessage(
-          platformChannelId,
+          messagingTarget,
           event.recipientPlatformId,
           payload.message,
           token,
