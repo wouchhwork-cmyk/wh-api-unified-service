@@ -24,23 +24,23 @@ describe('transport ledger', () => {
 
   beforeEach(async () => {
     await truncateTenantData(db);
-    const enterprise = (await db.query(
+    const enterprise: { id: string }[] = await db.query(
       `INSERT INTO enterprises (name, slug, email) VALUES ('Acme','acme','a@acme.test') RETURNING id`,
-    )) as { id: string }[];
+    );
     enterpriseId = Number(enterprise[0]?.id);
 
-    const connection = (await db.query(
+    const connection: { id: string }[] = await db.query(
       `INSERT INTO provider_connections
          (enterprise_id, provider, provider_category, provider_user_id, access_token)
        VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
       [enterpriseId],
-    )) as { id: string }[];
-    const channel = (await db.query(
+    );
+    const channel: { id: string }[] = await db.query(
       `INSERT INTO channels
          (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
        VALUES ($1,$2,'facebook','page','PAGE_1') RETURNING id`,
       [connection[0]?.id, enterpriseId],
-    )) as { id: string }[];
+    );
     channelId = Number(channel[0]?.id);
   });
 
@@ -94,9 +94,10 @@ describe('transport ledger', () => {
 
     // A batch of one must take the urgent row, not the oldest.
     const claimed = await claim('worker-a', 1);
-    const rows = (await db.query(`SELECT priority FROM inbound_events WHERE id = $1`, [
-      claimed[0],
-    ])) as { priority: number }[];
+    const rows: { priority: number }[] = await db.query(
+      `SELECT priority FROM inbound_events WHERE id = $1`,
+      [claimed[0]],
+    );
     expect(rows[0]?.priority).toBe(10);
   });
 
@@ -124,23 +125,23 @@ describe('transport ledger', () => {
     // joins on outbound_event_id. This test exists because the first version of
     // that statement failed with "inconsistent types deduced for parameter $3",
     // which left a delivered reply showing as pending forever.
-    const customer = (await db.query(
+    const customer: { id: string }[] = await db.query(
       `INSERT INTO customers (enterprise_id, first_source) VALUES ($1,'manual') RETURNING id`,
       [enterpriseId],
-    )) as { id: string }[];
-    const conversation = (await db.query(
+    );
+    const conversation: { id: string }[] = await db.query(
       `INSERT INTO conversations
          (enterprise_id, channel_id, customer_id, platform, conversation_kind, platform_thread_id)
        VALUES ($1,$2,$3,'facebook','comment_thread','comment:C1') RETURNING id`,
       [enterpriseId, channelId, customer[0]?.id],
-    )) as { id: string }[];
-    const event = (await db.query(
+    );
+    const event: { id: string }[] = await db.query(
       `INSERT INTO outbound_events
          (enterprise_id, channel_id, destination_kind, platform, event_type, dedup_key, payload, status)
        VALUES ($1,$2,'channel','facebook','comment_reply','facebook:comment_reply:messages:1','{}','sending')
        RETURNING id`,
       [enterpriseId, channelId],
-    )) as { id: string }[];
+    );
     await db.query(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, outbound_event_id, message_kind, body, status)
@@ -157,10 +158,11 @@ describe('transport ledger', () => {
       [event[0]?.id, 'PLATFORM_1', 'sent'],
     );
 
-    const rows = (await db.query(
-      `SELECT status, platform_message_id, (platform_sent_at IS NOT NULL) AS stamped
-         FROM messages WHERE direction = 'outbound'`,
-    )) as { status: string; platform_message_id: string; stamped: boolean }[];
+    const rows: { status: string; platform_message_id: string; stamped: boolean }[] =
+      await db.query(
+        `SELECT status, platform_message_id, (platform_sent_at IS NOT NULL) AS stamped
+           FROM messages WHERE direction = 'outbound'`,
+      );
 
     expect(rows[0]?.status).toBe('sent');
     expect(rows[0]?.platform_message_id).toBe('PLATFORM_1');

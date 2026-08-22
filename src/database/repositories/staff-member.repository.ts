@@ -8,7 +8,12 @@ export interface StaffSummary {
 }
 
 export interface StaffRecord extends StaffSummary {
-  readonly status: string;
+  /**
+   * Typed as the enum, not `string`. The column is a varchar, but every caller
+   * compares it against StaffStatus — and a string-to-enum comparison is
+   * silently always-false if either side is ever renamed.
+   */
+  readonly status: StaffStatus;
 }
 
 @Injectable()

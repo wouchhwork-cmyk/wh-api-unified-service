@@ -90,9 +90,9 @@ export async function readLatestVerificationSecret(db: DataSource): Promise<stri
   // The plaintext is never stored, so a test cannot read it. Instead the code is
   // brute-forced against the stored HMAC — trivial for six digits, and it proves
   // the hash is what the service actually compares.
-  const rows = (await db.query(
+  const rows: { secret_hash: string }[] = await db.query(
     `SELECT secret_hash FROM verifications ORDER BY id DESC LIMIT 1`,
-  )) as { secret_hash: string }[];
+  );
   const hash = rows[0]?.secret_hash;
   if (!hash) throw new Error('no verification row to read');
 

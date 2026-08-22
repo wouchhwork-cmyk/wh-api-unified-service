@@ -18,7 +18,10 @@ function parseCommand(raw: string | undefined): Command {
 async function main(): Promise<void> {
   const command = parseCommand(process.argv[2]);
 
-  if (command === 'drop' && (process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production')) {
+  if (
+    command === 'drop' &&
+    (process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production')
+  ) {
     throw new Error('refused: db drop is never allowed with NODE_ENV=prod');
   }
 

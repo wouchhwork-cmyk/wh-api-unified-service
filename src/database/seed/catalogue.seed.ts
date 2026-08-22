@@ -134,7 +134,8 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
   [Permission.ConversationsView]: 'See direct-message conversations and their messages.',
   [Permission.ConversationsReply]: 'Send a reply in a direct-message conversation.',
   [Permission.ConversationsAssign]: 'Assign a conversation to a team member.',
-  [Permission.ConversationsManage]: 'Administer inbox sync: re-run conversation backfills, change inbox settings.',
+  [Permission.ConversationsManage]:
+    'Administer inbox sync: re-run conversation backfills, change inbox settings.',
 
   [Permission.CommentsView]: 'See comments on published posts.',
   [Permission.CommentsReply]: 'Reply to a comment.',
@@ -206,7 +207,9 @@ function toPermissionSeed(code: Permission): PermissionSeed {
     throw new Error(`permission "${code}" is not <resource>.<action>`);
   }
   if (!isResource(resource)) {
-    throw new Error(`permission "${code}" names resource "${resource}", absent from PermissionResource`);
+    throw new Error(
+      `permission "${code}" names resource "${resource}", absent from PermissionResource`,
+    );
   }
 
   return {
@@ -222,19 +225,24 @@ function toPermissionSeed(code: Permission): PermissionSeed {
 const ALL_PERMISSIONS: readonly Permission[] = Object.values(Permission);
 const PERMISSION_CATALOGUE: readonly PermissionSeed[] = ALL_PERMISSIONS.map(toPermissionSeed);
 
-/**
- * Action halves used by a Permission code that PermissionAction does not
- * declare. Computed rather than listed, so it stays empty once the enum catches
- * up and no domain string literal has to be written here. Today it holds
- * "decide" (from `features.decide`).
- */
-const UNDECLARED_ACTIONS: readonly string[] = [
-  ...new Set(PERMISSION_CATALOGUE.map((seed) => seed.action).filter((action) => !isAction(action))),
-];
-
 const ACTION_OF: ReadonlyMap<Permission, string> = new Map(
   PERMISSION_CATALOGUE.map((seed) => [seed.code, seed.action]),
 );
+
+/**
+ * Whether a catalogue code's action half is the given one.
+ *
+ * Narrowed through isAction rather than compared straight across, because
+ * PERMISSION_CATALOGUE carries action halves that PermissionAction does not
+ * declare — `features.decide` today. So actionOf cannot promise an enum member,
+ * and a bare `actionOf(code) === PermissionAction.View` would be comparing two
+ * unrelated types: the kind of comparison that silently becomes always-false the
+ * day either side is renamed.
+ */
+function hasAction(code: Permission, action: PermissionAction): boolean {
+  const candidate = actionOf(code);
+  return isAction(candidate) && candidate === action;
+}
 
 function actionOf(code: Permission): string {
   const action = ACTION_OF.get(code);
@@ -302,14 +310,15 @@ const ROLES: readonly RoleSeed[] = [
     name: SystemRole.Viewer,
     scope: RoleScope.Enterprise,
     description: 'Read-only across every granted feature.',
-    permissions: ENTERPRISE_PERMISSIONS.filter((code) => actionOf(code) === PermissionAction.View),
+    permissions: ENTERPRISE_PERMISSIONS.filter((code) => hasAction(code, PermissionAction.View)),
   },
   {
     name: SystemRole.Support,
     scope: RoleScope.Staff,
-    description: 'Read-only across assigned enterprises, plus replying where a conversation is escalated.',
+    description:
+      'Read-only across assigned enterprises, plus replying where a conversation is escalated.',
     permissions: [
-      ...STAFF_PERMISSIONS.filter((code) => actionOf(code) === PermissionAction.View),
+      ...STAFF_PERMISSIONS.filter((code) => hasAction(code, PermissionAction.View)),
       Permission.ConversationsReply,
     ],
   },
@@ -349,7 +358,8 @@ function assertScopesAgree(): void {
       }
     }
     const duplicates = role.permissions.length - new Set(role.permissions).size;
-    if (duplicates > 0) problems.push(`role "${role.name}" lists ${duplicates} duplicate permission(s)`);
+    if (duplicates > 0)
+      problems.push(`role "${role.name}" lists ${duplicates} duplicate permission(s)`);
   }
 
   if (problems.length > 0) {
@@ -361,8 +371,14 @@ function assertScopesAgree(): void {
 // Persistence
 // ===========================================================================
 
-async function run<T>(manager: EntityManager, sql: string, parameters: readonly unknown[]): Promise<T[]> {
-  return (await manager.query(sql, parameters as unknown[])) as T[];
+async function run<T>(
+  manager: EntityManager,
+  sql: string,
+  parameters: readonly unknown[],
+): Promise<T[]> {
+  // No assertion: the declared return type already supplies it, and TypeORM's
+  // query() returns `any` so an `as T[]` would be laundering rather than checking.
+  return await manager.query(sql, parameters as unknown[]);
 }
 
 /**
@@ -394,7 +410,9 @@ interface Summary {
   readonly existing: number;
 }
 
-async function seedFeatures(manager: EntityManager): Promise<[Summary, ReadonlyMap<string, number>]> {
+async function seedFeatures(
+  manager: EntityManager,
+): Promise<[Summary, ReadonlyMap<string, number>]> {
   const inserted = await run<{ key: string }>(
     manager,
     `INSERT INTO features ("key", name, description, status)
@@ -507,7 +525,10 @@ async function seedRoles(manager: EntityManager): Promise<[Summary, ReadonlyMap<
     'roles',
   );
 
-  return [{ table: 'roles', inserted: inserted.length, existing: ROLES.length - inserted.length }, byName];
+  return [
+    { table: 'roles', inserted: inserted.length, existing: ROLES.length - inserted.length },
+    byName,
+  ];
 }
 
 interface GrantReport {

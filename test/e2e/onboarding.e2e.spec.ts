@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { createTestApp, readLatestVerificationSecret, resetTenantData, type TestApp } from './app.harness';
+import {
+  createTestApp,
+  readLatestVerificationSecret,
+  resetTenantData,
+  type TestApp,
+} from './app.harness';
 
 const SIGNUP = {
   business: { name: 'Acme Coffee', email: 'hello@acmecoffee.test', city: 'Pune' },
@@ -46,11 +51,11 @@ describe('business onboarding and sign-in', () => {
 
     // The enterprise got its OWN copies of the role templates, because a
     // NULL-enterprise role is structurally unassignable.
-    const roles = (await db.query(
+    const roles: { name: string }[] = await db.query(
       `SELECT r.name FROM member_roles mr
          JOIN roles r ON r.id = mr.role_id
         WHERE r.enterprise_id IS NOT NULL`,
-    )) as { name: string }[];
+    );
     expect(roles.map((r) => r.name)).toEqual(['owner']);
   });
 

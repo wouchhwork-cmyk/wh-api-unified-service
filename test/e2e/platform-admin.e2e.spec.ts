@@ -74,9 +74,9 @@ describe('the platform admin console', () => {
   it('issues the fixed code while realtime delivery is off', async () => {
     await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
 
-    const rows = (await db.query(
+    const rows: { secret_hash: string }[] = await db.query(
       `SELECT secret_hash FROM verifications ORDER BY id DESC LIMIT 1`,
-    )) as { secret_hash: string }[];
+    );
 
     // Proves the STORED hash is the hash of the configured constant, not merely
     // that the constant happens to be accepted: a bug that stored a random code
@@ -269,17 +269,17 @@ describe('the platform admin console', () => {
       .send({ status: 'active' })
       .expect(200);
 
-    const rows = (await db.query(
-      `SELECT action, entity_type, actor_staff_id, actor_kind, is_impersonated, changes
-         FROM audit_logs ORDER BY id`,
-    )) as {
+    const rows: {
       action: string;
       entity_type: string;
       actor_staff_id: string | null;
       actor_kind: string;
       is_impersonated: boolean;
       changes: Record<string, unknown>;
-    }[];
+    }[] = await db.query(
+      `SELECT action, entity_type, actor_staff_id, actor_kind, is_impersonated, changes
+         FROM audit_logs ORDER BY id`,
+    );
 
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => `${r.action}:${r.entity_type}`)).toEqual([
@@ -413,9 +413,10 @@ describe('access-token hygiene', () => {
     // A second business for the SAME owner credential is refused, so instead mint
     // a selection token the way login does and check the boundary directly.
     const tokens = app.get(TokenService);
-    const identity = (await db.query(`SELECT id FROM identities WHERE email = $1`, [
-      SIGNUP.owner.email,
-    ])) as { id: string }[];
+    const identity: { id: string }[] = await db.query(
+      `SELECT id FROM identities WHERE email = $1`,
+      [SIGNUP.owner.email],
+    );
     const selectionToken = await tokens.issueSelectionToken(Number(identity[0]?.id));
 
     // Same signing secret, valid signature, and it still must not authenticate:

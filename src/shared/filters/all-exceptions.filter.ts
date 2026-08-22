@@ -30,8 +30,7 @@ import type { ErrorEnvelope, ResponseMeta } from '@/shared/contracts/envelope';
 @Catch()
 @Injectable()
 export class AllExceptionsFilter implements ExceptionFilter {
-  constructor(@InjectPinoLogger(AllExceptionsFilter.name) private readonly logger: PinoLogger) {
-  }
+  constructor(@InjectPinoLogger(AllExceptionsFilter.name) private readonly logger: PinoLogger) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
@@ -55,7 +54,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       route: request.route?.path ?? request.url,
       err: exception,
     };
-    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+    if (isServerError(status)) {
       this.logger.error(logPayload, 'request failed');
     } else {
       this.logger.warn(logPayload, 'request rejected');
@@ -153,7 +152,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
             code,
             // The library's own messages are generic and client-safe
             // ("request entity too large"); they name nothing internal.
-            message: httpError.status >= 500 ? ERROR_MESSAGE[ErrorCode.InternalError] : httpError.message,
+            message:
+              httpError.status >= 500 ? ERROR_MESSAGE[ErrorCode.InternalError] : httpError.message,
           },
         },
       };
@@ -171,8 +171,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
           // for 5xx we substitute the generic catalogue message.
           error: {
             code,
-            message:
-              status >= HttpStatus.INTERNAL_SERVER_ERROR ? ERROR_MESSAGE[code] : exception.message,
+            message: isServerError(status) ? ERROR_MESSAGE[code] : exception.message,
           },
         },
       };
@@ -198,7 +197,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
  */
 function asHttpError(exception: unknown): { status: number; message: string } | null {
   if (!(exception instanceof Error)) return null;
-  const candidate = exception as Error & { status?: unknown; statusCode?: unknown; expose?: unknown };
+  const candidate = exception as Error & {
+    status?: unknown;
+    statusCode?: unknown;
+    expose?: unknown;
+  };
   const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
   if (typeof status !== 'number' || status < 400 || status > 599) return null;
   // `expose` is how the library marks a message as safe to show a client.
@@ -219,3 +222,16 @@ const FRAMEWORK_STATUS_CODE: Readonly<Record<number, ErrorCode>> = {
   [HttpStatus.BAD_GATEWAY]: ErrorCode.UpstreamUnavailable,
   [HttpStatus.SERVICE_UNAVAILABLE]: ErrorCode.UpstreamUnavailable,
 };
+
+/**
+ * Whether a status is OURS rather than the caller's.
+ *
+ * The cast is the point, and it is confined to this one line. `status` is a
+ * plain number and HttpStatus is a numeric enum, so comparing them relationally
+ * is precisely what the enum-comparison rule catches elsewhere — but the named
+ * constant still beats a bare 500, and "is this a server error" is worth having
+ * as one concept rather than as a repeated inequality.
+ */
+function isServerError(status: number): boolean {
+  return status >= (HttpStatus.INTERNAL_SERVER_ERROR as number);
+}

@@ -25,19 +25,19 @@ describe('schema guarantees', () => {
       const acme = await seedEnterprise(db, 'Acme', 'acme');
       const zenith = await seedEnterprise(db, 'Zenith', 'zenith');
 
-      const identity = (await db.query(
+      const identity: { id: string }[] = await db.query(
         `INSERT INTO identities (email, password_hash, first_name)
          VALUES ('a@x.test', 'h', 'A') RETURNING id`,
-      )) as { id: string }[];
-      const member = (await db.query(
+      );
+      const member: { id: string }[] = await db.query(
         `INSERT INTO enterprise_members (identity_id, enterprise_id) VALUES ($1, $2) RETURNING id`,
         [identity[0]?.id, acme],
-      )) as { id: string }[];
+      );
       // The role belongs to Zenith.
-      const role = (await db.query(
+      const role: { id: string }[] = await db.query(
         `INSERT INTO roles (enterprise_id, name) VALUES ($1, 'owner') RETURNING id`,
         [zenith],
-      )) as { id: string }[];
+      );
 
       // Acme's member + Zenith's role: the composite foreign key makes this
       // combination unrepresentable, so the DATABASE refuses it.
@@ -53,22 +53,22 @@ describe('schema guarantees', () => {
       const acme = await seedEnterprise(db, 'Acme', 'acme');
       const zenith = await seedEnterprise(db, 'Zenith', 'zenith');
 
-      const connection = (await db.query(
+      const connection: { id: string }[] = await db.query(
         `INSERT INTO provider_connections
            (enterprise_id, provider, provider_category, provider_user_id, access_token)
          VALUES ($1, 'meta', 'social', 'u1', 'env') RETURNING id`,
         [zenith],
-      )) as { id: string }[];
-      const channel = (await db.query(
+      );
+      const channel: { id: string }[] = await db.query(
         `INSERT INTO channels
            (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
          VALUES ($1, $2, 'facebook', 'page', 'p1') RETURNING id`,
         [connection[0]?.id, zenith],
-      )) as { id: string }[];
-      const customer = (await db.query(
+      );
+      const customer: { id: string }[] = await db.query(
         `INSERT INTO customers (enterprise_id, first_source) VALUES ($1, 'manual') RETURNING id`,
         [acme],
-      )) as { id: string }[];
+      );
 
       await expect(
         db.query(
@@ -87,10 +87,10 @@ describe('schema guarantees', () => {
       const zenith = await seedEnterprise(db, 'Zenith', 'zenith');
 
       const makeCustomer = async (enterpriseId: number): Promise<string> => {
-        const rows = (await db.query(
+        const rows: { id: string }[] = await db.query(
           `INSERT INTO customers (enterprise_id, first_source) VALUES ($1, 'manual') RETURNING id`,
           [enterpriseId],
-        )) as { id: string }[];
+        );
         return rows[0]!.id;
       };
       const addEmail = (enterpriseId: number, customerId: string) =>
@@ -117,10 +117,10 @@ describe('schema guarantees', () => {
     it('allows a RELEASED identifier to be claimed by a different customer', async () => {
       const acme = await seedEnterprise(db, 'Acme', 'acme');
       const newCustomer = async (): Promise<string> => {
-        const rows = (await db.query(
+        const rows: { id: string }[] = await db.query(
           `INSERT INTO customers (enterprise_id, first_source) VALUES ($1,'manual') RETURNING id`,
           [acme],
-        )) as { id: string }[];
+        );
         return rows[0]!.id;
       };
       const vikram = await newCustomer();
@@ -197,9 +197,9 @@ describe('schema guarantees', () => {
          VALUES ($1, 'system', 'created', 'enterprise')`,
         [enterprise],
       );
-      const rows = (await db.query(
+      const rows: { untouched: boolean }[] = await db.query(
         `SELECT (updated_at = created_at) AS untouched FROM audit_logs LIMIT 1`,
-      )) as { untouched: boolean }[];
+      );
       // The tripwire: on every legitimate row these are equal forever, so
       // WHERE updated_at <> created_at cheaply finds anything that bypassed the
       // service layer.
@@ -211,10 +211,10 @@ describe('schema guarantees', () => {
     it('advances updated_at on a normal update', async () => {
       const enterprise = await seedEnterprise(db, 'Acme', 'acme');
       await db.query(`UPDATE enterprises SET city = 'Pune' WHERE id = $1`, [enterprise]);
-      const rows = (await db.query(
+      const rows: { advanced: boolean }[] = await db.query(
         `SELECT (updated_at > created_at) AS advanced FROM enterprises WHERE id = $1`,
         [enterprise],
-      )) as { advanced: boolean }[];
+      );
       expect(rows[0]?.advanced).toBe(true);
     });
   });

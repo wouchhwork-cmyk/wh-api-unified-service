@@ -37,9 +37,14 @@ export abstract class BaseRepository {
    * work with FOR UPDATE SKIP LOCKED, upserts onto partial unique indexes, the
    * COALESCE dedup conflict target, trigram search, recursive CTEs.
    */
-  protected async query<T = unknown>(sql: string, parameters: readonly unknown[] = []): Promise<T[]> {
+  protected async query<T = unknown>(
+    sql: string,
+    parameters: readonly unknown[] = [],
+  ): Promise<T[]> {
     try {
-      return (await this.manager.query(sql, parameters as unknown[])) as T[];
+      // The declared return type supplies T[]; query() returns `any`, so an
+      // assertion here would launder rather than check.
+      return await this.manager.query(sql, parameters as unknown[]);
     } catch (error) {
       throw this.translate(error);
     }

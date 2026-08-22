@@ -29,11 +29,11 @@ async function main(): Promise<void> {
   const problems: string[] = [];
 
   try {
-    const dbColumns = (await AppDataSource.query(
+    const dbColumns: DbColumn[] = await AppDataSource.query(
       `SELECT table_name, column_name, is_nullable, data_type
          FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`,
-    )) as DbColumn[];
+    );
 
     const byTable = new Map<string, Map<string, DbColumn>>();
     for (const column of dbColumns) {
@@ -73,7 +73,12 @@ async function main(): Promise<void> {
         // A column the database requires but the entity thinks is optional is
         // the dangerous direction: an insert that omits it fails at runtime.
         const dbNullable = dbColumn.is_nullable === 'YES';
-        if (column.isNullable && !dbNullable && !column.isGenerated && column.default === undefined) {
+        if (
+          column.isNullable &&
+          !dbNullable &&
+          !column.isGenerated &&
+          column.default === undefined
+        ) {
           problems.push(
             `${tableName}.${column.databaseName} — entity says nullable, database says NOT NULL`,
           );

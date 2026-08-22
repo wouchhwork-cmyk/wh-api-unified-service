@@ -57,10 +57,10 @@ export async function seedEnterprise(
   name: string,
   slug: string,
 ): Promise<number> {
-  const rows = (await dataSource.query(
+  const rows: { id: string }[] = await dataSource.query(
     `INSERT INTO enterprises (name, slug, email) VALUES ($1, $2, $3) RETURNING id`,
     [name, slug, `hello@${slug}.test`],
-  )) as { id: string }[];
+  );
   return Number(rows[0]?.id);
 }
 

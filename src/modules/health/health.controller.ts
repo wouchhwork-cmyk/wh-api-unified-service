@@ -1,4 +1,4 @@
-import { Controller, Get, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
