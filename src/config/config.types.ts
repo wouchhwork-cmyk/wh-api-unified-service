@@ -74,6 +74,20 @@ export interface MetaConfig {
   readonly frontendDashboardUrl: string;
 }
 
+export interface OtpConfig {
+  /** When false nothing is sent and every code is `staticCode`. */
+  readonly realtimeEnabled: boolean;
+  readonly staticCode: string;
+}
+
+export interface PlatformAdminConfig {
+  readonly enabled: boolean;
+  readonly name: string;
+  readonly email: string;
+  readonly mobile: string;
+  readonly password: string;
+}
+
 export interface Configuration {
   readonly app: AppConfig;
   readonly database: DatabaseConfig;
@@ -82,4 +96,6 @@ export interface Configuration {
   readonly verification: Readonly<Record<VerificationKind, VerificationKindConfig>>;
   readonly worker: WorkerConfig;
   readonly meta: MetaConfig;
+  readonly otp: OtpConfig;
+  readonly platformAdmin: PlatformAdminConfig;
 }

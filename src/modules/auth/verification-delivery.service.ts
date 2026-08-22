@@ -1,46 +1,55 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { AppConfigService } from '@/config';
+import { OtpSenderService, OtpSendMode } from '@/modules/communication';
+import type { PendingOtpDelivery } from './verification.service';
 
 /**
- * Hands a verification secret to its delivery channel.
+ * Gets an issued verification to the person it was issued for.
  *
- * A placeholder for the real email/SMS providers, which are not chosen yet. It
- * exists as a seam so nothing else has to know how delivery happens, and so the
- * flow is complete and testable today.
+ * A thin adapter over the communication module, kept as its own class because
+ * the auth flows should depend on "deliver this verification" and not on which
+ * transport is behind it. When the real provider lands, only the communication
+ * module changes.
  *
- * When a provider is chosen, this becomes an `outbound_events` insert inside the
- * issuing transaction (the transactional outbox from schema.md §23 requirement
- * 9) with the relay making the call after commit — NOT a direct provider call
- * from here, which would put network I/O inside a transaction.
+ * Delivery is attempted AFTER the issuing transaction commits, deliberately: a
+ * vendor HTTP call inside a transaction would hold a database connection open
+ * for the length of a network round trip.
  */
 @Injectable()
 export class VerificationDeliveryService {
   constructor(
-    private readonly config: AppConfigService,
+    private readonly otp: OtpSenderService,
     @InjectPinoLogger(VerificationDeliveryService.name) private readonly logger: PinoLogger,
-  ) {
-  }
+  ) {}
 
-  async deliver(verificationRefId: string, secret: string): Promise<void> {
-    if (this.config.app.env === 'dev') {
-      // Dev only, and gated on the environment rather than the log level: the
-      // code has to be readable to test the flow without a provider. It must
-      // never be reachable in qa or prod.
-      this.logger.warn(
-        { verificationRefId, secret },
-        'DEV ONLY — verification secret logged because no delivery provider is configured',
+  async deliver(delivery: PendingOtpDelivery): Promise<void> {
+    const result = await this.otp.send({
+      channel: delivery.channel,
+      destination: delivery.destination,
+      code: delivery.code,
+      purpose: delivery.purpose,
+      expiresInSeconds: delivery.expiresInSeconds,
+    });
+
+    if (result.mode === OtpSendMode.Failed) {
+      // Loud, because a verification that exists but never arrives presents to
+      // the user as a code that simply never comes — the hardest thing to
+      // diagnose from a support ticket. The refId ties this line to the row.
+      this.logger.error(
+        { verificationRefId: delivery.verificationRefId, purpose: delivery.purpose },
+        'verification was created but delivery failed — the user must resend',
       );
       return;
     }
 
-    // Deliberately loud: silently dropping a verification would present to a
-    // user as a code that never arrives, which is the hardest kind of bug to
-    // diagnose from a support ticket.
-    this.logger.error(
-      { verificationRefId },
-      'no delivery provider is configured — the verification was created but NOT sent',
+    this.logger.info(
+      {
+        verificationRefId: delivery.verificationRefId,
+        purpose: delivery.purpose,
+        mode: result.mode,
+        provider: result.provider,
+      },
+      'verification delivery attempted',
     );
-    return Promise.resolve();
   }
 }

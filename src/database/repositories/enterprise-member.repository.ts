@@ -14,6 +14,16 @@ export interface MembershipSummary {
   readonly status: MemberStatus;
 }
 
+/*
+ * These queries answer ONE question: is this person a member of this business.
+ *
+ * They deliberately do NOT filter on the enterprise's own status. Doing so used
+ * to make a suspended business's membership disappear, which surfaced to its
+ * owner as AUTH_NO_ACTIVE_MEMBERSHIP — "this account has no active business" —
+ * when the truth was "your business is suspended". Whether a business may be
+ * USED is a separate question, answered per request by EnterpriseActiveGuard,
+ * which can say which of pending_activation or suspended applies.
+ */
 @Injectable()
 export class EnterpriseMemberRepository extends BaseRepository {
   /**
@@ -35,7 +45,6 @@ export class EnterpriseMemberRepository extends BaseRepository {
         WHERE m.identity_id = $1
           AND m.is_deleted = false
           AND m.status = $2
-          AND e.status = 'active'
         ORDER BY e.name, m.id`,
       [identityId, MemberStatus.Active],
     );
@@ -63,7 +72,6 @@ export class EnterpriseMemberRepository extends BaseRepository {
           AND m.enterprise_id = $2
           AND m.is_deleted = false
           AND m.status = $3
-          AND e.status = 'active'
         LIMIT 1`,
       [identityId, enterpriseId, MemberStatus.Active],
     );

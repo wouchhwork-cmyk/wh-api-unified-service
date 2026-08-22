@@ -75,7 +75,7 @@ export class EnterprisesController {
       ipAddress: request.ip ?? null,
       userAgent: request.get('user-agent') ?? null,
     });
-    await this.delivery.deliver(result.response.verificationRefId, result.deliverySecret);
+    await this.delivery.deliver(result.pendingDelivery);
     return result.response;
   }
 

@@ -7,6 +7,8 @@ import type {
   CryptoConfig,
   DatabaseConfig,
   MetaConfig,
+  OtpConfig,
+  PlatformAdminConfig,
   VerificationKindConfig,
   WorkerConfig,
 } from './config.types';
@@ -41,6 +43,12 @@ export class AppConfigService {
   }
   get meta(): MetaConfig {
     return this.all.meta;
+  }
+  get otp(): OtpConfig {
+    return this.all.otp;
+  }
+  get platformAdmin(): PlatformAdminConfig {
+    return this.all.platformAdmin;
   }
 
   verification(kind: VerificationKind): VerificationKindConfig {

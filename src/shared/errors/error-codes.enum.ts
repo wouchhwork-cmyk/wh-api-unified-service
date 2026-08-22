@@ -43,6 +43,13 @@ export enum ErrorCode {
   SyncAlreadyRunning = 'SYNC_ALREADY_RUNNING',
   FeatureAlreadyRequested = 'FEATURE_ALREADY_REQUESTED',
   InvalidStateTransition = 'INVALID_STATE_TRANSITION',
+  /**
+   * Somebody else changed the row between our read and our write. The client's
+   * view is stale, so it should refetch and decide again — never blind-retry.
+   */
+  ConcurrentModification = 'CONCURRENT_MODIFICATION',
+  /** Signed up and verified, but not yet switched on by Wouchh. */
+  EnterprisePendingActivation = 'ENTERPRISE_PENDING_ACTIVATION',
 
   // --- not found --------------------------------------------------------
   /** An unknown route. Distinct from a missing domain entity. */

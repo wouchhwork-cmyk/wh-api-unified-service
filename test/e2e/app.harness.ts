@@ -8,6 +8,7 @@ import { seedCatalogue } from '@/database/seed/catalogue.seed';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { Reflector } from '@nestjs/core';
 import { AppModule } from '@/app.module';
+import { PlatformAdminBootstrapService } from '@/modules/platform/platform-admin-bootstrap.service';
 import { AppConfigService } from '@/config';
 import { MAX_JSON_BODY_BYTES } from '@/shared/constants';
 import { AllExceptionsFilter } from '@/shared/filters/all-exceptions.filter';
@@ -44,7 +45,10 @@ export async function createTestApp(): Promise<TestApp> {
   app.useBodyParser('json', { limit: MAX_JSON_BODY_BYTES });
 
   const reflector = app.get(Reflector);
-  app.useGlobalInterceptors(new TimeoutInterceptor(config), new ResponseEnvelopeInterceptor(reflector));
+  app.useGlobalInterceptors(
+    new TimeoutInterceptor(config),
+    new ResponseEnvelopeInterceptor(reflector),
+  );
   app.useGlobalFilters(app.get(AllExceptionsFilter));
 
   await app.init();
@@ -99,4 +103,28 @@ export async function readLatestVerificationSecret(db: DataSource): Promise<stri
     if (createHmac('sha256', pepper).update(code).digest('hex') === hash) return code;
   }
   throw new Error('could not recover the verification code');
+}
+
+/**
+ * Re-runs the platform admin provisioning.
+ *
+ * resetTenantData TRUNCATEs identities, and staff_members references it, so the
+ * admin created at boot goes with it. Rather than inserting a fixture by hand,
+ * this calls the real bootstrap — so every test that needs an admin is also a
+ * test of how admins come to exist.
+ */
+export async function provisionPlatformAdmin(app: NestExpressApplication): Promise<void> {
+  await app.get(PlatformAdminBootstrapService).onApplicationBootstrap();
+}
+
+/** The credential the bootstrap provisions, read from the same env it reads. */
+export function platformAdminLogin(): {
+  mobile: { number: string; countryCode: string };
+  password: string;
+} {
+  const mobile = process.env.PLATFORM_ADMIN_MOBILE;
+  const password = process.env.PLATFORM_ADMIN_PASSWORD;
+  if (!mobile || !password)
+    throw new Error('PLATFORM_ADMIN_MOBILE and _PASSWORD must be set for tests');
+  return { mobile: { number: mobile, countryCode: 'IN' }, password };
 }

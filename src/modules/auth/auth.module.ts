@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AppConfigModule, AppConfigService } from '@/config';
+import { CommunicationModule } from '@/modules/communication';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { PermissionService } from './permission.service';
@@ -11,6 +12,7 @@ import { VerificationService } from './verification.service';
 @Module({
   imports: [
     AppConfigModule,
+    CommunicationModule,
     JwtModule.registerAsync({
       imports: [AppConfigModule],
       inject: [AppConfigService],

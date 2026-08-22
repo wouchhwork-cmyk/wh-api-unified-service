@@ -12,6 +12,7 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
+    "start:local": "node --env-file=.env.dev --env-file=.env.local dist/main.js",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main.js",
     "start:workers": "node dist/workers/main.js",

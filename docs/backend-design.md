@@ -1162,7 +1162,59 @@ The rule this produces, now applied throughout: **every tenant-scoped write name
 identify the row. The composite keys protect the shape of the data; only the
 predicate protects the write.
 
-### 19.7 Still open
+### 19.7 Phase 1 — what the login, signup and admin work changed
+
+Built after §1–§18 were written, so these supersede them where they differ. The
+flow-level account of all of it is [`backend-flows.md`](backend-flows.md).
+
+- **A business is not usable when it signs up.** `EnterpriseStatus` gained
+  `pending_activation`, and signup lands there rather than in `active`. A new
+  per-request guard refuses tenant-scoped routes for a business that is not
+  `active`, with `ENTERPRISE_PENDING_ACTIVATION` or `ENTERPRISE_SUSPENDED` — a
+  precise reason rather than a bare permission denial. Staff are exempt, because
+  somebody has to be able to look at a business to decide whether to activate it.
+- **Membership resolution no longer filters on the business's status.** It used to,
+  which made a suspended business's membership vanish and surfaced to its owner as
+  "this account has no active business". Whether someone is a member and whether
+  the business may be used are two questions, and only the second one has an
+  answer worth showing a person.
+- **A verification challenge is driven by proof, not by login count.** It used to
+  fire on any first login. It now fires when the credential being used has not been
+  proven — identical for a real signup, because signup leaves both credentials
+  unverified, but it lets an account provisioned from configuration sign straight
+  in instead of being locked out of its own first login.
+- **Login stopped enforcing the password strength policy.** Strength is checked
+  where a password is chosen. At login it leaked the policy for free and locked out
+  any account whose password predated it.
+- **Access tokens now carry a `typ` claim, and their shape is validated.** Both
+  token kinds are signed with the same secret, so a selection token verified
+  perfectly as an access token; it carries none of the actor claims, and because an
+  absent claim is not `null`, the resulting context slipped past the guard that
+  exists to reject a token with no enterprise.
+- **`isImpersonated` now requires an enterprise.** A platform admin with no tenant
+  scope was being marked as impersonating, which would have put
+  `is_impersonated = true` on every platform audit row and destroyed the only
+  signal the flag exists to give.
+- **`/auth/me` no longer returns internal ids,** and now reports whether the caller
+  is an internal admin and what state their business is in — what a client needs
+  after a page reload, when all it holds is a token.
+- **Verification delivery goes through a communication module** with one switch,
+  `OTP_REALTIME_ENABLED`. Off, nothing is sent and every numeric code is the fixed
+  `OTP_STATIC_CODE`; production refuses to boot in that state. Link tokens stay
+  random regardless. The provider behind it is a mock, bound in one place.
+- **The audit write path exists and is used** by the platform console — the first
+  code anywhere to write `audit_logs`.
+- **A platform console and an internal-staff axis.** `@RequirePlatformAdmin` is
+  deliberately not a permission: permissions live inside an enterprise and are
+  gated by what it has bought, which is the wrong shape for "this person works for
+  us", and keeping it separate means no role edit can ever grant platform reach.
+  The one admin is provisioned from configuration, because there is no staff signup
+  and there should never be one.
+- **Cross-tenant reads live in one named file.** Every query that deliberately
+  spans tenants is in `platform-admin.repository.ts` and reachable only behind the
+  platform gate, so a reviewer can find all of them by opening one file.
+
+### 19.8 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is
   complete; in dev the code is logged, and in qa or prod a missing provider is

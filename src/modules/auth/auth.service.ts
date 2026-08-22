@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { EnterpriseMemberRepository, type MembershipSummary } from '@/database/repositories/enterprise-member.repository';
+import {
+  EnterpriseMemberRepository,
+  type MembershipSummary,
+} from '@/database/repositories/enterprise-member.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { IdentityRepository } from '@/database/repositories/identity.repository';
 import { SessionRepository } from '@/database/repositories/session.repository';
@@ -18,9 +21,13 @@ import { AppException, ErrorCode } from '@/shared/errors';
 import { LOGIN_LOCK_DURATION_MS, MAX_FAILED_LOGINS } from '@/shared/constants';
 import { normalizeEmail, normalizeMobile, isValidEmail } from '@/shared/utils/normalize';
 import type { Identity } from '@/database/entities/identity.entity';
-import type { LoginRequest, LoginResponse, Membership } from '@/shared/contracts/auth/login.contract';
+import type {
+  LoginRequest,
+  LoginResponse,
+  Membership,
+} from '@/shared/contracts/auth/login.contract';
 import { TokenService } from './token.service';
-import { VerificationService } from './verification.service';
+import { VerificationService, type PendingOtpDelivery } from './verification.service';
 
 export interface RequestMetadata {
   readonly ipAddress: string | null;
@@ -37,7 +44,7 @@ export interface LoginOutcome {
   readonly response: LoginResponse;
   readonly session?: SessionIssue;
   /** Present only when a verification was issued, for the delivery path. */
-  readonly deliverySecret?: string;
+  readonly pendingDelivery?: PendingOtpDelivery;
 }
 
 @Injectable()
@@ -55,8 +62,7 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly verifications: VerificationService,
     @InjectPinoLogger(AuthService.name) private readonly logger: PinoLogger,
-  ) {
-  }
+  ) {}
 
   /**
    * Login. The security properties that must hold (schema.md §11):
@@ -113,8 +119,7 @@ export class AuthService {
         enterpriseId: null,
         verificationKind: VerificationKind.FirstLogin,
         destination: credential.value,
-        deliveryChannel:
-          credential.kind === 'email' ? DeliveryChannel.Email : DeliveryChannel.Sms,
+        deliveryChannel: credential.kind === 'email' ? DeliveryChannel.Email : DeliveryChannel.Sms,
         requestedIp: meta.ipAddress,
         requestedUserAgent: meta.userAgent,
       });
@@ -127,7 +132,7 @@ export class AuthService {
           maskedDestination: issued.maskedDestination,
           expiresInSeconds: issued.expiresInSeconds,
         },
-        deliverySecret: issued.secret,
+        pendingDelivery: issued.delivery,
       };
     }
 
@@ -263,7 +268,11 @@ export class AuthService {
       memberId: membership?.memberId ?? null,
       staffId: staffRecord?.staffId ?? null,
       actorKind: resolveActorKind(membership, staffRecord?.staffId ?? null),
-      isImpersonated: isImpersonated(membership, staffRecord?.staffId ?? null),
+      isImpersonated: isImpersonated(
+        membership,
+        staffRecord?.staffId ?? null,
+        membership?.enterpriseId ?? null,
+      ),
     });
 
     return {
@@ -315,7 +324,11 @@ export class AuthService {
       memberId: membership.memberId,
       staffId: staffRecord?.staffId ?? null,
       actorKind: resolveActorKind(membership, staffRecord?.staffId ?? null),
-      isImpersonated: isImpersonated(membership, staffRecord?.staffId ?? null),
+      isImpersonated: isImpersonated(
+        membership,
+        staffRecord?.staffId ?? null,
+        membership?.enterpriseId ?? null,
+      ),
     });
 
     return {
@@ -356,10 +369,11 @@ export class AuthService {
       memberId: membership?.memberId ?? null,
       staffId,
       actorKind: resolveActorKind(membership, staffId),
-      isImpersonated: isImpersonated(membership, staffId),
+      isImpersonated: isImpersonated(membership, staffId, membership?.enterpriseId ?? null),
     });
 
-    if (membership) await this.members.touchLastActive(membership.memberId, membership.enterpriseId);
+    if (membership)
+      await this.members.touchLastActive(membership.memberId, membership.enterpriseId);
 
     return {
       response: {
@@ -424,8 +438,23 @@ export class AuthService {
    * Verification is required on a first login, or whenever the credential the
    * person just used is not yet verified.
    */
+  /**
+   * A challenge is issued when the credential being used has not been PROVEN —
+   * not merely because this is somebody's first login.
+   *
+   * For a business owner the two are the same thing in practice: signup leaves
+   * both credentials unverified, and it is the verification itself that stamps
+   * them, so a new owner is still challenged exactly as before.
+   *
+   * They come apart for an account provisioned from configuration. An operator
+   * put that credential in the deployment environment, which is a stronger claim
+   * of control than any code sent to it — and if the address cannot receive SMS
+   * or email, "first login always needs a code" would lock the account out of
+   * itself permanently. Basing the rule on proof rather than on login count
+   * keeps the guarantee (an unproven credential can never hold a session) while
+   * letting a proven one straight through.
+   */
   private needsVerification(identity: Identity, usedCredential: 'email' | 'mobile'): boolean {
-    if (identity.lastLoginAt === null) return true;
     return usedCredential === 'email'
       ? identity.emailVerifiedAt === null
       : identity.mobileVerifiedAt === null;
@@ -446,9 +475,20 @@ function resolveActorKind(membership: MembershipSummary | null, staffId: number 
   return staffId !== null ? ActorKind.Staff : ActorKind.System;
 }
 
-/** Staff acting inside an enterprise they are not a member of (schema.md §25). */
-function isImpersonated(membership: MembershipSummary | null, staffId: number | null): boolean {
-  return staffId !== null && membership === null;
+/**
+ * Staff acting INSIDE an enterprise they are not a member of (schema.md §25).
+ *
+ * All three conditions matter, and the enterprise is the one most easily
+ * forgotten: a platform admin holding a token with no enterprise scope at all is
+ * not impersonating anybody — they are doing their own job on our own console.
+ * Marking that as impersonation would put `is_impersonated = true` on every
+ * platform audit row and destroy the only signal the flag exists to give, which
+ * is "one of ours was inside a customer's account".
+ */
+function isImpersonated(
+  membership: MembershipSummary | null,
+  staffId: number | null,
+  enterpriseId: number | null,
+): boolean {
+  return staffId !== null && membership === null && enterpriseId !== null;
 }
-
-

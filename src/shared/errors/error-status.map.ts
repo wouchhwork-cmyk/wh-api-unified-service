@@ -20,6 +20,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   // 403 — authenticated, but not allowed
   [ErrorCode.AuthNoActiveMembership]: HttpStatus.FORBIDDEN,
   [ErrorCode.AuthEnterpriseNotSelected]: HttpStatus.FORBIDDEN,
+  [ErrorCode.EnterprisePendingActivation]: HttpStatus.FORBIDDEN,
   [ErrorCode.AuthAccountLocked]: HttpStatus.FORBIDDEN,
   [ErrorCode.AuthAccountDisabled]: HttpStatus.FORBIDDEN,
   [ErrorCode.PermissionDenied]: HttpStatus.FORBIDDEN,
@@ -53,6 +54,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.SyncAlreadyRunning]: HttpStatus.CONFLICT,
   [ErrorCode.FeatureAlreadyRequested]: HttpStatus.CONFLICT,
   [ErrorCode.InvalidStateTransition]: HttpStatus.CONFLICT,
+  [ErrorCode.ConcurrentModification]: HttpStatus.CONFLICT,
   [ErrorCode.MessagingWindowClosed]: HttpStatus.CONFLICT,
   [ErrorCode.CustomerBlocked]: HttpStatus.CONFLICT,
   [ErrorCode.ConversationClosed]: HttpStatus.CONFLICT,
@@ -102,6 +104,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.AuthResendTooSoon]: 'Please wait before requesting another code.',
   [ErrorCode.AuthNoActiveMembership]: 'This account has no active business.',
   [ErrorCode.AuthEnterpriseNotSelected]: 'Select a business before continuing.',
+  [ErrorCode.EnterprisePendingActivation]:
+    'This business account is awaiting activation. We will be in touch shortly.',
 
   [ErrorCode.PermissionDenied]: 'You do not have permission to do that.',
   [ErrorCode.FeatureNotEnabled]: 'That feature is not enabled for this business.',
@@ -122,6 +126,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.SyncAlreadyRunning]: 'A sync of that kind is already running for this channel.',
   [ErrorCode.FeatureAlreadyRequested]: 'That feature has already been requested.',
   [ErrorCode.InvalidStateTransition]: 'That change is not allowed from the current state.',
+  [ErrorCode.ConcurrentModification]:
+    'Somebody else changed this while you were looking at it. Refresh and try again.',
 
   [ErrorCode.RouteNotFound]: 'That endpoint does not exist.',
   [ErrorCode.EnterpriseNotFound]: 'Business not found.',

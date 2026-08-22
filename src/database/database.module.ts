@@ -1,8 +1,10 @@
 import { Global, Module } from '@nestjs/common';
+import { AuditLogRepository } from './repositories/audit-log.repository';
 import { EnterpriseMemberRepository } from './repositories/enterprise-member.repository';
 import { EnterpriseRepository } from './repositories/enterprise.repository';
 import { IdentityRepository } from './repositories/identity.repository';
 import { PermissionRepository } from './repositories/permission.repository';
+import { PlatformAdminRepository } from './repositories/platform-admin.repository';
 import { RoleRepository } from './repositories/role.repository';
 import { SessionRepository } from './repositories/session.repository';
 import { StaffMemberRepository } from './repositories/staff-member.repository';
@@ -11,10 +13,12 @@ import { TransactionManager } from './transaction';
 
 const PROVIDERS = [
   TransactionManager,
+  AuditLogRepository,
   EnterpriseRepository,
   EnterpriseMemberRepository,
   IdentityRepository,
   PermissionRepository,
+  PlatformAdminRepository,
   RoleRepository,
   SessionRepository,
   StaffMemberRepository,

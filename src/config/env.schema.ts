@@ -7,9 +7,7 @@ import { z } from 'zod';
  * something plausible — a service that boots with a wrong secret is worse than
  * one that refuses to boot (backend-design.md §4.2).
  */
-const booleanish = z
-  .enum(['true', 'false'])
-  .transform((v) => v === 'true');
+const booleanish = z.enum(['true', 'false']).transform((v) => v === 'true');
 
 const port = z.coerce.number().int().positive().max(65535);
 const positiveInt = z.coerce.number().int().positive();
@@ -75,6 +73,31 @@ export const EnvSchema = z
     META_WEBHOOK_VERIFY_TOKEN: z.string().default(''),
     FRONTEND_DASHBOARD_URL: z.string().default(''),
 
+    // --- Verification delivery / OTP (backend-design.md §12) --------------
+    /**
+     * OFF means no provider is called and every issued code is the fixed
+     * OTP_STATIC_CODE, so the whole signup flow is walkable without an SMS or
+     * email vendor. Refused in prod by the check below: a predictable code in
+     * production would let anyone verify as anyone.
+     */
+    OTP_REALTIME_ENABLED: booleanish.default(false),
+    OTP_STATIC_CODE: z
+      .string()
+      .regex(/^\d{4,8}$/, 'OTP_STATIC_CODE must be 4 to 8 digits')
+      .default('666666'),
+
+    // --- Platform admin bootstrap ----------------------------------------
+    /**
+     * Creates (idempotently) one internal staff login with platform-wide reach
+     * on boot. Internal staff never sign up — there is no self-service route to
+     * a staff account by design, so the first one has to come from config.
+     */
+    PLATFORM_ADMIN_ENABLED: booleanish.default(false),
+    PLATFORM_ADMIN_NAME: z.string().default('Platform Admin'),
+    PLATFORM_ADMIN_EMAIL: z.string().default(''),
+    PLATFORM_ADMIN_MOBILE: z.string().default(''),
+    PLATFORM_ADMIN_PASSWORD: z.string().default(''),
+
     // --- Observability ----------------------------------------------------
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     SWAGGER_ENABLED: booleanish.default(false),
@@ -115,6 +138,25 @@ export const EnvSchema = z
       }
     }
 
+    // The bootstrap needs all three: a name to show, a credential to log in
+    // with, and a password. A half-configured admin would fail at boot instead
+    // of at first login, which is the cheaper place to find out.
+    if (env.PLATFORM_ADMIN_ENABLED) {
+      for (const key of [
+        'PLATFORM_ADMIN_EMAIL',
+        'PLATFORM_ADMIN_MOBILE',
+        'PLATFORM_ADMIN_PASSWORD',
+      ] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `${key} is required when PLATFORM_ADMIN_ENABLED=true`,
+          });
+        }
+      }
+    }
+
     // Production must never run with a committed dev placeholder, and must not
     // expose Swagger without deliberate intent.
     if (env.NODE_ENV === 'prod') {
@@ -137,6 +179,25 @@ export const EnvSchema = z
           code: 'custom',
           path: ['DB_SSL'],
           message: 'DB_SSL must be true in prod',
+        });
+      }
+      // A fixed OTP in production is a total authentication bypass: anyone who
+      // knows the constant can verify any email or mobile they can type.
+      if (!env.OTP_REALTIME_ENABLED) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['OTP_REALTIME_ENABLED'],
+          message:
+            'OTP_REALTIME_ENABLED must be true in prod — a static OTP would bypass verification',
+        });
+      }
+      // A short password on an account that can see and change every business on
+      // the platform is the highest-value credential in the system.
+      if (env.PLATFORM_ADMIN_ENABLED && env.PLATFORM_ADMIN_PASSWORD.length < 16) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['PLATFORM_ADMIN_PASSWORD'],
+          message: 'PLATFORM_ADMIN_PASSWORD must be at least 16 characters in prod',
         });
       }
     }

@@ -27,9 +27,17 @@ export class RequestContextMiddleware implements NestMiddleware {
     // Echo it back so a caller can correlate its own logs with ours.
     response.setHeader('x-correlation-id', correlationId);
 
-    RequestContext.run({ correlationId, route: `${request.method} ${request.path}` }, () => {
-      next();
-    });
+    RequestContext.run(
+      {
+        correlationId,
+        route: `${request.method} ${request.path}`,
+        ipAddress: request.ip ?? undefined,
+        userAgent: request.get('user-agent') ?? undefined,
+      },
+      () => {
+        next();
+      },
+    );
   }
 }
 

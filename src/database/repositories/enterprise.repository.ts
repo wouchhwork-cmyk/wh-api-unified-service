@@ -16,6 +16,7 @@ export interface CreateEnterpriseInput {
   readonly websiteUrl: string | null;
   readonly city: string | null;
   readonly state: string | null;
+  readonly status: EnterpriseStatus;
 }
 
 @Injectable()
@@ -25,6 +26,19 @@ export class EnterpriseRepository extends BaseRepository {
       const enterprise = this.repo(Enterprise).create({ ...input });
       return this.repo(Enterprise).save(enterprise);
     });
+  }
+
+  /**
+   * Just the status, for the per-request gate. A primary-key lookup returning a
+   * single small column, deliberately not `findById`: that would hydrate the
+   * whole row on every tenant request to read one field.
+   */
+  async statusById(id: number): Promise<EnterpriseStatus | null> {
+    const rows = await this.query<{ status: EnterpriseStatus }>(
+      `SELECT status FROM enterprises WHERE id = $1 AND is_deleted = false LIMIT 1`,
+      [id],
+    );
+    return rows[0]?.status ?? null;
   }
 
   async findById(id: number): Promise<Enterprise | null> {

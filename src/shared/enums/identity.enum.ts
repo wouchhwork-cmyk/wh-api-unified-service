@@ -23,9 +23,26 @@ export enum StaffStatus {
 
 /** schema.md §1 */
 export enum EnterpriseStatus {
+  /**
+   * Signed up, credential verified, waiting on us. The business can log in and
+   * see its own account, and nothing else: no inbox, no connections. This is the
+   * default a signup lands in, so onboarding a paying customer is a decision
+   * somebody makes rather than a side effect of filling in a form.
+   */
+  PendingActivation = 'pending_activation',
   Active = 'active',
+  /** Switched off by us. Reversible, unlike a deletion. */
   Suspended = 'suspended',
 }
+
+/** Which moves are legal, as data, so the service cannot invent a transition. */
+export const ENTERPRISE_STATUS_TRANSITIONS: Readonly<
+  Record<EnterpriseStatus, readonly EnterpriseStatus[]>
+> = {
+  [EnterpriseStatus.PendingActivation]: [EnterpriseStatus.Active, EnterpriseStatus.Suspended],
+  [EnterpriseStatus.Active]: [EnterpriseStatus.Suspended],
+  [EnterpriseStatus.Suspended]: [EnterpriseStatus.Active],
+} as const;
 
 /** schema.md §5 — keeps a staff role from ever being handed to a business member. */
 export enum RoleScope {

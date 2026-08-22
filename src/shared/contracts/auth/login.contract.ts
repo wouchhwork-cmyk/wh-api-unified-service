@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { DeliveryChannel, MemberKind } from '@/shared/enums';
-import { EmailSchema, MobileInputSchema, PasswordSchema } from './credential.contract';
+import { EmailSchema, LoginPasswordSchema, MobileInputSchema } from './credential.contract';
 
 /**
  * Login accepts EITHER credential. Which one was sent decides the lookup path,
@@ -10,7 +10,7 @@ export const LoginRequestSchema = z
   .object({
     email: EmailSchema.optional(),
     mobile: MobileInputSchema.optional(),
-    password: PasswordSchema,
+    password: LoginPasswordSchema,
   })
   .strict()
   .refine((value) => Boolean(value.email) !== Boolean(value.mobile), {
@@ -72,9 +72,7 @@ export const SelectEnterpriseRequestSchema = z
 export const SwitchEnterpriseRequestSchema = z.object({ enterpriseRefId: z.uuid() }).strict();
 
 /** Refresh may name an enterprise; a malformed value must be a 422, not a 500. */
-export const RefreshQuerySchema = z
-  .object({ enterpriseRefId: z.uuid().optional() })
-  .strict();
+export const RefreshQuerySchema = z.object({ enterpriseRefId: z.uuid().optional() }).strict();
 
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;

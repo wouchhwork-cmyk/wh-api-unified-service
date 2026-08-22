@@ -13,6 +13,13 @@ export interface RequestContextStore {
   transactionManager?: EntityManager | undefined;
   /** Route label for logs and metrics, e.g. "POST /api/v1/conversations/:refId/reply". */
   route?: string | undefined;
+  /**
+   * Where the request came from. Held here rather than passed down because the
+   * only consumer is the audit trail, and threading it through every service
+   * signature to reach one INSERT would be worse than ambient state.
+   */
+  ipAddress?: string | undefined;
+  userAgent?: string | undefined;
 }
 
 const storage = new AsyncLocalStorage<RequestContextStore>();
@@ -38,6 +45,14 @@ export const RequestContext = {
 
   actor(): ActorContext | undefined {
     return storage.getStore()?.actor;
+  },
+
+  ipAddress(): string | undefined {
+    return storage.getStore()?.ipAddress;
+  },
+
+  userAgent(): string | undefined {
+    return storage.getStore()?.userAgent;
   },
 
   /**

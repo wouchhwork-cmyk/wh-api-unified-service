@@ -27,17 +27,33 @@ export interface IssueVerificationInput {
   readonly requestedUserAgent: string | null;
 }
 
+/**
+ * Everything the delivery path needs, and nothing more.
+ *
+ * Carried as one object rather than loose arguments so a caller cannot pair a
+ * code with the wrong destination. It holds the plaintext code and the raw
+ * destination, so it must never be persisted, logged, or returned from an API.
+ */
+export interface PendingOtpDelivery {
+  readonly verificationRefId: string;
+  readonly channel: DeliveryChannel;
+  /** NORMALIZED: a lower-cased email or an E.164 mobile. */
+  readonly destination: string;
+  readonly purpose: VerificationKind;
+  readonly code: string;
+  readonly expiresInSeconds: number;
+}
+
 export interface IssuedVerification {
   readonly verificationRefId: string;
   readonly maskedDestination: string;
   readonly deliveryChannel: DeliveryChannel;
   readonly expiresInSeconds: number;
   /**
-   * The plaintext secret, returned ONLY so the caller can hand it to the
-   * delivery path. It is never persisted, never logged, and never put in an API
-   * response.
+   * Handed to the delivery path by the caller. Never persisted, never logged,
+   * and never put in an API response.
    */
-  readonly secret: string;
+  readonly delivery: PendingOtpDelivery;
 }
 
 @Injectable()
@@ -48,8 +64,7 @@ export class VerificationService {
     private readonly config: AppConfigService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(VerificationService.name) private readonly logger: PinoLogger,
-  ) {
-  }
+  ) {}
 
   /**
    * Issues a challenge. Superseding the previous live row and inserting the new
@@ -62,7 +77,7 @@ export class VerificationService {
 
     await this.assertWithinDestinationCap(input.destination, params.hourlyDestinationCap);
 
-    const secret = this.hasher.generateSecret(params.secretShape, params.secretSize);
+    const secret = this.mintSecret(params.secretShape, params.secretSize);
     const expiresAt = new Date(Date.now() + params.expiryMs);
 
     const created = await this.tx.runInTransaction(async () => {
@@ -96,13 +111,43 @@ export class VerificationService {
       'verification issued',
     );
 
+    const expiresInSeconds = Math.floor(params.expiryMs / 1000);
     return {
       verificationRefId: created.refId,
       maskedDestination: maskDestination(input.destination, input.deliveryChannel),
       deliveryChannel: input.deliveryChannel,
-      expiresInSeconds: Math.floor(params.expiryMs / 1000),
-      secret,
+      expiresInSeconds,
+      delivery: {
+        verificationRefId: created.refId,
+        channel: input.deliveryChannel,
+        destination: input.destination,
+        purpose: input.verificationKind,
+        code: secret,
+        expiresInSeconds,
+      },
     };
+  }
+
+  /**
+   * Where a code comes from.
+   *
+   * While realtime delivery is off nothing is sending anything, so a random code
+   * would make signup impossible to complete: the fixed OTP_STATIC_CODE is what
+   * keeps the flow walkable without an SMS or email vendor.
+   *
+   * Tokens are exempt and stay random. They travel inside a link rather than
+   * through someone's fingers, so predictability would buy no convenience at
+   * all while handing away the entire secret.
+   *
+   * Production cannot reach the fixed branch: env validation refuses to boot
+   * prod with OTP_REALTIME_ENABLED=false, because a known constant would let
+   * anyone verify any address they can type.
+   */
+  private mintSecret(shape: VerificationSecretShape, size: number): string {
+    if (this.config.otp.realtimeEnabled || shape !== VerificationSecretShape.NumericCode) {
+      return this.hasher.generateSecret(shape, size);
+    }
+    return this.config.otp.staticCode;
   }
 
   /**

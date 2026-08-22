@@ -18,6 +18,7 @@ import {
   type SwitchEnterpriseRequest,
   type VerifyRequest,
 } from '@/shared/contracts/auth/login.contract';
+import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { AuthService, type SessionIssue } from './auth.service';
 import { VerificationService } from './verification.service';
 import { VerificationDeliveryService } from './verification-delivery.service';
@@ -53,6 +54,7 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly verifications: VerificationService,
     private readonly delivery: VerificationDeliveryService,
+    private readonly enterprises: EnterpriseRepository,
     private readonly config: AppConfigService,
   ) {}
 
@@ -76,8 +78,8 @@ export class AuthController {
     const outcome = await this.auth.login(parsed, requestMetadata(request));
 
     if (outcome.session) this.setRefreshCookie(response, outcome.session);
-    if (outcome.deliverySecret !== undefined && outcome.response.outcome === 'verification_required') {
-      await this.delivery.deliver(outcome.response.verificationRefId, outcome.deliverySecret);
+    if (outcome.pendingDelivery !== undefined) {
+      await this.delivery.deliver(outcome.pendingDelivery);
     }
     return outcome.response;
   }
@@ -171,26 +173,49 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Revoke the session and clear the cookie' })
-  async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response): Promise<void> {
+  async logout(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
     const token = request.cookies?.[REFRESH_COOKIE];
     if (typeof token === 'string' && token) await this.auth.logout(token);
     response.clearCookie(REFRESH_COOKIE, this.cookieOptions());
   }
 
   @Get('me')
-  @ApiOperation({ summary: 'The current actor, its scope, and its resolved permissions' })
-  me(@CurrentActor() actor: ActorContext): {
-    identityId: number;
-    enterpriseId: number | null;
+  @ApiOperation({
+    summary: 'The current actor, its scope, and its resolved permissions',
+    description:
+      'What a client needs to decide what to render after a page reload, when all it holds is a ' +
+      'token: whether this is an internal admin, which business the session is scoped to, that ' +
+      "business's status, and the permission codes. No internal ids are returned — a sequential " +
+      'id would tell a caller how many businesses exist and let them probe for neighbours.',
+  })
+  async me(@CurrentActor() actor: ActorContext): Promise<{
     actorKind: string;
+    isPlatformAdmin: boolean;
     isImpersonated: boolean;
+    enterprise: { refId: string; name: string; slug: string; status: string } | null;
     permissions: string[];
-  } {
+  }> {
+    // Read rather than trusted from the token: the business may have been
+    // activated or suspended since this token was issued, and a client that
+    // renders "pending activation" forever would look broken.
+    const enterprise =
+      actor.enterpriseId === null ? null : await this.enterprises.findById(actor.enterpriseId);
+
     return {
-      identityId: actor.identityId,
-      enterpriseId: actor.enterpriseId,
       actorKind: actor.actorKind,
+      isPlatformAdmin: actor.staffId !== null,
       isImpersonated: actor.isImpersonated,
+      enterprise: enterprise
+        ? {
+            refId: enterprise.refId,
+            name: enterprise.name,
+            slug: enterprise.slug,
+            status: enterprise.status,
+          }
+        : null,
       permissions: [...actor.permissions].sort(),
     };
   }

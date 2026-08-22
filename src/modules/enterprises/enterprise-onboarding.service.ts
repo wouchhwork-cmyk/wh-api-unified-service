@@ -8,6 +8,7 @@ import { TransactionManager } from '@/database/transaction';
 import { SecretHashService } from '@/shared/crypto';
 import {
   DeliveryChannel,
+  EnterpriseStatus,
   MemberKind,
   MemberStatus,
   VerificationKind,
@@ -25,7 +26,7 @@ import {
   type NormalizedMobile,
 } from '@/shared/utils/normalize';
 import type { SignupRequest, SignupResponse } from '@/shared/contracts/enterprises/signup.contract';
-import { VerificationService } from '../auth/verification.service';
+import { VerificationService, type PendingOtpDelivery } from '../auth/verification.service';
 
 interface NormalizedOwner {
   readonly firstName: string;
@@ -46,8 +47,7 @@ export class EnterpriseOnboardingService {
     private readonly verifications: VerificationService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(EnterpriseOnboardingService.name) private readonly logger: PinoLogger,
-  ) {
-  }
+  ) {}
 
   /**
    * Business onboarding (schema.md §11 signup flow).
@@ -63,7 +63,7 @@ export class EnterpriseOnboardingService {
   async signup(
     request: SignupRequest,
     meta: { ipAddress: string | null; userAgent: string | null },
-  ): Promise<{ response: SignupResponse; deliverySecret: string }> {
+  ): Promise<{ response: SignupResponse; pendingDelivery: PendingOtpDelivery }> {
     const owner = this.normalizeOwner(request.owner);
     const business = this.normalizeBusiness(request.business);
 
@@ -73,7 +73,14 @@ export class EnterpriseOnboardingService {
       : await this.enterprises.findAvailableSlug(normalizeSlug(request.business.name));
 
     const created = await this.tx.runInTransaction(async () => {
-      const enterprise = await this.enterprises.create({ ...business, slug });
+      const enterprise = await this.enterprises.create({
+        ...business,
+        slug,
+        // A signup does not switch a business on. Somebody at Wouchh activates
+        // it, which is what makes onboarding a decision rather than a side
+        // effect of a form submission.
+        status: EnterpriseStatus.PendingActivation,
+      });
 
       const identity = await this.identities.create({
         email: owner.email,
@@ -124,10 +131,7 @@ export class EnterpriseOnboardingService {
       requestedUserAgent: meta.userAgent,
     });
 
-    this.logger.info(
-      { enterpriseId: created.enterprise.id, slug },
-      'enterprise onboarded',
-    );
+    this.logger.info({ enterpriseId: created.enterprise.id, slug }, 'enterprise onboarded');
 
     return {
       response: {
@@ -138,7 +142,7 @@ export class EnterpriseOnboardingService {
         verificationRefId: issued.verificationRefId,
         maskedDestination: issued.maskedDestination,
       },
-      deliverySecret: issued.secret,
+      pendingDelivery: issued.delivery,
     };
   }
 

@@ -12,8 +12,15 @@ import { ConnectionsModule } from '@/modules/connections/connections.module';
 import { EnterprisesModule } from '@/modules/enterprises/enterprises.module';
 import { HealthModule } from '@/modules/health/health.module';
 import { InboxModule } from '@/modules/inbox/inbox.module';
+import { PlatformModule } from '@/modules/platform/platform.module';
 import { CryptoModule } from '@/shared/crypto';
-import { EnterpriseScopeGuard, JwtAuthGuard, PermissionsGuard } from '@/shared/guards';
+import {
+  EnterpriseActiveGuard,
+  EnterpriseScopeGuard,
+  JwtAuthGuard,
+  PermissionsGuard,
+  PlatformAdminGuard,
+} from '@/shared/guards';
 import { AllExceptionsFilter } from '@/shared/filters/all-exceptions.filter';
 import { RequestContextMiddleware } from '@/shared/context/request-context.middleware';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
@@ -51,6 +58,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     ConnectionsModule,
     EnterprisesModule,
     InboxModule,
+    PlatformModule,
     HealthModule,
   ],
   providers: [
@@ -66,7 +74,9 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: EnterpriseScopeGuard },
+    { provide: APP_GUARD, useClass: EnterpriseActiveGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    { provide: APP_GUARD, useClass: PlatformAdminGuard },
   ],
 })
 export class AppModule implements NestModule {

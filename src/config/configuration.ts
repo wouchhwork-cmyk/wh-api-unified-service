@@ -125,5 +125,16 @@ export function loadConfiguration(): Configuration {
       webhookVerifyToken: env.META_WEBHOOK_VERIFY_TOKEN,
       frontendDashboardUrl: env.FRONTEND_DASHBOARD_URL,
     },
+    otp: {
+      realtimeEnabled: env.OTP_REALTIME_ENABLED,
+      staticCode: env.OTP_STATIC_CODE,
+    },
+    platformAdmin: {
+      enabled: env.PLATFORM_ADMIN_ENABLED,
+      name: env.PLATFORM_ADMIN_NAME,
+      email: env.PLATFORM_ADMIN_EMAIL.trim().toLowerCase(),
+      mobile: env.PLATFORM_ADMIN_MOBILE.trim(),
+      password: env.PLATFORM_ADMIN_PASSWORD,
+    },
   };
 }
