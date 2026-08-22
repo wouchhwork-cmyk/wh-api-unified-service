@@ -70,7 +70,7 @@ export async function resetTenantData(db: DataSource): Promise<void> {
              customer_engagements, customer_identifiers, customers,
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,
-             member_roles, enterprise_members, identities, enterprises
+             employee_roles, enterprise_employees, identities, enterprises
     RESTART IDENTITY CASCADE
   `);
   await db.query(`DELETE FROM roles WHERE enterprise_id IS NOT NULL`);

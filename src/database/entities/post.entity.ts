@@ -81,7 +81,7 @@ export class Post extends PublicEntity {
 
   /** Set only when WE published it — NULL for every mirrored post. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  authoredByMemberId!: number | null;
+  authoredByEmployeeId!: number | null;
 
   /** When the platform says it went live. */
   @Column({ type: 'timestamptz', nullable: true })

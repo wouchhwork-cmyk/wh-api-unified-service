@@ -39,7 +39,7 @@ export class StaffMemberRepository extends BaseRepository {
    *
    * Separate from findActiveByIdentity because provisioning has to be able to
    * SEE a suspended row in order to reactivate it. The auth path must never use
-   * this one: a suspended staff member logging in would be a hole.
+   * this one: a suspended staff employee logging in would be a hole.
    */
   async findAnyByIdentity(identityId: number): Promise<StaffRecord | null> {
     const rows = await this.query<StaffRecord>(

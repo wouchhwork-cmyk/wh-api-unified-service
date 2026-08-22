@@ -64,7 +64,7 @@ export class EnterprisesController {
   @ApiOperation({
     summary: 'Create a business and its owner',
     description:
-      'One transaction creates the enterprise, the owner identity, the membership, and the ' +
+      'One transaction creates the enterprise, the owner identity, the employment, and the ' +
       "enterprise's own copies of the system role templates, then grants the owner role. No " +
       'session is issued: signup always ends in a verification challenge.',
   })

@@ -36,9 +36,9 @@ export class AuditLog extends BaseEntity {
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
   actorIdentityId!: number | null;
 
-  /** The membership they acted through — the business context. */
+  /** The employment they acted through — the business context. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  actorMemberId!: number | null;
+  actorEmployeeId!: number | null;
 
   /** Set when a Wouchh person acted — the platform context. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })

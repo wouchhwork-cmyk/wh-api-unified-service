@@ -12,13 +12,16 @@ import {
   RefreshQuerySchema,
   SwitchEnterpriseRequestSchema,
   VerifyRequestSchema,
+  AcceptInviteRequestSchema,
   type LoginRequest,
   type LoginResponse,
   type SelectEnterpriseRequest,
   type SwitchEnterpriseRequest,
   type VerifyRequest,
+  type AcceptInviteRequest,
 } from '@/shared/contracts/auth/login.contract';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import { normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
 import { AuthService, type SessionIssue } from './auth.service';
 import { VerificationService } from './verification.service';
 import { VerificationDeliveryService } from './verification-delivery.service';
@@ -119,6 +122,52 @@ export class AuthController {
     return outcome.response;
   }
 
+  @Post('accept-invite')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Accept an invitation and set a password',
+    description:
+      'How everybody except a business owner gets their first session. The owner created the ' +
+      'account and never knew a password for it; this proves the address and sets one, in one ' +
+      'step, and moves the employment from invited to active. Both happen together, because a ' +
+      'spent code with no password set would leave an account nobody can ever enter.',
+  })
+  async acceptInvite(
+    @Body() body: unknown,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const parsed: AcceptInviteRequest = AcceptInviteRequestSchema.parse(body);
+
+    // Normalised here, once, so the lookup sees exactly what was stored: the
+    // destination on the verification row is the canonical form.
+    const destination =
+      parsed.email !== undefined
+        ? normalizeEmail(parsed.email)
+        : normalizeMobile(parsed.mobile as { number: string; countryCode?: string })?.canonical;
+    if (!destination) throw new AppException(ErrorCode.InvalidMobile);
+
+    const subject = await this.verifications.verifyByDestination(
+      destination,
+      parsed.code,
+      VerificationKind.EmployeeInvite,
+    );
+    if (subject.identityId === null) throw new AppException(ErrorCode.VerificationNotFound);
+
+    const outcome = await this.auth.completeInvite(
+      subject.identityId,
+      subject.enterpriseId,
+      // The destination the code actually went to, so the credential marked
+      // proven is the one that was proven.
+      subject.destination,
+      parsed.password,
+      requestMetadata(request),
+    );
+    if (outcome.session) this.setRefreshCookie(response, outcome.session);
+    return outcome.response;
+  }
+
   @Post('select-enterprise')
   @Public()
   @HttpCode(HttpStatus.OK)
@@ -144,7 +193,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Exchange the refresh cookie for a new access token',
     description:
-      'Every refresh re-checks that the membership is still active, so removing someone takes ' +
+      'Every refresh re-checks that the employment is still active, so removing someone takes ' +
       'effect within the access-token lifetime rather than whenever their session ends.',
   })
   async refresh(@Req() request: Request): Promise<{

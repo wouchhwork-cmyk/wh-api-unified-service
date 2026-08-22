@@ -1,7 +1,7 @@
 /**
  * The global catalogue seed — features (schema.md §9), permissions (§6), the six
  * system roles (§5, §8) and their grants (§7). It creates NO tenant data: no
- * enterprises, no identities, no memberships.
+ * enterprises, no identities, no employments.
  *
  * IDEMPOTENT. Every insert names the real unique index as its ON CONFLICT
  * target, so a second run inserts nothing. Conflicts DO NOTHING rather than
@@ -78,7 +78,7 @@ const FEATURE_BY_RESOURCE: Readonly<Record<PermissionResource, FeatureKey | null
   [PermissionResource.Posts]: FeatureKey.PostInsights,
   [PermissionResource.Customers]: FeatureKey.CustomerDirectory,
   [PermissionResource.Channels]: null,
-  [PermissionResource.Members]: null,
+  [PermissionResource.Employees]: null,
   [PermissionResource.Roles]: null,
   [PermissionResource.Features]: null,
   [PermissionResource.Enterprise]: null,
@@ -114,9 +114,9 @@ const PERMISSION_SCOPES: Readonly<Record<Permission, PermissionScope>> = {
   [Permission.CustomersView]: PermissionScope.Both,
   [Permission.CustomersManage]: PermissionScope.Enterprise,
 
-  [Permission.MembersView]: PermissionScope.Both,
-  [Permission.MembersInvite]: PermissionScope.Enterprise,
-  [Permission.MembersManage]: PermissionScope.Enterprise,
+  [Permission.EmployeesView]: PermissionScope.Both,
+  [Permission.EmployeesInvite]: PermissionScope.Enterprise,
+  [Permission.EmployeesManage]: PermissionScope.Enterprise,
 
   [Permission.RolesView]: PermissionScope.Both,
   [Permission.RolesManage]: PermissionScope.Enterprise,
@@ -133,7 +133,7 @@ const PERMISSION_SCOPES: Readonly<Record<Permission, PermissionScope>> = {
 const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
   [Permission.ConversationsView]: 'See direct-message conversations and their messages.',
   [Permission.ConversationsReply]: 'Send a reply in a direct-message conversation.',
-  [Permission.ConversationsAssign]: 'Assign a conversation to a team member.',
+  [Permission.ConversationsAssign]: 'Assign a conversation to a team employee.',
   [Permission.ConversationsManage]:
     'Administer inbox sync: re-run conversation backfills, change inbox settings.',
 
@@ -151,9 +151,9 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
   [Permission.CustomersView]: 'See customer records and their platform identifiers.',
   [Permission.CustomersManage]: 'Edit, merge, and archive customer records.',
 
-  [Permission.MembersView]: 'See the people who belong to this enterprise.',
-  [Permission.MembersInvite]: 'Invite a person to this enterprise.',
-  [Permission.MembersManage]: "Change a member's roles, or suspend them.",
+  [Permission.EmployeesView]: 'See the people who belong to this enterprise.',
+  [Permission.EmployeesInvite]: 'Invite a person to this enterprise.',
+  [Permission.EmployeesManage]: "Change a employee's roles, or suspend them.",
 
   [Permission.RolesView]: 'See roles and the permissions they grant.',
   [Permission.RolesManage]: 'Create, edit, and archive roles.',
@@ -234,7 +234,7 @@ const ACTION_OF: ReadonlyMap<Permission, string> = new Map(
  *
  * Narrowed through isAction rather than compared straight across, because
  * PERMISSION_CATALOGUE carries action halves that PermissionAction does not
- * declare — `features.decide` today. So actionOf cannot promise an enum member,
+ * declare — `features.decide` today. So actionOf cannot promise an enum employee,
  * and a bare `actionOf(code) === PermissionAction.View` would be comparing two
  * unrelated types: the kind of comparison that silently becomes always-false the
  * day either side is renamed.
@@ -295,7 +295,7 @@ const ROLES: readonly RoleSeed[] = [
   {
     name: SystemRole.Manager,
     scope: RoleScope.Enterprise,
-    description: 'Every feature action plus member and role management; no billing.',
+    description: 'Every feature action plus employee and role management; no billing.',
     // enterprise.manage is the billing and settings surface §8 withholds from
     // manager; there is no separate billing.* code to exclude.
     permissions: ENTERPRISE_PERMISSIONS.filter((code) => code !== Permission.EnterpriseManage),
@@ -496,7 +496,7 @@ async function seedPermissions(
 
 async function seedRoles(manager: EntityManager): Promise<[Summary, ReadonlyMap<string, number>]> {
   // enterprise_id stays NULL for all six. The four enterprise-scoped rows are
-  // TEMPLATES: member_roles' composite FK routes through enterprise_id, so a
+  // TEMPLATES: employee_roles' composite FK routes through enterprise_id, so a
   // NULL-enterprise role cannot be assigned to anyone (§8), and enterprise
   // creation copies them into the new tenant instead.
   const inserted = await run<{ name: string }>(

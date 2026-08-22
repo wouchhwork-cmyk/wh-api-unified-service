@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import { DeliveryChannel, MemberKind } from '@/shared/enums';
-import { EmailSchema, LoginPasswordSchema, MobileInputSchema } from './credential.contract';
+import { DeliveryChannel, EmployeeKind } from '@/shared/enums';
+import {
+  EmailSchema,
+  LoginPasswordSchema,
+  MobileInputSchema,
+  PasswordSchema,
+} from './credential.contract';
 
 /**
  * Login accepts EITHER credential. Which one was sent decides the lookup path,
@@ -17,11 +22,11 @@ export const LoginRequestSchema = z
     message: 'send exactly one of email or mobile',
   });
 
-export const MembershipSchema = z.object({
+export const EmploymentSchema = z.object({
   enterpriseRefId: z.uuid(),
   name: z.string(),
   slug: z.string(),
-  memberKind: z.enum(MemberKind),
+  employeeKind: z.enum(EmployeeKind),
 });
 
 /**
@@ -36,13 +41,13 @@ export const LoginResponseSchema = z.discriminatedUnion('outcome', [
     expiresInSeconds: z.number().int().positive(),
     // null for a staff actor who has not selected a business yet — the only
     // case where a session legitimately has no enterprise scope.
-    enterprise: MembershipSchema.nullable(),
+    enterprise: EmploymentSchema.nullable(),
   }),
   // More than one business: the client picks, then exchanges the selection token.
   z.object({
     outcome: z.literal('enterprise_selection_required'),
     selectionToken: z.string(),
-    enterprises: z.array(MembershipSchema),
+    enterprises: z.array(EmploymentSchema),
   }),
   // Verification needed. NOT an error — a 200 with what the client needs next,
   // and deliberately never the code itself (schema.md §12).
@@ -62,6 +67,28 @@ export const VerifyRequestSchema = z
   })
   .strict();
 
+/**
+ * Accepting an invitation: prove the address and choose a password, together.
+ *
+ * Keyed on the address rather than a verification reference, because the invited
+ * person never saw one — whoever invited them made that request, on another
+ * device. What they have is their own address and the code that arrived at it.
+ *
+ * The strength policy applies here, unlike login: this is a password being
+ * CHOSEN.
+ */
+export const AcceptInviteRequestSchema = z
+  .object({
+    email: EmailSchema.optional(),
+    mobile: MobileInputSchema.optional(),
+    code: z.string().trim().min(4).max(128),
+    password: PasswordSchema,
+  })
+  .strict()
+  .refine((value) => Boolean(value.email) !== Boolean(value.mobile), {
+    message: 'send exactly one of email or mobile',
+  });
+
 export const SelectEnterpriseRequestSchema = z
   .object({
     selectionToken: z.string().min(16),
@@ -77,6 +104,7 @@ export const RefreshQuerySchema = z.object({ enterpriseRefId: z.uuid().optional(
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export type VerifyRequest = z.infer<typeof VerifyRequestSchema>;
+export type AcceptInviteRequest = z.infer<typeof AcceptInviteRequestSchema>;
 export type SelectEnterpriseRequest = z.infer<typeof SelectEnterpriseRequestSchema>;
 export type SwitchEnterpriseRequest = z.infer<typeof SwitchEnterpriseRequestSchema>;
-export type Membership = z.infer<typeof MembershipSchema>;
+export type Employment = z.infer<typeof EmploymentSchema>;

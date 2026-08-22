@@ -51,7 +51,7 @@ export class InboxService {
     enterpriseId: number,
     options: {
       status: ConversationStatus | null;
-      assignedToMemberId: number | null;
+      assignedToEmployeeId: number | null;
       limit: number;
       cursor: string | null;
     },
@@ -60,7 +60,7 @@ export class InboxService {
     const rows = await this.conversations.listInbox({
       enterpriseId,
       status: options.status,
-      assignedToMemberId: options.assignedToMemberId,
+      assignedToEmployeeId: options.assignedToEmployeeId,
       // One extra row is the cheapest way to know whether another page exists,
       // without a second COUNT query over the same predicate.
       limit: limit + 1,
@@ -104,10 +104,10 @@ export class InboxService {
    * hold a transaction open across a third-party call.
    */
   async reply(
-    actor: { enterpriseId: number; memberId: number | null },
+    actor: { enterpriseId: number; employeeId: number | null },
     input: ReplyInput,
   ): Promise<ReplyResult> {
-    if (actor.memberId === null) throw new AppException(ErrorCode.AuthNoActiveMembership);
+    if (actor.employeeId === null) throw new AppException(ErrorCode.AuthNoActiveEmployment);
 
     // Validation and reads happen BEFORE the transaction opens, so it stays short.
     const conversation = await this.requireConversation(
@@ -142,14 +142,14 @@ export class InboxService {
       if (!channel.isManaged) throw new AppException(ErrorCode.ChannelNotManaged);
     }
 
-    const memberId = actor.memberId;
+    const employeeId = actor.employeeId;
 
     return this.tx.runInTransaction(async () => {
       const message = await this.messages.insertOutbound({
         enterpriseId: actor.enterpriseId,
         conversationId: conversation.id,
         customerId: conversation.customerId,
-        sentByMemberId: memberId,
+        sentByEmployeeId: employeeId,
         body: input.body,
         messageKind: MessageKind.Text,
         idempotencyKey: input.idempotencyKey,
@@ -222,10 +222,10 @@ export class InboxService {
   async assign(
     enterpriseId: number,
     conversationRefId: string,
-    memberId: number | null,
+    employeeId: number | null,
   ): Promise<void> {
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
-    await this.conversations.assign(enterpriseId, conversation.id, memberId);
+    await this.conversations.assign(enterpriseId, conversation.id, employeeId);
   }
 
   async setStatus(

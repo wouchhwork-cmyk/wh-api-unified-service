@@ -1,14 +1,22 @@
 /** Who is acting. `system` covers cron, workers, and webhook-driven writes. */
 export enum ActorKind {
-  EnterpriseMember = 'enterprise_member',
+  Employee = 'employee',
   Staff = 'staff',
   System = 'system',
 }
 
-/** schema.md §3 — which population a membership row belongs to. */
-export enum MemberKind {
-  /** Works for the business. */
-  Enterprise = 'enterprise',
-  /** A Wouchh person assigned to this specific business. */
-  Staff = 'staff',
+/**
+ * Which population an employment row belongs to (schema.md §3).
+ *
+ * One table holds both, because they need the same roles, the same assignment
+ * and the same audit trail — but they are emphatically not the same people, and
+ * the label has to say so. `support` is one of OURS, sitting inside a customer's
+ * business to help; calling that row an employee of the business would be a lie
+ * in the place it matters most, which is the audit trail.
+ */
+export enum EmployeeKind {
+  /** Works for the business. Its own staff: owner, manager, agent, viewer. */
+  Business = 'business',
+  /** A Wouchh person assigned to this specific business. Not their employee. */
+  Support = 'support',
 }

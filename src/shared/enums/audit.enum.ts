@@ -21,7 +21,7 @@ export enum AuditAction {
 export enum AuditEntityType {
   Enterprise = 'enterprise',
   Identity = 'identity',
-  EnterpriseMember = 'enterprise_member',
+  EnterpriseEmployee = 'enterprise_employee',
   Role = 'role',
   EnterpriseFeature = 'enterprise_feature',
   ProviderConnection = 'provider_connection',

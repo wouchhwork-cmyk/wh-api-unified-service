@@ -61,7 +61,7 @@ export class ProviderConnection extends PublicEntity {
   grantedScopes!: string | null;
 
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  connectedByMemberId!: number | null;
+  connectedByEmployeeId!: number | null;
 
   @Column({ type: 'varchar', length: 30, default: ConnectionStatus.Active })
   status!: ConnectionStatus;

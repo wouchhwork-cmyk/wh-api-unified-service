@@ -4,7 +4,7 @@ import {
   ConnectionStatus,
   EnterpriseFeatureStatus,
   EnterpriseStatus,
-  MemberStatus,
+  EmployeeStatus,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
@@ -26,7 +26,7 @@ export interface PlatformEnterpriseRow {
   readonly country: string;
   readonly timezone: string;
   readonly createdAt: Date;
-  readonly memberCount: number;
+  readonly employeeCount: number;
   readonly channelCount: number;
   readonly connectionCount: number;
   readonly customerCount: number;
@@ -117,9 +117,9 @@ export interface PlatformOverview {
  * an index-only count on `enterprise_id`.
  */
 const ENTERPRISE_COUNT_COLUMNS = `
-              (SELECT count(*)::int FROM enterprise_members m
+              (SELECT count(*)::int FROM enterprise_employees m
                  WHERE m.enterprise_id = e.id AND m.is_deleted = false
-                   AND m.status = $2::varchar)                     AS "memberCount",
+                   AND m.status = $2::varchar)                     AS "employeeCount",
               (SELECT count(*)::int FROM channels c
                  WHERE c.enterprise_id = e.id AND c.is_deleted = false) AS "channelCount",
               (SELECT count(*)::int FROM provider_connections pc
@@ -164,7 +164,7 @@ export class PlatformAdminRepository extends BaseRepository {
     // value that is not.
     const params: unknown[] = [
       filter.limit,
-      MemberStatus.Active,
+      EmployeeStatus.Active,
       EnterpriseFeatureStatus.Active,
       EnterpriseFeatureStatus.AccessRequested,
     ];
@@ -213,7 +213,7 @@ export class PlatformAdminRepository extends BaseRepository {
         LIMIT 1`,
       [
         refId,
-        MemberStatus.Active,
+        EmployeeStatus.Active,
         EnterpriseFeatureStatus.Active,
         EnterpriseFeatureStatus.AccessRequested,
       ],
@@ -232,8 +232,8 @@ export class PlatformAdminRepository extends BaseRepository {
 
   /**
    * The person who created the business: the oldest active enterprise-kind
-   * membership. Ordered by id so the answer is deterministic when two
-   * memberships share a timestamp.
+   * employment. Ordered by id so the answer is deterministic when two
+   * employments share a timestamp.
    */
   async findOwner(enterpriseId: number): Promise<PlatformEnterpriseOwner | null> {
     const rows = await this.query<PlatformEnterpriseOwner>(
@@ -244,7 +244,7 @@ export class PlatformAdminRepository extends BaseRepository {
               i.email_verified_at  AS "emailVerifiedAt",
               i.mobile_verified_at AS "mobileVerifiedAt",
               i.last_login_at      AS "lastLoginAt"
-         FROM enterprise_members m
+         FROM enterprise_employees m
          JOIN identities i ON i.id = m.identity_id AND i.is_deleted = false
         WHERE m.enterprise_id = $1 AND m.is_deleted = false
         ORDER BY m.created_at ASC, m.id ASC

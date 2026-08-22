@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { EnterpriseFeatureStatus, PermissionStatus, RoleStatus } from '@/shared/enums';
+import {
+  EmployeeStatus,
+  EnterpriseFeatureStatus,
+  PermissionStatus,
+  RoleStatus,
+} from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 @Injectable()
@@ -8,18 +13,31 @@ export class PermissionRepository extends BaseRepository {
    * The two-gate check from schema.md, resolved as ONE query in ONE place:
    *
    *   Gate 1 — does the enterprise have the feature?  enterprise_features.status = 'active'
-   *   Gate 2 — do the member's roles grant the action? member_roles -> role_permissions
+   *   Gate 2 — do the employee's roles grant the action? employee_roles -> role_permissions
    *
    * Gate 1 is commercial, gate 2 is structural, and neither implies the other.
    * A permission with feature_id NULL is not feature-gated and skips gate 1.
    *
-   * Returns the full permission-code set for the member, because the guard needs
+   * Returns the full permission-code set for the employee, because the guard needs
    * every code once per request rather than one query per check.
    */
-  async listEffectivePermissions(memberId: number, enterpriseId: number): Promise<string[]> {
+  async listEffectivePermissions(employeeId: number, enterpriseId: number): Promise<string[]> {
     const rows = await this.query<{ code: string }>(
       `SELECT DISTINCT p.code
-         FROM member_roles     mr
+         FROM employee_roles     mr
+         /*
+          * THE EMPLOYMENT ITSELF MUST STILL BE ACTIVE.
+          *
+          * Without this join a suspended employee keeps every permission until
+          * their access token expires — up to fifteen minutes of full access
+          * after being switched off, which makes "suspend" a suggestion rather
+          * than a control. Everything else in this system resolves per request
+          * precisely so that revocation means now.
+          */
+         JOIN enterprise_employees emp ON emp.id = mr.employee_id
+                                      AND emp.enterprise_id = mr.enterprise_id
+                                      AND emp.is_deleted = false
+                                      AND emp.status = $6
          JOIN roles            r  ON r.id = mr.role_id
                                  AND r.is_deleted = false
                                  AND r.status = $3
@@ -31,16 +49,17 @@ export class PermissionRepository extends BaseRepository {
          LEFT JOIN enterprise_features ef ON ef.feature_id = p.feature_id
                                          AND ef.enterprise_id = mr.enterprise_id
                                          AND ef.is_deleted = false
-        WHERE mr.member_id = $1
+        WHERE mr.employee_id = $1
           AND mr.enterprise_id = $2
           AND mr.is_deleted = false
           AND (p.feature_id IS NULL OR ef.status = $5)`,
       [
-        memberId,
+        employeeId,
         this.requireEnterprise(enterpriseId),
         RoleStatus.Active,
         PermissionStatus.Active,
         EnterpriseFeatureStatus.Active,
+        EmployeeStatus.Active,
       ],
     );
     return rows.map((row) => row.code);

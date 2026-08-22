@@ -45,7 +45,7 @@ export class JwtAuthGuard implements CanActivate {
     const actor: ActorContext = {
       identityId: claims.identityId,
       enterpriseId: claims.enterpriseId,
-      memberId: claims.memberId,
+      employeeId: claims.employeeId,
       staffId: claims.staffId,
       actorKind: claims.actorKind,
       isImpersonated: claims.isImpersonated,

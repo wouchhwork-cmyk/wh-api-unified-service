@@ -19,7 +19,7 @@ export interface InsertOutboundMessageInput {
   readonly enterpriseId: number;
   readonly conversationId: number;
   readonly customerId: number | null;
-  readonly sentByMemberId: number;
+  readonly sentByEmployeeId: number;
   readonly body: string;
   readonly messageKind: MessageKind;
   /** Client-supplied, so a double-click cannot post twice. */
@@ -39,7 +39,7 @@ export interface MessageRow {
   readonly platformSentAt: Date | null;
   readonly createdAt: Date;
   readonly customerId: number | null;
-  readonly sentByMemberId: number | null;
+  readonly sentByEmployeeId: number | null;
 }
 
 @Injectable()
@@ -95,7 +95,7 @@ export class MessageRepository extends BaseRepository {
   async insertOutbound(input: InsertOutboundMessageInput): Promise<{ id: number; refId: string }> {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
-         (enterprise_id, conversation_id, direction, customer_id, sent_by_member_id,
+         (enterprise_id, conversation_id, direction, customer_id, sent_by_employee_id,
           message_kind, body, idempotency_key, parent_message_id, status, is_read)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
        RETURNING id, ref_id`,
@@ -104,7 +104,7 @@ export class MessageRepository extends BaseRepository {
         input.conversationId,
         MessageDirection.Outbound,
         input.customerId,
-        input.sentByMemberId,
+        input.sentByEmployeeId,
         input.messageKind,
         input.body,
         input.idempotencyKey,
@@ -191,7 +191,7 @@ export class MessageRepository extends BaseRepository {
       `SELECT id, ref_id AS "refId", direction, body, message_kind AS "messageKind", status,
               is_read AS "isRead", is_internal_note AS "isInternalNote",
               platform_sent_at AS "platformSentAt", created_at AS "createdAt",
-              customer_id AS "customerId", sent_by_member_id AS "sentByMemberId"
+              customer_id AS "customerId", sent_by_employee_id AS "sentByEmployeeId"
          FROM messages
         WHERE enterprise_id = $1
           AND conversation_id = $2

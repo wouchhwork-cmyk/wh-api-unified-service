@@ -33,7 +33,7 @@ The ORM/mapper does this conversion in one place. No hand-written aliases, no pe
 ### Tables
 
 - Plural `snake_case` nouns: `enterprises`, `messages`, `sync_jobs`.
-- Junction tables name both sides, second side plural: `role_permissions`, `member_roles`.
+- Junction tables name both sides, second side plural: `role_permissions`, `employee_roles`.
 - No reserved words. Notably **no `users` table** — it is a reserved-ish word in several tools, and here it was ambiguous between "a person who logs in" and "a customer of the business". Both meanings now have precise names.
 
 ### Columns
@@ -43,7 +43,7 @@ The ORM/mapper does this conversion in one place. No hand-written aliases, no pe
 | Primary key         | always `id`                                                 | `id`                                                  |
 | Public identifier   | always `ref_id` → `refId`                                    | `ref_id`                                               |
 | Foreign key         | `<singular_referenced_table>_id`                             | `enterprise_id`, `channel_id`, `customer_id`, `inbound_event_id` |
-| Role-qualified FK   | `<role>_<singular>_id` when the plain name would be ambiguous | `sent_by_member_id`, `assigned_to_member_id`, `parent_message_id` |
+| Role-qualified FK   | `<role>_<singular>_id` when the plain name would be ambiguous | `sent_by_employee_id`, `assigned_to_employee_id`, `parent_message_id` |
 | Boolean             | `is_<state>` or `has_<thing>`. **Never negated**              | `is_deleted`, `is_read`, `has_attachments`             |
 | Timestamp           | `<past_participle>_at`, always `TIMESTAMPTZ`, always UTC     | `created_at`, `published_at`, `dead_lettered_at`       |
 | Count               | `<noun>_count`                                               | `message_count`, `attempt_count`                       |
@@ -120,14 +120,14 @@ The first draft's names were scratch. These are the deliberate ones, with the re
 | ------ | -------- | --- |
 | `enterprises` (`enterprise_id`) | `organizations` (`org_id`), `businesses` (`business_id`) | `business_id` was rejected outright: Meta's API already has one (Business Manager / Portfolio) and we handle those in the same code — two different `business_id`s in one integration is a bug waiting to happen. `org` was rejected as an abbreviation in the single most-used column name in the schema. `enterprise_id` is longer to type and unambiguous everywhere, which is the right trade for the tenant key. |
 | `identities` | `users`, `accounts`, `people` | `users` was ambiguous between "logs in" and "customer of the business" — the exact confusion that produced three copies of participant identity in the draft. `accounts` collides with account-connection concepts. `identities` says precisely what the row is: one login identity. |
-| `enterprise_members` / `staff_members` | `users` / `platform_staff` | The parallel names make the two populations obviously symmetric, and give clean FK names (`member_id`, `staff_id`). `platform_staff` was rejected because `platform` already means "the social platform" everywhere else. |
+| `enterprise_employees` / `staff_members` | `users` / `platform_staff` | The parallel names make the two populations obviously symmetric, and give clean FK names (`employee_id`, `staff_id`). `platform_staff` was rejected because `platform` already means "the social platform" everywhere else. |
 | `ref_id` → `refId` | `refid`, `uid`, `public_id` | `refid` is illegal — it maps to `refid`, not `refId`. `ref_id` is the chosen form: it round-trips correctly and `refId` is the established habit. `public_id` was considered because it names the security property (safe to expose) at every call site, but familiarity of the existing convention wins over a marginally more descriptive name. |
 | `sessions` | `refresh_tokens` | The row is a session; the refresh token is how a client proves it holds one. Naming a table after one of its columns blocks the obvious place to put session metadata later. |
 | `provider_connections` | `connected_accounts`, `integrations` | See the provider/platform split below — this is the change that removes the worst ambiguity in the draft. |
 | `customers` + `customer_identifiers` | `contacts`, `external_users` | "User" implies someone who logs in; these people never do. `customers` is what they are to the enterprise. Splitting the human from their identifiers is what makes multiple emails, mobiles, and platform ids possible — see §16–17. |
 | `customer_identifiers` | `customer_identities` | `identities` (§2) already means "a human who logs into Wouchh". Two unrelated concepts must not share a word in one schema. |
 | `inbound_events` / `outbound_events` | `inbox` / `outbox` | In a social-inbox product, "inbox" means the agent-facing chat inbox, and the product UI needs that word. Using it for a webhook/queue ledger would mislead every new reader. |
-| `member_roles` | `user_roles` | Follows the table it references. |
+| `employee_roles` | `user_roles` | Follows the table it references. |
 | `<noun>_kind` | bare `type` | The draft had `type` on five tables meaning five different things. A bare `type` tells a reader nothing at the call site. |
 | `mime_type` (kept as `_type`) | `mime_kind` | `_kind` is our word for our own classifications. MIME type is an external standard with a fixed name; renaming it would be worse. |
 
@@ -154,12 +154,12 @@ This is precisely the Meta case: **one** `provider_connections` row (`provider =
 | **Tenancy & access** | | |
 | 1 | `enterprises` | The tenant — one per business |
 | 2 | `identities` | One row per human. The login credential |
-| 3 | `enterprise_members` | One row per human per business. What the rest of the schema references |
+| 3 | `enterprise_employees` | One row per human per business. What the rest of the schema references |
 | 4 | `staff_members` | Wouchh's own people, with platform-wide reach |
 | 5 | `roles` | Role definitions, enterprise-scoped or staff-scoped |
 | 6 | `permissions` | Global catalogue of grantable actions |
 | 7 | `role_permissions` | Which actions a role grants |
-| 8 | `member_roles` | Which roles a member holds |
+| 8 | `employee_roles` | Which roles a employee holds |
 | 9 | `features` | Catalogue of product features |
 | 10 | `enterprise_features` | Which features a business has, and its lifecycle |
 | 11 | `sessions` | Server-side session records, one per signed-in device |
@@ -222,17 +222,17 @@ Renames from the earlier draft: `website` → `website_url`, `phone` → `mobile
 
 ---
 
-## Identity & membership — how §2–4 fit together
+## Identity & employment — how §2–4 fit together
 
 **Signup takes an email, a mobile, or both. Login works with either one.** That drives the whole shape of this area.
 
-Login by a single credential cannot work if the same credential can appear on two rows — and no index fixes that, because uniqueness is a property of the model. So the **credential is separated from the membership**:
+Login by a single credential cannot work if the same credential can appear on two rows — and no index fixes that, because uniqueness is a property of the model. So the **credential is separated from the employment**:
 
 - `identities` — one row per **human**. Globally unique email and mobile. This is what login resolves against.
-- `enterprise_members` — one row per **human in a business**. Roles, status. This is what every other table's foreign keys point at, so all of them stay correctly tenant-scoped.
-- `staff_members` — one row per **Wouchh employee**, for platform-wide reach that cannot be expressed as a list of memberships.
+- `enterprise_employees` — one row per **human in a business**. Roles, status. This is what every other table's foreign keys point at, so all of them stay correctly tenant-scoped.
+- `staff_members` — one row per **Wouchh employee**, for platform-wide reach that cannot be expressed as a list of employments.
 
-One person in three businesses is one `identities` row and three `enterprise_members` rows.
+One person in three businesses is one `identities` row and three `enterprise_employees` rows.
 
 ## 2. `identities`
 
@@ -291,7 +291,7 @@ Two consequences that are easy to get wrong:
 >
 > **This is the one deliberate exception to the no-`CHECK`-constraints rule**, and the two cases are genuinely different. That rule exists because *enum value lists change* — adding a new `status` should be a code change, not a migration. This is not a value list: it is a structural invariant that will never change for as long as login accepts an email or a mobile. It costs one line, it can never be bypassed by any write path, and the failure it prevents is silent.
 
-## 3. `enterprise_members`
+## 3. `enterprise_employees`
 
 One row per person per business. The tenant-scoped identity the rest of the schema references.
 
@@ -301,35 +301,35 @@ One row per person per business. The tenant-scoped identity the rest of the sche
 | ref_id             | UUID        | UNIQUE, NOT NULL, DEFAULT gen_random_uuid() | Public identifier                                              |
 | identity_id           | BIGINT      | NOT NULL, FK → identities(id)               | Which human                                                    |
 | enterprise_id                | BIGINT      | NOT NULL, FK → enterprises(id)            | Which business                                                 |
-| member_kind           | VARCHAR(30) | NOT NULL, DEFAULT 'enterprise'                | `enterprise` (works for the business) · `staff` (Wouchh person assigned to this business) |
+| employee_kind           | VARCHAR(30) | NOT NULL, DEFAULT 'enterprise'                | `enterprise` (works for the business) · `staff` (Wouchh person assigned to this business) |
 | status                | VARCHAR(30) | NOT NULL, DEFAULT 'invited'                 | `invited` · `active` · `suspended`                             |
-| invited_by_member_id  | BIGINT      | FK → enterprise_members(id)                        | Who added them                                                 |
+| invited_by_employee_id  | BIGINT      | FK → enterprise_employees(id)                        | Who added them                                                 |
 | invited_at            | TIMESTAMPTZ |                                             |                                                                |
-| joined_at             | TIMESTAMPTZ |                                             | When the membership became active                              |
+| joined_at             | TIMESTAMPTZ |                                             | When the employment became active                              |
 | last_active_at        | TIMESTAMPTZ |                                             | Last activity **in this business**                             |
 | is_deleted            | BOOLEAN     | NOT NULL, DEFAULT false                     |                                                                |
 | created_at            | TIMESTAMPTZ | NOT NULL, DEFAULT now()                     |                                                                |
 | updated_at            | TIMESTAMPTZ | NOT NULL, DEFAULT now()                     |                                                                |
 
 ```sql
--- one membership per person per business
-CREATE UNIQUE INDEX enterprise_members_enterprise_identity_uniq ON enterprise_members (enterprise_id, identity_id)
+-- one employment per person per business
+CREATE UNIQUE INDEX enterprise_employees_enterprise_identity_uniq ON enterprise_employees (enterprise_id, identity_id)
   WHERE is_deleted = false;
 -- "which businesses does this person belong to" — the query right after password verification
-CREATE INDEX enterprise_members_identity_idx ON enterprise_members (identity_id) WHERE is_deleted = false;
--- required so member_roles can composite-FK against it (see §8)
-CREATE UNIQUE INDEX enterprise_members_id_enterprise_uniq ON enterprise_members (id, enterprise_id);
+CREATE INDEX enterprise_employees_identity_idx ON enterprise_employees (identity_id) WHERE is_deleted = false;
+-- required so employee_roles can composite-FK against it (see §8)
+CREATE UNIQUE INDEX enterprise_employees_id_enterprise_uniq ON enterprise_employees (id, enterprise_id);
 ```
 
 **Indexes:** `ref_id` (unique), `enterprise_id`.
 
-`member_kind = 'staff'` is how a Wouchh person scoped to specific businesses is represented: they reuse the entire membership and permission path, so there is **one** place where tenant scoping is enforced rather than two. There is deliberately **no `role` column** — roles live in `member_roles`, so "what can this person do" has exactly one answer.
+`employee_kind = 'staff'` is how a Wouchh person scoped to specific businesses is represented: they reuse the entire employment and permission path, so there is **one** place where tenant scoping is enforced rather than two. There is deliberately **no `role` column** — roles live in `employee_roles`, so "what can this person do" has exactly one answer.
 
 `(enterprise_id, identity_id)` also replaces per-business email uniqueness, and is stronger: an email cannot appear twice in a business because it cannot appear twice at all.
 
 ## 4. `staff_members`
 
-Wouchh's own people. Separate from `enterprise_members` because platform-wide access cannot be expressed as a list of memberships — new businesses sign up continuously and would each need a backfill.
+Wouchh's own people. Separate from `enterprise_employees` because platform-wide access cannot be expressed as a list of employments — new businesses sign up continuously and would each need a backfill.
 
 | Column              | Type        | Constraints                                 | Notes                                                        |
 | ------------------- | ----------- | ------------------------------------------- | ------------------------------------------------------------ |
@@ -352,9 +352,9 @@ CREATE UNIQUE INDEX staff_members_identity_uniq ON staff_members (identity_id) W
 
 | Who | How it is represented |
 | --- | --------------------- |
-| Wouchh super admin — all businesses | `staff_members` row with `has_all_enterprise_access = true`. No `enterprise_members` rows needed |
-| Wouchh person on one or several businesses | `staff_members` row with `has_all_enterprise_access = false`, plus one `enterprise_members` row per assigned business with `member_kind = 'staff'` |
-| Business person | `enterprise_members` row with `member_kind = 'enterprise'`. No `staff_members` row |
+| Wouchh super admin — all businesses | `staff_members` row with `has_all_enterprise_access = true`. No `enterprise_employees` rows needed |
+| Wouchh person on one or several businesses | `staff_members` row with `has_all_enterprise_access = false`, plus one `enterprise_employees` row per assigned business with `employee_kind = 'staff'` |
+| Business person | `enterprise_employees` row with `employee_kind = 'enterprise'`. No `staff_members` row |
 
 Staff **roles and permissions** come from the same `roles` / `permissions` tables, using `roles.scope = 'staff'` (§5), so there is one permission engine rather than two.
 
@@ -382,7 +382,7 @@ Gate 1 is commercial — what the enterprise bought or was given. Gate 2 is stru
 | id          | BIGSERIAL    | PK                                          |                                                              |
 | ref_id      | UUID         | UNIQUE, NOT NULL, DEFAULT gen_random_uuid() | Public identifier                                            |
 | enterprise_id      | BIGINT       | FK → enterprises(id)                      | **NULL = a Wouchh-scoped or template role**; set = owned by that business |
-| scope       | VARCHAR(30)  | NOT NULL, DEFAULT 'enterprise'              | `enterprise` (assignable to `enterprise_members`) · `staff` (assignable to `staff_members`) |
+| scope       | VARCHAR(30)  | NOT NULL, DEFAULT 'enterprise'              | `enterprise` (assignable to `enterprise_employees`) · `staff` (assignable to `staff_members`) |
 | name        | VARCHAR(50)  | NOT NULL                                    | `owner`, `manager`, `agent`, `viewer`, `support`, `ops`       |
 | description | VARCHAR(255) |                                             |                                                              |
 | is_system   | BOOLEAN      | NOT NULL, DEFAULT false                     | Seeded by us; cannot be edited or deleted by a business       |
@@ -399,11 +399,11 @@ CREATE UNIQUE INDEX roles_enterprise_name_uniq ON roles (enterprise_id, name)
 -- A separate index is required because NULL enterprise_id values do not collide in the index above.
 CREATE UNIQUE INDEX roles_global_name_uniq ON roles (name)
   WHERE is_deleted = false AND enterprise_id IS NULL;
--- required so member_roles can composite-FK against it (see §8)
+-- required so employee_roles can composite-FK against it (see §8)
 CREATE UNIQUE INDEX roles_id_enterprise_uniq ON roles (id, enterprise_id);
 ```
 
-`scope` exists so a staff role can never be handed to a business member, or the reverse. Enforced in the service layer at assignment time; the `scope` value is checked against the target table.
+`scope` exists so a staff role can never be handed to a business employee, or the reverse. Enforced in the service layer at assignment time; the `scope` value is checked against the target table.
 
 ## 6. `permissions`
 
@@ -414,9 +414,9 @@ Global catalogue. Not tenant-scoped — the same action means the same thing eve
 | id          | BIGSERIAL    | PK                                          |                                                                   |
 | ref_id      | UUID         | UNIQUE, NOT NULL, DEFAULT gen_random_uuid() | Public identifier                                                 |
 | code        | VARCHAR(100) | NOT NULL                                    | `<resource>.<action>` — `conversations.reply`, `comments.delete`   |
-| resource    | VARCHAR(50)  | NOT NULL                                    | `conversations` · `comments` · `posts` · `channels` · `members`    |
+| resource    | VARCHAR(50)  | NOT NULL                                    | `conversations` · `comments` · `posts` · `channels` · `employees`    |
 | action      | VARCHAR(50)  | NOT NULL                                    | `view` · `reply` · `assign` · `delete` · `hide` · `connect` · `manage` |
-| feature_id  | BIGINT       | FK → features(id)                           | **The feature this action belongs to.** NULL = not feature-gated (e.g. `members.invite`) |
+| feature_id  | BIGINT       | FK → features(id)                           | **The feature this action belongs to.** NULL = not feature-gated (e.g. `employees.invite`) |
 | scope       | VARCHAR(30)  | NOT NULL, DEFAULT 'enterprise'              | `enterprise` · `staff` · `both`                                          |
 | description | VARCHAR(255) |                                             | Shown in the role editor UI                                       |
 | status      | VARCHAR(30)  | NOT NULL, DEFAULT 'active'                  | `active` · `deprecated`                                           |
@@ -453,52 +453,52 @@ CREATE INDEX role_permissions_role_idx ON role_permissions (role_id) WHERE is_de
 
 No tenant column is needed: permissions are global, and the role already carries the tenant.
 
-## 8. `member_roles`
+## 8. `employee_roles`
 
-Which roles a member holds. **This is the table where cross-tenant privilege escalation would happen, so it is prevented structurally.**
+Which roles a employee holds. **This is the table where cross-tenant privilege escalation would happen, so it is prevented structurally.**
 
 | Column               | Type        | Constraints                                       | Notes                                     |
 | -------------------- | ----------- | ------------------------------------------------- | ----------------------------------------- |
 | id                   | BIGSERIAL   | PK                                                |                                           |
 | enterprise_id               | BIGINT      | NOT NULL, FK → enterprises(id)                  | Denormalized so the composite FKs below work |
-| member_id            | BIGINT      | NOT NULL                                          | → `enterprise_members(id)` via the composite FK  |
+| employee_id            | BIGINT      | NOT NULL                                          | → `enterprise_employees(id)` via the composite FK  |
 | role_id              | BIGINT      | NOT NULL                                          | → `roles(id)` via the composite FK        |
-| granted_by_member_id | BIGINT      | FK → enterprise_members(id)                              | Who granted it                            |
+| granted_by_employee_id | BIGINT      | FK → enterprise_employees(id)                              | Who granted it                            |
 | granted_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()                           |                                           |
 | is_deleted           | BOOLEAN     | NOT NULL, DEFAULT false                           |                                           |
 | created_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()                           |                                           |
 | updated_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()                           |                                           |
 
 ```sql
-ALTER TABLE member_roles
-  ADD CONSTRAINT member_roles_member_fk
-      FOREIGN KEY (member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id),
-  ADD CONSTRAINT member_roles_role_fk
+ALTER TABLE employee_roles
+  ADD CONSTRAINT employee_roles_employee_fk
+      FOREIGN KEY (employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id),
+  ADD CONSTRAINT employee_roles_role_fk
       FOREIGN KEY (role_id,   enterprise_id) REFERENCES roles       (id, enterprise_id);
 
-CREATE UNIQUE INDEX member_roles_uniq ON member_roles (member_id, role_id) WHERE is_deleted = false;
-CREATE INDEX member_roles_member_idx ON member_roles (member_id) WHERE is_deleted = false;
+CREATE UNIQUE INDEX employee_roles_uniq ON employee_roles (employee_id, role_id) WHERE is_deleted = false;
+CREATE INDEX employee_roles_employee_idx ON employee_roles (employee_id) WHERE is_deleted = false;
 ```
 
-> **Why the composite foreign keys.** With plain `member_id` and `role_id` columns, nothing stops a row pairing business A's member with business B's role — a silent tenant-isolation breach, and the highest-severity bug class in a multi-tenant product. Routing both FKs **through `enterprise_id`** makes the mismatch unrepresentable: the database rejects it. This is why `enterprise_members` and `roles` each carry the extra `UNIQUE (id, enterprise_id)` index — a composite FK requires a unique constraint on exactly those columns in the parent.
+> **Why the composite foreign keys.** With plain `employee_id` and `role_id` columns, nothing stops a row pairing business A's employee with business B's role — a silent tenant-isolation breach, and the highest-severity bug class in a multi-tenant product. Routing both FKs **through `enterprise_id`** makes the mismatch unrepresentable: the database rejects it. This is why `enterprise_employees` and `roles` each carry the extra `UNIQUE (id, enterprise_id)` index — a composite FK requires a unique constraint on exactly those columns in the parent.
 >
-> Note the interaction with Wouchh-scoped roles: those have `enterprise_id IS NULL` and therefore **cannot** be assigned through `member_roles` at all, which is the correct outcome — staff privileges must not arrive through a business membership. Staff role assignment is a separate, narrower path (see §5 `scope`).
+> Note the interaction with Wouchh-scoped roles: those have `enterprise_id IS NULL` and therefore **cannot** be assigned through `employee_roles` at all, which is the correct outcome — staff privileges must not arrive through a business employment. Staff role assignment is a separate, narrower path (see §5 `scope`).
 
 ### Effective access resolution
 
 One query answers "may this person do this thing in this business", and it is the only place the rule lives:
 
 ```sql
--- Gate 1 (business has the feature) AND Gate 2 (member's roles grant the action)
+-- Gate 1 (business has the feature) AND Gate 2 (employee's roles grant the action)
 SELECT EXISTS (
   SELECT 1
-  FROM   member_roles     mr
+  FROM   employee_roles     mr
   JOIN   role_permissions rp ON rp.role_id     = mr.role_id     AND rp.is_deleted = false
   JOIN   permissions      p  ON p.id           = rp.permission_id AND p.is_deleted = false
                                                                  AND p.status = 'active'
   LEFT JOIN enterprise_features  ef ON ef.feature_id  = p.feature_id   AND ef.enterprise_id = mr.enterprise_id
                                                                  AND ef.is_deleted = false
-  WHERE  mr.member_id  = $1
+  WHERE  mr.employee_id  = $1
     AND  mr.enterprise_id     = $2
     AND  mr.is_deleted = false
     AND  p.code        = $3
@@ -518,8 +518,8 @@ Rules that go with it:
 
 | Role | Scope | Grants |
 | ---- | ----- | ------ |
-| `owner`   | enterprise | Everything within the enterprise, including billing and member management |
-| `manager` | enterprise | All feature actions plus member management; no billing |
+| `owner`   | enterprise | Everything within the enterprise, including billing and employee management |
+| `manager` | enterprise | All feature actions plus employee management; no billing |
 | `agent`   | enterprise | Reply, assign, hide within granted features; no configuration |
 | `viewer`  | enterprise | `*.view` only |
 | `support` | staff | Read-only across assigned businesses, plus reply where escalated |
@@ -527,7 +527,7 @@ Rules that go with it:
 
 `is_system = true` on all six, so a business cannot delete or redefine them; a business may create additional roles of its own.
 
-The four enterprise-scoped rows are **templates** (`enterprise_id` NULL) and are never assigned directly — `member_roles`' composite FK makes that impossible by construction (§8). Enterprise creation **copies** them into the new enterprise as its own `is_system` rows, together with their `role_permissions`, in the signup transaction (§11). The two staff roles stay NULL-scoped and are granted through the separate staff path. Template edits apply to future enterprises only; changing an existing enterprise's system roles is a deliberate migration, not a template side effect.
+The four enterprise-scoped rows are **templates** (`enterprise_id` NULL) and are never assigned directly — `employee_roles`' composite FK makes that impossible by construction (§8). Enterprise creation **copies** them into the new enterprise as its own `is_system` rows, together with their `role_permissions`, in the signup transaction (§11). The two staff roles stay NULL-scoped and are granted through the separate staff path. Template edits apply to future enterprises only; changing an existing enterprise's system roles is a deliberate migration, not a template side effect.
 
 ---
 
@@ -565,7 +565,7 @@ Which features a business has, and where each one is in its lifecycle.
 | feature_id      | BIGINT       | NOT NULL, FK → features(id)                 |                                                      |
 | config          | JSONB        | NOT NULL, DEFAULT '{}'                      | Per-business limits and settings for this feature    |
 | status          | VARCHAR(30)  | NOT NULL, DEFAULT 'access_requested'        | **The single source of truth** — see below           |
-| requested_by_member_id | BIGINT | FK → enterprise_members(id)                        | Who asked (NULL = we provisioned it)                 |
+| requested_by_employee_id | BIGINT | FK → enterprise_employees(id)                        | Who asked (NULL = we provisioned it)                 |
 | requested_at    | TIMESTAMPTZ  |                                             |                                                      |
 | decided_by_staff_id | BIGINT   | FK → staff_members(id)                      | Which Wouchh person approved or declined             |
 | decided_at      | TIMESTAMPTZ  |                                             |                                                      |
@@ -615,7 +615,7 @@ One row per signed-in device, so a session can be revoked server-side. The acces
 
 Named `sessions` rather than `refresh_tokens` because the row **is** the session — the refresh token is merely how the client proves it holds one. That also leaves the obvious home for future session metadata (last seen, revocation reason, trusted-device state) instead of a table whose name only describes one column.
 
-Keyed on `identities`, not `enterprise_members`: a session belongs to a **person**, and the active business is a claim in the short-lived access token. Switching business is therefore a token exchange, not a re-login.
+Keyed on `identities`, not `enterprise_employees`: a session belongs to a **person**, and the active business is a claim in the short-lived access token. Switching business is therefore a token exchange, not a re-login.
 
 | Column      | Type         | Constraints                                     | Notes                                        |
 | ----------- | ------------ | ----------------------------------------------- | -------------------------------------------- |
@@ -640,11 +640,11 @@ There is deliberately **no `status` column** — the same rule as §12 in the ot
 Signup           { email? , mobile? , password , business details }
   ├─ require at least one of email / mobile
   ├─ normalize both (see Input normalization)
-  ├─ INSERT enterprises → INSERT identities → INSERT enterprise_members (member_kind='enterprise')
+  ├─ INSERT enterprises → INSERT identities → INSERT enterprise_employees (employee_kind='enterprise')
   ├─ instantiate the enterprise's system roles: copy the four enterprise-scoped templates
   │    (owner / manager / agent / viewer — enterprise_id NULL) into roles rows owned by the
   │    new enterprise (is_system = true), with their role_permissions — same transaction
-  ├─ grant the new enterprise's own 'owner' role via member_roles
+  ├─ grant the new enterprise's own 'owner' role via employee_roles
   └─ send verification to whichever credential(s) were provided
 
 Login            { emailOrMobile , password }
@@ -652,23 +652,23 @@ Login            { emailOrMobile , password }
   ├─ email  → SELECT ... WHERE lower(email) = $1 AND is_deleted = false
   │  mobile → SELECT ... WHERE mobile       = $1 AND is_deleted = false      ← one index probe either way
   ├─ verify password against identities.password_hash                        ← exactly one hash comparison
-  ├─ load active memberships from enterprise_members WHERE identity_id = $1
+  ├─ load active employments from enterprise_employees WHERE identity_id = $1
   │     ├─ 0 → 403 (account exists, no active business)
   │     ├─ 1 → continue with that business
   │     └─ N → issue a short-lived selection token; client picks, then exchanges it
-  ├─ access token  → 15 min, carries identityId + enterpriseId + memberId — never roles:
+  ├─ access token  → 15 min, carries identityId + enterpriseId + employeeId — never roles:
   │     permissions are resolved per request, so a role change applies immediately
   ├─ refresh token → 7 days, httpOnly cookie; SHA-256 hash stored as a sessions row
   └─ staff with has_all_enterprise_access get a token with no enterpriseId until they choose a business
 
 Refresh          POST /auth/refresh
   ├─ hash the cookie value → look up an unrevoked, unexpired sessions row
-  ├─ re-check the membership is still active for the claimed business
+  ├─ re-check the employment is still active for the claimed business
   │     └─ removed or suspended → 403, even though the refresh token is valid
   └─ issue a new access token (no rotation)
 
 Switch business  POST /auth/switch-enterprise
-  └─ same refresh token, verify an active membership, issue a token scoped to the new business
+  └─ same refresh token, verify an active employment, issue a token scoped to the new business
 
 Logout           set revoked_at, clear the cookie
 ```
@@ -677,7 +677,7 @@ Logout           set revoked_at, clear the cookie
 
 - **No enumeration.** A wrong credential and a wrong password return the same error with the same timing. The list of businesses is returned only *after* the password verifies.
 - **Throttling keys on the normalized credential** and on the source IP. `failed_login_count` and `locked_until` on `identities` back this.
-- **Every refresh re-checks membership**, so removing someone takes effect within the access-token lifetime rather than whenever their session happens to end.
+- **Every refresh re-checks employment**, so removing someone takes effect within the access-token lifetime rather than whenever their session happens to end.
 - **Authorization always uses the token's `enterpriseId`**, never a client-supplied one.
 
 > **No refresh-token rotation** is a deliberate simplification with a real cost: without rotation, a stolen refresh token being replayed is undetectable, because the thief and the legitimate holder present the same value. Revocation is the only defence and it requires someone to notice. Worth revisiting before there is meaningful customer data.
@@ -686,7 +686,7 @@ Logout           set revoked_at, clear the cookie
 
 ## 12. `verifications`
 
-**Every verification challenge in the product lives here, of any type.** A member's or staff member's first login, verifying an email or mobile, password reset, an invite link — and, when that flow arrives, verifying an **end customer's** mobile or email. `verification_kind` is the discriminator, and nothing about the table assumes a six-digit code.
+**Every verification challenge in the product lives here, of any type.** A employee's or staff employee's first login, verifying an email or mobile, password reset, an invite link — and, when that flow arrives, verifying an **end customer's** mobile or email. `verification_kind` is the discriminator, and nothing about the table assumes a six-digit code.
 
 **One table, one verifier.** Verification logic is small but every part of it is security-critical: hashing, expiry, attempt limiting, resend throttling, single use, destination binding. Splitting it per flow means several implementations, and the second one is where someone forgets attempt limiting. So both axes become columns rather than tables: **`verification_kind`** for what is being verified, and a polymorphic **subject** — an `identities` row today, a `customers` row when that flow arrives.
 
@@ -701,7 +701,7 @@ The stored value is `secret_hash`, not `code_hash`, because it is not always a c
 | enterprise_id           | BIGINT       | FK → enterprises(id)                        | **Required** for a customer subject; context-only for an identity (which enterprise's login triggered it) |
 | customer_id             | BIGINT       |                                             | Set iff `subject_kind = 'customer'` → `customers(id, enterprise_id)` composite FK |
 | customer_identifier_id  | BIGINT       |                                             | The identifier being verified → `customer_identifiers(id, enterprise_id)` composite FK |
-| verification_kind       | VARCHAR(40)  | NOT NULL                                    | `first_login` · `email_verification` · `mobile_verification` · `password_reset` · `member_invite` · `identifier_change` |
+| verification_kind       | VARCHAR(40)  | NOT NULL                                    | `first_login` · `email_verification` · `mobile_verification` · `password_reset` · `employee_invite` · `identifier_change` |
 | delivery_channel        | VARCHAR(20)  | NOT NULL                                    | `email` · `sms` · `whatsapp`                                  |
 | destination             | VARCHAR(320) | NOT NULL                                    | The **normalized** address actually sent to — lower-cased email or E.164 |
 | secret_hash               | VARCHAR(128) | NOT NULL                                    | HMAC-SHA256 of the code under a server-side pepper. Never the code itself |
@@ -731,7 +731,7 @@ Each kind sets its own secret shape, expiry, and attempt budget — all configur
 | `mobile_verification` | identity | 6-digit code | ~10 min | 5 | Stamps `identities.mobile_verified_at` |
 | `password_reset` | identity | high-entropy token | ~30 min | 3 | A link, not a code — a guessable reset is an account takeover |
 | `identifier_change` | identity | 6-digit code | ~10 min | 5 | Sent to the **new** address before it replaces the old one |
-| `member_invite` | identity | high-entropy token | days | 3 | The invite link. Long-lived by nature, so entropy replaces the short window. Drives `invited → active` |
+| `employee_invite` | identity | high-entropy token | days | 3 | The invite link. Long-lived by nature, so entropy replaces the short window. Drives `invited → active` |
 | `customer_mobile_verification` | customer | 6-digit code | ~10 min | 5 | Stamps `customer_identifiers.verification_status` |
 | `customer_email_verification` | customer | 6-digit code | ~24 h | 5 | The same, per enterprise |
 
@@ -819,7 +819,7 @@ POST /auth/verify  { verificationRefId, code }
   ├─ wrong code  → attempt_count += 1, 401. Exhausted → the code is dead
   └─ correct     → consumed_at = now()
        ├─ stamp identities.email_verified_at / mobile_verified_at
-       ├─ enterprise_members.status: 'invited' → 'active'   (for an invite)
+       ├─ enterprise_employees.status: 'invited' → 'active'   (for an invite)
        └─ issue the session and the refresh token            (§11)
 ```
 
@@ -852,7 +852,7 @@ One OAuth grant per provider per business. Connecting Meta creates **one** row h
 | reauth_required       | BOOLEAN      | NOT NULL, DEFAULT false                     | What the UI reads to show a Reconnect prompt                 |
 | reauth_notified_at    | TIMESTAMPTZ  |                                             | Stops the notifier re-emailing every run                     |
 | granted_scopes        | TEXT         |                                             | Scopes the provider actually granted, comma-separated        |
-| connected_by_member_id| BIGINT       | FK → enterprise_members(id)                        | Who connected it                                             |
+| connected_by_employee_id| BIGINT       | FK → enterprise_employees(id)                        | Who connected it                                             |
 | status                | VARCHAR(30)  | NOT NULL, DEFAULT 'active'                  | `active` · `expired` · `revoked`                              |
 | is_deleted            | BOOLEAN      | NOT NULL, DEFAULT false                     |                                                              |
 | created_at            | TIMESTAMPTZ  | NOT NULL, DEFAULT now()                     |                                                              |
@@ -1057,7 +1057,7 @@ The same email is stored once per enterprise that knows the customer. At a few h
 
 Scalar settings that the platform reports or an agent sets — `locale`, `timezone`, `preferred_language` — are columns on `customers` (§16), which covers V1.
 
-A separate `customer_preferences` table is **not built yet**. When it is needed, the shape it needs is a key–value row per enterprise per customer with consent-grade audit fields (`source`, `set_by_member_id`, `effective_at`, `revoked_at`), superseding by inserting a new row rather than updating in place so consent history survives. Marketing and messaging keys must default to **absent means not consented**. Nothing in §16–17 has to change to add it.
+A separate `customer_preferences` table is **not built yet**. When it is needed, the shape it needs is a key–value row per enterprise per customer with consent-grade audit fields (`source`, `set_by_employee_id`, `effective_at`, `revoked_at`), superseding by inserting a new row rather than updating in place so consent history survives. Marketing and messaging keys must default to **absent means not consented**. Nothing in §16–17 has to change to add it.
 
 ### Naming note
 
@@ -1086,7 +1086,7 @@ One row per human per enterprise. The enterprise's record of a customer.
 | tags                   | JSONB        | NOT NULL, DEFAULT '[]'                      | Labels for filtering and automation                          |
 | metadata               | JSONB        | NOT NULL, DEFAULT '{}'                      | Platform extras                                              |
 | blocked_at             | TIMESTAMPTZ  |                                             |                                                             |
-| blocked_by_member_id   | BIGINT       | FK → enterprise_members(id)                        |                                                             |
+| blocked_by_employee_id   | BIGINT       | FK → enterprise_employees(id)                        |                                                             |
 | block_reason           | VARCHAR(255) |                                             |                                                             |
 | conversation_count     | INTEGER      | NOT NULL, DEFAULT 0                         | Denormalized for the directory                               |
 | merged_into_customer_id| BIGINT       |                                             | Set when merged into another record; FK composite with enterprise_id |
@@ -1128,7 +1128,7 @@ ALTER TABLE customers
 
 `last_channel_id` is denormalized onto the customer so the inbox list can render a badge and pick a default reply target without joining §18 on every row. It is a pointer, not a count, and is written by the same projector that maintains the engagement rows.
 
-`blocked_at` / `blocked_by_member_id` / `block_reason` are **audit trail, not state** — the same rule that removed `enterprise_features.is_enabled` (§10). Blocking sets `status = 'blocked'` and stamps them; unblocking returns `status` to `'active'` and leaves them as the record of the last block. There is deliberately no `is_blocked` boolean — it would be a second answer to the same question.
+`blocked_at` / `blocked_by_employee_id` / `block_reason` are **audit trail, not state** — the same rule that removed `enterprise_features.is_enabled` (§10). Blocking sets `status = 'blocked'` and stamps them; unblocking returns `status` to `'active'` and leaves them as the record of the last block. There is deliberately no `is_blocked` boolean — it would be a second answer to the same question.
 
 `merged_into_customer_id` is the forward seam for identity resolution, a merge points the losing row at the survivor, moves its identifiers across, and sets `status = 'merged'`. Reads follow the pointer once; writes always land on the survivor. Nothing sets it in V1, and adding merging later needs no restructuring.
 
@@ -1450,7 +1450,7 @@ Child tables reference these two through **both** columns:
 FOREIGN KEY (customer_id, enterprise_id) REFERENCES customers (id, enterprise_id)
 ```
 
-With a plain `customer_id`, nothing stops a `conversations` row pointing at another enterprise's customer — a silent cross-tenant leak, and the worst bug class in this product. Routing the reference through `enterprise_id` makes the mismatch **unrepresentable**: the database rejects it. Same technique as `member_roles` (§8), at the cost of one extra unique index per parent table. The pattern extends upward through the connection tables: `channels` and `provider_connections` each carry `UNIQUE (id, enterprise_id)`, so `conversations`, `posts`, `sync_jobs`, `customer_engagements`, and the customer channel pointers all route their channel references through `enterprise_id` too — a channel reference that crosses tenants is exactly as unrepresentable as a customer one. Where a composite FK is declared it **replaces** the single-column FK shown in the column table: one constraint per reference, never two.
+With a plain `customer_id`, nothing stops a `conversations` row pointing at another enterprise's customer — a silent cross-tenant leak, and the worst bug class in this product. Routing the reference through `enterprise_id` makes the mismatch **unrepresentable**: the database rejects it. Same technique as `employee_roles` (§8), at the cost of one extra unique index per parent table. The pattern extends upward through the connection tables: `channels` and `provider_connections` each carry `UNIQUE (id, enterprise_id)`, so `conversations`, `posts`, `sync_jobs`, `customer_engagements`, and the customer channel pointers all route their channel references through `enterprise_id` too — a channel reference that crosses tenants is exactly as unrepresentable as a customer one. Where a composite FK is declared it **replaces** the single-column FK shown in the column table: one constraint per reference, never two.
 
 ### Isolation rules
 
@@ -1502,7 +1502,7 @@ Mirrored platform posts. V1 is read-only — the business sees their posts and t
 | reach_count          | BIGINT       | NOT NULL, DEFAULT 0                         | Last synced                                                 |
 | metrics              | JSONB        | NOT NULL, DEFAULT '{}'                      | Platform-specific metrics that have no column                |
 | metrics_synced_at    | TIMESTAMPTZ  |                                             | When the counts above were last refreshed                    |
-| authored_by_member_id| BIGINT       | FK → enterprise_members(id)                        | Set only when we published it — NULL for mirrored posts       |
+| authored_by_employee_id| BIGINT       | FK → enterprise_employees(id)                        | Set only when we published it — NULL for mirrored posts       |
 | published_at         | TIMESTAMPTZ  |                                             | When the platform says it went live                          |
 | platform_deleted_at  | TIMESTAMPTZ  |                                             | Detected as removed at the platform                          |
 | status               | VARCHAR(30)  | NOT NULL, DEFAULT 'published'               | `published` · `platform_deleted` · `sync_failed`              |
@@ -1552,7 +1552,7 @@ A thread. A DM conversation, or the comment thread under one post. Works the sam
 | context_metadata      | JSONB        | NOT NULL, DEFAULT '{}'                      | Details of a non-post context                                    |
 | tags                  | JSONB        | NOT NULL, DEFAULT '[]'                      | Labels for filtering and workflows                                |
 | metadata              | JSONB        | NOT NULL, DEFAULT '{}'                      | Extra thread-level data                                          |
-| assigned_to_member_id | BIGINT       | FK → enterprise_members(id)                        | Team member handling it                                          |
+| assigned_to_employee_id | BIGINT       | FK → enterprise_employees(id)                        | Team employee handling it                                          |
 | assigned_at           | TIMESTAMPTZ  |                                             |                                                                  |
 | message_count         | INTEGER      | NOT NULL, DEFAULT 0                         | Denormalized for the list view                                    |
 | unread_count          | INTEGER      | NOT NULL, DEFAULT 0                         | Unread inbound messages                                          |
@@ -1576,7 +1576,7 @@ CREATE INDEX conversations_inbox_idx
   ON conversations (enterprise_id, status, last_message_at DESC, id) WHERE is_deleted = false;
 -- "assigned to me"
 CREATE INDEX conversations_assignee_idx
-  ON conversations (assigned_to_member_id, status, last_message_at DESC) WHERE is_deleted = false;
+  ON conversations (assigned_to_employee_id, status, last_message_at DESC) WHERE is_deleted = false;
 -- comment threads under a post
 CREATE INDEX conversations_post_idx ON conversations (post_id, last_message_at DESC) WHERE is_deleted = false;
 ```
@@ -1620,7 +1620,7 @@ This is also where the domain layer links to the transport ledger.
 | enterprise_id               | BIGINT       | NOT NULL, FK → enterprises(id)                   | Denormalized                                             |
 | direction            | VARCHAR(10)  | NOT NULL                                           | `inbound` · `outbound`                                   |
 | customer_id          | BIGINT       |                                                    | Who sent it, for inbound → `customers(id, enterprise_id)` composite FK |
-| sent_by_member_id    | BIGINT       | FK → enterprise_members(id)                               | Which team member sent it, for outbound                  |
+| sent_by_employee_id    | BIGINT       | FK → enterprise_employees(id)                               | Which team employee sent it, for outbound                  |
 | parent_message_id    | BIGINT       | FK → messages(id)                                  | Reply chains of any depth                                |
 | inbound_event_id     | BIGINT       | FK → inbound_events(id)                            | **The ledger event this was projected from**              |
 | outbound_event_id    | BIGINT       | FK → outbound_events(id)                           | **The ledger row delivering this**                        |
@@ -1669,7 +1669,7 @@ ALTER TABLE messages
       REFERENCES conversations (id, enterprise_id) ON DELETE CASCADE;
 ```
 
-**Indexes:** `ref_id` (unique), `customer_id`, `sent_by_member_id`, `parent_message_id`, `inbound_event_id`, plus the four above. `customer_id` carries the same composite foreign key through `enterprise_id` as `conversations`.
+**Indexes:** `ref_id` (unique), `customer_id`, `sent_by_employee_id`, `parent_message_id`, `inbound_event_id`, plus the four above. `customer_id` carries the same composite foreign key through `enterprise_id` as `conversations`.
 
 The platform key is scoped to the **enterprise, not the conversation**. A comment id is unique platform-wide, and scoping to `conversation_id` would let the same comment exist twice if a backfill and a webhook resolved it into different threads — exactly the case the constraint exists to catch. Scoping to the enterprise catches it wherever it lands.
 
@@ -1754,7 +1754,7 @@ Human-workflow fields belong to the domain layer. A queue message has no avatar 
 | assignment, tags, starring                | `conversations` (§20)                             |
 | thread grouping, reply parentage          | `conversations`, `messages.parent_message_id`      |
 | subject, body                             | `messages.body`; the raw text stays in `payload`   |
-| who sent it                               | `messages.sent_by_member_id` (§21)                |
+| who sent it                               | `messages.sent_by_employee_id` (§21)                |
 | `ref_id`                               | nothing — the ledger is internal and never addressed by a client, and a UUID plus its unique index on the highest-volume tables is pure write cost |
 
 Everything a projector needs is in `payload`: the raw body exactly as received. The ledger keeps only what *transport* needs — routing, dedup, ordering, retry, correlation.
@@ -1952,9 +1952,9 @@ Append-only activity log. Every meaningful action gets a row.
 | id                   | BIGSERIAL   | PK                          |                                                                          |
 | enterprise_id               | BIGINT      | FK → enterprises(id)      | NULL for platform-level events                                           |
 | actor_identity_id    | BIGINT      | FK → identities(id)         | The human who acted (NULL = system / cron / webhook)                     |
-| actor_member_id      | BIGINT      | FK → enterprise_members(id)        | The membership they acted through, when applicable                        |
+| actor_employee_id      | BIGINT      | FK → enterprise_employees(id)        | The employment they acted through, when applicable                        |
 | actor_staff_id       | BIGINT      | FK → staff_members(id)      | Set when a Wouchh person acted                                            |
-| actor_kind           | VARCHAR(30) | NOT NULL                    | `enterprise_member` · `staff` · `system`                                     |
+| actor_kind           | VARCHAR(30) | NOT NULL                    | `employee` · `staff` · `system`                                     |
 | is_impersonated      | BOOLEAN     | NOT NULL, DEFAULT false     | Wouchh staff acting inside a business's account                            |
 | action               | VARCHAR(50) | NOT NULL                    | `created` · `updated` · `deleted` · `login` · `connected` · `replied`      |
 | entity_type          | VARCHAR(50) | NOT NULL                    | `enterprise` · `channel` · `enterprise_feature` · `conversation` · `message`    |
@@ -1976,7 +1976,7 @@ CREATE INDEX audit_logs_staff_access_idx ON audit_logs (enterprise_id, actor_sta
   WHERE actor_staff_id IS NOT NULL;
 ```
 
-The actor is split across three columns because "who did this" has three genuinely different answers in this product, and collapsing them loses the distinction that matters most: **a Wouchh employee acting on a customer's data must be distinguishable from the customer's own staff doing the same thing.** `actor_identity_id` is the human, `actor_member_id` the business context, `actor_staff_id` the platform context, and `is_impersonated` marks the case a customer is entitled to ask about.
+The actor is split across three columns because "who did this" has three genuinely different answers in this product, and collapsing them loses the distinction that matters most: **a Wouchh employee acting on a customer's data must be distinguishable from the customer's own staff doing the same thing.** `actor_identity_id` is the human, `actor_employee_id` the business context, `actor_staff_id` the platform context, and `is_impersonated` marks the case a customer is entitled to ask about.
 
 > **Immutability, and why `updated_at` and `is_deleted` stay.** Append-only by policy: the service layer only ever `INSERT`s.
 >
@@ -1990,9 +1990,9 @@ The actor is split across three columns because "who did this" has three genuine
 
 ## V1 scope
 
-**In:** enterprise signup (email and/or mobile) · login with either credential · OTP verification on first login and for credential changes · multi-enterprise membership · Wouchh staff with platform-wide or scoped reach · roles and permissions at feature + action level · per-business feature activation with a request/approve flow · Meta connection yielding Facebook Page and Instagram channels · initial backfill and scheduled refresh · unified DM inbox · comment threads on posts, with reply, hide, and delete · post listing with engagement snapshots · customer records with multiple identifiers, per-enterprise verification, and per-platform engagement tracking · assignment and read state · full transport ledger · audit trail including staff access.
+**In:** enterprise signup (email and/or mobile) · login with either credential · OTP verification on first login and for credential changes · multi-enterprise employment · Wouchh staff with platform-wide or scoped reach · roles and permissions at feature + action level · per-business feature activation with a request/approve flow · Meta connection yielding Facebook Page and Instagram channels · initial backfill and scheduled refresh · unified DM inbox · comment threads on posts, with reply, hide, and delete · post listing with engagement snapshots · customer records with multiple identifiers, per-enterprise verification, and per-platform engagement tracking · assignment and read state · full transport ledger · audit trail including staff access.
 
-**Explicitly out, and unblocked by this schema:** publishing and scheduling posts (`posts.authored_by_member_id` and `media` are already shaped for it) · identity resolution / merging within an enterprise (`customers.merged_into_customer_id` is the seam) · canned replies and automation rules · analytics beyond stored snapshots · billing · WhatsApp, TikTok, LinkedIn, Zendesk (the provider/platform split takes them without schema change).
+**Explicitly out, and unblocked by this schema:** publishing and scheduling posts (`posts.authored_by_employee_id` and `media` are already shaped for it) · identity resolution / merging within an enterprise (`customers.merged_into_customer_id` is the seam) · canned replies and automation rules · analytics beyond stored snapshots · billing · WhatsApp, TikTok, LinkedIn, Zendesk (the provider/platform split takes them without schema change).
 
 ## Open items
 
@@ -2049,10 +2049,10 @@ The indexes in this document cover the paths that are already known: the inbox l
 
 ### 8. Smaller items
 
-- `role_permissions` and `member_roles` gained `is_deleted` for repository uniformity; confirm that revocation should be a soft delete rather than a hard one, since soft-deleted grants accumulate.
+- `role_permissions` and `employee_roles` gained `is_deleted` for repository uniformity; confirm that revocation should be a soft delete rather than a hard one, since soft-deleted grants accumulate.
 - `posts.media` as JSONB is right for a read-only mirror; revisit when publishing needs per-item upload state.
 - Refresh-token rotation is absent by decision; replay of a stolen token is therefore undetectable. Worth revisiting before there is meaningful customer data.
-- The `identities` ↔ invite flow: inviting someone who already has an identity must attach a new `enterprise_members` row rather than creating a second identity.
+- The `identities` ↔ invite flow: inviting someone who already has an identity must attach a new `enterprise_employees` row rather than creating a second identity.
 - **Invite links are a `verification_kind` on §12**, not a separate table — see the per-kind parameter table there. What still needs deciding is the invite *product* behaviour: whether an invite can be revoked before use, whether re-inviting supersedes or extends the existing one, and what the link lands on for someone who has no `identities` row yet.
 - **Verification configuration** — per-kind secret shape, expiry window, `max_attempts`, resend cooldown, per-destination hourly cap. All config, none hardcoded; the §12 table gives starting points.
 - **The HMAC pepper** for `verifications.secret_hash` needs the same secret-manager treatment as the token encryption key. Rotating it invalidates every live code — acceptable, but the rotation procedure must say so.
@@ -2063,19 +2063,19 @@ The indexes in this document cover the paths that are already known: the inbox l
 
 ```mermaid
 erDiagram
-    identities ||--o{ enterprise_members : "member_of"
+    identities ||--o{ enterprise_employees : "works_at"
     identities ||--o{ staff_members : "employed_as"
     identities ||--o{ sessions : "signed_in"
 
-    enterprises ||--o{ enterprise_members : "employs"
+    enterprises ||--o{ enterprise_employees : "employs"
     enterprises ||--o{ roles : "defines"
     enterprises ||--o{ enterprise_features : "activates"
     enterprises ||--o{ provider_connections : "connects"
     enterprises ||--o{ customers : "serves"
     enterprises ||--o{ audit_logs : "recorded_in"
 
-    enterprise_members ||--o{ member_roles : "holds"
-    roles ||--o{ member_roles : "granted_by"
+    enterprise_employees ||--o{ employee_roles : "holds"
+    roles ||--o{ employee_roles : "granted_by"
     roles ||--o{ role_permissions : "grants"
     permissions ||--o{ role_permissions : "granted_via"
     features ||--o{ permissions : "gates"
@@ -2099,8 +2099,8 @@ erDiagram
     conversations ||--o{ messages : "contains"
     messages ||--o{ messages : "replies_to"
     messages ||--o{ message_attachments : "carries"
-    enterprise_members ||--o{ conversations : "assigned"
-    enterprise_members ||--o{ messages : "sent_by"
+    enterprise_employees ||--o{ conversations : "assigned"
+    enterprise_employees ||--o{ messages : "sent_by"
 
     identities ||--o{ verifications : "challenged_via"
     enterprises ||--o{ verifications : "scopes"
@@ -2134,12 +2134,12 @@ erDiagram
         varchar status
         boolean is_deleted
     }
-    enterprise_members {
+    enterprise_employees {
         bigserial id PK
         uuid ref_id UK
         bigint identity_id FK
         bigint enterprise_id FK
-        varchar member_kind
+        varchar employee_kind
         varchar status
         boolean is_deleted
     }
@@ -2174,10 +2174,10 @@ erDiagram
         bigint role_id FK
         bigint permission_id FK
     }
-    member_roles {
+    employee_roles {
         bigserial id PK
         bigint enterprise_id FK
-        bigint member_id FK
+        bigint employee_id FK
         bigint role_id FK
     }
     features {
@@ -2326,7 +2326,7 @@ erDiagram
         bigint post_id FK
         varchar conversation_kind
         varchar platform_thread_id
-        bigint assigned_to_member_id FK
+        bigint assigned_to_employee_id FK
         integer unread_count
         timestamptz last_message_at
         varchar status
@@ -2338,7 +2338,7 @@ erDiagram
         bigint enterprise_id FK
         varchar direction
         bigint customer_id FK
-        bigint sent_by_member_id FK
+        bigint sent_by_employee_id FK
         bigint parent_message_id FK
         bigint inbound_event_id FK
         bigint outbound_event_id FK
@@ -2391,7 +2391,7 @@ erDiagram
         bigserial id PK
         bigint enterprise_id FK
         bigint actor_identity_id FK
-        bigint actor_member_id FK
+        bigint actor_employee_id FK
         bigint actor_staff_id FK
         varchar actor_kind
         boolean is_impersonated

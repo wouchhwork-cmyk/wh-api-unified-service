@@ -50,7 +50,7 @@ export const ReplyResponseSchema = z.object({
 export const AssignRequestSchema = z
   .object({
     /** null unassigns. */
-    memberRefId: z.uuid().nullable(),
+    employeeRefId: z.uuid().nullable(),
   })
   .strict();
 

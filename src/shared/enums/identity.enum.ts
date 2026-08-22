@@ -9,7 +9,7 @@ export enum IdentityStatus {
 }
 
 /** schema.md §3 */
-export enum MemberStatus {
+export enum EmployeeStatus {
   Invited = 'invited',
   Active = 'active',
   Suspended = 'suspended',
@@ -44,7 +44,7 @@ export const ENTERPRISE_STATUS_TRANSITIONS: Readonly<
   [EnterpriseStatus.Suspended]: [EnterpriseStatus.Active],
 } as const;
 
-/** schema.md §5 — keeps a staff role from ever being handed to a business member. */
+/** schema.md §5 — keeps a staff role from ever being handed to a business employee. */
 export enum RoleScope {
   Enterprise = 'enterprise',
   Staff = 'staff',

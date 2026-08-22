@@ -27,7 +27,7 @@ export interface AccessTokenClaims {
   readonly typ: 'access';
   readonly identityId: number;
   readonly enterpriseId: number | null;
-  readonly memberId: number | null;
+  readonly employeeId: number | null;
   readonly staffId: number | null;
   readonly actorKind: ActorKind;
   readonly isImpersonated: boolean;
@@ -150,7 +150,7 @@ function isAccessTokenClaims(value: unknown): value is AccessTokenClaims {
     typeof claims['sub'] === 'string' &&
     typeof claims['identityId'] === 'number' &&
     isNumberOrNull(claims['enterpriseId']) &&
-    isNumberOrNull(claims['memberId']) &&
+    isNumberOrNull(claims['employeeId']) &&
     isNumberOrNull(claims['staffId']) &&
     typeof claims['actorKind'] === 'string' &&
     (Object.values(ActorKind) as string[]).includes(claims['actorKind']) &&

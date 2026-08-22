@@ -34,7 +34,7 @@ export interface EnterpriseListItem {
   readonly timezone: string;
   readonly createdAt: Date;
   readonly counts: {
-    readonly members: number;
+    readonly employees: number;
     readonly channels: number;
     readonly connections: number;
     readonly customers: number;
@@ -278,7 +278,7 @@ function toListItem(row: {
   country: string;
   timezone: string;
   createdAt: Date;
-  memberCount: number;
+  employeeCount: number;
   channelCount: number;
   connectionCount: number;
   customerCount: number;
@@ -298,7 +298,7 @@ function toListItem(row: {
     timezone: row.timezone,
     createdAt: row.createdAt,
     counts: {
-      members: row.memberCount,
+      employees: row.employeeCount,
       channels: row.channelCount,
       connections: row.connectionCount,
       customers: row.customerCount,

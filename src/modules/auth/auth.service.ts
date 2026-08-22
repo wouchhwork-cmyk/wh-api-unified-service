@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
-  EnterpriseMemberRepository,
-  type MembershipSummary,
-} from '@/database/repositories/enterprise-member.repository';
+  EnterpriseEmployeeRepository,
+  type EmploymentSummary,
+} from '@/database/repositories/enterprise-employee.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { IdentityRepository } from '@/database/repositories/identity.repository';
 import { SessionRepository } from '@/database/repositories/session.repository';
@@ -12,8 +12,9 @@ import { SecretHashService } from '@/shared/crypto';
 import {
   ActorKind,
   DeliveryChannel,
+  EmployeeStatus,
   IdentityStatus,
-  MemberKind,
+  EmployeeKind,
   VerificationKind,
   VerificationSubjectKind,
 } from '@/shared/enums';
@@ -24,9 +25,10 @@ import type { Identity } from '@/database/entities/identity.entity';
 import type {
   LoginRequest,
   LoginResponse,
-  Membership,
+  Employment,
 } from '@/shared/contracts/auth/login.contract';
 import { TokenService } from './token.service';
+import { TransactionManager } from '@/database/transaction';
 import { VerificationService, type PendingOtpDelivery } from './verification.service';
 
 export interface RequestMetadata {
@@ -54,13 +56,14 @@ export class AuthService {
 
   constructor(
     private readonly identities: IdentityRepository,
-    private readonly members: EnterpriseMemberRepository,
+    private readonly employees: EnterpriseEmployeeRepository,
     private readonly staff: StaffMemberRepository,
     private readonly enterprises: EnterpriseRepository,
     private readonly sessions: SessionRepository,
     private readonly hasher: SecretHashService,
     private readonly tokens: TokenService,
     private readonly verifications: VerificationService,
+    private readonly tx: TransactionManager,
     @InjectPinoLogger(AuthService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -141,8 +144,62 @@ export class AuthService {
 
   /**
    * Called after a first-login code verifies. Stamps the credential, activates
-   * any pending membership, and only then issues a session.
+   * any pending employment, and only then issues a session.
    */
+  /**
+   * Completes an invitation: the person proves the address AND chooses a password
+   * in one step, and is signed in.
+   *
+   * Both writes happen together, because "the code was accepted but the password
+   * was not set" leaves an account that can never be entered — the code is spent,
+   * and the password is still the random one nobody knows.
+   *
+   * Their employment moves invited -> active here and not before. An account that
+   * can act before the address is proven is an account somebody else can take by
+   * guessing a colleague's email.
+   */
+  async completeInvite(
+    identityId: number,
+    enterpriseId: number | null,
+    verifiedDestination: string,
+    newPassword: string,
+    meta: RequestMetadata,
+  ): Promise<LoginOutcome> {
+    const identity = await this.identities.findById(identityId);
+    if (!identity) throw new AppException(ErrorCode.AuthInvalidCredentials);
+
+    await this.tx.runInTransaction(async () => {
+      await this.identities.updatePasswordHash(
+        identity.id,
+        await this.hasher.hashPassword(newPassword),
+      );
+
+      // The column is chosen by matching the destination that was actually
+      // proven, so accepting an email invite can never mark a mobile verified.
+      if (identity.email !== null && identity.email === verifiedDestination) {
+        await this.identities.markCredentialVerified(identity.id, 'email');
+      } else if (identity.mobile !== null && identity.mobile === verifiedDestination) {
+        await this.identities.markCredentialVerified(identity.id, 'mobile');
+      }
+
+      if (enterpriseId !== null) {
+        const employment = await this.employees.findByIdentity(enterpriseId, identity.id);
+        if (employment && employment.status === EmployeeStatus.Invited) {
+          await this.employees.activate(employment.employeeId, enterpriseId);
+        }
+      }
+    });
+
+    this.logger.info({ enterpriseId }, 'invitation accepted and password set');
+
+    // Re-read: the row just changed underneath us, and completeLogin decides what
+    // to issue from the current state.
+    const refreshed = await this.identities.findById(identityId);
+    if (!refreshed) throw new AppException(ErrorCode.AuthInvalidCredentials);
+    this.assertLoginable(refreshed);
+    return this.completeLogin(refreshed, meta);
+  }
+
   async completeVerifiedLogin(
     identityId: number,
     verifiedDestination: string,
@@ -174,35 +231,35 @@ export class AuthService {
   /**
    * Issues a session, or asks the client to choose a business.
    *
-   * Zero active memberships is a 403, not a 401: the account exists and the
+   * Zero active employments is a 403, not a 401: the account exists and the
    * password was correct — there is simply nothing to sign in to.
    */
   private async completeLogin(identity: Identity, meta: RequestMetadata): Promise<LoginOutcome> {
-    const memberships = await this.members.listActiveByIdentity(identity.id);
+    const employments = await this.employees.listActiveByIdentity(identity.id);
     const staffRecord = await this.staff.findActiveByIdentity(identity.id);
 
     await this.identities.recordSuccessfulLogin(identity.id);
 
     // Staff with platform-wide reach get a token with no enterprise until they
-    // pick one; they have no memberships to enumerate.
-    if (memberships.length === 0) {
+    // pick one; they have no employments to enumerate.
+    if (employments.length === 0) {
       if (staffRecord?.hasAllEnterpriseAccess) {
         return this.issueSession(identity, null, staffRecord.staffId, meta);
       }
-      throw new AppException(ErrorCode.AuthNoActiveMembership);
+      throw new AppException(ErrorCode.AuthNoActiveEmployment);
     }
 
-    if (memberships.length > 1) {
+    if (employments.length > 1) {
       return {
         response: {
           outcome: 'enterprise_selection_required',
           selectionToken: await this.tokens.issueSelectionToken(identity.id),
-          enterprises: memberships.map(toMembershipDto),
+          enterprises: employments.map(toEmploymentDto),
         },
       };
     }
 
-    const only = memberships[0] as MembershipSummary;
+    const only = employments[0] as EmploymentSummary;
     return this.issueSession(identity, only, staffRecord?.staffId ?? null, meta);
   }
 
@@ -221,15 +278,15 @@ export class AuthService {
     const enterprise = await this.enterprises.findByRefId(enterpriseRefId);
     if (!enterprise) throw new AppException(ErrorCode.EnterpriseNotFound);
 
-    const membership = await this.members.findActiveMembership(identity.id, enterprise.id);
-    if (!membership) throw new AppException(ErrorCode.AuthNoActiveMembership);
+    const employment = await this.employees.findActiveEmployment(identity.id, enterprise.id);
+    if (!employment) throw new AppException(ErrorCode.AuthNoActiveEmployment);
 
     const staffRecord = await this.staff.findActiveByIdentity(identity.id);
-    return this.issueSession(identity, membership, staffRecord?.staffId ?? null, meta);
+    return this.issueSession(identity, employment, staffRecord?.staffId ?? null, meta);
   }
 
   /**
-   * Refresh. EVERY refresh re-checks that the membership is still active, so
+   * Refresh. EVERY refresh re-checks that the employment is still active, so
    * removing someone takes effect within the access-token lifetime rather than
    * whenever their session happens to end.
    *
@@ -239,7 +296,7 @@ export class AuthService {
   async refresh(
     refreshToken: string,
     enterpriseRefId: string | null,
-  ): Promise<{ accessToken: string; expiresInSeconds: number; enterprise: Membership | null }> {
+  ): Promise<{ accessToken: string; expiresInSeconds: number; enterprise: Employment | null }> {
     const session = await this.sessions.findLiveByTokenHash(
       this.hasher.hashOpaqueToken(refreshToken),
     );
@@ -251,34 +308,34 @@ export class AuthService {
 
     const staffRecord = await this.staff.findActiveByIdentity(identity.id);
 
-    let membership: MembershipSummary | null = null;
+    let employment: EmploymentSummary | null = null;
     if (enterpriseRefId) {
       const enterprise = await this.enterprises.findByRefId(enterpriseRefId);
       if (!enterprise) throw new AppException(ErrorCode.EnterpriseNotFound);
-      membership = await this.members.findActiveMembership(identity.id, enterprise.id);
-      // The refresh token is valid, but the membership is gone: still a 403.
-      if (!membership && !staffRecord?.hasAllEnterpriseAccess) {
-        throw new AppException(ErrorCode.AuthNoActiveMembership);
+      employment = await this.employees.findActiveEmployment(identity.id, enterprise.id);
+      // The refresh token is valid, but the employment is gone: still a 403.
+      if (!employment && !staffRecord?.hasAllEnterpriseAccess) {
+        throw new AppException(ErrorCode.AuthNoActiveEmployment);
       }
     }
 
     const accessToken = await this.tokens.issueAccessToken({
       identityId: identity.id,
-      enterpriseId: membership?.enterpriseId ?? null,
-      memberId: membership?.memberId ?? null,
+      enterpriseId: employment?.enterpriseId ?? null,
+      employeeId: employment?.employeeId ?? null,
       staffId: staffRecord?.staffId ?? null,
-      actorKind: resolveActorKind(membership, staffRecord?.staffId ?? null),
+      actorKind: resolveActorKind(employment, staffRecord?.staffId ?? null),
       isImpersonated: isImpersonated(
-        membership,
+        employment,
         staffRecord?.staffId ?? null,
-        membership?.enterpriseId ?? null,
+        employment?.enterpriseId ?? null,
       ),
     });
 
     return {
       accessToken,
       expiresInSeconds: this.tokens.accessTokenLifetimeSeconds(),
-      enterprise: membership ? toMembershipDto(membership) : null,
+      enterprise: employment ? toEmploymentDto(employment) : null,
     };
   }
 
@@ -286,22 +343,22 @@ export class AuthService {
   async switchEnterprise(
     identityId: number,
     enterpriseRefId: string,
-  ): Promise<{ accessToken: string; expiresInSeconds: number; enterprise: Membership }> {
+  ): Promise<{ accessToken: string; expiresInSeconds: number; enterprise: Employment }> {
     const enterprise = await this.enterprises.findByRefId(enterpriseRefId);
     if (!enterprise) throw new AppException(ErrorCode.EnterpriseNotFound);
 
-    const membership = await this.members.findActiveMembership(identityId, enterprise.id);
+    const employment = await this.employees.findActiveEmployment(identityId, enterprise.id);
     const staffRecord = await this.staff.findActiveByIdentity(identityId);
 
-    if (!membership) {
+    if (!employment) {
       // Staff reach: allowed into any enterprise, and recorded as impersonation.
       if (!staffRecord?.hasAllEnterpriseAccess) {
-        throw new AppException(ErrorCode.AuthNoActiveMembership);
+        throw new AppException(ErrorCode.AuthNoActiveEmployment);
       }
       const accessToken = await this.tokens.issueAccessToken({
         identityId,
         enterpriseId: enterprise.id,
-        memberId: null,
+        employeeId: null,
         staffId: staffRecord.staffId,
         actorKind: ActorKind.Staff,
         isImpersonated: true,
@@ -313,28 +370,28 @@ export class AuthService {
           enterpriseRefId: enterprise.refId,
           name: enterprise.name,
           slug: enterprise.slug,
-          memberKind: MemberKind.Staff,
+          employeeKind: EmployeeKind.Support,
         },
       };
     }
 
     const accessToken = await this.tokens.issueAccessToken({
       identityId,
-      enterpriseId: membership.enterpriseId,
-      memberId: membership.memberId,
+      enterpriseId: employment.enterpriseId,
+      employeeId: employment.employeeId,
       staffId: staffRecord?.staffId ?? null,
-      actorKind: resolveActorKind(membership, staffRecord?.staffId ?? null),
+      actorKind: resolveActorKind(employment, staffRecord?.staffId ?? null),
       isImpersonated: isImpersonated(
-        membership,
+        employment,
         staffRecord?.staffId ?? null,
-        membership?.enterpriseId ?? null,
+        employment?.enterpriseId ?? null,
       ),
     });
 
     return {
       accessToken,
       expiresInSeconds: this.tokens.accessTokenLifetimeSeconds(),
-      enterprise: toMembershipDto(membership),
+      enterprise: toEmploymentDto(employment),
     };
   }
 
@@ -348,7 +405,7 @@ export class AuthService {
 
   private async issueSession(
     identity: Identity,
-    membership: MembershipSummary | null,
+    employment: EmploymentSummary | null,
     staffId: number | null,
     meta: RequestMetadata,
   ): Promise<LoginOutcome> {
@@ -365,22 +422,22 @@ export class AuthService {
 
     const accessToken = await this.tokens.issueAccessToken({
       identityId: identity.id,
-      enterpriseId: membership?.enterpriseId ?? null,
-      memberId: membership?.memberId ?? null,
+      enterpriseId: employment?.enterpriseId ?? null,
+      employeeId: employment?.employeeId ?? null,
       staffId,
-      actorKind: resolveActorKind(membership, staffId),
-      isImpersonated: isImpersonated(membership, staffId, membership?.enterpriseId ?? null),
+      actorKind: resolveActorKind(employment, staffId),
+      isImpersonated: isImpersonated(employment, staffId, employment?.enterpriseId ?? null),
     });
 
-    if (membership)
-      await this.members.touchLastActive(membership.memberId, membership.enterpriseId);
+    if (employment)
+      await this.employees.touchLastActive(employment.employeeId, employment.enterpriseId);
 
     return {
       response: {
         outcome: 'authenticated',
         accessToken,
         expiresInSeconds: this.tokens.accessTokenLifetimeSeconds(),
-        enterprise: membership ? toMembershipDto(membership) : null,
+        enterprise: employment ? toEmploymentDto(employment) : null,
       },
       session: { refreshToken, expiresAt },
     };
@@ -461,22 +518,22 @@ export class AuthService {
   }
 }
 
-function toMembershipDto(membership: MembershipSummary): Membership {
+function toEmploymentDto(employment: EmploymentSummary): Employment {
   return {
-    enterpriseRefId: membership.enterpriseRefId,
-    name: membership.enterpriseName,
-    slug: membership.enterpriseSlug,
-    memberKind: membership.memberKind,
+    enterpriseRefId: employment.enterpriseRefId,
+    name: employment.enterpriseName,
+    slug: employment.enterpriseSlug,
+    employeeKind: employment.employeeKind,
   };
 }
 
-function resolveActorKind(membership: MembershipSummary | null, staffId: number | null): ActorKind {
-  if (membership) return ActorKind.EnterpriseMember;
+function resolveActorKind(employment: EmploymentSummary | null, staffId: number | null): ActorKind {
+  if (employment) return ActorKind.Employee;
   return staffId !== null ? ActorKind.Staff : ActorKind.System;
 }
 
 /**
- * Staff acting INSIDE an enterprise they are not a member of (schema.md §25).
+ * Staff acting INSIDE an enterprise they are not a employee of (schema.md §25).
  *
  * All three conditions matter, and the enterprise is the one most easily
  * forgotten: a platform admin holding a token with no enterprise scope at all is
@@ -486,9 +543,9 @@ function resolveActorKind(membership: MembershipSummary | null, staffId: number 
  * is "one of ours was inside a customer's account".
  */
 function isImpersonated(
-  membership: MembershipSummary | null,
+  employment: EmploymentSummary | null,
   staffId: number | null,
   enterpriseId: number | null,
 ): boolean {
-  return staffId !== null && membership === null && enterpriseId !== null;
+  return staffId !== null && employment === null && enterpriseId !== null;
 }

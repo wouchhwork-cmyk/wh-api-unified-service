@@ -18,7 +18,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.AuthSessionRevoked]: HttpStatus.UNAUTHORIZED,
 
   // 403 — authenticated, but not allowed
-  [ErrorCode.AuthNoActiveMembership]: HttpStatus.FORBIDDEN,
+  [ErrorCode.AuthNoActiveEmployment]: HttpStatus.FORBIDDEN,
   [ErrorCode.AuthEnterpriseNotSelected]: HttpStatus.FORBIDDEN,
   [ErrorCode.EnterprisePendingActivation]: HttpStatus.FORBIDDEN,
   [ErrorCode.AuthAccountLocked]: HttpStatus.FORBIDDEN,
@@ -32,7 +32,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   // 404
   [ErrorCode.RouteNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.EnterpriseNotFound]: HttpStatus.NOT_FOUND,
-  [ErrorCode.MemberNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.EmployeeNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.RoleNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.FeatureNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ConnectionNotFound]: HttpStatus.NOT_FOUND,
@@ -47,7 +47,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.EmailAlreadyRegistered]: HttpStatus.CONFLICT,
   [ErrorCode.MobileAlreadyRegistered]: HttpStatus.CONFLICT,
   [ErrorCode.EnterpriseSlugTaken]: HttpStatus.CONFLICT,
-  [ErrorCode.MemberAlreadyExists]: HttpStatus.CONFLICT,
+  [ErrorCode.EnterpriseEmailAlreadyRegistered]: HttpStatus.CONFLICT,
+  [ErrorCode.EmployeeAlreadyExists]: HttpStatus.CONFLICT,
   [ErrorCode.RoleNameTaken]: HttpStatus.CONFLICT,
   [ErrorCode.IdentifierAlreadyLinked]: HttpStatus.CONFLICT,
   [ErrorCode.DuplicateMessage]: HttpStatus.CONFLICT,
@@ -102,7 +103,7 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.AuthTokenExpired]: 'Your session has expired. Sign in again.',
   [ErrorCode.AuthSessionRevoked]: 'This session has been signed out.',
   [ErrorCode.AuthResendTooSoon]: 'Please wait before requesting another code.',
-  [ErrorCode.AuthNoActiveMembership]: 'This account has no active business.',
+  [ErrorCode.AuthNoActiveEmployment]: 'This account has no active business.',
   [ErrorCode.AuthEnterpriseNotSelected]: 'Select a business before continuing.',
   [ErrorCode.EnterprisePendingActivation]:
     'This business account is awaiting activation. We will be in touch shortly.',
@@ -119,7 +120,9 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.EmailAlreadyRegistered]: 'An account already exists for that email address.',
   [ErrorCode.MobileAlreadyRegistered]: 'An account already exists for that mobile number.',
   [ErrorCode.EnterpriseSlugTaken]: 'That business URL is already taken.',
-  [ErrorCode.MemberAlreadyExists]: 'That person is already a member of this business.',
+  [ErrorCode.EnterpriseEmailAlreadyRegistered]:
+    'A business is already registered with that email. Ask its owner to create an account for you.',
+  [ErrorCode.EmployeeAlreadyExists]: 'That person is already a employee of this business.',
   [ErrorCode.RoleNameTaken]: 'A role with that name already exists.',
   [ErrorCode.IdentifierAlreadyLinked]: 'That contact detail is already linked to another customer.',
   [ErrorCode.DuplicateMessage]: 'That message has already been sent.',
@@ -131,7 +134,7 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
 
   [ErrorCode.RouteNotFound]: 'That endpoint does not exist.',
   [ErrorCode.EnterpriseNotFound]: 'Business not found.',
-  [ErrorCode.MemberNotFound]: 'Member not found.',
+  [ErrorCode.EmployeeNotFound]: 'Employee not found.',
   [ErrorCode.RoleNotFound]: 'Role not found.',
   [ErrorCode.FeatureNotFound]: 'Feature not found.',
   [ErrorCode.ConnectionNotFound]: 'Connection not found.',

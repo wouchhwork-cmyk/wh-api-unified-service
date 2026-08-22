@@ -9,7 +9,7 @@ import { BaseEntity } from './base.entity';
  * No `ref_id`: a client never addresses a session by identifier, it presents
  * the refresh token cookie and the server resolves the row from its hash.
  *
- * Keyed on `identities`, not `enterprise_members`: a session belongs to a
+ * Keyed on `identities`, not `enterprise_employees`: a session belongs to a
  * person, and the active business is a claim in the short-lived access token,
  * so switching business is a token exchange rather than a re-login.
  *

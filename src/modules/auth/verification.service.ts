@@ -151,6 +151,31 @@ export class VerificationService {
   }
 
   /**
+   * Verifies a code against the live challenge for a DESTINATION rather than a
+   * reference.
+   *
+   * Same guarantees, same code path: it resolves the reference and delegates, so
+   * expiry, the atomic attempt spend, the hashed comparison and single use are
+   * not reimplemented here. Only the way the row is found differs.
+   */
+  async verifyByDestination(
+    destination: string,
+    submittedSecret: string,
+    expectedKind: VerificationKind,
+  ): Promise<{
+    identityId: number | null;
+    customerId: number | null;
+    enterpriseId: number | null;
+    destination: string;
+  }> {
+    const live = await this.verifications.findLiveByDestination(destination, expectedKind);
+    // Deliberately the same error an unknown reference gives: whether an
+    // invitation exists for an address is not something to confirm to a guesser.
+    if (!live) throw new AppException(ErrorCode.VerificationNotFound);
+    return this.verify(live.refId, submittedSecret, expectedKind);
+  }
+
+  /**
    * Verifies a submitted secret against a challenge.
    *
    * The client posts back the opaque refId, never the destination — which keeps
@@ -164,7 +189,13 @@ export class VerificationService {
     verificationRefId: string,
     submittedSecret: string,
     expectedKind: VerificationKind,
-  ): Promise<{ identityId: number | null; customerId: number | null; destination: string }> {
+  ): Promise<{
+    identityId: number | null;
+    customerId: number | null;
+    /** The business the challenge was issued for, when it was issued for one. */
+    enterpriseId: number | null;
+    destination: string;
+  }> {
     const verification = await this.verifications.findLiveByRefId(verificationRefId, expectedKind);
     if (!verification) throw new AppException(ErrorCode.VerificationNotFound);
 
@@ -198,6 +229,7 @@ export class VerificationService {
     return {
       identityId: verification.identityId,
       customerId: verification.customerId,
+      enterpriseId: verification.enterpriseId,
       destination: verification.destination,
     };
   }

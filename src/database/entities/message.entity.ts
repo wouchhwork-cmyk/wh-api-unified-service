@@ -25,9 +25,9 @@ export class Message extends PublicEntity {
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
   customerId!: number | null;
 
-  /** Which team member sent it, for outbound. */
+  /** Which team employee sent it, for outbound. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  sentByMemberId!: number | null;
+  sentByEmployeeId!: number | null;
 
   /** Reply chains of any depth: comment → reply → reply-to-reply. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })

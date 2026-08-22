@@ -11,7 +11,7 @@ export interface ActorContext {
   readonly identityId: number;
   /** null only for a staff actor who has not selected an enterprise yet. */
   readonly enterpriseId: number | null;
-  readonly memberId: number | null;
+  readonly employeeId: number | null;
   readonly staffId: number | null;
   readonly actorKind: ActorKind;
   /** Staff acting inside an enterprise — audited (schema.md §25). */

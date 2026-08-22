@@ -4,8 +4,8 @@ import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
 
 /**
- * schema.md §4 — Wouchh's own people. Separate from `enterprise_members`
- * because platform-wide access cannot be expressed as a list of memberships:
+ * schema.md §4 — Wouchh's own people. Separate from `enterprise_employees`
+ * because platform-wide access cannot be expressed as a list of employments:
  * new businesses sign up continuously and would each need a backfill.
  *
  * Staff roles and permissions come from the same `roles` / `permissions` tables
@@ -19,8 +19,8 @@ export class StaffMember extends PublicEntity {
 
   /**
    * true = every business, present and future — the super admin, who needs no
-   * `enterprise_members` rows at all. false = reach comes from one
-   * `enterprise_members` row per assigned business with `memberKind = 'staff'`.
+   * `enterprise_employees` rows at all. false = reach comes from one
+   * `enterprise_employees` row per assigned business with `employeeKind = 'staff'`.
    */
   @Column({ type: 'boolean', default: false })
   hasAllEnterpriseAccess!: boolean;

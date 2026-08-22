@@ -17,7 +17,7 @@ tables *are* the business state.
 ## 1. The words we use
 
 The product has a specific vocabulary, and most confusion about it comes from two
-pairs that sound interchangeable and are not: **identity vs member**, and
+pairs that sound interchangeable and are not: **identity vs employee**, and
 **connection vs channel**.
 
 ### The people and the businesses
@@ -26,8 +26,8 @@ pairs that sound interchangeable and are not: **identity vs member**, and
 | --- | --- | --- |
 | **Enterprise** | `enterprises` | A business that signed up. The tenant. Almost every other table carries `enterprise_id` pointing here. Called "enterprise" rather than "business" because Meta's API already has a `business_id` and two different meanings for one word is a bug waiting to happen. |
 | **Identity** | `identities` | A login. One row per human, and deliberately **not** tenant-scoped — this is the only thing that can sign in. Holds the email and/or mobile, the password hash, and the per-credential "this was proven" stamps. |
-| **Member** (membership) | `enterprise_members` | One row per person per business. This is the tenant-scoped person that everything else points at, which is what keeps conversations, messages and assignments correctly scoped. One person working for three businesses is **one** identity and **three** members. |
-| **Staff member** | `staff_members` | One of *our* people. `has_all_enterprise_access = true` means every business, present and future — the platform admin. Staff never sign up; there is no route that creates one from outside. |
+| **Employee** (employment) | `enterprise_employees` | One row per person per business. This is the tenant-scoped person that everything else points at, which is what keeps conversations, messages and assignments correctly scoped. One person working for three businesses is **one** identity and **three** employees. |
+| **Staff employee** | `staff_members` | One of *our* people. `has_all_enterprise_access = true` means every business, present and future — the platform admin. Staff never sign up; there is no route that creates one from outside. |
 | **Role** | `roles` | A named bundle of actions, owned by one business. The four enterprise templates (owner, manager, agent, viewer) are **copied into each business at signup**, because a template row belongs to no business and is structurally unassignable. |
 | **Permission** | `permissions` | The global catalogue of grantable actions, as `resource.action` — `conversations.reply`. Each one optionally names the feature that gates it. |
 | **Feature** | `features` | The product catalogue: `unified_inbox`, `comment_management`, `post_insights`, `customer_directory`. |
@@ -38,8 +38,8 @@ pairs that sound interchangeable and are not: **identity vs member**, and
 | We call it | Table | What it means |
 | --- | --- | --- |
 | **Session** | `sessions` | One signed-in device, so it can be revoked server-side. The access token is stateless and never stored; what is stored is a keyed hash of the **refresh** token. |
-| **Verification** | `verifications` | Every code or link in the product — first login, email and mobile checks, password resets, member invites — in one table with one verifier. Split per flow and you get several implementations, and the second one is where somebody forgets attempt limiting. |
-| **Access token** | — | A short-lived JWT (15 minutes) naming the identity, the business it is scoped to, and the member or staff acting. **Carries no roles**: permissions are resolved per request, so a role change lands on the next request rather than the next login. |
+| **Verification** | `verifications` | Every code or link in the product — first login, email and mobile checks, password resets, employee invites — in one table with one verifier. Split per flow and you get several implementations, and the second one is where somebody forgets attempt limiting. |
+| **Access token** | — | A short-lived JWT (15 minutes) naming the identity, the business it is scoped to, and the employee or staff acting. **Carries no roles**: permissions are resolved per request, so a role change lands on the next request rather than the next login. |
 | **Selection token** | — | A 5-minute token that proves a password check and nothing else. Issued only when one person belongs to several businesses. |
 
 ### The connected accounts
@@ -58,7 +58,7 @@ pairs that sound interchangeable and are not: **identity vs member**, and
 | --- | --- | --- |
 | **Inbound event** | `inbound_events` | The ledger of everything Meta sent us, stored raw before anything is interpreted. |
 | **Outbound event** | `outbound_events` | The ledger of everything we intend to send. A reply is written here in the same transaction as the message row — which is what makes "we said we sent it" and "we tried to send it" impossible to disagree. |
-| **Sync job** | `sync_jobs` | A backfill request. **Rows are created and nothing consumes them** — see §20. |
+| **Sync job** | `sync_jobs` | A backfill request. **Rows are created and nothing consumes them** — see §21. |
 | **Audit log** | `audit_logs` | Who did what to whom. Append-only by grant, not just by policy: the migration revokes UPDATE and DELETE from the application role. |
 
 ### The states worth memorising
@@ -120,7 +120,7 @@ least 10 characters. The owner must give an email or a mobile; both is fine.
    nature, so the unique index is still the real defence.
 3. **One transaction** writes: the `enterprises` row (as **`pending_activation`**),
    the owner's `identities` row with an argon2id password hash, the
-   `enterprise_members` row (active immediately), this business's **own copies** of
+   `enterprise_employees` row (active immediately), this business's **own copies** of
    the four role templates, and the owner's role grant. All of it or none of it.
 4. **Outside that transaction,** issue the verification: supersede any live code
    for the same destination and insert the new one, together, so two live codes
@@ -131,7 +131,7 @@ least 10 characters. The owner must give an email or a mobile; both is fine.
 address can never hold a session.
 
 **Response `201`:** the business's `refId` and slug, the owner's `identityRefId`
-and `memberRefId`, the **`verificationRefId`**, and the masked destination
+and `employeeRefId`, the **`verificationRefId`**, and the masked destination
 (`me***@bluebottle.test`). Only reference ids cross the boundary; a numeric id
 never does.
 
@@ -226,7 +226,7 @@ hash.
    **proven**? Not "is this the first login" — proof is the question, which is why
    an account provisioned from configuration signs straight in while a fresh
    signup is always challenged.
-5. **Resolve memberships** and produce one of three outcomes.
+5. **Resolve employments** and produce one of three outcomes.
 
 Login has **three** outcomes, as separate shapes rather than one shape with
 everything optional, so a client cannot misread which it got:
@@ -246,9 +246,9 @@ a session with no business scope.
 
 | Flow | Route | What matters |
 | --- | --- | --- |
-| **Choose a business** | `POST /auth/select-enterprise` | Exchanges the 5-minute selection token plus a business reference for a real session. The membership is re-checked here. |
+| **Choose a business** | `POST /auth/select-enterprise` | Exchanges the 5-minute selection token plus a business reference for a real session. The employment is re-checked here. |
 | **Switch business** | `POST /auth/switch-enterprise` | Mints a token scoped to another business without signing in again. Staff may switch into **any** business — recorded as impersonation. Returns `201` (no explicit status override). |
-| **Refresh** | `POST /auth/refresh` | Reads the httpOnly cookie, resolves the session by keyed hash, issues a new access token. **Only re-checks the membership when `?enterpriseRefId=` is supplied** — see §20. |
+| **Refresh** | `POST /auth/refresh` | Reads the httpOnly cookie, resolves the session by keyed hash, issues a new access token. **Only re-checks the employment when `?enterpriseRefId=` is supplied** — see §21. |
 | **Sign out** | `POST /auth/logout` | Revokes the session by refresh-token hash and clears the cookie. `204`. Logging out an already-dead session succeeds. |
 | **Who am I** | `GET /auth/me` | What a client needs after a page reload when all it holds is a token: whether this is an internal admin, which business, **that business's status**, and the permission codes. No internal ids. |
 
@@ -285,7 +285,7 @@ however misconfigured, can ever grant platform reach.
 | Route | What it does |
 | --- | --- |
 | `GET /platform/overview` | Businesses by status, and platform totals: customers, channels, conversations, pending feature requests. |
-| `GET /platform/enterprises` | Every business, newest first, with per-business counts (members, channels, connections, customers, conversations, features). Free-text search over name, slug and email; status filter; keyset pagination on `(createdAt, id)` so pages cannot skip or repeat. |
+| `GET /platform/enterprises` | Every business, newest first, with per-business counts (employees, channels, connections, customers, conversations, features). Free-text search over name, slug and email; status filter; keyset pagination on `(createdAt, id)` so pages cannot skip or repeat. |
 | `GET /platform/enterprises/{refId}` | One business in full: profile, owner, every feature and its state, every connected channel. |
 | `POST /platform/enterprises/{refId}/status` | Activate or suspend. |
 | `POST /platform/enterprises/{refId}/features/{featureKey}` | Grant, disable, decline or revoke a feature. |
@@ -298,7 +298,7 @@ Two things the console deliberately does **not** do:
   recognise the account, not read the customer's personal data — and this is the
   response most likely to end up in a screenshot or a support ticket.
 
-Every mutation writes an `audit_logs` row naming the staff member, the business
+Every mutation writes an `audit_logs` row naming the staff employee, the business
 affected, the before and after values, and the reason where one was required.
 
 ---
@@ -351,11 +351,112 @@ resolved per request, so the owner's very next call sees the new codes.
 
 **A business cannot request a feature today.** The `access_requested` state, the
 `features.request` permission and the whole request path exist in the schema with
-no endpoint — see §20.
+no endpoint — see §21.
 
 ---
 
-## 11. Connecting Facebook and Instagram
+## 11. Building a team
+
+A business signs up with exactly **one** person: its owner. Everybody after that
+is created by somebody already inside. There is no employee signup, and adding
+one would be the hole that makes every other control here decorative.
+
+Two things follow, both intended:
+
+- **One business cannot be signed up twice.** `enterprises.email` is unique among
+  live rows, on `lower(email)`, so a colleague signing up the same business is
+  turned away with `409 ENTERPRISE_EMAIL_ALREADY_REGISTERED` and told to ask its
+  owner for an account. Without it they would get a second tenant with the same
+  name and a `-2` slug: split data, and a product that looks broken rather than
+  duplicated.
+- **Nobody can add themselves** to a business they do not already belong to.
+
+### Creating a colleague
+
+`POST /api/v1/employees` — needs `employees.invite` (owner and manager hold it).
+
+The request carries a name, an email or a mobile, and a role. **It does not carry
+a password, and one sent is refused.**
+
+1. **Resolve the role within the caller's own business.** A role reference from
+   another business does not resolve, so a request body cannot name one.
+2. **Reuse the login if the person already has one.** An identity is global —
+   they may already work for another business on the platform. One human, one
+   password, however many jobs.
+3. **One transaction** writes the identity (if new), the employment as
+   `invited`, and the role grant.
+4. **Issue the invitation** outside that transaction.
+
+The stored password on a new identity is **random and never revealed**. It exists
+only because the column is NOT NULL, and it is unusable by construction: the only
+way in is the invitation.
+
+> **Why not let the owner set a temporary password?** Because then the owner knows
+> a credential that can act as their colleague, and every message that colleague
+> sends has two people who could have sent it. The audit trail stops being able to
+> answer its only question.
+
+**Response `201`:** the employee as the team list shows them — `invited`, with
+their role, and contact details masked.
+
+| Also possible | |
+| --- | --- |
+| A password in the body, or neither email nor mobile | `422 VALIDATION_FAILED` |
+| That person is already on this business's books | `409 EMPLOYEE_ALREADY_EXISTS` |
+| The role is not this business's | `404 ROLE_NOT_FOUND` |
+| The caller is a staff actor with no employment of their own | `403 AUTH_NO_ACTIVE_EMPLOYMENT` |
+
+### Accepting an invitation
+
+`POST /api/v1/auth/accept-invite` — public. Email or mobile, the code, and the
+password they choose.
+
+**Keyed on their own address, not on a verification reference** — the one place
+this differs from every other verification in the product. The invited person
+never saw a reference: the owner made that request, on another device. What they
+have is their own address and the code that arrived at it.
+
+That is also why an invitation is a numeric code despite being long-lived, where
+a password reset is a token. A token only works when the person can be handed a
+link containing both the reference and the secret; nobody types a token. Brute
+force is still bounded — five attempts on the one live row, and only somebody
+already inside the business can create another.
+
+1. **Normalise the address** so the lookup sees what was stored.
+2. **Find the live invitation** for that address. A missing one is
+   `404 VERIFICATION_NOT_FOUND` — the same answer an unknown address gives,
+   because whether an invitation exists is not something to confirm to a guesser.
+3. **Spend an attempt, then compare** — the same code path as every other
+   verification, so expiry, attempt limiting and single use are not reimplemented.
+4. **One transaction** sets the password, stamps the credential proven, and moves
+   the employment `invited → active`. Together, because a spent code with no
+   password set would leave an account nobody can ever enter.
+5. **Issue a session.**
+
+From then on they sign in like anyone else, with a password only they know.
+
+### The team
+
+| Route | Permission | |
+| --- | --- | --- |
+| `GET /employees` | `employees.view` | Everybody here, with roles and whether they have accepted. `includeSupport=true` also shows the Wouchh people assigned to this business — who are not its employees. |
+| `GET /employees/roles` | `roles.view` | The business's own copies of the role templates, needed before anybody can be invited. |
+| `POST /employees/:refId/status` | `employees.manage` | Suspend or reinstate. |
+
+**Suspending is a status change, never a deletion** — what somebody did has to
+survive them leaving. A reason is required, because it is the only record of why.
+
+**Nobody may change their own status.** The realistic accident is an owner
+locking themselves out with no second admin able to undo it.
+
+**Suspension applies immediately, to tokens already issued.** Permissions are
+resolved per request against the employment, so a suspended person's next request
+resolves to nothing — rather than keeping full access until their token happens to
+expire.
+
+---
+
+## 12. Connecting Facebook and Instagram
 
 Modelled on a working implementation, and every Graph call mirrors calls proven in
 production. **It has not yet run against real Meta credentials from this
@@ -367,7 +468,7 @@ codebase.**
 
 Returns the URL to send the person to: Facebook Login for Business, identified by
 a **configuration id** rather than a scope list (the config decides the scopes),
-plus a signed **state** token carrying the business and the member who started it.
+plus a signed **state** token carrying the business and the employee who started it.
 
 ### Coming back
 
@@ -390,7 +491,7 @@ browser here.
    a key can be rotated without rewriting old rows.
 7. **Subscribe each Page** to `messages`, `messaging_postbacks`, `feed` and
    `mention`.
-8. **Enqueue backfill jobs** — which nothing consumes yet (§20).
+8. **Enqueue backfill jobs** — which nothing consumes yet (§21).
 
 **Always a redirect, never a JSON body.** The callback catches everything and
 answers with a `302` back to the dashboard, carrying a stable reason code on
@@ -413,7 +514,7 @@ rather than attempting a doomed send.
 
 ---
 
-## 12. Something arrives from Meta
+## 13. Something arrives from Meta
 
 ### The handshake
 
@@ -469,11 +570,11 @@ because the thread is found or created by key rather than assumed to exist.
 
 **Mentions and post updates are recorded and skipped** — no projector exists.
 Inbound attachments are recorded only as a message kind; the media is never
-fetched (§20).
+fetched (§21).
 
 ---
 
-## 13. Reading the inbox
+## 14. Reading the inbox
 
 Six routes on `/api/v1/conversations`, each declaring a permission.
 
@@ -481,8 +582,8 @@ Six routes on `/api/v1/conversations`, each declaring a permission.
 | --- | --- | --- |
 | `GET /` | `conversations.view` | The queue: newest activity first, optional status filter, "assigned to me", cursor pagination. |
 | `GET /{refId}` | `conversations.view` | One thread's messages. |
-| `POST /{refId}/reply` | `conversations.reply` | §14. |
-| `POST /{refId}/assign` | `conversations.assign` | Assign to a member, or unassign. |
+| `POST /{refId}/reply` | `conversations.reply` | §15. |
+| `POST /{refId}/assign` | `conversations.assign` | Assign to a employee, or unassign. |
 | `POST /{refId}/status` | `conversations.manage` | Move it through its workflow. |
 | `POST /{refId}/read` | `conversations.view` | Clear the unread count. |
 
@@ -492,7 +593,7 @@ tenant-scoped query without it.
 
 ---
 
-## 14. Replying
+## 15. Replying
 
 `POST /api/v1/conversations/{refId}/reply` — needs `conversations.reply`.
 
@@ -532,11 +633,11 @@ Failure is classified rather than blanket-retried:
 - **Ambiguous** — the send may or may not have happened: **cancelled, never
   retried.** Sending a customer the same message twice is worse than not sending
   it, and we cannot tell which happened. Reading back to find out is not built
-  (§20).
+  (§21).
 
 ---
 
-## 15. The workers
+## 16. The workers
 
 There is **no Redis and no queue**. Postgres is the queue, and the mechanics are
 worth understanding because they are what makes the system safe without one.
@@ -571,7 +672,7 @@ projected.**
 
 ---
 
-## 16. Health, errors and logging
+## 17. Health, errors and logging
 
 **Health.** `live` answers without touching the database — a liveness probe that
 fails on a database blip would restart a healthy process and make an outage worse.
@@ -598,7 +699,7 @@ password.
 
 ---
 
-## 17. Where the tenant boundary is actually enforced
+## 18. Where the tenant boundary is actually enforced
 
 Worth stating plainly, because it is the thing most likely to be got wrong later.
 
@@ -616,7 +717,7 @@ Worth stating plainly, because it is the thing most likely to be got wrong later
 
 ---
 
-## 18. What the frontend needs to know
+## 19. What the frontend needs to know
 
 The portal in `wh-web-web-portal` uses only these:
 
@@ -627,6 +728,8 @@ The portal in `wh-web-web-portal` uses only these:
 | Enter the code | `POST /auth/verify` |
 | Where do I go now | `GET /auth/me` — `isPlatformAdmin` decides console or portal; `enterprise.status` decides what the portal shows |
 | Admin console | `GET /platform/overview`, `GET /platform/enterprises`, `GET /platform/enterprises/{refId}`, the two `POST`s |
+| The team | `GET /employees`, `GET /employees/roles`, `POST /employees`, `POST /employees/{refId}/status` |
+| Accepting an invitation | `POST /auth/accept-invite` — email or mobile, code, chosen password |
 
 Two rules for any client:
 
@@ -637,12 +740,13 @@ Two rules for any client:
 
 ---
 
-## 19. What is verified, and how
+## 20. What is verified, and how
 
-- **68 automated tests**: schema guarantees against real Postgres, ledger
+- **82 automated tests**: schema guarantees against real Postgres, ledger
   concurrency, the onboarding and platform flows end to end through the real guard
   chain, and unit tests for normalisation, contracts and every production boot
-  refusal.
+  refusal. A pre-deploy check (`pnpm test:schema`) builds a database from the
+  migration and another from the entities and compares them.
 - **Verified live** end to end: signup → fixed code → session → blocked while
   pending → admin activates → same token works → feature granted → permissions
   appear → suspended → blocked again, with audit rows for every admin action.
@@ -651,7 +755,7 @@ Two rules for any client:
 
 ---
 
-## 20. What is designed but not built
+## 21. What is designed but not built
 
 Read this before promising anything.
 
@@ -666,19 +770,19 @@ Read this before promising anything.
 
 ### No endpoint exists for these
 
-Members and invites; roles; a business requesting a feature; the customer
-directory (the query is written, nothing exposes it); posts; comment hide and
-delete; resending a verification code.
+Creating or editing a role (a business gets the four templates and cannot change
+them); a business requesting a feature; the customer directory (the query is
+written, nothing exposes it); posts; comment hide and delete; resending a
+verification code; changing somebody's role after they are created.
 
 ### Known weaknesses in what *is* built
 
 | | |
 | --- | --- |
-| **Refresh does not re-check membership** unless the caller passes `?enterpriseRefId=`. Removing someone from a business does not end their existing sessions. |
-| **Nothing revokes sessions** when a membership, identity or business is suspended. Sessions are unbounded per identity and are removed only by the 30-day retention sweep. |
+| **Refresh does not re-check employment** unless the caller passes `?enterpriseRefId=`. Removing someone from a business does not end their existing sessions. |
+| **Nothing revokes sessions** when a employment, identity or business is suspended. Sessions are unbounded per identity and are removed only by the 30-day retention sweep. |
 | **The OAuth state token is not single-use**, despite being described as such. It is signed and expiring, and replayable within its window. |
-| **Membership status is not read** when resolving permissions, so a suspended member keeps their permissions. |
-| **A role's scope is not enforced at assignment** — only composite foreign keys stand between a staff role and a business member. |
+| **A role's scope is not enforced at assignment** — only composite foreign keys stand between a staff role and a business employee. |
 | **Malformed reference ids on the conversation routes are `500`s**, not `422`s: those five routes do not validate the path parameter. The platform routes do. |
 | **The correlation id is client-supplied** if a header is sent, so it is not trustworthy as an audit anchor. |
 | **The resend cooldown is configured and unenforced**; only the hourly per-destination cap of 5 applies, and it counts every kind of verification to that destination. |

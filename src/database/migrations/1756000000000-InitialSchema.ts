@@ -85,16 +85,16 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       )
     `);
 
-    // --- 3. enterprise_members --------------------------------------------
+    // --- 3. enterprise_employees --------------------------------------------
     await q.query(`
-      CREATE TABLE enterprise_members (
+      CREATE TABLE enterprise_employees (
         id                    BIGSERIAL    PRIMARY KEY,
         ref_id                UUID         NOT NULL DEFAULT gen_random_uuid(),
         identity_id           BIGINT       NOT NULL,
         enterprise_id         BIGINT       NOT NULL,
-        member_kind           VARCHAR(30)  NOT NULL DEFAULT 'enterprise',
+        employee_kind           VARCHAR(30)  NOT NULL DEFAULT 'enterprise',
         status                VARCHAR(30)  NOT NULL DEFAULT 'invited',
-        invited_by_member_id  BIGINT,
+        invited_by_employee_id  BIGINT,
         invited_at            TIMESTAMPTZ,
         joined_at             TIMESTAMPTZ,
         last_active_at        TIMESTAMPTZ,
@@ -182,15 +182,15 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       )
     `);
 
-    // --- 8. member_roles --------------------------------------------------
+    // --- 8. employee_roles --------------------------------------------------
     // enterprise_id is denormalised so both foreign keys can route through it.
     await q.query(`
-      CREATE TABLE member_roles (
+      CREATE TABLE employee_roles (
         id                   BIGSERIAL   PRIMARY KEY,
         enterprise_id        BIGINT      NOT NULL,
-        member_id            BIGINT      NOT NULL,
+        employee_id            BIGINT      NOT NULL,
         role_id              BIGINT      NOT NULL,
-        granted_by_member_id BIGINT,
+        granted_by_employee_id BIGINT,
         granted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
         is_deleted           BOOLEAN     NOT NULL DEFAULT false,
         created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -208,7 +208,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         feature_id             BIGINT        NOT NULL,
         config                 JSONB         NOT NULL DEFAULT '{}',
         status                 VARCHAR(30)   NOT NULL DEFAULT 'access_requested',
-        requested_by_member_id BIGINT,
+        requested_by_employee_id BIGINT,
         requested_at           TIMESTAMPTZ,
         decided_by_staff_id    BIGINT,
         decided_at             TIMESTAMPTZ,
@@ -292,7 +292,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         reauth_required        BOOLEAN       NOT NULL DEFAULT false,
         reauth_notified_at     TIMESTAMPTZ,
         granted_scopes         TEXT,
-        connected_by_member_id BIGINT,
+        connected_by_employee_id BIGINT,
         status                 VARCHAR(30)   NOT NULL DEFAULT 'active',
         is_deleted             BOOLEAN       NOT NULL DEFAULT false,
         created_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
@@ -369,7 +369,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
 
     // --- 16. customers ------------------------------------------------------
     // No is_blocked boolean: status is the single source of truth, and
-    // blocked_at / blocked_by_member_id / block_reason are audit trail only.
+    // blocked_at / blocked_by_employee_id / block_reason are audit trail only.
     // first_source is IMMUTABLE — attribution, not current state.
     await q.query(`
       CREATE TABLE customers (
@@ -390,7 +390,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         tags                    JSONB         NOT NULL DEFAULT '[]',
         metadata                JSONB         NOT NULL DEFAULT '{}',
         blocked_at              TIMESTAMPTZ,
-        blocked_by_member_id    BIGINT,
+        blocked_by_employee_id    BIGINT,
         block_reason            VARCHAR(255),
         conversation_count      INTEGER       NOT NULL DEFAULT 0,
         merged_into_customer_id BIGINT,
@@ -479,7 +479,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         reach_count            BIGINT        NOT NULL DEFAULT 0,
         metrics                JSONB         NOT NULL DEFAULT '{}',
         metrics_synced_at      TIMESTAMPTZ,
-        authored_by_member_id  BIGINT,
+        authored_by_employee_id  BIGINT,
         published_at           TIMESTAMPTZ,
         platform_deleted_at    TIMESTAMPTZ,
         status                 VARCHAR(30)   NOT NULL DEFAULT 'published',
@@ -511,7 +511,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         context_metadata       JSONB         NOT NULL DEFAULT '{}',
         tags                   JSONB         NOT NULL DEFAULT '[]',
         metadata               JSONB         NOT NULL DEFAULT '{}',
-        assigned_to_member_id  BIGINT,
+        assigned_to_employee_id  BIGINT,
         assigned_at            TIMESTAMPTZ,
         message_count          INTEGER       NOT NULL DEFAULT 0,
         unread_count           INTEGER       NOT NULL DEFAULT 0,
@@ -538,7 +538,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         enterprise_id         BIGINT        NOT NULL,
         direction             VARCHAR(10)   NOT NULL,
         customer_id           BIGINT,
-        sent_by_member_id     BIGINT,
+        sent_by_employee_id     BIGINT,
         parent_message_id     BIGINT,
         inbound_event_id      BIGINT,
         outbound_event_id     BIGINT,
@@ -686,7 +686,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         id                BIGSERIAL     PRIMARY KEY,
         enterprise_id     BIGINT,
         actor_identity_id BIGINT,
-        actor_member_id   BIGINT,
+        actor_employee_id   BIGINT,
         actor_staff_id    BIGINT,
         actor_kind        VARCHAR(30)   NOT NULL,
         is_impersonated   BOOLEAN       NOT NULL DEFAULT false,
@@ -740,13 +740,13 @@ const DROP_ORDER = [
   'provider_connections',
   'sessions',
   'enterprise_features',
-  'member_roles',
+  'employee_roles',
   'role_permissions',
   'permissions',
   'roles',
   'features',
   'staff_members',
-  'enterprise_members',
+  'enterprise_employees',
   'identities',
   'enterprises',
 ] as const;

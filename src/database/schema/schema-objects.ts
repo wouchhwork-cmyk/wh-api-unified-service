@@ -36,7 +36,7 @@ export type SqlRunner = (sql: string) => Promise<unknown>;
 export const REF_ID_TABLES = [
   'enterprises',
   'identities',
-  'enterprise_members',
+  'enterprise_employees',
   'staff_members',
   'roles',
   'permissions',
@@ -56,7 +56,7 @@ export const REF_ID_TABLES = [
 export const ALL_TABLES = [
   ...REF_ID_TABLES,
   'role_permissions',
-  'member_roles',
+  'employee_roles',
   'sessions',
   'customer_identifiers',
   'customer_engagements',
@@ -106,7 +106,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
 
   // --- tenant-safety parent keys ----------------------------------------
   await run(
-    `CREATE UNIQUE INDEX enterprise_members_id_enterprise_uniq ON enterprise_members (id, enterprise_id)`,
+    `CREATE UNIQUE INDEX enterprise_employees_id_enterprise_uniq ON enterprise_employees (id, enterprise_id)`,
   );
   await run(`CREATE UNIQUE INDEX roles_id_enterprise_uniq ON roles (id, enterprise_id)`);
   await run(
@@ -129,6 +129,21 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
   // --- reusable business identifiers: partial, so deleting frees the key --
   await run(
     `CREATE UNIQUE INDEX enterprises_slug_uniq ON enterprises (slug) WHERE is_deleted = false`,
+  );
+  /*
+   * ONE BUSINESS PER CONTACT ADDRESS.
+   *
+   * Signup is the only way a business comes into existence, and there is no way
+   * to sign up INTO an existing one — so without this, two colleagues signing up
+   * "Acme Coffee" get two separate tenants with two separate slugs, split data,
+   * and a product that looks broken rather than duplicated. The second person has
+   * to be given an account by the first, which is what this forces.
+   *
+   * lower(), because a business is not two businesses for having capitalised its
+   * own address.
+   */
+  await run(
+    `CREATE UNIQUE INDEX enterprises_email_uniq ON enterprises (lower(email)) WHERE is_deleted = false`,
   );
   await run(`CREATE UNIQUE INDEX features_key_uniq ON features ("key") WHERE is_deleted = false`);
   await run(
@@ -156,10 +171,10 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       WHERE is_deleted = false AND mobile IS NOT NULL
     `);
 
-  // --- memberships and grants -------------------------------------------
+  // --- employments and grants -------------------------------------------
   await run(`
-      CREATE UNIQUE INDEX enterprise_members_enterprise_identity_uniq
-      ON enterprise_members (enterprise_id, identity_id) WHERE is_deleted = false
+      CREATE UNIQUE INDEX enterprise_employees_enterprise_identity_uniq
+      ON enterprise_employees (enterprise_id, identity_id) WHERE is_deleted = false
     `);
   await run(`
       CREATE UNIQUE INDEX staff_members_identity_uniq ON staff_members (identity_id)
@@ -170,7 +185,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       WHERE is_deleted = false
     `);
   await run(`
-      CREATE UNIQUE INDEX member_roles_uniq ON member_roles (member_id, role_id)
+      CREATE UNIQUE INDEX employee_roles_uniq ON employee_roles (employee_id, role_id)
       WHERE is_deleted = false
     `);
   await run(`
@@ -270,10 +285,10 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
   // cross-tenant reference unrepresentable — the database rejects it.
   // =======================================================================
   await run(`
-      ALTER TABLE enterprise_members
-        ADD CONSTRAINT enterprise_members_identity_fk FOREIGN KEY (identity_id) REFERENCES identities (id),
-        ADD CONSTRAINT enterprise_members_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
-        ADD CONSTRAINT enterprise_members_invited_by_fk FOREIGN KEY (invited_by_member_id) REFERENCES enterprise_members (id)
+      ALTER TABLE enterprise_employees
+        ADD CONSTRAINT enterprise_employees_identity_fk FOREIGN KEY (identity_id) REFERENCES identities (id),
+        ADD CONSTRAINT enterprise_employees_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
+        ADD CONSTRAINT enterprise_employees_invited_by_fk FOREIGN KEY (invited_by_employee_id) REFERENCES enterprise_employees (id)
     `);
   await run(`
       ALTER TABLE staff_members
@@ -293,24 +308,24 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
         ADD CONSTRAINT role_permissions_permission_fk FOREIGN KEY (permission_id) REFERENCES permissions (id) ON DELETE CASCADE
     `);
   // THE table where cross-tenant privilege escalation would happen. Both
-  // references route through enterprise_id, so pairing business A's member
+  // references route through enterprise_id, so pairing business A's employee
   // with business B's role is rejected by the database.
   await run(`
-      ALTER TABLE member_roles
-        ADD CONSTRAINT member_roles_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
-        ADD CONSTRAINT member_roles_member_fk
-            FOREIGN KEY (member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id),
-        ADD CONSTRAINT member_roles_role_fk
+      ALTER TABLE employee_roles
+        ADD CONSTRAINT employee_roles_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
+        ADD CONSTRAINT employee_roles_employee_fk
+            FOREIGN KEY (employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id),
+        ADD CONSTRAINT employee_roles_role_fk
             FOREIGN KEY (role_id, enterprise_id) REFERENCES roles (id, enterprise_id),
-        ADD CONSTRAINT member_roles_granted_by_fk
-            FOREIGN KEY (granted_by_member_id) REFERENCES enterprise_members (id)
+        ADD CONSTRAINT employee_roles_granted_by_fk
+            FOREIGN KEY (granted_by_employee_id) REFERENCES enterprise_employees (id)
     `);
   await run(`
       ALTER TABLE enterprise_features
         ADD CONSTRAINT enterprise_features_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
         ADD CONSTRAINT enterprise_features_feature_fk FOREIGN KEY (feature_id) REFERENCES features (id),
         ADD CONSTRAINT enterprise_features_requested_by_fk
-            FOREIGN KEY (requested_by_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id),
+            FOREIGN KEY (requested_by_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id),
         ADD CONSTRAINT enterprise_features_decided_by_fk
             FOREIGN KEY (decided_by_staff_id) REFERENCES staff_members (id)
     `);
@@ -322,7 +337,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       ALTER TABLE provider_connections
         ADD CONSTRAINT provider_connections_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
         ADD CONSTRAINT provider_connections_connected_by_fk
-            FOREIGN KEY (connected_by_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id)
+            FOREIGN KEY (connected_by_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id)
     `);
   await run(`
       ALTER TABLE channels
@@ -347,7 +362,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
         ADD CONSTRAINT customers_last_channel_fk
             FOREIGN KEY (last_channel_id, enterprise_id) REFERENCES channels (id, enterprise_id),
         ADD CONSTRAINT customers_blocked_by_fk
-            FOREIGN KEY (blocked_by_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id),
+            FOREIGN KEY (blocked_by_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id),
         ADD CONSTRAINT customers_merged_into_fk
             FOREIGN KEY (merged_into_customer_id, enterprise_id) REFERENCES customers (id, enterprise_id)
     `);
@@ -373,7 +388,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
         ADD CONSTRAINT posts_channel_fk
             FOREIGN KEY (channel_id, enterprise_id) REFERENCES channels (id, enterprise_id) ON DELETE CASCADE,
         ADD CONSTRAINT posts_authored_by_fk
-            FOREIGN KEY (authored_by_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id)
+            FOREIGN KEY (authored_by_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id)
     `);
   await run(`
       ALTER TABLE conversations
@@ -387,7 +402,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
             REFERENCES customer_identifiers (id, enterprise_id),
         ADD CONSTRAINT conversations_post_fk FOREIGN KEY (post_id) REFERENCES posts (id),
         ADD CONSTRAINT conversations_assigned_to_fk
-            FOREIGN KEY (assigned_to_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id)
+            FOREIGN KEY (assigned_to_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id)
     `);
   await run(`
       ALTER TABLE messages
@@ -398,7 +413,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
         ADD CONSTRAINT messages_customer_fk
             FOREIGN KEY (customer_id, enterprise_id) REFERENCES customers (id, enterprise_id),
         ADD CONSTRAINT messages_sent_by_fk
-            FOREIGN KEY (sent_by_member_id, enterprise_id) REFERENCES enterprise_members (id, enterprise_id),
+            FOREIGN KEY (sent_by_employee_id, enterprise_id) REFERENCES enterprise_employees (id, enterprise_id),
         ADD CONSTRAINT messages_parent_fk FOREIGN KEY (parent_message_id) REFERENCES messages (id),
         ADD CONSTRAINT messages_inbound_event_fk FOREIGN KEY (inbound_event_id) REFERENCES inbound_events (id),
         ADD CONSTRAINT messages_outbound_event_fk FOREIGN KEY (outbound_event_id) REFERENCES outbound_events (id)
@@ -443,7 +458,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       ALTER TABLE audit_logs
         ADD CONSTRAINT audit_logs_enterprise_fk FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
         ADD CONSTRAINT audit_logs_actor_identity_fk FOREIGN KEY (actor_identity_id) REFERENCES identities (id),
-        ADD CONSTRAINT audit_logs_actor_member_fk FOREIGN KEY (actor_member_id) REFERENCES enterprise_members (id),
+        ADD CONSTRAINT audit_logs_actor_employee_fk FOREIGN KEY (actor_employee_id) REFERENCES enterprise_employees (id),
         ADD CONSTRAINT audit_logs_actor_staff_fk FOREIGN KEY (actor_staff_id) REFERENCES staff_members (id)
     `);
 
@@ -453,10 +468,10 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
 
   // --- lookups right after password verification -------------------------
   await run(
-    `CREATE INDEX enterprise_members_identity_idx ON enterprise_members (identity_id) WHERE is_deleted = false`,
+    `CREATE INDEX enterprise_employees_identity_idx ON enterprise_employees (identity_id) WHERE is_deleted = false`,
   );
   await run(
-    `CREATE INDEX enterprise_members_enterprise_idx ON enterprise_members (enterprise_id) WHERE is_deleted = false`,
+    `CREATE INDEX enterprise_employees_enterprise_idx ON enterprise_employees (enterprise_id) WHERE is_deleted = false`,
   );
   await run(`CREATE INDEX enterprises_status_idx ON enterprises (status) WHERE is_deleted = false`);
 
@@ -465,7 +480,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
     `CREATE INDEX role_permissions_role_idx ON role_permissions (role_id) WHERE is_deleted = false`,
   );
   await run(
-    `CREATE INDEX member_roles_member_idx ON member_roles (member_id) WHERE is_deleted = false`,
+    `CREATE INDEX employee_roles_employee_idx ON employee_roles (employee_id) WHERE is_deleted = false`,
   );
   await run(`CREATE INDEX permissions_feature_idx ON permissions (feature_id)`);
   await run(`CREATE INDEX permissions_resource_idx ON permissions (resource)`);
@@ -575,7 +590,7 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
     `);
   await run(`
       CREATE INDEX conversations_assignee_idx
-      ON conversations (assigned_to_member_id, status, last_message_at DESC) WHERE is_deleted = false
+      ON conversations (assigned_to_employee_id, status, last_message_at DESC) WHERE is_deleted = false
     `);
   await run(`
       CREATE INDEX conversations_post_idx ON conversations (post_id, last_message_at DESC)

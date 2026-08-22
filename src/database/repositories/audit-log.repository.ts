@@ -4,7 +4,7 @@ import { BaseRepository } from './base.repository';
 export interface AuditLogInsert {
   readonly enterpriseId: number | null;
   readonly actorIdentityId: number | null;
-  readonly actorMemberId: number | null;
+  readonly actorEmployeeId: number | null;
   readonly actorStaffId: number | null;
   readonly actorKind: string;
   readonly isImpersonated: boolean;
@@ -28,7 +28,7 @@ export class AuditLogRepository extends BaseRepository {
   async insert(entry: AuditLogInsert): Promise<void> {
     await this.query(
       `INSERT INTO audit_logs (
-         enterprise_id, actor_identity_id, actor_member_id, actor_staff_id,
+         enterprise_id, actor_identity_id, actor_employee_id, actor_staff_id,
          actor_kind, is_impersonated, action, entity_type, entity_id,
          changes, metadata, ip_address, user_agent, status
        ) VALUES ($1, $2, $3, $4, $5::varchar, $6, $7::varchar, $8::varchar, $9,
@@ -36,7 +36,7 @@ export class AuditLogRepository extends BaseRepository {
       [
         entry.enterpriseId,
         entry.actorIdentityId,
-        entry.actorMemberId,
+        entry.actorEmployeeId,
         entry.actorStaffId,
         entry.actorKind,
         entry.isImpersonated,

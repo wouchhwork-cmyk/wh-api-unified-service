@@ -309,7 +309,7 @@ describe('the platform admin console', () => {
     const row = list.body.data[0];
     expect(row.refId).toBe(refId);
     expect(row.status).toBe('pending_activation');
-    expect(row.counts.members).toBe(1);
+    expect(row.counts.employees).toBe(1);
     expect(row.counts.customers).toBe(0);
 
     // The cursor is built from the internal key, which must be stripped from the
@@ -420,7 +420,7 @@ describe('access-token hygiene', () => {
     const selectionToken = await tokens.issueSelectionToken(Number(identity[0]?.id));
 
     // Same signing secret, valid signature, and it still must not authenticate:
-    // it carries no enterpriseId, memberId or staffId, and an absent claim is not
+    // it carries no enterpriseId, employeeId or staffId, and an absent claim is not
     // a null one.
     const response = await http()
       .get('/api/v1/auth/me')

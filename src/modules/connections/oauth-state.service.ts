@@ -7,7 +7,7 @@ import { AppException, ErrorCode } from '@/shared/errors';
 
 interface StatePayload {
   readonly enterpriseId: number;
-  readonly memberId: number | null;
+  readonly employeeId: number | null;
   readonly nonce: string;
   readonly exp: number;
 }
@@ -27,10 +27,10 @@ interface StatePayload {
 export class OauthStateService {
   constructor(private readonly config: AppConfigService) {}
 
-  mint(enterpriseId: number, memberId: number | null): string {
+  mint(enterpriseId: number, employeeId: number | null): string {
     const payload: StatePayload = {
       enterpriseId,
-      memberId,
+      employeeId,
       nonce: randomBytes(16).toString('base64url'),
       exp: Date.now() + OAUTH_STATE_TTL_MS,
     };
@@ -42,7 +42,7 @@ export class OauthStateService {
    * Verifies signature THEN expiry. Both failures return the same error, so the
    * response cannot be used to distinguish a forged state from a stale one.
    */
-  verify(state: string): { enterpriseId: number; memberId: number | null } {
+  verify(state: string): { enterpriseId: number; employeeId: number | null } {
     const parts = state.split('.');
     if (parts.length !== 2) throw new AppException(ErrorCode.OauthStateInvalid);
 
@@ -70,7 +70,7 @@ export class OauthStateService {
       throw new AppException(ErrorCode.OauthStateInvalid);
     }
 
-    return { enterpriseId: payload.enterpriseId, memberId: payload.memberId ?? null };
+    return { enterpriseId: payload.enterpriseId, employeeId: payload.employeeId ?? null };
   }
 
   /**

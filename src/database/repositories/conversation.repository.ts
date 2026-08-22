@@ -106,7 +106,7 @@ export class ConversationRepository extends BaseRepository {
   async listInbox(input: {
     enterpriseId: number;
     status: ConversationStatus | null;
-    assignedToMemberId: number | null;
+    assignedToEmployeeId: number | null;
     limit: number;
     cursor: { lastMessageAt: Date | null; id: number } | null;
   }): Promise<ConversationRow[]> {
@@ -117,9 +117,9 @@ export class ConversationRepository extends BaseRepository {
       params.push(input.status);
       filters.push(`AND status = $${params.length}`);
     }
-    if (input.assignedToMemberId !== null) {
-      params.push(input.assignedToMemberId);
-      filters.push(`AND assigned_to_member_id = $${params.length}`);
+    if (input.assignedToEmployeeId !== null) {
+      params.push(input.assignedToEmployeeId);
+      filters.push(`AND assigned_to_employee_id = $${params.length}`);
     }
     if (input.cursor) {
       params.push(input.cursor.lastMessageAt, input.cursor.id);
@@ -176,14 +176,14 @@ export class ConversationRepository extends BaseRepository {
   async assign(
     enterpriseId: number,
     conversationId: number,
-    memberId: number | null,
+    employeeId: number | null,
   ): Promise<void> {
     await this.mutate(
       `UPDATE conversations
-          SET assigned_to_member_id = $3,
+          SET assigned_to_employee_id = $3,
               assigned_at = CASE WHEN $3 IS NULL THEN NULL ELSE now() END
         WHERE id = $2 AND enterprise_id = $1 AND is_deleted = false`,
-      [this.requireEnterprise(enterpriseId), conversationId, memberId],
+      [this.requireEnterprise(enterpriseId), conversationId, employeeId],
     );
   }
 

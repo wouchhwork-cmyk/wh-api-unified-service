@@ -5,7 +5,7 @@ export enum PermissionResource {
   Posts = 'posts',
   Channels = 'channels',
   Customers = 'customers',
-  Members = 'members',
+  Employees = 'employees',
   Roles = 'roles',
   Features = 'features',
   Enterprise = 'enterprise',
@@ -51,9 +51,9 @@ export enum Permission {
   CustomersView = 'customers.view',
   CustomersManage = 'customers.manage',
 
-  MembersView = 'members.view',
-  MembersInvite = 'members.invite',
-  MembersManage = 'members.manage',
+  EmployeesView = 'employees.view',
+  EmployeesInvite = 'employees.invite',
+  EmployeesManage = 'employees.manage',
 
   RolesView = 'roles.view',
   RolesManage = 'roles.manage',

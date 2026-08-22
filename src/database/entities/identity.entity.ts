@@ -5,10 +5,10 @@ import { PublicEntity } from './base.entity';
 /**
  * schema.md §2 — the login credential. One row per human, never tenant-scoped.
  *
- * The credential is separated from the membership because login by a single
+ * The credential is separated from the employment because login by a single
  * credential cannot work if the same credential can appear on two rows. One
  * person in three businesses is one `identities` row and three
- * `enterprise_members` rows.
+ * `enterprise_employees` rows.
  */
 @Entity('identities')
 export class Identity extends PublicEntity {

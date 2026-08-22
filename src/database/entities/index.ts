@@ -15,12 +15,12 @@ import { CustomerEngagement } from './customer-engagement.entity';
 import { CustomerIdentifier } from './customer-identifier.entity';
 import { Customer } from './customer.entity';
 import { EnterpriseFeature } from './enterprise-feature.entity';
-import { EnterpriseMember } from './enterprise-member.entity';
+import { EnterpriseEmployee } from './enterprise-employee.entity';
 import { Enterprise } from './enterprise.entity';
 import { Feature } from './feature.entity';
 import { Identity } from './identity.entity';
 import { InboundEvent } from './inbound-event.entity';
-import { MemberRole } from './member-role.entity';
+import { EmployeeRole } from './employee-role.entity';
 import { MessageAttachment } from './message-attachment.entity';
 import { Message } from './message.entity';
 import { OutboundEvent } from './outbound-event.entity';
@@ -42,12 +42,12 @@ export { CustomerEngagement } from './customer-engagement.entity';
 export { CustomerIdentifier } from './customer-identifier.entity';
 export { Customer } from './customer.entity';
 export { EnterpriseFeature } from './enterprise-feature.entity';
-export { EnterpriseMember } from './enterprise-member.entity';
+export { EnterpriseEmployee } from './enterprise-employee.entity';
 export { Enterprise } from './enterprise.entity';
 export { Feature } from './feature.entity';
 export { Identity } from './identity.entity';
 export { InboundEvent } from './inbound-event.entity';
-export { MemberRole } from './member-role.entity';
+export { EmployeeRole } from './employee-role.entity';
 export { MessageAttachment } from './message-attachment.entity';
 export { Message } from './message.entity';
 export { OutboundEvent } from './outbound-event.entity';
@@ -70,12 +70,12 @@ export const ENTITIES = [
   CustomerIdentifier,
   Customer,
   EnterpriseFeature,
-  EnterpriseMember,
+  EnterpriseEmployee,
   Enterprise,
   Feature,
   Identity,
   InboundEvent,
-  MemberRole,
+  EmployeeRole,
   MessageAttachment,
   Message,
   OutboundEvent,

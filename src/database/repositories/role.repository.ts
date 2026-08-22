@@ -4,6 +4,8 @@ import { BaseRepository } from './base.repository';
 
 export interface RoleRow {
   readonly id: number;
+  /** The only identifier that crosses the API boundary. */
+  readonly refId: string;
   readonly name: string;
   readonly scope: RoleScope;
 }
@@ -14,7 +16,7 @@ export class RoleRepository extends BaseRepository {
    * Instantiates the enterprise's own system roles by COPYING the NULL-enterprise
    * templates, together with their permission grants.
    *
-   * This copy is not incidental: member_roles routes both foreign keys through
+   * This copy is not incidental: employee_roles routes both foreign keys through
    * enterprise_id, so a role with enterprise_id NULL is structurally
    * unassignable. Every enterprise therefore needs its own rows (schema.md §8).
    *
@@ -69,9 +71,24 @@ export class RoleRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * A role by its public refId, WITHIN one enterprise — so a refId belonging to
+   * another business simply does not resolve, and no request body can name a
+   * role that is not this business's own.
+   */
+  async findByRefId(enterpriseId: number, refId: string): Promise<RoleRow | null> {
+    const rows = await this.query<RoleRow>(
+      `SELECT id, ref_id AS "refId", name, scope FROM roles
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false AND status = $3
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), refId, RoleStatus.Active],
+    );
+    return rows[0] ?? null;
+  }
+
   async listForEnterprise(enterpriseId: number): Promise<RoleRow[]> {
     return this.query<RoleRow>(
-      `SELECT id, name, scope FROM roles
+      `SELECT id, ref_id AS "refId", name, scope FROM roles
         WHERE enterprise_id = $1 AND is_deleted = false AND status = $2
         ORDER BY is_system DESC, name`,
       [this.requireEnterprise(enterpriseId), RoleStatus.Active],
@@ -79,26 +96,26 @@ export class RoleRepository extends BaseRepository {
   }
 
   /**
-   * Grants a role to a member. enterprise_id is passed explicitly because the
+   * Grants a role to a employee. enterprise_id is passed explicitly because the
    * composite foreign keys require it — and that is exactly what makes pairing
-   * one business's member with another's role impossible.
+   * one business's employee with another's role impossible.
    */
-  async grantToMember(input: {
+  async grantToEmployee(input: {
     enterpriseId: number;
-    memberId: number;
+    employeeId: number;
     roleId: number;
-    grantedByMemberId: number | null;
+    grantedByEmployeeId: number | null;
   }): Promise<void> {
     await this.guard(async () => {
       await this.query(
-        `INSERT INTO member_roles (enterprise_id, member_id, role_id, granted_by_member_id)
+        `INSERT INTO employee_roles (enterprise_id, employee_id, role_id, granted_by_employee_id)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING`,
         [
           this.requireEnterprise(input.enterpriseId),
-          input.memberId,
+          input.employeeId,
           input.roleId,
-          input.grantedByMemberId,
+          input.grantedByEmployeeId,
         ],
       );
     });
@@ -107,7 +124,7 @@ export class RoleRepository extends BaseRepository {
   /** Grants the owner role created during signup. */
   async grantOwner(
     enterpriseId: number,
-    memberId: number,
+    employeeId: number,
     roleIdsByName: Map<string, number>,
   ): Promise<void> {
     const ownerRoleId = roleIdsByName.get(SystemRole.Owner);
@@ -118,11 +135,11 @@ export class RoleRepository extends BaseRepository {
         `system role "${SystemRole.Owner}" template is missing — run the seed before signup`,
       );
     }
-    await this.grantToMember({
+    await this.grantToEmployee({
       enterpriseId,
-      memberId,
+      employeeId,
       roleId: ownerRoleId,
-      grantedByMemberId: null,
+      grantedByEmployeeId: null,
     });
   }
 }

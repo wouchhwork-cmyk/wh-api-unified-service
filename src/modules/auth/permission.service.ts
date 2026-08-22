@@ -7,14 +7,14 @@ import type { AccessTokenClaims } from './token.service';
  * Resolves the two-gate access check from schema.md into a permission set.
  *
  *   Gate 1 — does the enterprise have the feature?   (commercial)
- *   Gate 2 — do the member's roles grant the action? (structural)
+ *   Gate 2 — do the employee's roles grant the action? (structural)
  *
  * Neither implies the other, which is why they are separate tables rather than
  * one grant.
  *
  * RESOLVED PER REQUEST, CACHED PER REQUEST — never per session. A role change
  * must take effect on the next request, not the next login. A short-TTL cache
- * keyed on (memberId, rolesVersion) is permitted later, but only with an
+ * keyed on (employeeId, rolesVersion) is permitted later, but only with an
  * explicit invalidation path (backend-design.md §7.2).
  */
 @Injectable()
@@ -22,10 +22,10 @@ export class PermissionService {
   constructor(private readonly permissions: PermissionRepository) {}
 
   async resolve(claims: AccessTokenClaims): Promise<ReadonlySet<string>> {
-    // A member's own grants, when acting inside their business.
-    if (claims.memberId !== null && claims.enterpriseId !== null) {
+    // A employee's own grants, when acting inside their business.
+    if (claims.employeeId !== null && claims.enterpriseId !== null) {
       const codes = await this.permissions.listEffectivePermissions(
-        claims.memberId,
+        claims.employeeId,
         claims.enterpriseId,
       );
       return new Set(codes);

@@ -57,7 +57,7 @@ export const RequestContext = {
 
   /**
    * Attaches the resolved actor. Called only by the guard chain, once the
-   * identity, membership, and permissions are all known.
+   * identity, employment, and permissions are all known.
    */
   setActor(actor: ActorContext): void {
     const store = storage.getStore();

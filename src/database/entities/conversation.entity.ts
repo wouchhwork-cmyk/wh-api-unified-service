@@ -72,9 +72,9 @@ export class Conversation extends PublicEntity {
   @Column({ type: 'jsonb', default: () => "'{}'" })
   metadata!: Record<string, unknown>;
 
-  /** Team member handling it. */
+  /** Team employee handling it. */
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  assignedToMemberId!: number | null;
+  assignedToEmployeeId!: number | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   assignedAt!: Date | null;

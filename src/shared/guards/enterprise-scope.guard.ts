@@ -39,10 +39,10 @@ export class EnterpriseScopeGuard implements CanActivate {
       throw new AppException(ErrorCode.AuthEnterpriseNotSelected);
     }
 
-    // A member acting in their own business must actually have a membership.
-    // Staff reach into an enterprise legitimately carries no memberId.
-    if (actor.memberId === null && actor.actorKind !== ActorKind.Staff) {
-      throw new AppException(ErrorCode.AuthNoActiveMembership);
+    // A employee acting in their own business must actually have a employment.
+    // Staff reach into an enterprise legitimately carries no employeeId.
+    if (actor.employeeId === null && actor.actorKind !== ActorKind.Staff) {
+      throw new AppException(ErrorCode.AuthNoActiveEmployment);
     }
 
     return true;

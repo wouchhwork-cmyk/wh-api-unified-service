@@ -127,7 +127,7 @@ src/
     auth/                       # login, refresh, verify, switch-enterprise
     identities/
     enterprises/
-    members/                    # enterprise_members + roles + permissions
+    employees/                    # enterprise_employees + roles + permissions
     features/                   # features + enterprise_features
     connections/                # provider_connections + channels
     sync/                       # sync_jobs + workers
@@ -514,7 +514,7 @@ Implements the flows in `schema.md` §2, §11, §12. Three layers of guard, appl
 
 ```
 JwtAuthGuard          → is there a valid access token?  (global, bypassed by @Public)
-EnterpriseScopeGuard  → does the token carry an enterprise, and is the membership still active?
+EnterpriseScopeGuard  → does the token carry an enterprise, and is the employment still active?
 PermissionsGuard      → does @RequirePermission('conversations.reply') pass the two-gate check?
 ```
 
@@ -539,9 +539,9 @@ export class ConversationsController {
 export interface ActorContext {
   identityId: number;
   enterpriseId: number | null;       // null only for a staff actor who has not selected one
-  memberId: number | null;
+  employeeId: number | null;
   staffId: number | null;
-  actorKind: ActorKind;              // enterprise_member | staff | system
+  actorKind: ActorKind;              // employee | staff | system
   isImpersonated: boolean;           // staff acting inside an enterprise — audited (schema.md §25)
   permissions: ReadonlySet<string>;  // resolved once per request
   correlationId: string;
@@ -550,23 +550,23 @@ export interface ActorContext {
 
 ### 7.2 Permission resolution
 
-The two-gate check from `schema.md` (§5–10) — enterprise has the feature **and** the member's roles grant the action — is one query, in one place, `PermissionService.resolve(actor)`.
+The two-gate check from `schema.md` (§5–10) — enterprise has the feature **and** the employee's roles grant the action — is one query, in one place, `PermissionService.resolve(actor)`.
 
 - **Resolved per request, cached per request.** Not per session: a role change must take effect on the next request, not the next login.
 - **Deny by default.** No row means no permission. There are no negative grants and therefore no precedence rules to get wrong.
 - **Staff bypass reaches, it does not entitle.** `staff_members.has_all_enterprise_access` grants reach into any enterprise but never bypasses the feature gate — a feature the enterprise does not have does not exist for anyone.
-- A short-TTL cache (seconds) keyed on `(memberId, rolesVersion)` is permitted later, but only with an explicit invalidation path on role change.
+- A short-TTL cache (seconds) keyed on `(employeeId, rolesVersion)` is permitted later, but only with an explicit invalidation path on role change.
 
 ### 7.3 Tokens
 
 | | Where | TTL | Notes |
 | --- | --- | --- | --- |
-| Access token | Response body, held in client memory | 15 min | Carries `identityId`, `enterpriseId`, `memberId`, `actorKind` |
+| Access token | Response body, held in client memory | 15 min | Carries `identityId`, `enterpriseId`, `employeeId`, `actorKind` |
 | Refresh token | `httpOnly` `Secure` `SameSite=Strict` cookie | 7 days | SHA-256 hash stored as a `sessions` row |
 
-Rules: **every refresh re-checks the membership is still active**, so removing someone takes effect within the access-token lifetime; switching enterprise is a token exchange, not a re-login; logout revokes the session row and clears the cookie. Refresh-token rotation is absent by decision — recorded in `schema.md` as a known gap, since replay of a stolen token is undetectable without it. One deployment assumption to keep visible: `SameSite=Strict` only works while the web app and the API share a site — if the frontend ever moves to a different registrable domain, the cookie silently stops being sent and the setting must become `None` plus an explicit CSRF token.
+Rules: **every refresh re-checks the employment is still active**, so removing someone takes effect within the access-token lifetime; switching enterprise is a token exchange, not a re-login; logout revokes the session row and clears the cookie. Refresh-token rotation is absent by decision — recorded in `schema.md` as a known gap, since replay of a stolen token is undetectable without it. One deployment assumption to keep visible: `SameSite=Strict` only works while the web app and the API share a site — if the frontend ever moves to a different registrable domain, the cookie silently stops being sent and the setting must become `None` plus an explicit CSRF token.
 
-Login and verification follow `schema.md` §12 exactly: normalise the credential, one index probe, one hash comparison, load memberships, and issue nothing until any required verification passes. `bcrypt` is not used — **argon2id**, with parameters in config.
+Login and verification follow `schema.md` §12 exactly: normalise the credential, one index probe, one hash comparison, load employments, and issue nothing until any required verification passes. `bcrypt` is not used — **argon2id**, with parameters in config.
 
 ### 7.4 What the guards are not allowed to do
 
@@ -751,8 +751,8 @@ What "proper examples" means here, concretely:
 
 ```
 shared/enums/
-  actor.enum.ts           ActorKind, MemberKind
-  identity.enum.ts        IdentityStatus, MemberStatus, StaffStatus, EnterpriseStatus, RoleScope
+  actor.enum.ts           ActorKind, EmployeeKind
+  identity.enum.ts        IdentityStatus, EmployeeStatus, StaffStatus, EnterpriseStatus, RoleScope
   auth.enum.ts            VerificationKind, DeliveryChannel, DeliveryStatus, VerificationMethod
   connection.enum.ts      Provider, ProviderCategory, Platform, ChannelKind, TokenStatus,
                           ConnectionStatus, ChannelStatus
@@ -976,7 +976,7 @@ Ported from the **working socialLift implementation** — a production codebase 
 
 ```
 GET /api/v1/connections/meta/connect                 (authenticated, RequirePermission channels.connect)
-  ├─ build state: HMAC-signed payload { enterpriseId, memberId, nonce, exp: now()+10min }
+  ├─ build state: HMAC-signed payload { enterpriseId, employeeId, nonce, exp: now()+10min }
   └─ 302 → https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth
              ?client_id={FB_APP_ID}
              &redirect_uri={META_OAUTH_REDIRECT_URI}       ← one static URI, identical in the exchange
@@ -1006,7 +1006,7 @@ GET /api/v1/connections/meta/callback?code&state     (@Public — the browser ar
   ├─ persist, one transaction:
   │    ├─ UPSERT provider_connections (enterprise_id, provider='meta', provider_user_id)
   │    │    access_token = encrypted long-lived user token (§14 envelope), token_expires_at,
-  │    │    granted_scopes, connected_by_member_id, status='active', reauth_required=false
+  │    │    granted_scopes, connected_by_employee_id, status='active', reauth_required=false
   │    ├─ per page:  UPSERT channels (platform='facebook',  channel_kind='page',
   │    │    platform_channel_id=page_id, access_token=encrypted page token)
   │    ├─ per linked IG account: UPSERT channels (platform='instagram', channel_kind='profile',
@@ -1047,7 +1047,7 @@ The route is registered with the raw-body parser **before** the JSON parser (§7
 
 | socialLift (demo-grade) | Here | Why |
 | --- | --- | --- |
-| `state` = raw client-supplied user id, never validated | HMAC-signed `{enterpriseId, memberId, nonce, exp}`, single-use | Their git history had real CSRF state and removed it for demo convenience (`b290456`); this is login CSRF |
+| `state` = raw client-supplied user id, never validated | HMAC-signed `{enterpriseId, employeeId, nonce, exp}`, single-use | Their git history had real CSRF state and removed it for demo convenience (`b290456`); this is login CSRF |
 | Page tokens sent to the browser in URLs, AES-CBC without a MAC | Tokens never leave the server; AES-256-GCM envelope in Postgres (§14) | URLs land in history, Referer, and proxy logs; CBC without a MAC is malleable |
 | `expires_in` discarded, no expiry tracking, no re-auth path | `token_expires_at` captured; sweep + `reauth_required` per schema.md §14 | Their only recovery from a dead token was the user noticing 500s |
 | Per-page N+1 detail calls | One `/me/accounts` call with field expansion; per-page calls only in the `debug_token` fallback | Same data, one round trip; the fallback keeps the per-page shape because that path has no `/me/accounts` response to expand |
@@ -1173,9 +1173,9 @@ flow-level account of all of it is [`backend-flows.md`](backend-flows.md).
   `active`, with `ENTERPRISE_PENDING_ACTIVATION` or `ENTERPRISE_SUSPENDED` — a
   precise reason rather than a bare permission denial. Staff are exempt, because
   somebody has to be able to look at a business to decide whether to activate it.
-- **Membership resolution no longer filters on the business's status.** It used to,
-  which made a suspended business's membership vanish and surfaced to its owner as
-  "this account has no active business". Whether someone is a member and whether
+- **Employment resolution no longer filters on the business's status.** It used to,
+  which made a suspended business's employment vanish and surfaced to its owner as
+  "this account has no active business". Whether someone is a employee and whether
   the business may be used are two questions, and only the second one has an
   answer worth showing a person.
 - **A verification challenge is driven by proof, not by login count.** It used to
@@ -1213,6 +1213,43 @@ flow-level account of all of it is [`backend-flows.md`](backend-flows.md).
 - **Cross-tenant reads live in one named file.** Every query that deliberately
   spans tenants is in `platform-admin.repository.ts` and reachable only behind the
   platform gate, so a reviewer can find all of them by opening one file.
+
+### 19.8 Phase 2 — employees, and the one-signup-per-business rule
+
+- **`members` became `employees` everywhere** — tables, columns, enums, permission
+  codes, error codes, the token claim, both design docs. `enterprise_members` is
+  now `enterprise_employees`, `member_roles` is `employee_roles`, and every
+  `*_member_id` is `*_employee_id`. `staff_members` deliberately did NOT change:
+  Wouchh's own people are a different concept, and blurring the two would be worst
+  exactly where it matters, in the audit trail.
+- **`employee_kind` says `business` or `support`,** not `enterprise` or `staff`.
+  One table still holds both populations, because they need the same roles, the
+  same assignment and the same audit trail — but calling an embedded Wouchh
+  person an employee of the customer's business would be a lie, and `support`
+  reads correctly in an audit row. (I had proposed `internal`; it is ambiguous
+  about internal to WHOM, which is the opposite of what the value means.)
+- **A business can be signed up exactly once.** `enterprises.email` is unique on
+  `lower(email)` among live rows. Without it two colleagues each signing up "Acme
+  Coffee" got two tenants and a `-2` slug: split data and a product that looks
+  broken rather than duplicated.
+- **Employees are created, never self-registered.** `POST /employees` takes a
+  name, an address and a role — and refuses a password. The identity is created
+  with a random one nobody is told; the only way in is the invitation.
+- **An invitation is a CODE keyed on the destination,** which looks like it
+  contradicts §12's "a long-lived secret gets entropy, not a short window" and
+  does not. A token only works when the person can be handed a link carrying both
+  the reference and the secret. An invited colleague is on a different device from
+  whoever invited them and never sees the API response the reference came back in.
+  So `POST /auth/accept-invite` is keyed on the address they already know. Brute
+  force stays bounded: five attempts on the one live row, and only somebody
+  already inside can create another.
+- **Accepting sets the password, stamps the credential and activates the
+  employment in ONE transaction.** A spent code with no password set would leave
+  an account nobody can ever enter.
+- **Permission resolution now joins the employment and requires it active.**
+  Without that a suspended employee kept every permission until their access token
+  expired — up to fifteen minutes of full access after being switched off, which
+  made "suspend" a suggestion rather than a control.
 
 ### 19.8 Still open
 

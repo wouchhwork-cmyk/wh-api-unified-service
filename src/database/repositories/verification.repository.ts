@@ -68,6 +68,31 @@ export class VerificationRepository extends BaseRepository {
    * second request and removes any chance of verifying a code against a
    * different address than it was sent to.
    */
+  /**
+   * The live challenge for one destination and kind.
+   *
+   * Used where the caller cannot know the reference: an invited colleague was
+   * never shown it. `verifications_live_uniq` guarantees at most one live row per
+   * (subject, kind, destination), so this cannot be ambiguous — issuing a new
+   * code supersedes the previous one in the same transaction.
+   */
+  async findLiveByDestination(
+    destination: string,
+    kind: VerificationKind,
+  ): Promise<Verification | null> {
+    const rows = await this.repo(Verification)
+      .createQueryBuilder('v')
+      .where('v.destination = :destination', { destination })
+      .andWhere('v.verificationKind = :kind', { kind })
+      .andWhere('v.consumedAt IS NULL')
+      .andWhere('v.supersededAt IS NULL')
+      .andWhere('v.isDeleted = false')
+      .orderBy('v.id', 'DESC')
+      .limit(1)
+      .getMany();
+    return rows[0] ?? null;
+  }
+
   async findLiveByRefId(refId: string, kind: VerificationKind): Promise<Verification | null> {
     const rows = await this.repo(Verification)
       .createQueryBuilder('v')

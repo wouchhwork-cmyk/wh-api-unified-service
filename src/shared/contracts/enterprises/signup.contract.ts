@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { EmailSchema, MobileInputSchema, PasswordSchema } from '../auth/credential.contract';
 
 /**
- * Signup creates the business AND its first member in one transaction. At least
+ * Signup creates the business AND its first employee in one transaction. At least
  * one credential is required — the identities CHECK constraint enforces the same
  * invariant at the database level, so the two can never disagree.
  */
@@ -52,7 +52,7 @@ export const SignupResponseSchema = z.object({
   enterpriseRefId: z.uuid(),
   slug: z.string(),
   identityRefId: z.uuid(),
-  memberRefId: z.uuid(),
+  employeeRefId: z.uuid(),
   /** Signup always requires verification before a session is issued. */
   verificationRefId: z.uuid(),
   maskedDestination: z.string(),

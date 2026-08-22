@@ -42,8 +42,23 @@ export const VERIFICATION_CONFIG: Readonly<Record<VerificationKind, Verification
   [VerificationKind.IdentifierChange]: code(10 * MINUTE),
   /** A link, not a code — a guessable reset is an account takeover. */
   [VerificationKind.PasswordReset]: token(30 * MINUTE),
-  /** Long-lived by nature, so entropy replaces the short window. */
-  [VerificationKind.MemberInvite]: token(7 * DAY),
+  /*
+   * A CODE, despite being long-lived — which looks like it contradicts the rule
+   * above, and does not.
+   *
+   * A token only works when the person can be handed a LINK containing both the
+   * verification reference and the secret, because a token is far too long to
+   * type. An invited colleague is on a different device from whoever invited
+   * them: they never see the API response the reference came back in. So the
+   * invite is looked up by the destination they already know — their own address
+   * — plus a code short enough to read off a phone.
+   *
+   * The entropy argument still holds. Brute force is bounded by 5 attempts on the
+   * one live row, and only somebody already inside the business can create
+   * another, so a guessing attack gets 5 tries in 1,000,000 and then needs a
+   * fresh invitation it cannot request.
+   */
+  [VerificationKind.EmployeeInvite]: code(7 * DAY),
   [VerificationKind.CustomerMobileVerification]: code(10 * MINUTE),
   [VerificationKind.CustomerEmailVerification]: code(24 * HOUR),
 } as const;

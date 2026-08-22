@@ -29,8 +29,8 @@ describe('schema guarantees', () => {
         `INSERT INTO identities (email, password_hash, first_name)
          VALUES ('a@x.test', 'h', 'A') RETURNING id`,
       );
-      const member: { id: string }[] = await db.query(
-        `INSERT INTO enterprise_members (identity_id, enterprise_id) VALUES ($1, $2) RETURNING id`,
+      const employee: { id: string }[] = await db.query(
+        `INSERT INTO enterprise_employees (identity_id, enterprise_id) VALUES ($1, $2) RETURNING id`,
         [identity[0]?.id, acme],
       );
       // The role belongs to Zenith.
@@ -39,14 +39,14 @@ describe('schema guarantees', () => {
         [zenith],
       );
 
-      // Acme's member + Zenith's role: the composite foreign key makes this
+      // Acme's employee + Zenith's role: the composite foreign key makes this
       // combination unrepresentable, so the DATABASE refuses it.
       await expect(
         db.query(
-          `INSERT INTO member_roles (enterprise_id, member_id, role_id) VALUES ($1, $2, $3)`,
-          [acme, member[0]?.id, role[0]?.id],
+          `INSERT INTO employee_roles (enterprise_id, employee_id, role_id) VALUES ($1, $2, $3)`,
+          [acme, employee[0]?.id, role[0]?.id],
         ),
-      ).rejects.toThrow(/member_roles_role_fk|foreign key/i);
+      ).rejects.toThrow(/employee_roles_role_fk|foreign key/i);
     });
 
     it('REJECTS a conversation pointing at another tenant’s channel', async () => {

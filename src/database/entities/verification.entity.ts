@@ -10,7 +10,7 @@ import { PublicEntity } from './base.entity';
 
 /**
  * schema.md §12 — EVERY verification challenge in the product, of any type:
- * first login, email/mobile checks, password reset, member invites, and end
+ * first login, email/mobile checks, password reset, employee invites, and end
  * customers when that flow arrives.
  *
  * "One table, one verifier." Hashing, expiry, attempt limiting, resend

@@ -32,7 +32,7 @@ export class EnterpriseFeature extends PublicEntity {
 
   /** Who asked. NULL = we provisioned it without a request. */
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
-  requestedByMemberId!: number | null;
+  requestedByEmployeeId!: number | null;
 
   /*
    * The timestamps below are AUDIT TRAIL, NOT STATE — never read them to decide
@@ -44,7 +44,7 @@ export class EnterpriseFeature extends PublicEntity {
   @Column({ type: 'timestamptz', nullable: true })
   requestedAt!: Date | null;
 
-  /** Which Wouchh staff member approved or declined. */
+  /** Which Wouchh staff employee approved or declined. */
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   decidedByStaffId!: number | null;
 

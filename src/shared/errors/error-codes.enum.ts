@@ -18,7 +18,7 @@ export enum ErrorCode {
   AuthSessionRevoked = 'AUTH_SESSION_REVOKED',
   AuthResendTooSoon = 'AUTH_RESEND_TOO_SOON',
   /** Authenticated, but no active business — 403, not 401. */
-  AuthNoActiveMembership = 'AUTH_NO_ACTIVE_MEMBERSHIP',
+  AuthNoActiveEmployment = 'AUTH_NO_ACTIVE_EMPLOYMENT',
   AuthEnterpriseNotSelected = 'AUTH_ENTERPRISE_NOT_SELECTED',
 
   // --- authorisation ----------------------------------------------------
@@ -36,7 +36,8 @@ export enum ErrorCode {
   EmailAlreadyRegistered = 'EMAIL_ALREADY_REGISTERED',
   MobileAlreadyRegistered = 'MOBILE_ALREADY_REGISTERED',
   EnterpriseSlugTaken = 'ENTERPRISE_SLUG_TAKEN',
-  MemberAlreadyExists = 'MEMBER_ALREADY_EXISTS',
+  EnterpriseEmailAlreadyRegistered = 'ENTERPRISE_EMAIL_ALREADY_REGISTERED',
+  EmployeeAlreadyExists = 'EMPLOYEE_ALREADY_EXISTS',
   RoleNameTaken = 'ROLE_NAME_TAKEN',
   IdentifierAlreadyLinked = 'IDENTIFIER_ALREADY_LINKED',
   DuplicateMessage = 'DUPLICATE_MESSAGE',
@@ -55,7 +56,7 @@ export enum ErrorCode {
   /** An unknown route. Distinct from a missing domain entity. */
   RouteNotFound = 'ROUTE_NOT_FOUND',
   EnterpriseNotFound = 'ENTERPRISE_NOT_FOUND',
-  MemberNotFound = 'MEMBER_NOT_FOUND',
+  EmployeeNotFound = 'EMPLOYEE_NOT_FOUND',
   RoleNotFound = 'ROLE_NOT_FOUND',
   FeatureNotFound = 'FEATURE_NOT_FOUND',
   ConnectionNotFound = 'CONNECTION_NOT_FOUND',

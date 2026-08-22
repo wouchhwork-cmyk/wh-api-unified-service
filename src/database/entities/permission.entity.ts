@@ -32,7 +32,7 @@ export class Permission extends PublicEntity {
 
   /**
    * The feature this action belongs to; NULL = not feature-gated (e.g.
-   * `members.invite`). This column "is what makes feature-level access and
+   * `employees.invite`). This column "is what makes feature-level access and
    * action-level access one system instead of two" — without it, flags and
    * permissions would be unrelated systems that can disagree.
    */

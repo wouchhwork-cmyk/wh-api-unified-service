@@ -52,7 +52,7 @@ describe('business onboarding and sign-in', () => {
     // The enterprise got its OWN copies of the role templates, because a
     // NULL-enterprise role is structurally unassignable.
     const roles: { name: string }[] = await db.query(
-      `SELECT r.name FROM member_roles mr
+      `SELECT r.name FROM employee_roles mr
          JOIN roles r ON r.id = mr.role_id
         WHERE r.enterprise_id IS NOT NULL`,
     );

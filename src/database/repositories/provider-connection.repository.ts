@@ -12,7 +12,7 @@ export interface UpsertConnectionInput {
   readonly accessToken: string;
   readonly tokenExpiresAt: Date | null;
   readonly grantedScopes: string | null;
-  readonly connectedByMemberId: number | null;
+  readonly connectedByEmployeeId: number | null;
 }
 
 export interface ConnectionRow {
@@ -39,7 +39,7 @@ export class ProviderConnectionRepository extends BaseRepository {
       `INSERT INTO provider_connections
          (enterprise_id, provider, provider_category, provider_user_id, provider_user_name,
           access_token, token_expires_at, token_status, reauth_required, granted_scopes,
-          connected_by_member_id, status, is_deleted)
+          connected_by_employee_id, status, is_deleted)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10, $11, false)
        ON CONFLICT (enterprise_id, provider, provider_user_id)
        DO UPDATE SET
@@ -50,7 +50,7 @@ export class ProviderConnectionRepository extends BaseRepository {
          reauth_required        = false,
          reauth_notified_at     = NULL,
          granted_scopes         = EXCLUDED.granted_scopes,
-         connected_by_member_id = EXCLUDED.connected_by_member_id,
+         connected_by_employee_id = EXCLUDED.connected_by_employee_id,
          status                 = EXCLUDED.status,
          is_deleted             = false
        RETURNING id, ref_id`,
@@ -64,7 +64,7 @@ export class ProviderConnectionRepository extends BaseRepository {
         input.tokenExpiresAt,
         TokenStatus.Valid,
         input.grantedScopes,
-        input.connectedByMemberId,
+        input.connectedByEmployeeId,
         ConnectionStatus.Active,
       ],
     );

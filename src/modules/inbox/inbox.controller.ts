@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { EnterpriseMemberRepository } from '@/database/repositories/enterprise-member.repository';
+import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { ConversationStatus, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
@@ -23,7 +23,7 @@ type ScopedActor = ActorContext & { enterpriseId: number };
 export class InboxController {
   constructor(
     private readonly inbox: InboxService,
-    private readonly members: EnterpriseMemberRepository,
+    private readonly employees: EnterpriseEmployeeRepository,
   ) {}
 
   @Get()
@@ -41,7 +41,7 @@ export class InboxController {
     const parsed = InboxQuerySchema.parse(query);
     const result = await this.inbox.listInbox(actor.enterpriseId, {
       status: parsed.status ?? null,
-      assignedToMemberId: parsed.assignedToMe === 'true' ? actor.memberId : null,
+      assignedToEmployeeId: parsed.assignedToMe === 'true' ? actor.employeeId : null,
       limit: parsed.limit ?? 50,
       cursor: parsed.cursor ?? null,
     });
@@ -101,7 +101,7 @@ export class InboxController {
   @Post(':refId/assign')
   @RequirePermission(Permission.ConversationsAssign)
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Assign a conversation to a team member, or unassign it' })
+  @ApiOperation({ summary: 'Assign a conversation to a team employee, or unassign it' })
   async assign(
     @CurrentScopedActor() actor: ScopedActor,
     @Param('refId') refId: string,
@@ -109,16 +109,16 @@ export class InboxController {
   ): Promise<void> {
     const parsed = AssignRequestSchema.parse(body);
 
-    let memberId: number | null = null;
-    if (parsed.memberRefId !== null) {
+    let employeeId: number | null = null;
+    if (parsed.employeeRefId !== null) {
       // Resolved within THIS enterprise, so a refId from another tenant cannot
       // be assigned work here.
-      const member = await this.members.findByRefId(actor.enterpriseId, parsed.memberRefId);
-      if (!member) throw new AppException(ErrorCode.MemberNotFound);
-      memberId = member.memberId;
+      const employee = await this.employees.findByRefId(actor.enterpriseId, parsed.employeeRefId);
+      if (!employee) throw new AppException(ErrorCode.EmployeeNotFound);
+      employeeId = employee.employeeId;
     }
 
-    await this.inbox.assign(actor.enterpriseId, refId, memberId);
+    await this.inbox.assign(actor.enterpriseId, refId, employeeId);
   }
 
   @Post(':refId/status')

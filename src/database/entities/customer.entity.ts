@@ -75,7 +75,7 @@ export class Customer extends PublicEntity {
   metadata!: Record<string, unknown>;
 
   /**
-   * blockedAt / blockedByMemberId / blockReason are "audit trail, not state".
+   * blockedAt / blockedByEmployeeId / blockReason are "audit trail, not state".
    * Blocking sets `status = 'blocked'` and stamps them; unblocking returns
    * `status` to `'active'` and LEAVES them as the record of the last block.
    * There is deliberately no `is_blocked` boolean.
@@ -84,7 +84,7 @@ export class Customer extends PublicEntity {
   blockedAt!: Date | null;
 
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
-  blockedByMemberId!: number | null;
+  blockedByEmployeeId!: number | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   blockReason!: string | null;

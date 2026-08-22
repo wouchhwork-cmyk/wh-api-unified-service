@@ -9,15 +9,15 @@ export class Role extends PublicEntity {
   /**
    * NULL = a Wouchh-scoped or template role; set = owned by that business.
    *
-   * A NULL-scoped role can never be assigned through `member_roles`, whose
+   * A NULL-scoped role can never be assigned through `employee_roles`, whose
    * composite FK routes through `enterprise_id` — the correct outcome, because
-   * "staff privileges must not arrive through a business membership" (§8).
+   * "staff privileges must not arrive through a business employment" (§8).
    */
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   enterpriseId!: number | null;
 
   /**
-   * Exists "so a staff role can never be handed to a business member, or the
+   * Exists "so a staff role can never be handed to a business employee, or the
    * reverse". Enforced in the service layer at assignment time by checking this
    * value against the target table.
    */

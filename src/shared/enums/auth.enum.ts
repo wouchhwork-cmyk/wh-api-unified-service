@@ -7,7 +7,7 @@ export enum VerificationKind {
   EmailVerification = 'email_verification',
   MobileVerification = 'mobile_verification',
   PasswordReset = 'password_reset',
-  MemberInvite = 'member_invite',
+  EmployeeInvite = 'employee_invite',
   IdentifierChange = 'identifier_change',
   CustomerMobileVerification = 'customer_mobile_verification',
   CustomerEmailVerification = 'customer_email_verification',

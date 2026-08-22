@@ -121,6 +121,10 @@ mocked repository would accept the duplicate a partial unique index rejects.
 - The inbox: listing, reading a thread, replying, assigning, resolving
 - Postgres-only workers: projector, outbound relay, lease reaper, sweeper
 
+- **A business builds its team.** The owner creates each colleague — there is no
+  employee signup — and they set their own password from the code sent to them.
+  Suspension takes effect on the next request, not when their token expires.
+
 ## What does not
 
 - Verification delivery has no email or SMS provider wired

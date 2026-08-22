@@ -54,7 +54,7 @@ export class AuditService {
       await this.logs.insert({
         enterpriseId: event.enterpriseId,
         actorIdentityId: actor?.identityId ?? null,
-        actorMemberId: actor?.memberId ?? null,
+        actorEmployeeId: actor?.employeeId ?? null,
         actorStaffId: actor?.staffId ?? null,
         actorKind: actor?.actorKind ?? ActorKind.System,
         isImpersonated: actor?.isImpersonated ?? false,

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { EnterpriseMemberRepository } from '@/database/repositories/enterprise-member.repository';
+import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { IdentityRepository } from '@/database/repositories/identity.repository';
 import { RoleRepository } from '@/database/repositories/role.repository';
@@ -9,8 +9,8 @@ import { SecretHashService } from '@/shared/crypto';
 import {
   DeliveryChannel,
   EnterpriseStatus,
-  MemberKind,
-  MemberStatus,
+  EmployeeKind,
+  EmployeeStatus,
   VerificationKind,
   VerificationSubjectKind,
 } from '@/shared/enums';
@@ -41,7 +41,7 @@ export class EnterpriseOnboardingService {
   constructor(
     private readonly enterprises: EnterpriseRepository,
     private readonly identities: IdentityRepository,
-    private readonly members: EnterpriseMemberRepository,
+    private readonly employees: EnterpriseEmployeeRepository,
     private readonly roles: RoleRepository,
     private readonly hasher: SecretHashService,
     private readonly verifications: VerificationService,
@@ -52,7 +52,7 @@ export class EnterpriseOnboardingService {
   /**
    * Business onboarding (schema.md §11 signup flow).
    *
-   * One transaction creates the enterprise, the owner's identity, the membership,
+   * One transaction creates the enterprise, the owner's identity, the employment,
    * and the enterprise's own copies of the system role templates — then grants
    * the owner role. All of it, or none: a business whose founder has no role is
    * an account nobody can administer.
@@ -93,23 +93,23 @@ export class EnterpriseOnboardingService {
         lastName: owner.lastName,
       });
 
-      const member = await this.members.create({
+      const employee = await this.employees.create({
         identityId: identity.id,
         enterpriseId: enterprise.id,
-        memberKind: MemberKind.Enterprise,
+        employeeKind: EmployeeKind.Business,
         // Active immediately: this person just proved they control the
         // credential by choosing the password, and the verification below gates
-        // the session rather than the membership.
-        status: MemberStatus.Active,
+        // the session rather than the employment.
+        status: EmployeeStatus.Active,
       });
 
       // Copies the NULL-enterprise templates into this enterprise. Required,
-      // not cosmetic: member_roles' composite foreign keys make a
+      // not cosmetic: employee_roles' composite foreign keys make a
       // NULL-enterprise role structurally unassignable (schema.md §8).
       const roleIds = await this.roles.instantiateSystemRoles(enterprise.id);
-      await this.roles.grantOwner(enterprise.id, member.id, roleIds);
+      await this.roles.grantOwner(enterprise.id, employee.id, roleIds);
 
-      return { enterprise, identity, member };
+      return { enterprise, identity, employee };
     });
 
     // Outside the transaction: issuing a verification writes its own rows and
@@ -138,7 +138,7 @@ export class EnterpriseOnboardingService {
         enterpriseRefId: created.enterprise.refId,
         slug: created.enterprise.slug,
         identityRefId: created.identity.refId,
-        memberRefId: created.member.refId,
+        employeeRefId: created.employee.refId,
         verificationRefId: issued.verificationRefId,
         maskedDestination: issued.maskedDestination,
       },

@@ -30,11 +30,11 @@ export class ConnectionsController {
     summary: 'Begin connecting a Meta account',
     description:
       'Returns the Facebook Login for Business dialog URL. The state parameter is a signed, ' +
-      'single-use token bound to this enterprise and member, and expires in ten minutes.',
+      'single-use token bound to this enterprise and employee, and expires in ten minutes.',
   })
   startMetaConnect(@CurrentScopedActor() actor: ScopedActor): { authorizationUrl: string } {
     return {
-      authorizationUrl: this.meta.buildAuthorizationUrl(actor.enterpriseId, actor.memberId),
+      authorizationUrl: this.meta.buildAuthorizationUrl(actor.enterpriseId, actor.employeeId),
     };
   }
 

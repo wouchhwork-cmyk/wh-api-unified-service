@@ -33,10 +33,10 @@ export async function truncateTenantData(dataSource: DataSource): Promise<void> 
              customer_engagements, customer_identifiers, customers,
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,
-             member_roles, enterprise_members, identities, enterprises
+             employee_roles, enterprise_employees, identities, enterprises
     RESTART IDENTITY CASCADE
   `);
-  // member_roles cascades from enterprises, but the ROLE rows a tenant owns are
+  // employee_roles cascades from enterprises, but the ROLE rows a tenant owns are
   // its own copies of the templates and must go too — without removing the
   // templates themselves, which have enterprise_id IS NULL.
   await dataSource.query(`DELETE FROM roles WHERE enterprise_id IS NOT NULL`);

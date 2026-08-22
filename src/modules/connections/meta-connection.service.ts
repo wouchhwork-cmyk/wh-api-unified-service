@@ -54,9 +54,9 @@ export class MetaConnectionService {
   ) {}
 
   /** Step 0: the URL the browser is redirected to. */
-  buildAuthorizationUrl(enterpriseId: number, memberId: number | null): string {
+  buildAuthorizationUrl(enterpriseId: number, employeeId: number | null): string {
     this.assertConfigured();
-    return this.graph.buildLoginDialogUrl(this.state.mint(enterpriseId, memberId));
+    return this.graph.buildLoginDialogUrl(this.state.mint(enterpriseId, employeeId));
   }
 
   /**
@@ -71,7 +71,7 @@ export class MetaConnectionService {
 
     // Verified first: an unsigned or expired state is rejected before we spend a
     // single Graph call on it.
-    const { enterpriseId, memberId } = this.state.verify(rawState);
+    const { enterpriseId, employeeId } = this.state.verify(rawState);
 
     const shortLived = await this.exchange(() => this.graph.exchangeCodeForToken(code));
     const longLived = await this.exchange(() =>
@@ -104,7 +104,7 @@ export class MetaConnectionService {
         accessToken: this.cipher.encrypt(longLived.access_token),
         tokenExpiresAt: expiryFrom(longLived.expires_in),
         grantedScopes: null,
-        connectedByMemberId: memberId,
+        connectedByEmployeeId: employeeId,
       });
 
       const channelIds: number[] = [];
