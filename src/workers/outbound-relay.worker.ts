@@ -1,0 +1,219 @@
+import { Injectable } from '@nestjs/common';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { AppConfigService } from '@/config';
+import { ChannelRepository } from '@/database/repositories/channel.repository';
+import { OutboundEventRepository, type ClaimedOutboundEvent } from '@/database/repositories/outbound-event.repository';
+import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
+import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
+import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
+import { scheduleRetry } from '@/modules/ledger/backoff.util';
+import { TokenCipherService } from '@/shared/crypto';
+import { ConnectionStatus, OutboundEventType } from '@/shared/enums';
+import { BasePoller } from './base-poller';
+
+interface CommentReplyPayload {
+  readonly commentId?: string;
+  readonly message?: string;
+}
+interface DirectMessagePayload {
+  readonly message?: string;
+}
+interface CommentModerationPayload {
+  readonly commentId?: string;
+  readonly hidden?: boolean;
+}
+
+/**
+ * Sends what the domain queued, and writes the outcome back.
+ *
+ * This is the only place a platform call is made on behalf of a domain action,
+ * which is what keeps the send rules in one place rather than at every call site.
+ */
+@Injectable()
+export class OutboundRelayWorker extends BasePoller {
+  protected readonly name = 'outbound-relay';
+
+  constructor(
+    private readonly outbound: OutboundEventRepository,
+    private readonly channels: ChannelRepository,
+    private readonly connections: ProviderConnectionRepository,
+    private readonly graph: GraphApiClient,
+    private readonly cipher: TokenCipherService,
+    protected readonly config: AppConfigService,
+    @InjectPinoLogger(OutboundRelayWorker.name) protected readonly logger: PinoLogger,
+  ) {
+    super();
+  }
+
+  protected async pollOnce(): Promise<number> {
+    const { batchSize, leaseSeconds } = this.config.worker;
+    const claimed = await this.outbound.claimDueBatch(this.leaseOwner, batchSize, leaseSeconds);
+
+    for (const event of claimed) {
+      await this.deliver(event);
+    }
+    return claimed.length;
+  }
+
+  private async deliver(event: ClaimedOutboundEvent): Promise<void> {
+    if (event.enterpriseId === null || event.channelId === null) {
+      await this.outbound.cancel(event.id, 'the event names no channel to send through');
+      return;
+    }
+
+    const channel = await this.channels.findSendContext(event.enterpriseId, event.channelId);
+    if (!channel) {
+      await this.outbound.cancel(event.id, 'the channel no longer exists');
+      return;
+    }
+
+    /*
+     * FAIL FAST ON A DEAD TOKEN. Checked before sending rather than after
+     * failing: burning five attempts against a credential that cannot succeed
+     * delays every other item in the queue and tells the operator nothing new.
+     */
+    if (channel.reauthRequired) {
+      await this.outbound.cancel(event.id, 'the channel needs re-authentication');
+      return;
+    }
+    if (!channel.isManaged) {
+      await this.outbound.cancel(event.id, 'the channel is not managed');
+      return;
+    }
+    if (!channel.effectiveAccessToken) {
+      await this.outbound.cancel(event.id, 'no usable access token for the channel');
+      return;
+    }
+
+    let token: string;
+    try {
+      token = this.cipher.decrypt(channel.effectiveAccessToken);
+    } catch (error) {
+      // A decryption failure is an ALERT, not a fallback: it means key loss or
+      // tampering. Treating it as "no token" would show a user a mysterious
+      // re-auth prompt and hide a serious problem.
+      this.logger.error(
+        { channelId: channel.channelId, err: error },
+        'could not decrypt a channel token — key loss or tampering',
+      );
+      await this.outbound.cancel(event.id, 'the channel token could not be decrypted');
+      return;
+    }
+
+    try {
+      const platformId = await this.send(event, channel.platformChannelId, token);
+      await this.outbound.markSent(event.id, platformId);
+    } catch (error) {
+      await this.handleSendFailure(event, error);
+    }
+  }
+
+  private async send(
+    event: ClaimedOutboundEvent,
+    platformChannelId: string,
+    token: string,
+  ): Promise<string | null> {
+    switch (event.eventType) {
+      case OutboundEventType.CommentReply: {
+        const payload = event.payload as CommentReplyPayload;
+        if (!payload.commentId || !payload.message) throw new Error('incomplete comment reply');
+        const result = await this.graph.replyToComment(payload.commentId, payload.message, token);
+        return result.platformId;
+      }
+      case OutboundEventType.DirectMessage: {
+        const payload = event.payload as DirectMessagePayload;
+        if (!event.recipientPlatformId || !payload.message) {
+          throw new Error('incomplete direct message');
+        }
+        const result = await this.graph.sendDirectMessage(
+          platformChannelId,
+          event.recipientPlatformId,
+          payload.message,
+          token,
+        );
+        return result.platformId;
+      }
+      case OutboundEventType.CommentHide: {
+        const payload = event.payload as CommentModerationPayload;
+        if (!payload.commentId) throw new Error('incomplete comment hide');
+        await this.graph.hideComment(payload.commentId, payload.hidden ?? true, token);
+        return null;
+      }
+      case OutboundEventType.CommentDelete: {
+        const payload = event.payload as CommentModerationPayload;
+        if (!payload.commentId) throw new Error('incomplete comment delete');
+        await this.graph.deleteComment(payload.commentId, token);
+        return null;
+      }
+      default:
+        // A type with no sender is a wiring gap, not a transient failure.
+        throw new Error(`no sender for event_type "${event.eventType}"`);
+    }
+  }
+
+  private async handleSendFailure(event: ClaimedOutboundEvent, error: unknown): Promise<void> {
+    if (!(error instanceof GraphApiError)) {
+      const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
+      await this.outbound.markFailed(
+        event.id,
+        error instanceof Error ? error.message : 'send failed',
+        retry?.nextAttemptAt ?? null,
+      );
+      return;
+    }
+
+    const mapped = mapGraphError(error);
+
+    /*
+     * A LIVE AUTH ERROR BEATS THE CALENDAR. Providers revoke early — a password
+     * change, an app removal — so the connection is flagged the moment a call
+     * says the credential is dead, rather than waiting for the expiry sweep.
+     * Flagging the parent cascades to every channel under it.
+     */
+    if (mapped.requiresReauth && event.enterpriseId !== null && event.channelId !== null) {
+      const channel = await this.channels.findSendContext(event.enterpriseId, event.channelId);
+      if (channel) {
+        await this.connections.markReauthRequired(channel.channelId, ConnectionStatus.Revoked);
+      }
+      await this.outbound.cancel(event.id, 'the provider rejected the credential');
+      return;
+    }
+
+    /*
+     * THE AMBIGUOUS SEND (schema.md case 5) — the one duplicate no constraint
+     * can prevent. We timed out or got a 5xx, so we do not know whether Meta
+     * created the comment. Meta offers no idempotency token on these endpoints,
+     * so blindly retrying may post twice.
+     *
+     * Until the read-back is implemented, the row is CANCELLED rather than
+     * retried: a missing reply an agent can see and resend is recoverable, a
+     * duplicate reply to a customer is not. This is a deliberate choice of the
+     * cheaper failure, and it is why this branch is explicit rather than folded
+     * into the generic retry.
+     */
+    if (isAmbiguousFailure(error)) {
+      this.logger.warn(
+        { eventId: event.id, httpStatus: error.httpStatus, code: error.code },
+        'send failed ambiguously — not retrying, because the platform may have accepted it',
+      );
+      await this.outbound.cancel(
+        event.id,
+        'the outcome was ambiguous; a read-back is required before any retry',
+      );
+      return;
+    }
+
+    if (!mapped.retryable) {
+      await this.outbound.markFailed(event.id, `${mapped.code}: ${error.message}`, null);
+      return;
+    }
+
+    const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
+    await this.outbound.markFailed(
+      event.id,
+      `${mapped.code}: ${error.message}`,
+      retry?.nextAttemptAt ?? null,
+    );
+  }
+}

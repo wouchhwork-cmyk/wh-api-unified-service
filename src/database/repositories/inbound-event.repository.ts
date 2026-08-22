@@ -78,12 +78,21 @@ export class InboundEventRepository extends BaseRepository {
     leaseOwner: string,
     limit: number,
     leaseSeconds: number,
-  ): Promise<{ id: number; eventType: InboundEventType; payload: unknown; attemptCount: number }[]> {
+  ): Promise<
+    {
+      id: number;
+      eventType: InboundEventType;
+      payload: unknown;
+      attemptCount: number;
+      priority: number;
+    }[]
+  > {
     const { rows } = await this.mutate<{
       id: number;
       event_type: InboundEventType;
       payload: unknown;
       attempt_count: number;
+      priority: number;
     }>(
       `UPDATE inbound_events
           SET status = $1,
@@ -99,16 +108,22 @@ export class InboundEventRepository extends BaseRepository {
            LIMIT $4
            FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, event_type, payload, attempt_count`,
+        RETURNING id, event_type, payload, attempt_count, priority`,
       [InboundEventStatus.Processing, leaseOwner, leaseSeconds, limit],
     );
 
-    return rows.map((row) => ({
-      id: row.id,
-      eventType: row.event_type,
-      payload: row.payload,
-      attemptCount: row.attempt_count,
-    }));
+    // RETURNING rows arrive in no defined order, so the ORDER BY above decides
+    // only WHICH rows are claimed. Sorting here is what makes an urgent event
+    // inside a batch actually run before a low-priority one.
+    return rows
+      .map((row) => ({
+        id: row.id,
+        eventType: row.event_type,
+        payload: row.payload,
+        attemptCount: row.attempt_count,
+        priority: row.priority,
+      }))
+      .sort((a, b) => a.priority - b.priority || a.id - b.id);
   }
 
   async markProcessed(id: number): Promise<void> {
