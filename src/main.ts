@@ -104,4 +104,29 @@ function mountSwagger(app: NestExpressApplication, config: AppConfigService): vo
   });
 }
 
-void bootstrap();
+/*
+ * A caught bootstrap, not `void bootstrap()`.
+ *
+ * Unhandled, the commonest startup failure by far — the port is already in use,
+ * usually because a previous run is still holding it — arrives as fifteen lines
+ * of Node internals with the one useful word buried in the middle. Config
+ * validation throws even earlier, at require time, so it never reaches here; this
+ * is for the failures that happen once the graph is built.
+ */
+bootstrap().catch((error: unknown) => {
+  const code = (error as { code?: string }).code;
+  const port = (error as { port?: number }).port;
+
+  if (code === 'EADDRINUSE') {
+    console.error(
+      `\nPort ${port ?? 'unknown'} is already in use — something else is listening on it.\n` +
+        `Find it with:  lsof -nP -iTCP:${port ?? 3000} -sTCP:LISTEN\n` +
+        `Or start on another port with:  PORT=3001 pnpm start:local\n`,
+    );
+    process.exit(1);
+  }
+
+  console.error('\nThe service failed to start.\n');
+  console.error(error);
+  process.exit(1);
+});

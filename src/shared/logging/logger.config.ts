@@ -18,6 +18,16 @@ export function buildLoggerConfig(config: AppConfigService): Params {
   const isDev = config.app.env === 'dev';
 
   return {
+    /*
+     * Spelled the way Express 5's router accepts, rather than nestjs-pino's own
+     * default of `['*']`.
+     *
+     * The bare wildcard is gone from path-to-regexp, so Nest auto-converts it and
+     * logs a warning for it on every boot — twice here, because the module
+     * applies two middlewares. Passing the modern form silences both and means
+     * nothing has to change when the auto-conversion is eventually removed.
+     */
+    forRoutes: ['{*path}'],
     pinoHttp: {
       level: config.app.logLevel,
       // Pretty output in dev only; JSON everywhere a machine reads the logs.

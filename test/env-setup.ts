@@ -42,3 +42,18 @@ function load(file: string, required: boolean): void {
 
 load('.env.dev', true);
 load('.env.local', false);
+
+/*
+ * TESTS GET THEIR OWN DATABASE, ALWAYS.
+ *
+ * The integration and e2e suites TRUNCATE tenant data in beforeEach. Pointed at
+ * the development database that is fine right up until somebody is clicking
+ * through the portal while a test run wipes the business they were looking at —
+ * and it is worse against a permanent local install than a disposable container,
+ * because there is no `down -v` to put it back.
+ *
+ * Derived rather than configured, so a new environment cannot forget to set it,
+ * and overridable by a real TEST_DB_NAME for a CI service container.
+ */
+const devDatabase = process.env.DB_NAME ?? 'wouchh_dev';
+process.env.DB_NAME = process.env.TEST_DB_NAME ?? `${devDatabase.replace(/_dev$/, '')}_test`;

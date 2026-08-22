@@ -83,7 +83,14 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    // First in the chain: guards and interceptors both read this context.
-    consumer.apply(RequestContextMiddleware).forRoutes('*');
+    /*
+     * First in the chain: guards and interceptors both read this context.
+     *
+     * `{*path}` rather than `*`. Express 5's path-to-regexp dropped the bare
+     * wildcard, and Nest currently auto-converts it while logging a warning on
+     * every boot — so this is the same route, spelled the way the router will
+     * still accept after the next upgrade.
+     */
+    consumer.apply(RequestContextMiddleware).forRoutes('{*path}');
   }
 }

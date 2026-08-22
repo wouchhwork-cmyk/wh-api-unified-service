@@ -4,7 +4,9 @@
  *
  *   node --env-file=.env.dev --import tsx scripts/db.ts migrate
  */
-import AppDataSource from '../src/database/data-source';
+import { DataSource } from 'typeorm';
+import AppDataSource, { buildDataSourceOptions } from '../src/database/data-source';
+import { loadConfiguration } from '../src/config/configuration';
 import { applyPostTableObjects, applyPreTableObjects } from '../src/database/schema/schema-objects';
 
 type Command = 'migrate' | 'revert' | 'drop' | 'status' | 'sync';
@@ -21,6 +23,45 @@ const ALREADY_EXISTS = new Set([
 function parseCommand(raw: string | undefined): Command {
   if (raw && (COMMANDS as readonly string[]).includes(raw)) return raw as Command;
   throw new Error(`Usage: db.ts <${COMMANDS.join('|')}>`);
+}
+
+/**
+ * Creates the database itself if it is not there yet.
+ *
+ * Nothing else can: `synchronize` and migrations both operate INSIDE a database,
+ * and CREATE DATABASE requires a connection to a different one — so a missing
+ * database surfaces as a raw driver error naming a file nobody has heard of.
+ * Compose creates it from POSTGRES_DB, but only when the volume is brand new,
+ * which is exactly the case that has already passed by the time somebody renames
+ * a database or runs against a second one.
+ *
+ * Connects to `postgres`, the maintenance database every server has.
+ */
+async function ensureDatabaseExists(): Promise<void> {
+  const database = loadConfiguration().database;
+  const admin = new DataSource({
+    ...buildDataSourceOptions(database),
+    database: 'postgres',
+    entities: [],
+    migrations: [],
+  });
+
+  await admin.initialize();
+  try {
+    const existing: { count: string }[] = await admin.query(
+      'SELECT count(*) AS count FROM pg_database WHERE datname = $1',
+      [database.name],
+    );
+    if (existing[0]?.count === '0') {
+      // The name comes from our own configuration, never from a request, and
+      // CREATE DATABASE takes no parameters — so it has to be interpolated.
+      // Quoted as an identifier to keep that honest.
+      await admin.query(`CREATE DATABASE "${database.name.replace(/"/g, '""')}"`);
+      console.log(`created database ${database.name}`);
+    }
+  } finally {
+    await admin.destroy();
+  }
 }
 
 async function main(): Promise<void> {
@@ -48,6 +89,10 @@ async function main(): Promise<void> {
         'qa and prod go through migrations.',
     );
   }
+
+  // Before the app's own connection: initialize() would fail on a database that
+  // does not exist yet, and `sync` is the command somebody runs from nothing.
+  if (command === 'sync') await ensureDatabaseExists();
 
   await AppDataSource.initialize();
   try {

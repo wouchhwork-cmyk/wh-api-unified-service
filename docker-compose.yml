@@ -8,9 +8,14 @@ services:
       POSTGRES_USER: wouchh
       POSTGRES_PASSWORD: wouchh_dev_local
     ports:
-      # 5544 on the host: PostgreSQL 17 and 18 are already installed locally and
-      # occupy 5432/5433, so this avoids a silent connection to the wrong database.
-      - '5544:5432'
+      # 5544, NOT 5432. Something on this machine already accepts TCP on 5432 and
+      # does not speak Postgres — pg_isready gets no response from it, and it is
+      # owned by another user so it does not show up in an unprivileged `lsof`.
+      # A local postgresql@16 is installed too, currently stopped.
+      #
+      # Overridable, but DB_PORT in .env.dev must match: a mismatch reads as "the
+      # tables vanished", because you connect successfully to the wrong server.
+      - '${HOST_DB_PORT:-5544}:5432'
     volumes:
       # Postgres 18+ wants ONE mount at /var/lib/postgresql (data lands in a
       # subdirectory), not the pre-18 /var/lib/postgresql/data. Mounting the old

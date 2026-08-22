@@ -91,11 +91,21 @@ export default [
   },
 
   {
-    // Operator-facing output: stdout IS the interface for a command somebody
-    // runs by hand, and routing a seed report through pino would bury it in
-    // JSON. The seed lives under src/ only because the migration and the app
-    // both need it.
-    files: ['scripts/**/*.ts', 'src/database/seed/**/*.ts'],
+    /*
+     * Operator-facing output, where stdout IS the interface.
+     *
+     * A seed report routed through pino would be buried in JSON, and it lives
+     * under src/ only because the migration and the app both need it. The two
+     * entrypoints are here for a different reason: a startup failure can happen
+     * BEFORE the logger exists, and "the port is in use" has to be readable
+     * without a JSON parser.
+     */
+    files: [
+      'scripts/**/*.ts',
+      'src/database/seed/**/*.ts',
+      'src/main.ts',
+      'src/workers/main.ts',
+    ],
     rules: {
       'no-console': 'off',
     },

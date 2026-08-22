@@ -13,15 +13,34 @@ from one place.
 
 ## Running it
 
-Requires Node 24, pnpm 10, and Docker.
+Requires Node 24, pnpm 10, and PostgreSQL 16 or newer.
+
+**Docker is optional.** Compose is there if you want a disposable database, but a
+local PostgreSQL works and is what the default `.env.dev` points at.
 
 ```bash
 pnpm install                  # exact versions, install scripts off (see design §2)
-docker compose up -d postgres # Postgres 18 on host port 5544, database wouchh_dev
-pnpm db:migrate               # hand-written SQL migrations
+
+# Against a local PostgreSQL on 5432 — create the role and the two databases once:
+#   CREATE ROLE wouchh WITH LOGIN PASSWORD '…' CREATEDB;
+#   CREATE DATABASE wouchh_dev  OWNER wouchh;
+#   CREATE DATABASE wouchh_test OWNER wouchh;
+#
+# Or, for a container instead:  docker compose up -d postgres   (publishes 5544,
+# so set DB_PORT=5544 in .env.dev to match)
+
+pnpm db:sync                  # schema from the entities + everything they cannot express
 pnpm db:seed                  # features, permissions, system role templates
-pnpm build && pnpm start:local
+pnpm dev                      # sync, build, run
 ```
+
+`db:sync` creates the database itself if it is missing — nothing else can, because
+CREATE DATABASE needs a connection to a different one.
+
+**Tests use their own database.** `test/env-setup.ts` rewrites `DB_NAME` to
+`wouchh_test`, because the integration and e2e suites TRUNCATE tenant data in
+`beforeEach` and doing that to the database you are clicking through is its own
+kind of bug. Give it a schema once with `DB_NAME=wouchh_test pnpm db:sync`.
 
 The API listens on `http://localhost:3000/api/v1`, with Swagger at
 `http://localhost:3000/api/docs`. Workers are a separate process sharing the same

@@ -1,14 +1,14 @@
 {
   "Servers": {
     "1": {
-      "Name": "Wouchh — local (docker)",
+      "Name": "Wouchh \u2014 local",
       "Group": "Wouchh",
-      "Host": "localhost",
-      "Port": 5544,
+      "Host": "127.0.0.1",
+      "Port": 5432,
       "MaintenanceDB": "wouchh_dev",
       "Username": "wouchh",
       "SSLMode": "prefer",
-      "Comment": "The compose Postgres. Port 5544, not 5432: local PostgreSQL installations already hold the usual ports. Password is DB_PASSWORD in .env.dev; pgAdmin will prompt for it."
+      "Comment": "The local PostgreSQL install. Password is DB_PASSWORD in .env.dev; pgAdmin will prompt. wouchh_test alongside it is the tests' own database and is wiped on every run."
     }
   }
 }
