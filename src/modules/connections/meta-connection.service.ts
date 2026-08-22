@@ -5,10 +5,12 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
+import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { TokenCipherService } from '@/shared/crypto';
 import {
   ChannelKind,
   ChannelStatus,
+  EnterpriseStatus,
   Platform,
   Provider,
   ProviderCategory,
@@ -47,6 +49,7 @@ export class MetaConnectionService {
     private readonly connections: ProviderConnectionRepository,
     private readonly channels: ChannelRepository,
     private readonly syncJobs: SyncJobRepository,
+    private readonly enterprises: EnterpriseRepository,
     private readonly cipher: TokenCipherService,
     private readonly config: AppConfigService,
     private readonly tx: TransactionManager,
@@ -81,6 +84,24 @@ export class MetaConnectionService {
     // replayed callback cannot get as far as Facebook a second time.
     const { enterpriseId, employeeId } = await this.state.consume(rawState);
 
+    /*
+     * RE-CHECKED HERE, not just when the flow started.
+     *
+     * This route is @Public and trusts only the signed state, so it bypasses the
+     * guard chain entirely — including the one that refuses a suspended or
+     * unactivated business. A state minted while a business was active would
+     * otherwise complete a connection minutes after it was switched off, and the
+     * tokens would be live.
+     */
+    const status = await this.enterprises.statusById(enterpriseId);
+    if (status !== EnterpriseStatus.Active) {
+      throw new AppException(
+        status === EnterpriseStatus.Suspended
+          ? ErrorCode.EnterpriseSuspended
+          : ErrorCode.EnterprisePendingActivation,
+      );
+    }
+
     const shortLived = await this.exchange(() => this.graph.exchangeCodeForToken(code));
     const longLived = await this.exchange(() =>
       this.graph.exchangeForLongLivedToken(shortLived.access_token),
@@ -111,7 +132,7 @@ export class MetaConnectionService {
         // Encrypted before it reaches Postgres; the column never holds plaintext.
         accessToken: this.cipher.encrypt(longLived.access_token),
         tokenExpiresAt: expiryFrom(longLived.expires_in),
-        grantedScopes: null,
+        grantedScopes: await this.readGrantedScopes(longLived.access_token),
         connectedByEmployeeId: employeeId,
       });
 
@@ -134,7 +155,13 @@ export class MetaConnectionService {
           accessToken: page.pageAccessToken ? this.cipher.encrypt(page.pageAccessToken) : null,
           tokenStatus: page.pageAccessToken ? TokenStatus.Valid : TokenStatus.NotApplicable,
           metadata: page.category ? { category: page.category } : {},
-          status: ChannelStatus.Active,
+          /*
+           * A Page that arrived without a token cannot send or be subscribed, so
+           * it is NOT active. It used to be stored as active and merely counted
+           * in errorCount — which reads, on the connections screen, as a working
+           * channel that silently never receives anything.
+           */
+          status: page.pageAccessToken ? ChannelStatus.Active : ChannelStatus.Error,
         });
         channelIds.push(pageChannel.id);
         channelIdByPageId.set(page.pageId, pageChannel.id);
@@ -203,6 +230,30 @@ export class MetaConnectionService {
       instagramCount: persisted.instagramCount,
       errorCount: discovered.partialFailures + subscribeFailures,
     };
+  }
+
+  /**
+   * The scopes Meta actually granted, as a comma-separated string.
+   *
+   * Read from debug_token rather than assumed from what was requested: with
+   * Facebook Login for Business the config decides the scopes, and a user can
+   * decline individual permissions at the consent screen. Without this there is
+   * no record of what was granted, so "why can we not read comments for this
+   * Page" has no answer months later.
+   *
+   * Best-effort on purpose. Failing to READ the scopes must not fail a
+   * connection whose tokens are already in hand — the column simply stays null,
+   * exactly as it was before.
+   */
+  private async readGrantedScopes(token: string): Promise<string | null> {
+    try {
+      const debug = await this.graph.debugToken(token);
+      const scopes = debug.data?.scopes;
+      return scopes && scopes.length > 0 ? scopes.join(',') : null;
+    } catch (error) {
+      this.logger.warn({ err: error }, 'could not read granted scopes; storing none');
+      return null;
+    }
   }
 
   /**

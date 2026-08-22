@@ -1,17 +1,28 @@
-import { Controller, Get, Query, Res } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Query, Res } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
-import { CurrentScopedActor, Public, RequirePermission } from '@/shared/decorators';
+import { CurrentScopedActor, Public, RequirePermission, SkipTimeout } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
 import { AppException } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
 import { MetaConnectionService } from './meta-connection.service';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
+
+/** What a client sees of a provider connection. No internal ids, no tokens. */
+interface ConnectionDto {
+  readonly refId: string;
+  readonly provider: string;
+  readonly providerUserName: string | null;
+  readonly status: string;
+  readonly reauthRequired: boolean;
+  readonly tokenExpiresAt: Date | null;
+}
 
 @ApiTags('connections')
 @Controller({ path: 'connections', version: '1' })
@@ -51,6 +62,22 @@ export class ConnectionsController {
    */
   @Get('meta/callback')
   @Public()
+  /*
+   * Facebook drives this, not a client of ours, so two global policies are wrong
+   * for it.
+   *
+   * The rate limit would answer a burst with a 429 JSON envelope — to a BROWSER
+   * mid-OAuth, which expects a redirect and would show raw JSON. The webhook
+   * controller is exempt for the same reason.
+   *
+   * The 15-second request timeout is shorter than the work: four mandatory Graph
+   * calls in series, then one subscribe per discovered Page, each with its own
+   * 10-second budget. Being aborted halfway is the worst available outcome,
+   * because the connection may be half written while the person is told it
+   * failed. The Graph client's per-call timeouts are the real bound.
+   */
+  @SkipThrottle()
+  @SkipTimeout()
   @ApiExcludeEndpoint()
   async metaCallback(
     @Query('code') code: string | undefined,
@@ -59,7 +86,23 @@ export class ConnectionsController {
     @Query('error_description') errorDescription: string | undefined,
     @Res() response: Response,
   ): Promise<void> {
-    const target = new URL(this.config.meta.frontendDashboardUrl);
+    /*
+     * Built defensively, because this line used to run OUTSIDE the try below:
+     * `new URL('')` throws, so an unset FRONTEND_DASHBOARD_URL turned every
+     * callback into a 500 on a public route. Without somewhere to send the
+     * browser there is nothing useful to do, so say so plainly instead of
+     * leaking a stack trace.
+     */
+    const target = this.redirectTarget();
+    if (!target) {
+      this.logger.error(
+        'FRONTEND_DASHBOARD_URL is missing or not a URL — cannot complete the OAuth callback',
+      );
+      response
+        .status(HttpStatus.SERVICE_UNAVAILABLE)
+        .send('This service is not configured to complete a connection.');
+      return;
+    }
 
     // The user cancelled at the consent screen: not an error of ours.
     if (error) {
@@ -96,11 +139,33 @@ export class ConnectionsController {
     response.redirect(target.toString());
   }
 
+  /** null when the configured value is absent or not an absolute URL. */
+  private redirectTarget(): URL | null {
+    const configured = this.config.meta.frontendDashboardUrl;
+    if (!configured) return null;
+    try {
+      return new URL(configured);
+    } catch {
+      return null;
+    }
+  }
+
   @Get()
   @RequirePermission(Permission.ChannelsView)
   @ApiOperation({ summary: 'The provider connections this business holds' })
-  async list(@CurrentScopedActor() actor: ScopedActor): Promise<unknown> {
-    return this.connections.listForEnterprise(actor.enterpriseId);
+  async list(@CurrentScopedActor() actor: ScopedActor): Promise<ConnectionDto[]> {
+    const connections = await this.connections.listForEnterprise(actor.enterpriseId);
+    // Mapped with a declared return type, like /channels. Returning the
+    // repository row verbatim made every change to that SELECT a silent change
+    // to the API — including one that would leak a column added later.
+    return connections.map((connection) => ({
+      refId: connection.refId,
+      provider: connection.provider,
+      providerUserName: connection.providerUserName,
+      status: connection.status,
+      reauthRequired: connection.reauthRequired,
+      tokenExpiresAt: connection.tokenExpiresAt,
+    }));
   }
 
   @Get('channels')

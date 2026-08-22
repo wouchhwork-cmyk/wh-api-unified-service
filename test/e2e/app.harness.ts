@@ -46,7 +46,7 @@ export async function createTestApp(): Promise<TestApp> {
 
   const reflector = app.get(Reflector);
   app.useGlobalInterceptors(
-    new TimeoutInterceptor(config),
+    new TimeoutInterceptor(config, reflector),
     new ResponseEnvelopeInterceptor(reflector),
   );
   app.useGlobalFilters(app.get(AllExceptionsFilter));
