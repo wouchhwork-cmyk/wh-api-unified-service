@@ -8,6 +8,7 @@ import { AppConfigModule, AppConfigService } from '@/config';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { DatabaseModule } from '@/database/database.module';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { ConnectionsModule } from '@/modules/connections/connections.module';
 import { EnterprisesModule } from '@/modules/enterprises/enterprises.module';
 import { HealthModule } from '@/modules/health/health.module';
 import { CryptoModule } from '@/shared/crypto';
@@ -46,6 +47,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
 
     DatabaseModule,
     AuthModule,
+    ConnectionsModule,
     EnterprisesModule,
     HealthModule,
   ],

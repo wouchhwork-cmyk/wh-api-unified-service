@@ -1,11 +1,11 @@
 import 'reflect-metadata';
 import { VersioningType } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
-import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { AppConfigService } from './config';
 import { MAX_JSON_BODY_BYTES } from './shared/constants';
@@ -14,7 +14,7 @@ import { ResponseEnvelopeInterceptor } from './shared/interceptors/response-enve
 import { TimeoutInterceptor } from './shared/interceptors/timeout.interceptor';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // REQUIRED: without it the raw bytes are gone after body parsing, and Meta
     // webhook HMAC verification becomes impossible.
     rawBody: true,
@@ -31,8 +31,14 @@ async function bootstrap(): Promise<void> {
 
   app.use(helmet());
   app.use(cookieParser());
-  app.use(json({ limit: MAX_JSON_BODY_BYTES }));
-  app.use(urlencoded({ extended: false, limit: MAX_JSON_BODY_BYTES }));
+  /*
+   * Nest's OWN body parsers, not app.use(json()): the rawBody: true option is
+   * implemented inside them, so replacing them with express middleware silently
+   * drops req.rawBody — and Meta webhook HMAC verification then always fails,
+   * because it has nothing to verify against.
+   */
+  app.useBodyParser('json', { limit: MAX_JSON_BODY_BYTES });
+  app.useBodyParser('urlencoded', { extended: false, limit: MAX_JSON_BODY_BYTES });
 
   // A strict allowlist, never a wildcard with credentials — the refresh cookie
   // makes this a credentialed API.
@@ -46,7 +52,7 @@ async function bootstrap(): Promise<void> {
 
   // So rate limiting and audit rows see the real client IP rather than the
   // load balancer's.
-  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  app.set('trust proxy', 1);
 
   const reflector = app.get(Reflector);
   // The request context is established by middleware (see AppModule), because
@@ -70,10 +76,7 @@ async function bootstrap(): Promise<void> {
   await app.listen(config.app.port);
 }
 
-function mountSwagger(
-  app: Awaited<ReturnType<typeof NestFactory.create>>,
-  config: AppConfigService,
-): void {
+function mountSwagger(app: NestExpressApplication, config: AppConfigService): void {
   const document = SwaggerModule.createDocument(
     app,
     new DocumentBuilder()
