@@ -64,6 +64,56 @@ async function ensureDatabaseExists(): Promise<void> {
   }
 }
 
+/**
+ * Records the migrations as applied, without running them.
+ *
+ * A sync-built database has no migration ledger, so TypeORM reports one pending
+ * forever — and readiness checks exactly that. Left alone, every sync-built
+ * instance answers 503 on /health/ready and an orchestrator never sends it
+ * traffic: a development convenience quietly breaking a production probe.
+ *
+ * Claiming "applied" is honest here rather than a fiction. Both paths run the
+ * same schema-objects module over the same entities, and
+ * test/integration/schema-parity.spec.ts asserts the two produce the same
+ * indexes, keys, checks, triggers and columns. The schema really is at that
+ * revision; it simply arrived by the other road.
+ */
+async function stampMigrationsAsApplied(): Promise<void> {
+  const table = AppDataSource.options.migrationsTableName ?? 'migrations';
+
+  // Same shape TypeORM creates, so a later `db:migrate` on this database reads
+  // and writes it without complaint.
+  await AppDataSource.query(
+    `CREATE TABLE IF NOT EXISTS "${table}" (
+       "id"        SERIAL PRIMARY KEY,
+       "timestamp" bigint NOT NULL,
+       "name"      character varying NOT NULL
+     )`,
+  );
+
+  let stamped = 0;
+  for (const migration of AppDataSource.migrations) {
+    const name = migration.name ?? migration.constructor.name;
+    // TypeORM derives the ordering from the digits at the end of the class name.
+    const timestamp = Number(/(\d+)$/.exec(name)?.[1] ?? 0);
+
+    const inserted: unknown[] = await AppDataSource.query(
+      `INSERT INTO "${table}" ("timestamp", "name")
+       SELECT $1::bigint, $2::varchar
+        WHERE NOT EXISTS (SELECT 1 FROM "${table}" WHERE "name" = $2::varchar)
+       RETURNING "id"`,
+      [timestamp, name],
+    );
+    if (inserted.length > 0) stamped += 1;
+  }
+
+  console.log(
+    stamped === 0
+      ? 'migration ledger already up to date'
+      : `recorded ${stamped} migration(s) as applied, so readiness passes`,
+  );
+}
+
 async function main(): Promise<void> {
   const command = parseCommand(process.argv[2]);
 
@@ -155,6 +205,8 @@ async function main(): Promise<void> {
         console.log(
           `indexes, foreign keys, checks, triggers and grants: ${applied} applied, ${existing} already present`,
         );
+
+        await stampMigrationsAsApplied();
         break;
       }
       case 'status': {

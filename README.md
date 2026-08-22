@@ -35,7 +35,10 @@ pnpm dev                      # sync, build, run
 ```
 
 `db:sync` creates the database itself if it is missing — nothing else can, because
-CREATE DATABASE needs a connection to a different one.
+CREATE DATABASE needs a connection to a different one. It also records the
+migrations as applied, because `/health/ready` checks for pending ones: without
+that stamp a sync-built instance answers 503 forever and an orchestrator never
+sends it traffic.
 
 **Tests use their own database.** `test/env-setup.ts` rewrites `DB_NAME` to
 `wouchh_test`, because the integration and e2e suites TRUNCATE tenant data in
