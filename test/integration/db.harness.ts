@@ -63,3 +63,19 @@ export async function seedEnterprise(
   )) as { id: string }[];
   return Number(rows[0]?.id);
 }
+
+/**
+ * Normalises TypeORM's two RETURNING shapes, the same way BaseRepository.mutate
+ * does.
+ *
+ * Verified against Postgres 18: `INSERT ... RETURNING` yields a FLAT row array,
+ * while `UPDATE`/`DELETE ... RETURNING` yields the tuple `[rows, affected]`.
+ * Tests that assert on raw SQL have to handle both, or they measure the shape
+ * rather than the behaviour.
+ */
+export function returningRows<T>(result: unknown): T[] {
+  if (Array.isArray(result) && Array.isArray(result[0]) && typeof result[1] === 'number') {
+    return result[0] as T[];
+  }
+  return Array.isArray(result) ? (result as T[]) : [];
+}

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
+import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository, type ClaimedOutboundEvent } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -9,7 +10,7 @@ import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { TokenCipherService } from '@/shared/crypto';
-import { ConnectionStatus, OutboundEventType } from '@/shared/enums';
+import { ConnectionStatus, MessageStatus, OutboundEventType } from '@/shared/enums';
 import { BasePoller } from './base-poller';
 
 interface CommentReplyPayload {
@@ -38,6 +39,7 @@ export class OutboundRelayWorker extends BasePoller {
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
     private readonly connections: ProviderConnectionRepository,
+    private readonly messages: MessageRepository,
     private readonly graph: GraphApiClient,
     private readonly cipher: TokenCipherService,
     protected readonly config: AppConfigService,
@@ -58,13 +60,13 @@ export class OutboundRelayWorker extends BasePoller {
 
   private async deliver(event: ClaimedOutboundEvent): Promise<void> {
     if (event.enterpriseId === null || event.channelId === null) {
-      await this.outbound.cancel(event.id, 'the event names no channel to send through');
+      await this.settleAsFailed(event.id, 'the event names no channel to send through');
       return;
     }
 
     const channel = await this.channels.findSendContext(event.enterpriseId, event.channelId);
     if (!channel) {
-      await this.outbound.cancel(event.id, 'the channel no longer exists');
+      await this.settleAsFailed(event.id, 'the channel no longer exists');
       return;
     }
 
@@ -74,15 +76,15 @@ export class OutboundRelayWorker extends BasePoller {
      * delays every other item in the queue and tells the operator nothing new.
      */
     if (channel.reauthRequired) {
-      await this.outbound.cancel(event.id, 'the channel needs re-authentication');
+      await this.settleAsFailed(event.id, 'the channel needs re-authentication');
       return;
     }
     if (!channel.isManaged) {
-      await this.outbound.cancel(event.id, 'the channel is not managed');
+      await this.settleAsFailed(event.id, 'the channel is not managed');
       return;
     }
     if (!channel.effectiveAccessToken) {
-      await this.outbound.cancel(event.id, 'no usable access token for the channel');
+      await this.settleAsFailed(event.id, 'no usable access token for the channel');
       return;
     }
 
@@ -97,16 +99,36 @@ export class OutboundRelayWorker extends BasePoller {
         { channelId: channel.channelId, err: error },
         'could not decrypt a channel token — key loss or tampering',
       );
-      await this.outbound.cancel(event.id, 'the channel token could not be decrypted');
+      await this.settleAsFailed(event.id, 'the channel token could not be decrypted');
       return;
     }
 
     try {
       const platformId = await this.send(event, channel.platformChannelId, token);
       await this.outbound.markSent(event.id, platformId);
+
+      /*
+       * The delivery write-back, keyed on the LEDGER row rather than the message:
+       * the relay knows which event it sent, not which message — which is why
+       * messages_outbound_event_idx exists. Without this the message would stay
+       * 'pending' forever even though the reply was delivered.
+       */
+      await this.messages.recordDelivery(event.id, platformId, MessageStatus.Sent);
     } catch (error) {
       await this.handleSendFailure(event, error);
     }
+  }
+
+  /**
+   * Cancels the ledger row AND settles the message.
+   *
+   * Kept as one call because the two must not diverge: a cancelled event with a
+   * message still showing 'pending' means the agent watches a reply that will
+   * never be delivered and never be marked failed.
+   */
+  private async settleAsFailed(eventId: number, reason: string): Promise<void> {
+    await this.outbound.cancel(eventId, reason);
+    await this.messages.recordDelivery(eventId, null, MessageStatus.Failed);
   }
 
   private async send(
@@ -160,6 +182,7 @@ export class OutboundRelayWorker extends BasePoller {
         error instanceof Error ? error.message : 'send failed',
         retry?.nextAttemptAt ?? null,
       );
+      if (!retry) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
       return;
     }
 
@@ -176,7 +199,7 @@ export class OutboundRelayWorker extends BasePoller {
       if (channel) {
         await this.connections.markReauthRequired(channel.channelId, ConnectionStatus.Revoked);
       }
-      await this.outbound.cancel(event.id, 'the provider rejected the credential');
+      await this.settleAsFailed(event.id, 'the provider rejected the credential');
       return;
     }
 
@@ -197,7 +220,7 @@ export class OutboundRelayWorker extends BasePoller {
         { eventId: event.id, httpStatus: error.httpStatus, code: error.code },
         'send failed ambiguously — not retrying, because the platform may have accepted it',
       );
-      await this.outbound.cancel(
+      await this.settleAsFailed(
         event.id,
         'the outcome was ambiguous; a read-back is required before any retry',
       );
@@ -206,6 +229,7 @@ export class OutboundRelayWorker extends BasePoller {
 
     if (!mapped.retryable) {
       await this.outbound.markFailed(event.id, `${mapped.code}: ${error.message}`, null);
+      await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
       return;
     }
 
@@ -215,5 +239,8 @@ export class OutboundRelayWorker extends BasePoller {
       `${mapped.code}: ${error.message}`,
       retry?.nextAttemptAt ?? null,
     );
+    // Only a spent budget is terminal; while retries remain the message stays
+    // pending, because it may still be delivered.
+    if (!retry) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
   }
 }

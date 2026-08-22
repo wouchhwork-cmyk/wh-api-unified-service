@@ -154,10 +154,14 @@ export class MessageRepository extends BaseRepository {
     status: MessageStatus,
   ): Promise<void> {
     await this.mutate(
+      // $2 and $3 are cast explicitly: without the casts Postgres sees $3 used
+      // both as a column value and inside a comparison, and fails with
+      // "inconsistent types deduced for parameter $3".
       `UPDATE messages
-          SET platform_message_id = COALESCE($2, platform_message_id),
-              status = $3,
-              platform_sent_at = CASE WHEN $3 = 'sent' THEN now() ELSE platform_sent_at END
+          SET platform_message_id = COALESCE($2::varchar, platform_message_id),
+              status = $3::varchar,
+              platform_sent_at = CASE WHEN $3::varchar = 'sent'
+                                      THEN now() ELSE platform_sent_at END
         WHERE outbound_event_id = $1`,
       [outboundEventId, platformMessageId, status],
     );

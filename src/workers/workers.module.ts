@@ -7,6 +7,7 @@ import { buildDataSourceOptions } from '@/database/data-source';
 import { DatabaseModule } from '@/database/database.module';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
+import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -49,6 +50,7 @@ import { SweeperWorker } from './sweeper.worker';
   providers: [
     InboundEventRepository,
     OutboundEventRepository,
+    MessageRepository,
     ChannelRepository,
     ProviderConnectionRepository,
     GraphApiClient,

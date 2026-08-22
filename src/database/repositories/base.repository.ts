@@ -48,11 +48,17 @@ export abstract class BaseRepository {
   /**
    * For INSERT / UPDATE / DELETE with a RETURNING clause.
    *
-   * This exists because TypeORM does NOT return the same shape as for a SELECT:
-   * a data-modifying statement yields the tuple `[rows, affectedCount]`, while a
-   * SELECT yields a flat row array. Reading `rows[0]` on the tuple silently
-   * gives the inner array, and `rows.length` silently gives 2 — so a caller that
-   * treats "did this update match?" as `rows.length === 1` is always wrong.
+   * This exists because TypeORM's shapes are not uniform. Verified against
+   * Postgres 18:
+   *
+   *   SELECT                     -> [{...}, {...}]        flat rows
+   *   INSERT ... RETURNING       -> [{...}]               flat rows
+   *   UPDATE/DELETE ... RETURNING-> [[{...}], 1]          [rows, affectedCount]
+   *
+   * Reading `rows[0]` on the tuple silently gives the inner ARRAY, and
+   * `rows.length` silently gives 2 — so "did this update match?" written as
+   * `rows.length === 1` is always wrong. The discriminator below is safe because
+   * a row is always an object, never an array.
    *
    * Normalising it once, here, is the concrete payoff of having a single data
    * access path: the trap is disarmed for every repository rather than
