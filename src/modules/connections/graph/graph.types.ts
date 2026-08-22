@@ -124,6 +124,8 @@ export interface GraphFeedPost {
   story?: string;
   created_time?: string;
   permalink_url?: string;
+  /** added_photos / added_video / shared_story / mobile_status_update / ... */
+  status_type?: string;
   comments?: GraphEdge<GraphComment>;
 }
 
@@ -139,4 +141,32 @@ export interface GraphConversation {
   id: string;
   updated_time?: string;
   messages?: GraphEdge<GraphConversationMessage>;
+}
+
+/* ------------------------------------------------------------------ *
+ * Instagram read edges. A different vocabulary from Facebook's for the
+ * same concepts: media rather than posts, `text` rather than `message`,
+ * `username` rather than `name`, `timestamp` rather than `created_time`.
+ * ------------------------------------------------------------------ */
+
+export interface GraphInstagramComment {
+  id: string;
+  text?: string;
+  timestamp?: string;
+  username?: string;
+  like_count?: number;
+  hidden?: boolean;
+  /** Only returned when explicitly requested, and required to identify a person. */
+  from?: { id?: string; username?: string };
+  parent_id?: string;
+}
+
+export interface GraphInstagramMedia {
+  id: string;
+  caption?: string;
+  media_type?: string;
+  permalink?: string;
+  timestamp?: string;
+  comments_count?: number;
+  comments?: GraphEdge<GraphInstagramComment>;
 }

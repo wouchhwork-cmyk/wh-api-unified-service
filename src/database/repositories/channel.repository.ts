@@ -52,6 +52,21 @@ export interface ChannelSendContext {
   readonly isManaged: boolean;
 }
 
+/**
+ * What a backfill needs, which is the send context PLUS the parent's platform
+ * id: Instagram threads are read from the linked PAGE's conversations edge
+ * (`/{page-id}/conversations?platform=instagram`), so the Instagram channel
+ * alone cannot address its own inbox.
+ */
+export interface ChannelBackfillContext {
+  readonly channelId: number;
+  readonly platform: Platform;
+  readonly platformChannelId: string;
+  readonly parentPlatformChannelId: string | null;
+  readonly effectiveAccessToken: string | null;
+  readonly reauthRequired: boolean;
+}
+
 @Injectable()
 export class ChannelRepository extends BaseRepository {
   /**
@@ -191,5 +206,34 @@ export class ChannelRepository extends BaseRepository {
       channelId,
       status,
     ]);
+  }
+
+  /**
+   * Resolves a channel for backfill: its own platform id, its PARENT's platform
+   * id, and the token that authorises calls for it.
+   *
+   * Separate from findSendContext rather than widening it, because the send path
+   * is the hot path and has no use for the parent's platform id.
+   */
+  async findBackfillContext(
+    enterpriseId: number,
+    channelId: number,
+  ): Promise<ChannelBackfillContext | null> {
+    const rows = await this.query<ChannelBackfillContext>(
+      `SELECT c.id                                            AS "channelId",
+              c.platform,
+              c.platform_channel_id                           AS "platformChannelId",
+              parent.platform_channel_id                      AS "parentPlatformChannelId",
+              COALESCE(c.access_token, parent.access_token)    AS "effectiveAccessToken",
+              (c.reauth_required OR COALESCE(parent.reauth_required, false)) AS "reauthRequired"
+         FROM channels c
+         LEFT JOIN channels parent
+                ON parent.id = c.parent_channel_id
+               AND parent.enterprise_id = c.enterprise_id
+        WHERE c.enterprise_id = $1 AND c.id = $2 AND c.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), channelId],
+    );
+    return rows[0] ?? null;
   }
 }

@@ -18,21 +18,7 @@ import {
   Platform,
 } from '@/shared/enums';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
-
-/** The shape Meta sends for a feed/comment change. */
-interface CommentChange {
-  readonly field?: string;
-  readonly value?: {
-    readonly item?: string;
-    readonly verb?: string;
-    readonly comment_id?: string;
-    readonly parent_id?: string;
-    readonly post_id?: string;
-    readonly message?: string;
-    readonly created_time?: number;
-    readonly from?: { readonly id?: string; readonly name?: string };
-  };
-}
+import { normalizeComment } from './comment-normalizer';
 
 export interface ProjectionOutcome {
   readonly projected: boolean;
@@ -65,49 +51,27 @@ export class CommentProjectorService {
     inboundEventId: number,
     payload: unknown,
   ): Promise<ProjectionOutcome> {
-    const change = payload as CommentChange;
-    const value = change.value;
-
-    // A feed change covers posts, likes, and shares as well as comments. Only a
-    // comment projects into the inbox; the rest are skipped explicitly rather
-    // than half-handled.
-    if (!value || value.item !== 'comment' || !value.comment_id) {
-      return { projected: false, reason: `not a comment (item="${value?.item ?? 'none'}")` };
-    }
-    // A removal is not a new message. Handling deletions needs its own path.
-    if (value.verb === 'remove' || value.verb === 'hide') {
-      return { projected: false, reason: `comment verb "${value.verb}" is not projected yet` };
-    }
-
-    const authorPlatformId = value.from?.id;
-    if (!authorPlatformId) {
-      return { projected: false, reason: 'the comment names no author' };
-    }
+    /*
+     * Both platforms' shapes collapse to one here. Previously this method read
+     * the Facebook shape directly, which meant every Instagram comment was
+     * skipped as "not a comment".
+     */
+    const normalized = normalizeComment(platform, payload);
+    if ('skip' in normalized) return { projected: false, reason: normalized.skip };
+    const comment = normalized.comment;
 
     const identifierKind =
       platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId
         : IdentifierKind.FacebookUserId;
 
-    /*
-     * The thread key: one conversation per TOP-LEVEL comment thread. parent_id
-     * is the root when the comment is a reply; otherwise the comment is itself
-     * the root. Without this, a reply would open its own thread and the
-     * conversation would fragment.
-     */
-    const rootCommentId = value.parent_id ?? value.comment_id;
-    // Captured before the closure: the guard above proved these are present, but
-    // that narrowing does not survive into a callback.
-    const commentId = value.comment_id;
-    const parentId = value.parent_id ?? null;
-
     return this.tx.runInTransaction(async () => {
       const customer = await this.customers.resolveOrCreate({
         enterpriseId,
         identifierKind,
-        identifierValue: authorPlatformId,
-        identifierValueRaw: authorPlatformId,
-        displayName: normalizeOptionalText(value.from?.name ?? null),
+        identifierValue: comment.authorPlatformId,
+        identifierValueRaw: comment.authorPlatformId,
+        displayName: normalizeOptionalText(comment.authorName),
         firstSource:
           platform === Platform.Instagram
             ? CustomerFirstSource.InstagramComment
@@ -126,13 +90,13 @@ export class CommentProjectorService {
         postId: null,
         platform,
         conversationKind: ConversationKind.CommentThread,
-        platformThreadId: composeThreadKey(ConversationKind.CommentThread, rootCommentId),
-        subject: normalizeOptionalText(value.message ?? null)?.slice(0, 500) ?? null,
+        platformThreadId: composeThreadKey(ConversationKind.CommentThread, comment.rootCommentId),
+        subject: normalizeOptionalText(comment.text)?.slice(0, 500) ?? null,
       });
 
       // A reply threads under its parent when we already hold it.
-      const parentMessageId = parentId
-        ? await this.messages.findIdByPlatformId(enterpriseId, parentId)
+      const parentMessageId = comment.parentId
+        ? await this.messages.findIdByPlatformId(enterpriseId, comment.parentId)
         : null;
 
       const inserted = await this.messages.insertInbound({
@@ -140,10 +104,10 @@ export class CommentProjectorService {
         conversationId: conversation.id,
         customerId: customer.customerId,
         inboundEventId,
-        platformMessageId: commentId,
+        platformMessageId: comment.commentId,
         messageKind: MessageKind.Text,
-        body: value.message ?? null,
-        platformSentAt: value.created_time ? new Date(value.created_time * 1000) : null,
+        body: comment.text,
+        platformSentAt: comment.createdAt,
         parentMessageId,
       });
 
@@ -153,7 +117,7 @@ export class CommentProjectorService {
         return { projected: false, reason: 'the comment was already projected' };
       }
 
-      const occurredAt = value.created_time ? new Date(value.created_time * 1000) : new Date();
+      const occurredAt = comment.createdAt ?? new Date();
       await this.conversations.recordMessage({
         enterpriseId,
         conversationId: conversation.id,

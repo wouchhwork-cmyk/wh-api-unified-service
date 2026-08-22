@@ -9,6 +9,7 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
+import { PostRepository } from '@/database/repositories/post.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
@@ -58,6 +59,7 @@ import { SweeperWorker } from './sweeper.worker';
     MessageRepository,
     ChannelRepository,
     ProviderConnectionRepository,
+    PostRepository,
     SyncJobRepository,
     QueueMetricsRepository,
     GraphApiClient,

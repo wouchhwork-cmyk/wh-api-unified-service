@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
-import { ChannelRepository } from '@/database/repositories/channel.repository';
+import {
+  ChannelRepository,
+  type ChannelBackfillContext,
+} from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -12,6 +15,8 @@ import type {
   GraphComment,
   GraphConversation,
   GraphFeedPost,
+  GraphInstagramComment,
+  GraphInstagramMedia,
 } from '@/modules/connections/graph/graph.types';
 import { TokenCipherService } from '@/shared/crypto/token-cipher.service';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
@@ -31,6 +36,7 @@ import { BasePoller } from './base-poller';
  * silently routed to the wrong walk.
  */
 const IMPLEMENTED_JOB_KINDS: ReadonlySet<SyncJobKind> = new Set([
+  SyncJobKind.BackfillPosts,
   SyncJobKind.BackfillComments,
   SyncJobKind.BackfillConversations,
 ]);
@@ -97,7 +103,7 @@ export class BackfillWorker extends BasePoller {
   }
 
   private async runJob(job: ClaimedSyncJob, leaseSeconds: number): Promise<void> {
-    const channel = await this.channels.findSendContext(job.enterpriseId, job.channelId);
+    const channel = await this.channels.findBackfillContext(job.enterpriseId, job.channelId);
 
     if (!channel) {
       await this.syncJobs.markPaused(job.id, this.leaseOwner, 'the channel no longer exists');
@@ -117,35 +123,28 @@ export class BackfillWorker extends BasePoller {
     }
 
     /*
-     * Instagram reads a different set of edges entirely (/media, not /feed) and
-     * is not implemented. PAUSED with a reason rather than completed-with-zero:
-     * completing would claim the history was copied when nothing was read.
-     */
-    if (channel.platform !== Platform.Facebook) {
-      await this.syncJobs.markPaused(
-        job.id,
-        this.leaseOwner,
-        `backfill is not implemented for platform "${channel.platform}" yet`,
-      );
-      return;
-    }
-
-    /*
-     * Only these two kinds are implemented. The dispatch below would otherwise
-     * fall through to the comment walk for ANY kind, so backfill_posts would
-     * quietly re-copy comments — the same rows as backfill_comments, under a
-     * job that claims to be about posts.
-     *
-     * backfill_posts needs somewhere to put a post, and there is no posts
-     * repository or post projector yet; refresh_* are scheduled refreshes, not
-     * history walks. Paused with a reason, so the job says what it is waiting
-     * for instead of reporting success it did not achieve.
+     * Only these two kinds are implemented. The dispatch would otherwise fall
+     * through to the comment walk for ANY kind, so backfill_posts would quietly
+     * re-copy comments under a job claiming to be about posts.
      */
     if (!IMPLEMENTED_JOB_KINDS.has(job.jobKind)) {
       await this.syncJobs.markPaused(
         job.id,
         this.leaseOwner,
         `sync kind "${job.jobKind}" is not implemented yet`,
+      );
+      return;
+    }
+
+    /*
+     * Instagram threads are read through the linked Page, so an Instagram
+     * channel with no parent cannot be walked at all.
+     */
+    if (channel.platform === Platform.Instagram && !channel.parentPlatformChannelId) {
+      await this.syncJobs.markPaused(
+        job.id,
+        this.leaseOwner,
+        'the instagram channel is not linked to a facebook page',
       );
       return;
     }
@@ -171,13 +170,7 @@ export class BackfillWorker extends BasePoller {
     const correlationId = randomUUID();
 
     try {
-      const result = await this.walk(
-        job,
-        channel.platformChannelId,
-        token,
-        correlationId,
-        leaseSeconds,
-      );
+      const result = await this.walk(job, channel, token, correlationId, leaseSeconds);
 
       if (result.finished) {
         await this.syncJobs.markCompleted(job.id, this.leaseOwner, result.itemsAdded);
@@ -201,7 +194,7 @@ export class BackfillWorker extends BasePoller {
    */
   private async walk(
     job: ClaimedSyncJob,
-    platformChannelId: string,
+    channel: ChannelBackfillContext,
     token: string,
     correlationId: string,
     leaseSeconds: number,
@@ -210,10 +203,7 @@ export class BackfillWorker extends BasePoller {
     let itemsAdded = 0;
 
     for (let page = 0; page < SYNC_MAX_PAGES_PER_RUN; page += 1) {
-      const slice =
-        job.jobKind === SyncJobKind.BackfillConversations
-          ? await this.conversationPage(job, platformChannelId, token, correlationId, cursor)
-          : await this.commentPage(job, platformChannelId, token, correlationId, cursor);
+      const slice = await this.page(job, channel, token, correlationId, cursor);
 
       itemsAdded += slice.itemsAdded;
       cursor = slice.nextCursor;
@@ -243,6 +233,173 @@ export class BackfillWorker extends BasePoller {
     return { itemsAdded: 0, nextCursor: cursor, finished: false };
   }
 
+  /**
+   * Routes to the right walk. Platform first, then kind — the two vocabularies
+   * share nothing but the concept, so there is no shared edge to fall back to.
+   */
+  private async page(
+    job: ClaimedSyncJob,
+    channel: ChannelBackfillContext,
+    token: string,
+    correlationId: string,
+    cursor: string | null,
+  ): Promise<SliceResult> {
+    const posts = job.jobKind === SyncJobKind.BackfillPosts;
+
+    if (channel.platform === Platform.Instagram) {
+      // Guarded when the job was claimed.
+      const pageId = channel.parentPlatformChannelId as string;
+      if (job.jobKind === SyncJobKind.BackfillConversations) {
+        return this.instagramConversationPage(
+          job,
+          channel.platformChannelId,
+          pageId,
+          token,
+          correlationId,
+          cursor,
+        );
+      }
+      return this.instagramMediaPage(
+        job,
+        channel.platformChannelId,
+        token,
+        correlationId,
+        cursor,
+        posts,
+      );
+    }
+
+    if (job.jobKind === SyncJobKind.BackfillConversations) {
+      return this.conversationPage(job, channel.platformChannelId, token, correlationId, cursor);
+    }
+    return this.commentPage(job, channel.platformChannelId, token, correlationId, cursor, posts);
+  }
+
+  /** One page of Instagram media, emitting a ledger row per comment found. */
+  private async instagramMediaPage(
+    job: ClaimedSyncJob,
+    instagramUserId: string,
+    token: string,
+    correlationId: string,
+    cursor: string | null,
+    postsOnly = false,
+  ): Promise<SliceResult> {
+    const edge = await this.graph.listInstagramMedia(instagramUserId, token, cursor ?? undefined);
+
+    let added = 0;
+    for (const media of edge.data ?? []) {
+      if (postsOnly) {
+        const stored = await this.appendPost(job, correlationId, Platform.Instagram, {
+          postId: media.id,
+          caption: media.caption ?? null,
+          permalink: media.permalink ?? null,
+          publishedAt: media.timestamp ?? null,
+          kind: media.media_type ?? null,
+          commentCount: media.comments_count ?? null,
+        });
+        if (stored) added += 1;
+        continue;
+      }
+
+      const comments = media.comments?.data ?? [];
+
+      // No silent caps: a media item with more comments than one nested page
+      // holds is reported, because the remainder is NOT copied by this walk.
+      if (comments.length >= SYNC_COMMENTS_PER_POST) {
+        this.logger.warn(
+          { mediaId: media.id, copied: comments.length, channelId: job.channelId },
+          'media has more comments than one nested page — the remainder is not backfilled',
+        );
+      }
+
+      for (const comment of comments) {
+        if (await this.appendInstagramComment(job, media, comment, correlationId)) added += 1;
+      }
+    }
+
+    return {
+      itemsAdded: added,
+      nextCursor: edge.paging?.cursors?.after ?? null,
+      finished: !edge.paging?.next,
+    };
+  }
+
+  private async appendInstagramComment(
+    job: ClaimedSyncJob,
+    media: GraphInstagramMedia,
+    comment: GraphInstagramComment,
+    correlationId: string,
+  ): Promise<boolean> {
+    if (!comment.id) return false;
+
+    /*
+     * Instagram's OWN webhook shape, so the normaliser has exactly one Instagram
+     * shape to understand rather than one per source. `media.id` stands in for
+     * the post, which is what the webhook sends too.
+     */
+    const payload = {
+      field: 'comments',
+      value: {
+        id: comment.id,
+        text: comment.text,
+        timestamp: comment.timestamp,
+        parent_id: comment.parent_id,
+        media: { id: media.id },
+        from: comment.from,
+        username: comment.username,
+      },
+    };
+
+    const result = await this.inbound.insertIgnoringDuplicate({
+      enterpriseId: job.enterpriseId,
+      channelId: job.channelId,
+      sourceKind: SourceKind.Channel,
+      sourceId: media.id,
+      platform: Platform.Instagram,
+      eventType: InboundEventType.Comment,
+      platformEventId: comment.id,
+      // Instagram comment webhooks carry no verb, so the key is the id alone —
+      // matching composeDedupKey's id-only branch for this platform.
+      dedupKey: inboundDedupKey(Platform.Instagram, InboundEventType.Comment, comment.id),
+      correlationId,
+      payload,
+      priority: EventPriority.Low,
+      receivedAt: parseTimestamp(comment.timestamp),
+    });
+
+    return !result.duplicate;
+  }
+
+  /** One page of Instagram message threads, read through the linked Page. */
+  private async instagramConversationPage(
+    job: ClaimedSyncJob,
+    instagramUserId: string,
+    pageId: string,
+    token: string,
+    correlationId: string,
+    cursor: string | null,
+  ): Promise<SliceResult> {
+    const edge = await this.graph.listInstagramConversations(pageId, token, cursor ?? undefined);
+
+    let added = 0;
+    for (const conversation of edge.data ?? []) {
+      // The Instagram ACCOUNT is the recipient of an Instagram DM, not the Page.
+      added += await this.emitMessages(
+        job,
+        conversation,
+        correlationId,
+        Platform.Instagram,
+        instagramUserId,
+      );
+    }
+
+    return {
+      itemsAdded: added,
+      nextCursor: edge.paging?.cursors?.after ?? null,
+      finished: !edge.paging?.next,
+    };
+  }
+
   /** One page of the feed, emitting a ledger row per comment found. */
   private async commentPage(
     job: ClaimedSyncJob,
@@ -250,15 +407,33 @@ export class BackfillWorker extends BasePoller {
     token: string,
     correlationId: string,
     cursor: string | null,
+    postsOnly = false,
   ): Promise<SliceResult> {
+    /*
+     * The comments edge is only requested when comments are wanted. That is not
+     * an optimisation: nested comments require pages_read_user_content, so
+     * asking for them would make a POSTS backfill fail on a permission it does
+     * not need.
+     */
     const edge = await this.graph.listPagePosts(pageId, token, {
       ...(cursor === null ? {} : { after: cursor }),
-      withComments: true,
+      withComments: !postsOnly,
     });
 
     let added = 0;
     for (const post of edge.data ?? []) {
-      added += await this.emitComments(job, post, correlationId);
+      added += postsOnly
+        ? Number(
+            await this.appendPost(job, correlationId, Platform.Facebook, {
+              postId: post.id,
+              caption: post.message ?? post.story ?? null,
+              permalink: post.permalink_url ?? null,
+              publishedAt: post.created_time ?? null,
+              kind: post.status_type ?? null,
+              commentCount: null,
+            }),
+          )
+        : await this.emitComments(job, post, correlationId);
     }
 
     return {
@@ -351,7 +526,7 @@ export class BackfillWorker extends BasePoller {
 
     let added = 0;
     for (const conversation of edge.data ?? []) {
-      added += await this.emitMessages(job, pageId, conversation, correlationId);
+      added += await this.emitMessages(job, conversation, correlationId, Platform.Facebook, pageId);
     }
 
     return {
@@ -363,9 +538,10 @@ export class BackfillWorker extends BasePoller {
 
   private async emitMessages(
     job: ClaimedSyncJob,
-    pageId: string,
     conversation: GraphConversation,
     correlationId: string,
+    platform: Platform,
+    selfPlatformId: string,
   ): Promise<number> {
     let added = 0;
 
@@ -379,11 +555,11 @@ export class BackfillWorker extends BasePoller {
        * skips echoes, so marking them keeps the Page from being projected as a
        * customer of itself.
        */
-      const isEcho = senderId !== null && senderId === pageId;
+      const isEcho = senderId !== null && senderId === selfPlatformId;
 
       const payload = {
         sender: { id: senderId ?? undefined },
-        recipient: { id: pageId },
+        recipient: { id: selfPlatformId },
         timestamp: toUnixMilliseconds(message.created_time),
         message: {
           mid: message.id,
@@ -397,11 +573,11 @@ export class BackfillWorker extends BasePoller {
         channelId: job.channelId,
         sourceKind: SourceKind.Channel,
         sourceId: conversation.id,
-        platform: Platform.Facebook,
+        platform,
         eventType: InboundEventType.DirectMessage,
         platformEventId: message.id,
         // Messages carry no verb, matching composeDedupKey's id-only branch.
-        dedupKey: inboundDedupKey(Platform.Facebook, InboundEventType.DirectMessage, message.id),
+        dedupKey: inboundDedupKey(platform, InboundEventType.DirectMessage, message.id),
         correlationId,
         payload,
         priority: EventPriority.Low,
@@ -412,6 +588,59 @@ export class BackfillWorker extends BasePoller {
     }
 
     return added;
+  }
+
+  /**
+   * Appends a post_update event in ONE canonical shape.
+   *
+   * The two platforms name everything differently — message vs caption,
+   * created_time vs timestamp, status_type vs media_type — so the mapping
+   * happens here, once, and the projector receives a single shape. The
+   * alternative is two projectors that drift.
+   */
+  private async appendPost(
+    job: ClaimedSyncJob,
+    correlationId: string,
+    platform: Platform,
+    post: {
+      postId: string;
+      caption: string | null;
+      permalink: string | null;
+      publishedAt: string | null;
+      kind: string | null;
+      commentCount: number | null;
+    },
+  ): Promise<boolean> {
+    if (!post.postId) return false;
+
+    const payload = {
+      field: 'posts',
+      value: {
+        post_id: post.postId,
+        caption: post.caption,
+        permalink_url: post.permalink,
+        published_at: post.publishedAt,
+        post_kind: post.kind,
+        comment_count: post.commentCount,
+      },
+    };
+
+    const result = await this.inbound.insertIgnoringDuplicate({
+      enterpriseId: job.enterpriseId,
+      channelId: job.channelId,
+      sourceKind: SourceKind.Channel,
+      sourceId: post.postId,
+      platform,
+      eventType: InboundEventType.PostUpdate,
+      platformEventId: post.postId,
+      dedupKey: inboundDedupKey(platform, InboundEventType.PostUpdate, post.postId),
+      correlationId,
+      payload,
+      priority: EventPriority.Low,
+      receivedAt: parseTimestamp(post.publishedAt ?? undefined),
+    });
+
+    return !result.duplicate;
   }
 
   /**

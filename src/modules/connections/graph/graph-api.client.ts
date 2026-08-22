@@ -14,6 +14,7 @@ import type {
   GraphDebugTokenResponse,
   GraphEdge,
   GraphFeedPost,
+  GraphInstagramMedia,
   GraphMeResponse,
   GraphTokenResponse,
   SendResult,
@@ -258,6 +259,9 @@ export class GraphApiClient {
       'story',
       'created_time',
       'permalink_url',
+      // Without status_type every post is indistinguishable and lands as
+      // post_kind 'text' — a photo album included.
+      'status_type',
       ...(options.withComments
         ? [
             `comments.limit(${SYNC_COMMENTS_PER_POST}){id,message,created_time,from{id,name},parent{id}}`,
@@ -291,6 +295,62 @@ export class GraphApiClient {
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken: pageAccessToken,
       params: {
+        fields: `id,updated_time,${messageFields}`,
+        limit: String(SYNC_PAGE_SIZE),
+        ...(after ? { after } : {}),
+      },
+    });
+  }
+
+  /**
+   * One page of an Instagram account's media, with each item's first comments.
+   *
+   * This is the path the previous product actually used, and it needs no
+   * permission beyond instagram_basic + instagram_manage_comments — unlike
+   * Facebook Page comments, which require pages_read_user_content. So Instagram
+   * comments are readable today while Facebook's are not.
+   *
+   * `from{id,username}` is requested EXPLICITLY. The edge returns only
+   * `username` by default, and a handle is not an identity: it can be changed
+   * and reused, so a comment without `from.id` cannot be filed against a
+   * customer and is skipped downstream.
+   */
+  async listInstagramMedia(
+    instagramUserId: string,
+    accessToken: string,
+    after?: string,
+  ): Promise<GraphEdge<GraphInstagramMedia>> {
+    const commentFields = `comments.limit(${SYNC_COMMENTS_PER_POST}){id,text,timestamp,username,like_count,hidden,from{id,username},parent_id}`;
+
+    return this.request<GraphEdge<GraphInstagramMedia>>('GET', `${instagramUserId}/media`, {
+      accessToken,
+      params: {
+        fields: `id,caption,media_type,permalink,timestamp,comments_count,${commentFields}`,
+        limit: String(SYNC_PAGE_SIZE),
+        ...(after ? { after } : {}),
+      },
+    });
+  }
+
+  /**
+   * One page of Instagram message threads.
+   *
+   * Addressed to the linked PAGE with `platform=instagram`, not to the Instagram
+   * account: Instagram messaging is served through the Page's conversations
+   * edge. Verified against a live account — the Instagram id has no
+   * conversations edge of its own here.
+   */
+  async listInstagramConversations(
+    pageId: string,
+    accessToken: string,
+    after?: string,
+  ): Promise<GraphEdge<GraphConversation>> {
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}}}`;
+
+    return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
+      accessToken,
+      params: {
+        platform: 'instagram',
         fields: `id,updated_time,${messageFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),

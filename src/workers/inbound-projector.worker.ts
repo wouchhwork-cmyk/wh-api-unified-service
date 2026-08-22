@@ -5,6 +5,7 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
+import { PostProjectorService } from '@/modules/inbox/post-projector.service';
 import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
@@ -42,6 +43,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly channels: ChannelRepository,
     private readonly comments: CommentProjectorService,
     private readonly directMessages: DirectMessageProjectorService,
+    private readonly posts: PostProjectorService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(InboundProjectorWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -60,6 +62,15 @@ export class InboundProjectorWorker extends BasePoller {
     );
     this.projectors.set(InboundEventType.DirectMessage, (context, payload) =>
       this.directMessages.project(
+        context.enterpriseId,
+        context.channelId,
+        context.platform,
+        context.inboundEventId,
+        payload,
+      ),
+    );
+    this.projectors.set(InboundEventType.PostUpdate, (context, payload) =>
+      this.posts.project(
         context.enterpriseId,
         context.channelId,
         context.platform,
