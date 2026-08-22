@@ -236,4 +236,21 @@ export class ChannelRepository extends BaseRepository {
     );
     return rows[0] ?? null;
   }
+
+  /**
+   * Resolves a channel ref_id WITHIN a tenant.
+   *
+   * The enterprise predicate is the whole point: a ref_id belonging to another
+   * business must resolve to nothing, so a filter parameter can never become a
+   * way to read across the boundary.
+   */
+  async findByRefId(enterpriseId: number, refId: string): Promise<{ id: number } | null> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM channels
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), refId],
+    );
+    return rows[0] ?? null;
+  }
 }

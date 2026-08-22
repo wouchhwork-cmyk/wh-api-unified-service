@@ -155,3 +155,81 @@ function parseInstagramTimestamp(value: string | number | undefined): Date | nul
   const parsed = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
+
+/**
+ * Facebook's mention change: somebody tagged the Page in their own post or
+ * comment. A different vocabulary again — the author is `sender_id`, because the
+ * person is not commenting on our content, they are talking about us on theirs.
+ */
+interface FacebookMentionChange {
+  readonly field?: string;
+  readonly value?: {
+    readonly item?: string;
+    readonly verb?: string;
+    readonly post_id?: string;
+    readonly comment_id?: string;
+    readonly sender_id?: string;
+    readonly sender_name?: string;
+    readonly message?: string;
+    readonly created_time?: number;
+  };
+}
+
+/**
+ * Instagram's mentions change carries ids only — `media_id` and `comment_id` —
+ * and no author or text at all. Reading the content needs a second Graph call
+ * against a different edge, so there is nothing to project from the event alone.
+ */
+interface InstagramMentionChange {
+  readonly field?: string;
+  readonly value?: {
+    readonly media_id?: string;
+    readonly comment_id?: string;
+  };
+}
+
+/**
+ * Normalises a mention onto the SAME canonical shape as a comment.
+ *
+ * Deliberately shared: a mention and a comment differ in where they were
+ * written, not in what the inbox has to do with them — resolve a person, open or
+ * find a thread, store one message. Only the conversation kind differs, and that
+ * is the caller's decision rather than a second projector.
+ */
+export function normalizeMention(platform: Platform, payload: unknown): NormalizedComment {
+  if (platform === Platform.Instagram) {
+    const value = (payload as InstagramMentionChange).value;
+    const target = value?.comment_id ?? value?.media_id;
+    return {
+      skip: target
+        ? `instagram mention ${target} carries no author or text — projecting it needs a second graph read`
+        : 'the instagram mention names nothing',
+    };
+  }
+
+  const value = (payload as FacebookMentionChange).value;
+
+  // The mention's identity is the comment when we were tagged in one, otherwise
+  // the post. Without one there is nothing to key a message on.
+  const mentionId = value?.comment_id ?? value?.post_id;
+  if (!mentionId) return { skip: 'the mention names no post or comment' };
+  if (isNonProjectingVerb(value?.verb)) {
+    return { skip: `mention verb "${value?.verb}" is not projected yet` };
+  }
+  if (!value?.sender_id) return { skip: 'the mention names no author' };
+
+  return {
+    comment: {
+      commentId: mentionId,
+      // A mention opens its own thread: it is not a reply to our content, so
+      // there is no parent comment of ours to hang it under.
+      rootCommentId: mentionId,
+      parentId: null,
+      postId: value.post_id ?? null,
+      text: value.message ?? null,
+      createdAt: value.created_time ? new Date(value.created_time * 1000) : null,
+      authorPlatformId: value.sender_id,
+      authorName: value.sender_name ?? null,
+    },
+  };
+}

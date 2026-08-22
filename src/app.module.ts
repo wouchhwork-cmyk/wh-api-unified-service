@@ -7,6 +7,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AppConfigModule, AppConfigService } from '@/config';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { DatabaseModule } from '@/database/database.module';
+import { CatalogueModule } from '@/modules/catalogue/catalogue.module';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { ConnectionsModule } from '@/modules/connections/connections.module';
 import { EmployeesModule } from '@/modules/employees/employees.module';
@@ -60,6 +61,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     EmployeesModule,
     EnterprisesModule,
     InboxModule,
+    CatalogueModule,
     PlatformModule,
     HealthModule,
   ],

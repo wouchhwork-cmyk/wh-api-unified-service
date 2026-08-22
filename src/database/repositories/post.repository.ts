@@ -2,6 +2,21 @@ import { Injectable } from '@nestjs/common';
 import { PostKind, PostStatus, type Platform } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
+export interface PostFeedRow {
+  readonly id: number;
+  readonly refId: string;
+  readonly platform: Platform;
+  readonly postKind: PostKind;
+  readonly caption: string | null;
+  readonly permalinkUrl: string | null;
+  readonly publishedAt: Date | null;
+  readonly commentCount: number;
+  readonly likeCount: number;
+  readonly status: PostStatus;
+  readonly channelRefId: string;
+  readonly channelName: string | null;
+}
+
 export interface UpsertPostInput {
   readonly enterpriseId: number;
   readonly channelId: number;
@@ -62,5 +77,71 @@ export class PostRepository extends BaseRepository {
     const row = rows[0];
     if (!row) throw new Error('post upsert returned no row');
     return { id: Number(row.id), created: row.created };
+  }
+
+  /**
+   * One page of the post feed, newest first.
+   *
+   * Keyset, not OFFSET: a feed that grows while somebody pages would shift rows
+   * under them and repeat or skip items. The tiebreaker is `id`, so the order is
+   * total even when two posts share a publish timestamp — which cross-posted
+   * content routinely does.
+   *
+   * NULLS LAST on published_at is a deliberate departure from
+   * posts_feed_idx's ordering: a post whose publish time the platform did not
+   * give us belongs at the END of a reverse-chronological feed, not the top. The
+   * predicate below therefore does the null handling explicitly rather than
+   * relying on row comparison, which yields NULL — and so silently drops rows —
+   * the moment either side is null.
+   */
+  async listFeed(input: {
+    enterpriseId: number;
+    channelId: number | null;
+    limit: number;
+    cursor: { publishedAt: Date | null; id: number } | null;
+  }): Promise<PostFeedRow[]> {
+    const params: unknown[] = [this.requireEnterprise(input.enterpriseId), input.limit];
+    const filters: string[] = [];
+
+    if (input.channelId !== null) {
+      params.push(input.channelId);
+      filters.push(`AND p.channel_id = $${params.length}`);
+    }
+    if (input.cursor) {
+      params.push(input.cursor.publishedAt, input.cursor.id);
+      const at = `$${params.length - 1}::timestamptz`;
+      const id = `$${params.length}`;
+      filters.push(
+        `AND (
+             (${at} IS NOT NULL AND p.published_at IS NOT NULL
+                AND (p.published_at, p.id) < (${at}, ${id}))
+          OR (${at} IS NOT NULL AND p.published_at IS NULL)
+          OR (${at} IS NULL AND p.published_at IS NULL AND p.id < ${id})
+        )`,
+      );
+    }
+
+    return this.query<PostFeedRow>(
+      `SELECT p.id,
+              p.ref_id             AS "refId",
+              p.platform,
+              p.post_kind          AS "postKind",
+              p.caption,
+              p.permalink_url      AS "permalinkUrl",
+              p.published_at       AS "publishedAt",
+              p.comment_count      AS "commentCount",
+              p.like_count         AS "likeCount",
+              p.status,
+              c.ref_id             AS "channelRefId",
+              c.name               AS "channelName"
+         FROM posts p
+         JOIN channels c ON c.id = p.channel_id AND c.enterprise_id = p.enterprise_id
+        WHERE p.enterprise_id = $1
+          AND p.is_deleted = false
+          ${filters.join('\n          ')}
+        ORDER BY p.published_at DESC NULLS LAST, p.id DESC
+        LIMIT $2`,
+      params,
+    );
   }
 }

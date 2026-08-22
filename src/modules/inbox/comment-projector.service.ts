@@ -18,7 +18,8 @@ import {
   Platform,
 } from '@/shared/enums';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
-import { normalizeComment } from './comment-normalizer';
+import { normalizeComment, normalizeMention } from './comment-normalizer';
+import type { CanonicalComment } from './comment-normalizer';
 
 export interface ProjectionOutcome {
   readonly projected: boolean;
@@ -58,8 +59,60 @@ export class CommentProjectorService {
      */
     const normalized = normalizeComment(platform, payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
-    const comment = normalized.comment;
 
+    return this.store(
+      enterpriseId,
+      channelId,
+      platform,
+      inboundEventId,
+      normalized.comment,
+      ConversationKind.CommentThread,
+      platform === Platform.Instagram
+        ? CustomerFirstSource.InstagramComment
+        : CustomerFirstSource.FacebookComment,
+    );
+  }
+
+  /**
+   * A mention: somebody tagged the account in their OWN post or comment.
+   *
+   * Same storage path as a comment, because the inbox does the same work —
+   * resolve the person, open a thread, store one message. Only the conversation
+   * kind differs, which is why this is a second entry point rather than a second
+   * projector.
+   */
+  async projectMention(
+    enterpriseId: number,
+    channelId: number,
+    platform: Platform,
+    inboundEventId: number,
+    payload: unknown,
+  ): Promise<ProjectionOutcome> {
+    const normalized = normalizeMention(platform, payload);
+    if ('skip' in normalized) return { projected: false, reason: normalized.skip };
+
+    return this.store(
+      enterpriseId,
+      channelId,
+      platform,
+      inboundEventId,
+      normalized.comment,
+      ConversationKind.Mention,
+      platform === Platform.Instagram
+        ? CustomerFirstSource.InstagramComment
+        : CustomerFirstSource.FacebookComment,
+    );
+  }
+
+  private async store(
+    enterpriseId: number,
+    channelId: number,
+    platform: Platform,
+    inboundEventId: number,
+    comment: CanonicalComment,
+    conversationKind: ConversationKind,
+    firstSource: CustomerFirstSource,
+  ): Promise<ProjectionOutcome> {
     const identifierKind =
       platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId
@@ -72,10 +125,7 @@ export class CommentProjectorService {
         identifierValue: comment.authorPlatformId,
         identifierValueRaw: comment.authorPlatformId,
         displayName: normalizeOptionalText(comment.authorName),
-        firstSource:
-          platform === Platform.Instagram
-            ? CustomerFirstSource.InstagramComment
-            : CustomerFirstSource.FacebookComment,
+        firstSource,
         firstChannelId: channelId,
         // The platform vouches for this id: it issued it.
         source: IdentifierSource.Platform,
@@ -89,8 +139,8 @@ export class CommentProjectorService {
         customerIdentifierId: customer.identifierId,
         postId: null,
         platform,
-        conversationKind: ConversationKind.CommentThread,
-        platformThreadId: composeThreadKey(ConversationKind.CommentThread, comment.rootCommentId),
+        conversationKind,
+        platformThreadId: composeThreadKey(conversationKind, comment.rootCommentId),
         subject: normalizeOptionalText(comment.text)?.slice(0, 500) ?? null,
       });
 

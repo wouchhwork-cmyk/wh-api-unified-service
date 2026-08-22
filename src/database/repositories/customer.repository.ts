@@ -32,6 +32,19 @@ export interface CreateCustomerInput extends ResolveIdentifierInput {
   readonly verificationStatus: IdentifierVerificationStatus;
 }
 
+export interface CustomerDirectoryRow {
+  readonly id: number;
+  readonly refId: string;
+  readonly displayName: string | null;
+  readonly avatarUrl: string | null;
+  readonly firstSource: string | null;
+  readonly conversationCount: number;
+  readonly firstSeenAt: Date | null;
+  readonly lastSeenAt: Date | null;
+  readonly status: string;
+  readonly isBlocked: boolean;
+}
+
 @Injectable()
 export class CustomerRepository extends BaseRepository {
   /**
@@ -68,7 +81,30 @@ export class CustomerRepository extends BaseRepository {
    */
   async resolveOrCreate(input: CreateCustomerInput): Promise<CustomerResolution> {
     const existing = await this.findByIdentifier(input);
-    if (existing) return existing;
+    if (existing) {
+      /*
+       * Backfill the name once we learn it, and only then.
+       *
+       * A customer first seen through a direct message has NO name: Meta's
+       * messaging payload carries a sender id and nothing else. The same person
+       * commenting later does carry a username — but resolveOrCreate returned
+       * early, so that name was thrown away and the directory showed a blank row
+       * forever.
+       *
+       * Guarded on display_name IS NULL so a later, poorer source can never
+       * overwrite a name we already hold, and skipped entirely when this event
+       * brought no name.
+       */
+      if (input.displayName) {
+        await this.mutate(
+          `UPDATE customers
+              SET display_name = $2, updated_at = now()
+            WHERE id = $1 AND enterprise_id = $3 AND display_name IS NULL`,
+          [existing.customerId, input.displayName, this.requireEnterprise(input.enterpriseId)],
+        );
+      }
+      return existing;
+    }
 
     const enterpriseId = this.requireEnterprise(input.enterpriseId);
 
@@ -187,36 +223,64 @@ export class CustomerRepository extends BaseRepository {
   }
 
   /** The customer directory, newest activity first, cursor-paginated. */
-  async listDirectory(
-    enterpriseId: number,
-    limit: number,
-    cursor: { lastSeenAt: Date; id: number } | null,
-  ): Promise<
-    {
-      id: number;
-      refId: string;
-      displayName: string | null;
-      lastSeenAt: Date | null;
-      conversationCount: number;
-    }[]
-  > {
-    const params: unknown[] = [this.requireEnterprise(enterpriseId), limit];
-    let keyset = '';
-    if (cursor) {
-      // Keyset pagination on the same columns the index is built on, with id as
-      // the stable tiebreaker, so a page can neither skip nor repeat a row.
-      keyset = `AND (last_seen_at, id) < ($3, $4)`;
-      params.push(cursor.lastSeenAt, cursor.id);
+  async listDirectory(input: {
+    enterpriseId: number;
+    search: string | null;
+    limit: number;
+    cursor: { lastSeenAt: Date | null; id: number } | null;
+  }): Promise<CustomerDirectoryRow[]> {
+    const params: unknown[] = [this.requireEnterprise(input.enterpriseId), input.limit];
+    const filters: string[] = [];
+
+    if (input.search) {
+      // A CONTAINS match, which normally forbids an index — customers_name_trgm_idx
+      // (gin_trgm_ops) exists precisely for this shape.
+      params.push(`%${input.search}%`);
+      filters.push(`AND display_name ILIKE $${params.length}`);
+    }
+    if (input.cursor) {
+      params.push(input.cursor.lastSeenAt, input.cursor.id);
+      const at = `$${params.length - 1}::timestamptz`;
+      const id = `$${params.length}`;
+      /*
+       * The null case is handled EXPLICITLY. The previous `(last_seen_at, id) <
+       * ($3, $4)` looked right, but row comparison against NULL yields NULL, so
+       * with ORDER BY ... NULLS LAST every customer who had never been seen was
+       * silently dropped from page two onward — the exact rows that sort last.
+       */
+      filters.push(
+        `AND (
+             (${at} IS NOT NULL AND last_seen_at IS NOT NULL
+                AND (last_seen_at, id) < (${at}, ${id}))
+          OR (${at} IS NOT NULL AND last_seen_at IS NULL)
+          OR (${at} IS NULL AND last_seen_at IS NULL AND id < ${id})
+        )`,
+      );
     }
 
-    return this.query(
+    return this.query<CustomerDirectoryRow>(
       `SELECT id, ref_id AS "refId", display_name AS "displayName",
-              last_seen_at AS "lastSeenAt", conversation_count AS "conversationCount"
+              avatar_url AS "avatarUrl", first_source AS "firstSource",
+              /*
+               * COUNTED, not read from customers.conversation_count: that column
+               * is declared DEFAULT 0 and no code has ever written to it, so
+               * returning it would report 0 for every customer forever. The
+               * subquery is an index-only probe of conversations_customer_idx
+               * (enterprise_id, customer_id, ...), and a computed count cannot
+               * drift the way a denormalised counter does.
+               */
+              (SELECT count(*) FROM conversations cv
+                WHERE cv.enterprise_id = customers.enterprise_id
+                  AND cv.customer_id = customers.id
+                  AND cv.is_deleted = false)  AS "conversationCount",
+              first_seen_at AS "firstSeenAt", last_seen_at AS "lastSeenAt",
+              status, (blocked_at IS NOT NULL) AS "isBlocked"
          FROM customers
         WHERE enterprise_id = $1
           AND status <> 'merged'
           AND is_deleted = false
-          ${keyset}
+          AND merged_into_customer_id IS NULL
+          ${filters.join('\n          ')}
         ORDER BY last_seen_at DESC NULLS LAST, id DESC
         LIMIT $2`,
       params,

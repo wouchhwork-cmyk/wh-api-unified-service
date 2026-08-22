@@ -69,6 +69,15 @@ export class InboundProjectorWorker extends BasePoller {
         payload,
       ),
     );
+    this.projectors.set(InboundEventType.Mention, (context, payload) =>
+      this.comments.projectMention(
+        context.enterpriseId,
+        context.channelId,
+        context.platform,
+        context.inboundEventId,
+        payload,
+      ),
+    );
     this.projectors.set(InboundEventType.PostUpdate, (context, payload) =>
       this.posts.project(
         context.enterpriseId,
