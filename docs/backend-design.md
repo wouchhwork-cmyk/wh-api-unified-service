@@ -1058,6 +1058,127 @@ None of these change a single request to Facebook.
 
 ---
 
+## 19. What implementation changed
+
+The design above was written before the code. Building it surfaced facts that no
+amount of design review would have produced, so they are recorded here rather
+than left as a difference between the document and the repository.
+
+### 19.1 Corrections to §1 and §5 — the toolchain
+
+**tsx cannot run this application.** It transpiles with esbuild, which does not
+emit `emitDecoratorMetadata`, so `design:paramtypes` is absent and EVERY
+type-reflected injection resolves to `undefined`. The symptom is misleading:
+providers that use an explicit token (`@InjectDataSource`, `@InjectPinoLogger`)
+resolve fine, so the failure looks like a module-wiring problem. The application
+builds and runs on **SWC** with `decoratorMetadata: true` (`.swcrc`); tsx remains
+fine for the scripts, which use no DI.
+
+**TypeORM's result shapes are not uniform.** Verified against Postgres 18:
+
+| Statement | Returns |
+| --------- | ------- |
+| `SELECT` | `[{...}, {...}]` — flat rows |
+| `INSERT ... RETURNING` | `[{...}]` — flat rows |
+| `UPDATE`/`DELETE ... RETURNING` | `[[{...}], 1]` — `[rows, affectedCount]` |
+
+Reading `rows[0]` on the tuple silently yields the inner ARRAY and `rows.length`
+silently yields 2, so "did this update match?" written as `rows.length === 1` is
+always false. `BaseRepository.mutate()` normalises it in one place — the concrete
+payoff of §5's one-mechanism rule, since the trap is disarmed everywhere at once.
+
+**A generated `BIGINT` id hydrates as a string.** The driver-level `int8` parser
+covers rows read back, but TypeORM builds a freshly-inserted entity from its own
+`RETURNING` handling, so an id could be a string on the object that just came
+from `save()` and a number on the same row loaded later. The primary key is
+therefore `@PrimaryColumn` + `@Generated('increment')` with the bigint
+transformer, because `@PrimaryGeneratedColumn`'s typed options reject a
+transformer.
+
+**Entity and migration globs are replaced by explicit lists.** TypeORM resolves a
+glob at runtime and `require`s the matches itself, bypassing the build's
+transform: under the test runner it tried to execute raw TypeScript.
+
+**No global `ValidationPipe`.** Nest's pipe requires `class-validator`, which
+§1.3 deliberately does not use. Each handler parses its request with its Zod
+schema.
+
+**`app.use(json())` breaks webhook signature verification.** The `rawBody: true`
+option is implemented inside Nest's own body parsers, so replacing them with
+express middleware silently discards `req.rawBody` — and the HMAC then has
+nothing to verify against. Use `app.useBodyParser(...)`.
+
+### 19.2 Correction to §8.2 — errors the filter did not own
+
+Body-parser failures (413, 415, aborted requests) are `http-errors` instances,
+not Nest `HttpException`s, and carry no `code`. They fell through to
+`INTERNAL_ERROR`, so a client sending too large a body was told the server had
+failed. The filter now recognises anything carrying an HTTP-range `status`, and
+trusts the library's `expose` flag to decide whether its message is client-safe.
+
+### 19.3 Correction to §13.1 — a probe must answer in its status code
+
+`/health/ready` and `/health/startup` reported failure only in the JSON body. An
+orchestrator reads the STATUS CODE, so a degraded instance was never pulled from
+the load balancer. Both now return `503` when a check fails.
+
+### 19.4 Correction to §12 — leases need fencing, not just bounding
+
+A bounded lease is not enough. With the documented defaults — batch 20, 10 s per
+platform call, a 120 s lease — a batch can run for 200 s, the reaper re-queues
+the row, and a second worker sends the same message. Two changes: the lease is
+re-checked immediately before each send, and the write-back is conditional on
+`lease_owner`, so a worker that lost its claim cannot settle the row.
+
+Also: `RETURNING` has no defined row order, so the claim's `ORDER BY` decides
+WHICH rows are taken but not the order they come back in. Priority is re-applied
+in code, or an urgent event inside a batch runs after a low-priority one.
+
+### 19.5 Correction to §18 — one Page, several tenants
+
+`channels_platform_uniq` is `(platform, platform_channel_id,
+provider_connection_id)` with no enterprise component, precisely so an agency and
+the brand it manages can both connect the same Page. Resolving an inbound webhook
+with `LIMIT 1` therefore delivered the event to one of them and silently dropped
+the rest. Attribution now fans out to every channel holding that platform id,
+each with its own enterprise-scoped dedup key.
+
+A dedup key composed from an object id alone is also not enough for a Facebook
+`feed` change: one comment id carries several distinct events over its life
+(added, edited, hidden, removed), so the verb belongs in the key or every event
+after the first is discarded as a duplicate.
+
+### 19.6 The tenant-safety gap composite foreign keys do not close
+
+Composite FKs make a cross-tenant REFERENCE unrepresentable. They do nothing for
+an UPDATE of ordinary columns: `UPDATE provider_connections SET reauth_required
+= true WHERE id = $1` is well-formed whoever owns row `$1`. One such write
+existed, and it was reachable — a dead token on one tenant's channel revoked
+another tenant's connection, because a `channels.id` was passed where a
+`provider_connections.id` was expected and both are `BIGSERIAL` typed `number`.
+
+The rule this produces, now applied throughout: **every tenant-scoped write names
+`enterprise_id` in its `WHERE` clause**, even when the primary key alone would
+identify the row. The composite keys protect the shape of the data; only the
+predicate protects the write.
+
+### 19.7 Still open
+
+- **Verification delivery** has no provider. The seam exists and the flow is
+  complete; in dev the code is logged, and in qa or prod a missing provider is
+  logged as an error rather than silently dropping the send.
+- **OAuth `state` is signed and expiring but not single-use.** Replay is bounded
+  by the ten-minute window and by Meta rejecting a reused authorization code, so
+  the practical exposure is small — but the design says single-use, and closing
+  it needs somewhere to record spent nonces.
+- **The ambiguous-send read-back** is not implemented. Such sends are cancelled
+  rather than retried, choosing a missing reply an agent can resend over a
+  duplicate reply to a customer.
+- **Backfill** is enqueued on connect but no sync runner consumes `sync_jobs` yet.
+- **Posts** are modelled and migrated but not synced or exposed.
+
+---
+
 ## Appendix — sources checked (August 2026)
 
 - NestJS releases and v12 scope — [github.com/nestjs/nest/releases](https://github.com/nestjs/nest/releases), [v12.0.0 PR](https://github.com/nestjs/nest/pull/16391), [InfoQ on the v12 roadmap](https://www.infoq.com/news/2026/04/nestjs-12-roadmap-esm/), [Trilon](https://trilon.io/blog/nestjs-12-is-coming)
