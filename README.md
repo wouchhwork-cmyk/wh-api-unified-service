@@ -11,6 +11,9 @@ from one place.
 | [docs/schema.md](docs/schema.md) | The data: 25 tables, their keys, and the reasoning behind each name and constraint |
 | [docs/backend-design.md](docs/backend-design.md) | The code: stack, layering, transactions, auth, API contract, deployment, and the Meta integration. §19 records what building it changed |
 
+- [`docs/backlog.md`](docs/backlog.md) — everything known to be missing or wrong,
+  ordered by risk. Read this before planning work.
+
 ## Running it
 
 Requires Node 24, pnpm 10, and PostgreSQL 16 or newer.

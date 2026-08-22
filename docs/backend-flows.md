@@ -757,6 +757,9 @@ Two rules for any client:
 
 ## 21. What is designed but not built
 
+> The full, current list lives in [`backlog.md`](backlog.md), with sizes and a
+> suggested order. What follows is the summary.
+
 Read this before promising anything.
 
 ### Nothing consumes these
