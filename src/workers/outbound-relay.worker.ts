@@ -3,7 +3,10 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
-import { OutboundEventRepository, type ClaimedOutboundEvent } from '@/database/repositories/outbound-event.repository';
+import {
+  OutboundEventRepository,
+  type ClaimedOutboundEvent,
+} from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { GraphApiError } from '@/modules/connections/graph/graph-api.error';

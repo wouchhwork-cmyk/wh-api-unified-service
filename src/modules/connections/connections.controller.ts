@@ -124,7 +124,7 @@ export class ConnectionsController {
       reauthRequired: channel.reauthRequired,
       isManaged: channel.isManaged,
       parentChannelRefId:
-        channel.parentChannelId === null ? null : refById.get(channel.parentChannelId) ?? null,
+        channel.parentChannelId === null ? null : (refById.get(channel.parentChannelId) ?? null),
     }));
   }
 }

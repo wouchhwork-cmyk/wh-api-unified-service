@@ -117,11 +117,7 @@ export class InboundProjectorWorker extends BasePoller {
         // dead-letter when the budget is spent.
         const message = error instanceof Error ? error.message : 'projection failed';
         const retry = scheduleRetry(event.attemptCount, 3);
-        await this.inbound.markFailed(
-          event.id,
-          message,
-          retry?.nextAttemptAt ?? new Date(),
-        );
+        await this.inbound.markFailed(event.id, message, retry?.nextAttemptAt ?? new Date());
         this.logger.warn(
           { eventId: event.id, eventType: event.eventType, attempt: event.attemptCount },
           'projection failed',

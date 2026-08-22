@@ -83,9 +83,10 @@ export class IdentityRepository extends BaseRepository {
   /** Stamps the credential that was just proven. Never overwrites the other one. */
   async markCredentialVerified(id: number, credential: 'email' | 'mobile'): Promise<void> {
     const column = credential === 'email' ? 'email_verified_at' : 'mobile_verified_at';
-    await this.query(`UPDATE identities SET ${column} = now() WHERE id = $1 AND ${column} IS NULL`, [
-      id,
-    ]);
+    await this.query(
+      `UPDATE identities SET ${column} = now() WHERE id = $1 AND ${column} IS NULL`,
+      [id],
+    );
   }
 
   async updatePasswordHash(id: number, passwordHash: string): Promise<void> {

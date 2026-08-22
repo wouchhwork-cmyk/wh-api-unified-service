@@ -87,8 +87,14 @@ export class ProviderConnectionRepository extends BaseRepository {
   }
 
   async listForEnterprise(enterpriseId: number): Promise<
-    { refId: string; provider: string; providerUserName: string | null; status: string;
-      reauthRequired: boolean; tokenExpiresAt: Date | null }[]
+    {
+      refId: string;
+      provider: string;
+      providerUserName: string | null;
+      status: string;
+      reauthRequired: boolean;
+      tokenExpiresAt: Date | null;
+    }[]
   > {
     return this.query(
       `SELECT ref_id AS "refId", provider, provider_user_name AS "providerUserName",

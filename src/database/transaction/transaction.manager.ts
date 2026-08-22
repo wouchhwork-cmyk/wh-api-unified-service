@@ -34,8 +34,7 @@ export class TransactionManager {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectPinoLogger(TransactionManager.name) private readonly logger: PinoLogger,
-  ) {
-  }
+  ) {}
 
   async runInTransaction<T>(
     work: (manager: EntityManager) => Promise<T>,

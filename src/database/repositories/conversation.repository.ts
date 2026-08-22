@@ -1,10 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  ConversationKind,
-  ConversationStatus,
-  Platform,
-  THREAD_KEY_PREFIX,
-} from '@/shared/enums';
+import { ConversationKind, ConversationStatus, Platform, THREAD_KEY_PREFIX } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 export interface UpsertConversationInput {

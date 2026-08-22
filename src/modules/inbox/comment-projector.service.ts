@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
-import { ConversationRepository, composeThreadKey } from '@/database/repositories/conversation.repository';
+import {
+  ConversationRepository,
+  composeThreadKey,
+} from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { TransactionManager } from '@/database/transaction';
@@ -82,7 +85,9 @@ export class CommentProjectorService {
     }
 
     const identifierKind =
-      platform === Platform.Instagram ? IdentifierKind.InstagramUserId : IdentifierKind.FacebookUserId;
+      platform === Platform.Instagram
+        ? IdentifierKind.InstagramUserId
+        : IdentifierKind.FacebookUserId;
 
     /*
      * The thread key: one conversation per TOP-LEVEL comment thread. parent_id

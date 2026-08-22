@@ -50,9 +50,7 @@ export function normalizeSlug(value: string): string {
     .replace(/^-|-$/g, '');
 
   // Trim at the boundary, then strip a hyphen the cut may have left dangling.
-  return slug.length <= MAX_SLUG_LENGTH
-    ? slug
-    : slug.slice(0, MAX_SLUG_LENGTH).replace(/-$/, '');
+  return slug.length <= MAX_SLUG_LENGTH ? slug : slug.slice(0, MAX_SLUG_LENGTH).replace(/-$/, '');
 }
 
 /** URL: lower-case scheme and host, strip a default port, KEEP path case. */

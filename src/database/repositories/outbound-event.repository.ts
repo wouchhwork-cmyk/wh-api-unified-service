@@ -122,15 +122,15 @@ export class OutboundEventRepository extends BaseRepository {
     return rows
       .sort((a, b) => a.priority - b.priority || a.id - b.id)
       .map((row) => ({
-      id: row.id,
-      enterpriseId: row.enterprise_id,
-      channelId: row.channel_id,
-      eventType: row.event_type,
-      recipientPlatformId: row.recipient_platform_id,
-      payload: row.payload,
-      attemptCount: row.attempt_count,
-      maxAttempts: row.max_attempts,
-    }));
+        id: row.id,
+        enterpriseId: row.enterprise_id,
+        channelId: row.channel_id,
+        eventType: row.event_type,
+        recipientPlatformId: row.recipient_platform_id,
+        payload: row.payload,
+        attemptCount: row.attempt_count,
+        maxAttempts: row.max_attempts,
+      }));
   }
 
   /**
@@ -141,11 +141,7 @@ export class OutboundEventRepository extends BaseRepository {
    * workers would write back and the send could be duplicated with neither
    * noticing.
    */
-  async markSent(
-    id: number,
-    leaseOwner: string,
-    platformEventId: string | null,
-  ): Promise<boolean> {
+  async markSent(id: number, leaseOwner: string, platformEventId: string | null): Promise<boolean> {
     const { affected } = await this.mutate(
       `UPDATE outbound_events
           SET status = $2, sent_at = now(), platform_event_id = $3,

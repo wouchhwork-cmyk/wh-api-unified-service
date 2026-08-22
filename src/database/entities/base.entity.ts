@@ -1,10 +1,4 @@
-import {
-  Column,
-  CreateDateColumn,
-  Generated,
-  PrimaryColumn,
-  UpdateDateColumn,
-} from 'typeorm';
+import { Column, CreateDateColumn, Generated, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 import { bigintTransformer } from '../bigint.transformer';
 
 /**

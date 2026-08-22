@@ -57,7 +57,10 @@ async function bootstrap(): Promise<void> {
   const reflector = app.get(Reflector);
   // The request context is established by middleware (see AppModule), because
   // middleware runs before guards and interceptors do not.
-  app.useGlobalInterceptors(new TimeoutInterceptor(config), new ResponseEnvelopeInterceptor(reflector));
+  app.useGlobalInterceptors(
+    new TimeoutInterceptor(config),
+    new ResponseEnvelopeInterceptor(reflector),
+  );
   app.useGlobalFilters(app.get(AllExceptionsFilter));
 
   /*

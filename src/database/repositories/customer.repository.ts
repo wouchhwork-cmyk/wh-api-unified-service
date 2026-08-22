@@ -192,8 +192,13 @@ export class CustomerRepository extends BaseRepository {
     limit: number,
     cursor: { lastSeenAt: Date; id: number } | null,
   ): Promise<
-    { id: number; refId: string; displayName: string | null; lastSeenAt: Date | null;
-      conversationCount: number }[]
+    {
+      id: number;
+      refId: string;
+      displayName: string | null;
+      lastSeenAt: Date | null;
+      conversationCount: number;
+    }[]
   > {
     const params: unknown[] = [this.requireEnterprise(enterpriseId), limit];
     let keyset = '';

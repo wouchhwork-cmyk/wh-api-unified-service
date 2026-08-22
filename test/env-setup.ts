@@ -28,7 +28,10 @@ function load(file: string, required: boolean): void {
 
     const key = trimmed.slice(0, equals).trim();
     // Strip an inline comment, then surrounding quotes.
-    const raw = trimmed.slice(equals + 1).replace(/\s+#.*$/, '').trim();
+    const raw = trimmed
+      .slice(equals + 1)
+      .replace(/\s+#.*$/, '')
+      .trim();
     const value = raw.replace(/^["']|["']$/g, '');
 
     // Earlier files lose to later ones, and a real environment variable wins

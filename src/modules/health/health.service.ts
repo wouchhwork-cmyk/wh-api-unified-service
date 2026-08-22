@@ -65,7 +65,10 @@ export class HealthService {
         poolMax: this.config.database.poolMax,
         statementTimeoutMs: this.config.database.statementTimeoutMs,
       },
-      meta: { enabled: this.config.meta.enabled, graphApiVersion: this.config.meta.graphApiVersion },
+      meta: {
+        enabled: this.config.meta.enabled,
+        graphApiVersion: this.config.meta.graphApiVersion,
+      },
     };
   }
 

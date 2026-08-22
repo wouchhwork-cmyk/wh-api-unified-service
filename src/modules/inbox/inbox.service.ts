@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
-import { ConversationRepository, type ConversationRow } from '@/database/repositories/conversation.repository';
+import {
+  ConversationRepository,
+  type ConversationRow,
+} from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
@@ -107,7 +110,10 @@ export class InboxService {
     if (actor.memberId === null) throw new AppException(ErrorCode.AuthNoActiveMembership);
 
     // Validation and reads happen BEFORE the transaction opens, so it stays short.
-    const conversation = await this.requireConversation(actor.enterpriseId, input.conversationRefId);
+    const conversation = await this.requireConversation(
+      actor.enterpriseId,
+      input.conversationRefId,
+    );
 
     if (conversation.status === ConversationStatus.Archived) {
       throw new AppException(ErrorCode.ConversationClosed);
@@ -126,7 +132,10 @@ export class InboxService {
     // An internal note never leaves the building, so the send-path checks below
     // do not apply to it.
     if (!input.internalNote) {
-      const channel = await this.channels.findSendContext(actor.enterpriseId, conversation.channelId);
+      const channel = await this.channels.findSendContext(
+        actor.enterpriseId,
+        conversation.channelId,
+      );
       if (!channel) throw new AppException(ErrorCode.ChannelNotFound);
       // Fail fast, before a row is queued that the relay could only cancel.
       if (channel.reauthRequired) throw new AppException(ErrorCode.ChannelReauthRequired);
@@ -165,12 +174,7 @@ export class InboxService {
           recipientPlatformId: stripThreadPrefix(conversation.platformThreadId),
           // Keyed on the CAUSING row, because an outbound send has no platform
           // id yet and hashing the body would collide two identical replies.
-          dedupKey: outboundDedupKey(
-            conversation.platform,
-            eventType,
-            'messages',
-            message.id,
-          ),
+          dedupKey: outboundDedupKey(conversation.platform, eventType, 'messages', message.id),
           correlationId: RequestContext.correlationId() ?? null,
           payload:
             eventType === OutboundEventType.CommentReply

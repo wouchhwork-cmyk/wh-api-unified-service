@@ -41,7 +41,9 @@ export class SyncJobRepository extends BaseRepository {
   async listForChannel(
     enterpriseId: number,
     channelId: number,
-  ): Promise<{ refId: string; jobKind: SyncJobKind; status: SyncJobStatus; syncedItemCount: number }[]> {
+  ): Promise<
+    { refId: string; jobKind: SyncJobKind; status: SyncJobStatus; syncedItemCount: number }[]
+  > {
     return this.query(
       `SELECT ref_id AS "refId", job_kind AS "jobKind", status,
               synced_item_count AS "syncedItemCount"

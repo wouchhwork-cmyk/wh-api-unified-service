@@ -74,7 +74,11 @@ export class PermissionRepository extends BaseRepository {
           AND p.status = $2
           AND p.scope IN ('staff','both')
           AND (p.feature_id IS NULL OR ef.status = $3)`,
-      [this.requireEnterprise(enterpriseId), PermissionStatus.Active, EnterpriseFeatureStatus.Active],
+      [
+        this.requireEnterprise(enterpriseId),
+        PermissionStatus.Active,
+        EnterpriseFeatureStatus.Active,
+      ],
     );
     return rows.map((row) => row.code);
   }

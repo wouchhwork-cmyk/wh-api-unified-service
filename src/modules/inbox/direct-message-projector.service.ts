@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { ConversationRepository, composeThreadKey } from '@/database/repositories/conversation.repository';
+import {
+  ConversationRepository,
+  composeThreadKey,
+} from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { TransactionManager } from '@/database/transaction';
@@ -65,7 +68,9 @@ export class DirectMessageProjectorService {
     if (!senderId) return { projected: false, reason: 'the message names no sender' };
 
     const identifierKind =
-      platform === Platform.Instagram ? IdentifierKind.InstagramUserId : IdentifierKind.FacebookUserId;
+      platform === Platform.Instagram
+        ? IdentifierKind.InstagramUserId
+        : IdentifierKind.FacebookUserId;
 
     return this.tx.runInTransaction(async () => {
       const customer = await this.customers.resolveOrCreate({

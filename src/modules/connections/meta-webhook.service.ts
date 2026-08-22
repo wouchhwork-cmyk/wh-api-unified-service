@@ -50,7 +50,11 @@ export class MetaWebhookService {
   }
 
   /** The subscription handshake. Meta expects the bare challenge as text/plain. */
-  verifySubscription(mode: string | undefined, token: string | undefined, challenge: string | undefined): string {
+  verifySubscription(
+    mode: string | undefined,
+    token: string | undefined,
+    challenge: string | undefined,
+  ): string {
     this.assertConfigured();
     if (mode !== 'subscribe' || !challenge) {
       throw new AppException(ErrorCode.WebhookSignatureInvalid);
@@ -222,7 +226,6 @@ function mapChangeField(field: string | undefined): InboundEventType {
       return InboundEventType.PostUpdate;
   }
 }
-
 
 /**
  * Composes the dedup key using the SHARED scheme, so a backfill fetching the

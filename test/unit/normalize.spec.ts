@@ -28,8 +28,16 @@ describe('email normalization', () => {
   });
 
   it('rejects addresses that would break the uniqueness key', () => {
-    for (const value of ['no-at-sign', 'two@@example.com', 'bob@nodot', '.bob@example.com',
-                         'bob.@example.com', 'bo..b@example.com', 'a b@example.com', '@example.com']) {
+    for (const value of [
+      'no-at-sign',
+      'two@@example.com',
+      'bob@nodot',
+      '.bob@example.com',
+      'bob.@example.com',
+      'bo..b@example.com',
+      'a b@example.com',
+      '@example.com',
+    ]) {
       expect(isValidEmail(normalizeEmail(value)), value).toBe(false);
     }
   });

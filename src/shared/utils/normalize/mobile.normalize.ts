@@ -1,8 +1,4 @@
-import {
-  parsePhoneNumberWithError,
-  type CountryCode,
-  type PhoneNumber,
-} from 'libphonenumber-js';
+import { parsePhoneNumberWithError, type CountryCode, type PhoneNumber } from 'libphonenumber-js';
 import { INVISIBLE_PATTERN } from './patterns';
 
 /**

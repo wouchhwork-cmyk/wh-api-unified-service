@@ -730,13 +730,25 @@ export class InitialSchema1756000000000 implements MigrationInterface {
     // =======================================================================
 
     // --- tenant-safety parent keys ----------------------------------------
-    await q.query(`CREATE UNIQUE INDEX enterprise_members_id_enterprise_uniq ON enterprise_members (id, enterprise_id)`);
+    await q.query(
+      `CREATE UNIQUE INDEX enterprise_members_id_enterprise_uniq ON enterprise_members (id, enterprise_id)`,
+    );
     await q.query(`CREATE UNIQUE INDEX roles_id_enterprise_uniq ON roles (id, enterprise_id)`);
-    await q.query(`CREATE UNIQUE INDEX provider_connections_id_enterprise_uniq ON provider_connections (id, enterprise_id)`);
-    await q.query(`CREATE UNIQUE INDEX channels_id_enterprise_uniq ON channels (id, enterprise_id)`);
-    await q.query(`CREATE UNIQUE INDEX customers_id_enterprise_uniq ON customers (id, enterprise_id)`);
-    await q.query(`CREATE UNIQUE INDEX customer_identifiers_id_enterprise_uniq ON customer_identifiers (id, enterprise_id)`);
-    await q.query(`CREATE UNIQUE INDEX conversations_id_enterprise_uniq ON conversations (id, enterprise_id)`);
+    await q.query(
+      `CREATE UNIQUE INDEX provider_connections_id_enterprise_uniq ON provider_connections (id, enterprise_id)`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX channels_id_enterprise_uniq ON channels (id, enterprise_id)`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX customers_id_enterprise_uniq ON customers (id, enterprise_id)`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX customer_identifiers_id_enterprise_uniq ON customer_identifiers (id, enterprise_id)`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX conversations_id_enterprise_uniq ON conversations (id, enterprise_id)`,
+    );
 
     // --- ref_id: random, never reused, so a plain UNIQUE is correct --------
     for (const table of REF_ID_TABLES) {
@@ -744,9 +756,15 @@ export class InitialSchema1756000000000 implements MigrationInterface {
     }
 
     // --- reusable business identifiers: partial, so deleting frees the key --
-    await q.query(`CREATE UNIQUE INDEX enterprises_slug_uniq ON enterprises (slug) WHERE is_deleted = false`);
-    await q.query(`CREATE UNIQUE INDEX features_key_uniq ON features ("key") WHERE is_deleted = false`);
-    await q.query(`CREATE UNIQUE INDEX permissions_code_uniq ON permissions (code) WHERE is_deleted = false`);
+    await q.query(
+      `CREATE UNIQUE INDEX enterprises_slug_uniq ON enterprises (slug) WHERE is_deleted = false`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX features_key_uniq ON features ("key") WHERE is_deleted = false`,
+    );
+    await q.query(
+      `CREATE UNIQUE INDEX permissions_code_uniq ON permissions (code) WHERE is_deleted = false`,
+    );
     await q.query(`
       CREATE UNIQUE INDEX roles_enterprise_name_uniq ON roles (enterprise_id, name)
       WHERE is_deleted = false AND enterprise_id IS NOT NULL
@@ -792,7 +810,9 @@ export class InitialSchema1756000000000 implements MigrationInterface {
     `);
 
     // --- sessions: a hash of a random token is never reused ----------------
-    await q.query(`CREATE UNIQUE INDEX sessions_refresh_token_hash_uniq ON sessions (refresh_token_hash)`);
+    await q.query(
+      `CREATE UNIQUE INDEX sessions_refresh_token_hash_uniq ON sessions (refresh_token_hash)`,
+    );
 
     // --- verifications: at most one LIVE code per subject/kind/destination --
     // Predicate uses only immutable column tests; a partial index cannot
@@ -815,7 +835,9 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       CREATE UNIQUE INDEX channels_platform_uniq
       ON channels (platform, platform_channel_id, provider_connection_id)
     `);
-    await q.query(`CREATE UNIQUE INDEX posts_platform_uniq ON posts (channel_id, platform_post_id)`);
+    await q.query(
+      `CREATE UNIQUE INDEX posts_platform_uniq ON posts (channel_id, platform_post_id)`,
+    );
     await q.query(`
       CREATE UNIQUE INDEX conversations_thread_uniq
       ON conversations (channel_id, platform_thread_id)
@@ -1063,13 +1085,23 @@ export class InitialSchema1756000000000 implements MigrationInterface {
     // =======================================================================
 
     // --- lookups right after password verification -------------------------
-    await q.query(`CREATE INDEX enterprise_members_identity_idx ON enterprise_members (identity_id) WHERE is_deleted = false`);
-    await q.query(`CREATE INDEX enterprise_members_enterprise_idx ON enterprise_members (enterprise_id) WHERE is_deleted = false`);
-    await q.query(`CREATE INDEX enterprises_status_idx ON enterprises (status) WHERE is_deleted = false`);
+    await q.query(
+      `CREATE INDEX enterprise_members_identity_idx ON enterprise_members (identity_id) WHERE is_deleted = false`,
+    );
+    await q.query(
+      `CREATE INDEX enterprise_members_enterprise_idx ON enterprise_members (enterprise_id) WHERE is_deleted = false`,
+    );
+    await q.query(
+      `CREATE INDEX enterprises_status_idx ON enterprises (status) WHERE is_deleted = false`,
+    );
 
     // --- permission resolution --------------------------------------------
-    await q.query(`CREATE INDEX role_permissions_role_idx ON role_permissions (role_id) WHERE is_deleted = false`);
-    await q.query(`CREATE INDEX member_roles_member_idx ON member_roles (member_id) WHERE is_deleted = false`);
+    await q.query(
+      `CREATE INDEX role_permissions_role_idx ON role_permissions (role_id) WHERE is_deleted = false`,
+    );
+    await q.query(
+      `CREATE INDEX member_roles_member_idx ON member_roles (member_id) WHERE is_deleted = false`,
+    );
     await q.query(`CREATE INDEX permissions_feature_idx ON permissions (feature_id)`);
     await q.query(`CREATE INDEX permissions_resource_idx ON permissions (resource)`);
 
@@ -1081,30 +1113,42 @@ export class InitialSchema1756000000000 implements MigrationInterface {
 
     // --- sessions cleanup --------------------------------------------------
     await q.query(`CREATE INDEX sessions_identity_idx ON sessions (identity_id)`);
-    await q.query(`CREATE INDEX sessions_expiry_idx ON sessions (expires_at) WHERE revoked_at IS NULL`);
+    await q.query(
+      `CREATE INDEX sessions_expiry_idx ON sessions (expires_at) WHERE revoked_at IS NULL`,
+    );
 
     // --- verifications: rate limiting and cleanup --------------------------
-    await q.query(`CREATE INDEX verifications_destination_idx ON verifications (destination, created_at DESC)`);
+    await q.query(
+      `CREATE INDEX verifications_destination_idx ON verifications (destination, created_at DESC)`,
+    );
     await q.query(`
       CREATE INDEX verifications_expiry_idx ON verifications (expires_at)
       WHERE consumed_at IS NULL AND is_deleted = false
     `);
     await q.query(`CREATE INDEX verifications_identity_idx ON verifications (identity_id)`);
-    await q.query(`CREATE INDEX verifications_customer_idx ON verifications (enterprise_id, customer_id)`);
+    await q.query(
+      `CREATE INDEX verifications_customer_idx ON verifications (enterprise_id, customer_id)`,
+    );
 
     // --- token expiry sweeps ----------------------------------------------
     await q.query(`
       CREATE INDEX provider_connections_token_expiry_idx ON provider_connections (token_expires_at)
       WHERE is_deleted = false AND token_expires_at IS NOT NULL AND status = 'active'
     `);
-    await q.query(`CREATE INDEX provider_connections_enterprise_idx ON provider_connections (enterprise_id) WHERE is_deleted = false`);
+    await q.query(
+      `CREATE INDEX provider_connections_enterprise_idx ON provider_connections (enterprise_id) WHERE is_deleted = false`,
+    );
     await q.query(`
       CREATE INDEX channels_token_expiry_idx ON channels (token_expires_at)
       WHERE is_deleted = false AND token_expires_at IS NOT NULL AND status = 'active'
     `);
-    await q.query(`CREATE INDEX channels_enterprise_idx ON channels (enterprise_id) WHERE is_deleted = false`);
+    await q.query(
+      `CREATE INDEX channels_enterprise_idx ON channels (enterprise_id) WHERE is_deleted = false`,
+    );
     await q.query(`CREATE INDEX channels_connection_idx ON channels (provider_connection_id)`);
-    await q.query(`CREATE INDEX channels_parent_idx ON channels (parent_channel_id) WHERE parent_channel_id IS NOT NULL`);
+    await q.query(
+      `CREATE INDEX channels_parent_idx ON channels (parent_channel_id) WHERE parent_channel_id IS NOT NULL`,
+    );
 
     // --- sync jobs: runnable work and lease reclaim ------------------------
     // COALESCE so a rate-limited job whose backoff has passed is FOUND; without
@@ -1114,7 +1158,9 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       ON sync_jobs (COALESCE(next_attempt_at, rate_limited_until, created_at), id)
       WHERE status IN ('pending','failed','rate_limited')
     `);
-    await q.query(`CREATE INDEX sync_jobs_expired_lease_idx ON sync_jobs (lease_expires_at) WHERE status = 'running'`);
+    await q.query(
+      `CREATE INDEX sync_jobs_expired_lease_idx ON sync_jobs (lease_expires_at) WHERE status = 'running'`,
+    );
     await q.query(`CREATE INDEX sync_jobs_channel_idx ON sync_jobs (channel_id)`);
 
     // --- the customer directory and search --------------------------------
@@ -1125,7 +1171,9 @@ export class InitialSchema1756000000000 implements MigrationInterface {
     // Trigram on display_name alone: BIGINT has no GIN operator class, so a
     // composite (enterprise_id, display_name) GIN index would additionally need
     // btree_gin. The tenant filter combines as a bitmap AND instead.
-    await q.query(`CREATE INDEX customers_name_trgm_idx ON customers USING gin (display_name gin_trgm_ops)`);
+    await q.query(
+      `CREATE INDEX customers_name_trgm_idx ON customers USING gin (display_name gin_trgm_ops)`,
+    );
 
     // --- customer identifiers ---------------------------------------------
     await q.query(`
@@ -1189,10 +1237,14 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       WHERE is_deleted = false AND direction = 'inbound' AND is_read = false
     `);
     await q.query(`CREATE INDEX messages_customer_idx ON messages (enterprise_id, customer_id)`);
-    await q.query(`CREATE INDEX messages_parent_idx ON messages (parent_message_id) WHERE parent_message_id IS NOT NULL`);
+    await q.query(
+      `CREATE INDEX messages_parent_idx ON messages (parent_message_id) WHERE parent_message_id IS NOT NULL`,
+    );
 
     // --- attachments: the download worker ---------------------------------
-    await q.query(`CREATE INDEX message_attachments_message_idx ON message_attachments (message_id)`);
+    await q.query(
+      `CREATE INDEX message_attachments_message_idx ON message_attachments (message_id)`,
+    );
     await q.query(`
       CREATE INDEX message_attachments_pending_idx ON message_attachments (id)
       WHERE is_downloaded = false AND status = 'active' AND is_deleted = false
@@ -1211,7 +1263,9 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       CREATE INDEX inbound_events_expired_lease_idx ON inbound_events (lease_expires_at)
       WHERE status IN ('leased','processing')
     `);
-    await q.query(`CREATE INDEX inbound_events_enterprise_idx ON inbound_events (enterprise_id, created_at DESC)`);
+    await q.query(
+      `CREATE INDEX inbound_events_enterprise_idx ON inbound_events (enterprise_id, created_at DESC)`,
+    );
     await q.query(`
       CREATE INDEX inbound_events_dead_letter_idx ON inbound_events (dead_lettered_at DESC)
       WHERE status = 'dead_letter'
@@ -1225,15 +1279,21 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       CREATE INDEX outbound_events_expired_lease_idx ON outbound_events (lease_expires_at)
       WHERE status IN ('leased','sending')
     `);
-    await q.query(`CREATE INDEX outbound_events_enterprise_idx ON outbound_events (enterprise_id, created_at DESC)`);
+    await q.query(
+      `CREATE INDEX outbound_events_enterprise_idx ON outbound_events (enterprise_id, created_at DESC)`,
+    );
     await q.query(`
       CREATE INDEX outbound_events_dead_letter_idx ON outbound_events (dead_lettered_at DESC)
       WHERE status = 'dead_letter'
     `);
 
     // --- the audit trail --------------------------------------------------
-    await q.query(`CREATE INDEX audit_logs_enterprise_idx ON audit_logs (enterprise_id, created_at DESC)`);
-    await q.query(`CREATE INDEX audit_logs_actor_identity_idx ON audit_logs (actor_identity_id, created_at DESC)`);
+    await q.query(
+      `CREATE INDEX audit_logs_enterprise_idx ON audit_logs (enterprise_id, created_at DESC)`,
+    );
+    await q.query(
+      `CREATE INDEX audit_logs_actor_identity_idx ON audit_logs (actor_identity_id, created_at DESC)`,
+    );
     await q.query(`CREATE INDEX audit_logs_entity_idx ON audit_logs (entity_type, entity_id)`);
     await q.query(`CREATE INDEX audit_logs_action_idx ON audit_logs (action, created_at DESC)`);
     // The question a customer will eventually ask: which Wouchh staff touched

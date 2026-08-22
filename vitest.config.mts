@@ -9,6 +9,22 @@ export default defineConfig({
   test: {
     globals: true,
     root: '.',
+    /*
+     * ONE FILE AT A TIME, ACROSS EVERY PROJECT.
+     *
+     * `fileParallelism: false` inside a project only serialises that project's
+     * own files — projects still run concurrently with each other, and the
+     * integration and e2e suites share one database and both TRUNCATE it in
+     * beforeEach. Run in parallel they delete each other's fixtures, which
+     * presents as a test that fails perhaps one run in three and passes when you
+     * re-run it alone: the worst failure mode a suite can have.
+     *
+     * The honest fix is a database per suite. Until then this is what makes the
+     * suite deterministic, and it costs a few seconds on a suite that runs in
+     * under ten.
+     */
+    fileParallelism: false,
+    maxWorkers: 1,
     projects: [
       {
         extends: true,

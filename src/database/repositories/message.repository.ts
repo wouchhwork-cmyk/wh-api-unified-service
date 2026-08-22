@@ -56,7 +56,9 @@ export class MessageRepository extends BaseRepository {
    * unique platform-wide, and conversation scoping would let the same comment
    * exist twice if a backfill and a webhook resolved it into different threads.
    */
-  async insertInbound(input: InsertInboundMessageInput): Promise<{ id: number; refId: string } | null> {
+  async insertInbound(
+    input: InsertInboundMessageInput,
+  ): Promise<{ id: number; refId: string } | null> {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, customer_id, inbound_event_id,

@@ -134,8 +134,13 @@ export class GraphApiClient {
   async getPageWithInstagram(
     pageId: string,
     userAccessToken: string,
-  ): Promise<{ id: string; name?: string; access_token?: string; category?: string;
-              instagram_business_account?: { id: string; username?: string } }> {
+  ): Promise<{
+    id: string;
+    name?: string;
+    access_token?: string;
+    category?: string;
+    instagram_business_account?: { id: string; username?: string };
+  }> {
     return this.request('GET', pageId, {
       accessToken: userAccessToken,
       params: { fields: 'id,name,access_token,category,instagram_business_account{id,username}' },

@@ -8,7 +8,10 @@ import { RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS } from '@/shared/constants';
  * next outage. Full jitter spreads them across the whole window.
  */
 export function nextAttemptDelayMs(attemptCount: number): number {
-  const exponential = Math.min(RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1), RETRY_MAX_DELAY_MS);
+  const exponential = Math.min(
+    RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1),
+    RETRY_MAX_DELAY_MS,
+  );
   return Math.floor(exponential * (0.5 + Math.random() / 2));
 }
 

@@ -119,7 +119,10 @@ export class ChannelRepository extends BaseRepository {
    * and the PAGE token is what authorises the call. Without this join the send
    * path cannot find a usable credential for Instagram at all.
    */
-  async findSendContext(enterpriseId: number, channelId: number): Promise<ChannelSendContext | null> {
+  async findSendContext(
+    enterpriseId: number,
+    channelId: number,
+  ): Promise<ChannelSendContext | null> {
     const rows = await this.query<ChannelSendContext>(
       `SELECT c.id                                            AS "channelId",
               c.provider_connection_id                        AS "providerConnectionId",
