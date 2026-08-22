@@ -83,7 +83,25 @@ Only the platform console and the employees module write `audit_logs`. Auth
 assign, status change) write nothing, though `AuditAction` already declares
 `Login`, `LoginFailed`, `Logout`, `Verified`, `Assigned` and `Replied`.
 
-### 1.8 Smaller, but real — **S each**
+### 1.8 One test fails intermittently, unexplained — **M**
+
+Twice now, a single test has failed in a combined `pnpm test:all` run and then
+passed on every subsequent run — including three consecutive clean runs
+immediately afterwards, and every per-project run. Both times unreproducible, so
+both times I could not name the test with confidence.
+
+Recorded rather than dismissed, because "fails one run in N" is the failure mode
+that erodes trust in a suite fastest, and the suite is the only thing standing
+between a rename and a silent break.
+
+Where to look first: everything shares one database (`wouchh_test`), and
+`beforeEach` TRUNCATEs. Root-level `fileParallelism: false` and `maxWorkers: 1`
+serialise files, so it is not two files racing — more likely an app instance from
+a finished file still holding a connection, or a worker poller started by one
+suite touching rows during another. A per-file database, or capturing the failure
+with `--reporter=json` on a loop until it reproduces, would settle it.
+
+### 1.9 Smaller, but real — **S each**
 
 - **Resend cooldown is configured and unenforced.** `resendCooldownMs` is read by
   nothing; only the hourly per-destination cap of 5 applies, and it counts every
