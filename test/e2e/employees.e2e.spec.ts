@@ -6,6 +6,7 @@ import {
   createTestApp,
   platformAdminLogin,
   provisionPlatformAdmin,
+  readLatestVerificationSecret,
   resetTenantData,
   type TestApp,
 } from './app.harness';
@@ -337,6 +338,106 @@ describe('a business builds its team', () => {
       .send({ status: 'suspended', reason: 'by mistake' })
       .expect(403);
     expect(refused.body.error.details[0].issue).toMatch(/your own status/i);
+  });
+
+  it('resends an invitation that a stranger burned, and reveals nothing', async () => {
+    /*
+     * accept-invite is @Public and spends an attempt per submission, so anybody
+     * who knew a colleague's address could post wrong codes until the invitation
+     * was exhausted — and with no resend, that account could never be entered
+     * again. This is the recovery, and it is deliberately indistinguishable from
+     * a request for an address nobody has invited.
+     */
+    const { ownerToken } = await onboardedBusiness();
+    const roleRef = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: roleRef })
+      .expect(201);
+
+    // Burn the attempt budget with wrong codes.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({ email: 'rahul@bluebottle.test', code: '000000', password: OWNER_PASSWORD });
+    }
+
+    // Even the correct code is refused now: the budget is spent.
+    const spent = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: await readLatestVerificationSecret(db),
+        password: OWNER_PASSWORD,
+      });
+    expect(spent.status).toBeGreaterThanOrEqual(400);
+
+    /*
+     * Waiting out the cooldown, which is five minutes for a token-shaped
+     * challenge. That wait is the deliberate cost of this recovery: a stranger
+     * who burns the budget inside the window makes the real person wait, and
+     * removing the cooldown would turn this endpoint into a free SMS pump.
+     */
+    await db.query(
+      `UPDATE verifications SET last_sent_at = now() - interval '1 hour'
+        WHERE consumed_at IS NULL AND superseded_at IS NULL`,
+    );
+
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'rahul@bluebottle.test', purpose: 'employee_invite' })
+      .expect(202);
+
+    // A fresh challenge, with a fresh budget.
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: await readLatestVerificationSecret(db),
+        password: OWNER_PASSWORD,
+      })
+      .expect(200);
+    expect(accepted.body.data.accessToken).toBeTruthy();
+  });
+
+  it('answers a resend for an address nobody has invited exactly the same way', async () => {
+    // 202 either way: a different answer would tell a caller who has been
+    // invited, which is the enumeration this endpoint must not become.
+    await onboardedBusiness();
+
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'nobody@nowhere.test', purpose: 'employee_invite' })
+      .expect(202);
+  });
+
+  it('refuses a second resend inside the cooldown, still without saying so', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const roleRef = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: roleRef })
+      .expect(201);
+
+    const before: { resend_count: number }[] = await db.query(
+      `SELECT resend_count FROM verifications ORDER BY id DESC LIMIT 1`,
+    );
+
+    // Immediately after the invite was sent, so the cooldown is running.
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'rahul@bluebottle.test', purpose: 'employee_invite' })
+      .expect(202);
+
+    const after: { resend_count: number }[] = await db.query(
+      `SELECT resend_count FROM verifications ORDER BY id DESC LIMIT 1`,
+    );
+    // Nothing was sent: resendCooldownMs was configured per kind and read by
+    // nothing at all before this.
+    expect(Number(after[0]?.resend_count)).toBe(Number(before[0]?.resend_count));
   });
 
   it('refuses to create the same person twice', async () => {

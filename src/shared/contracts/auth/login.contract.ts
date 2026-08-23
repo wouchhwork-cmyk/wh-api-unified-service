@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DeliveryChannel, EmployeeKind } from '@/shared/enums';
+import { DeliveryChannel, EmployeeKind, VerificationKind } from '@/shared/enums';
 import {
   EmailSchema,
   LoginPasswordSchema,
@@ -89,6 +89,24 @@ export const AcceptInviteRequestSchema = z
     message: 'send exactly one of email or mobile',
   });
 
+/**
+ * Ask for a fresh code for an address that already had one.
+ *
+ * The KIND is named by the client because one address can legitimately have a
+ * challenge of more than one kind — a first login and an invitation — and
+ * guessing would resend the wrong one.
+ */
+export const ResendRequestSchema = z
+  .object({
+    email: EmailSchema.optional(),
+    mobile: MobileInputSchema.optional(),
+    purpose: z.enum([VerificationKind.EmployeeInvite, VerificationKind.FirstLogin]),
+  })
+  .strict()
+  .refine((value) => Boolean(value.email) !== Boolean(value.mobile), {
+    message: 'send exactly one of email or mobile',
+  });
+
 export const SelectEnterpriseRequestSchema = z
   .object({
     selectionToken: z.string().min(16),
@@ -105,6 +123,7 @@ export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export type VerifyRequest = z.infer<typeof VerifyRequestSchema>;
 export type AcceptInviteRequest = z.infer<typeof AcceptInviteRequestSchema>;
+export type ResendRequest = z.infer<typeof ResendRequestSchema>;
 export type SelectEnterpriseRequest = z.infer<typeof SelectEnterpriseRequestSchema>;
 export type SwitchEnterpriseRequest = z.infer<typeof SwitchEnterpriseRequestSchema>;
 export type Employment = z.infer<typeof EmploymentSchema>;

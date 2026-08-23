@@ -236,6 +236,69 @@ export class VerificationService {
   }
 
   /**
+   * Issues a fresh code for a destination that already had one.
+   *
+   * THIS IS WHAT MAKES A BURNED CHALLENGE RECOVERABLE. `/auth/accept-invite` is
+   * @Public and spends an attempt per submission, so anybody who knew a
+   * colleague's address could post five wrong codes and permanently exhaust the
+   * invitation — and with no resend, that account could never be entered again.
+   *
+   * It reveals nothing. An unknown destination, a destination with no live
+   * challenge, and one still inside its cooldown are answered identically, so
+   * this cannot be used to discover who has been invited.
+   *
+   * The cooldown is `resendCooldownMs`, which was configured per kind and read by
+   * nothing. It sits alongside the hourly per-destination cap rather than
+   * replacing it: the cap stops this being a free SMS pump, the cooldown stops a
+   * held-down button.
+   */
+  async resend(input: {
+    destination: string;
+    verificationKind: VerificationKind;
+    deliveryChannel: DeliveryChannel;
+    requestedIp: string | null;
+    requestedUserAgent: string | null;
+  }): Promise<PendingOtpDelivery | null> {
+    const live = await this.verifications.findLiveByDestination(
+      input.destination,
+      input.verificationKind,
+    );
+    if (!live) return null;
+
+    const params = this.config.verification(input.verificationKind);
+    const lastSentAt = live.lastSentAt?.getTime() ?? 0;
+    if (Date.now() - lastSentAt < params.resendCooldownMs) {
+      this.logger.info(
+        { verificationKind: input.verificationKind },
+        'resend refused — still inside the cooldown',
+      );
+      return null;
+    }
+
+    /*
+     * A NEW ROW, not a re-send of the old one. Its attempt budget is what was
+     * exhausted, and `issue` supersedes the live row inside one transaction —
+     * which is what verifications_live_uniq requires, and what stops the old
+     * code still being valid alongside the new one.
+     */
+    const issued = await this.issue({
+      subjectKind: live.subjectKind,
+      identityId: live.identityId,
+      customerId: live.customerId,
+      customerIdentifierId: live.customerIdentifierId,
+      enterpriseId: live.enterpriseId,
+      verificationKind: input.verificationKind,
+      destination: input.destination,
+      deliveryChannel: input.deliveryChannel,
+      requestedIp: input.requestedIp,
+      requestedUserAgent: input.requestedUserAgent,
+    });
+
+    await this.verifications.recordResend(live.id);
+    return issued.delivery;
+  }
+
+  /**
    * The hourly per-destination cap. Without it this endpoint is a free SMS pump
    * billed to us.
    */

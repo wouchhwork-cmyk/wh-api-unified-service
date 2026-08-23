@@ -5,7 +5,7 @@ import type { Request, Response } from 'express';
 import { AppConfigService } from '@/config';
 import { CREDENTIAL_ATTEMPTS_PER_MINUTE } from '@/shared/constants';
 import { CurrentActor, Public } from '@/shared/decorators';
-import { VerificationKind } from '@/shared/enums';
+import { DeliveryChannel, VerificationKind } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
 import {
@@ -15,12 +15,14 @@ import {
   SwitchEnterpriseRequestSchema,
   VerifyRequestSchema,
   AcceptInviteRequestSchema,
+  ResendRequestSchema,
   type LoginRequest,
   type LoginResponse,
   type SelectEnterpriseRequest,
   type SwitchEnterpriseRequest,
   type VerifyRequest,
   type AcceptInviteRequest,
+  type ResendRequest,
 } from '@/shared/contracts/auth/login.contract';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
@@ -182,6 +184,48 @@ export class AuthController {
     );
     if (outcome.session) this.setRefreshCookie(response, outcome.session);
     return outcome.response;
+  }
+
+  @Post('resend')
+  @Public()
+  // A resend sends a message that costs money, so it gets the credential budget
+  // rather than the generous one, on top of the per-destination cap and cooldown.
+  @Throttle({ default: { limit: CREDENTIAL_ATTEMPTS_PER_MINUTE, ttl: 60_000 } })
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Send a fresh code to an address that already had one',
+    description:
+      'Always 202, whatever the address. An unknown destination, one with no live challenge, and ' +
+      'one still inside its cooldown are indistinguishable — otherwise this would tell a caller ' +
+      'who has been invited. It exists because accept-invite spends an attempt per submission: ' +
+      'without a resend, anyone who knew a colleague’s address could exhaust the invitation and ' +
+      'leave that account permanently unenterable.',
+  })
+  async resend(@Body() body: unknown, @Req() request: Request): Promise<{ accepted: true }> {
+    const parsed: ResendRequest = ResendRequestSchema.parse(body);
+
+    const destination =
+      parsed.email !== undefined
+        ? normalizeEmail(parsed.email)
+        : normalizeMobile(parsed.mobile as { number: string; countryCode?: string })?.canonical;
+
+    // A malformed mobile is the one thing worth reporting: it is a client bug,
+    // not a fact about who exists.
+    if (!destination) throw new AppException(ErrorCode.InvalidMobile);
+
+    const pending = await this.verifications.resend({
+      destination,
+      verificationKind: parsed.purpose,
+      deliveryChannel: parsed.email !== undefined ? DeliveryChannel.Email : DeliveryChannel.Sms,
+      requestedIp: requestMetadata(request).ipAddress,
+      requestedUserAgent: requestMetadata(request).userAgent,
+    });
+
+    // Delivery is best-effort and never throws: the row is already committed, so
+    // a failed send is something the person recovers from by asking again.
+    if (pending) await this.delivery.deliver(pending);
+
+    return { accepted: true };
   }
 
   @Post('select-enterprise')

@@ -171,7 +171,15 @@ export class InboundProjectorWorker extends BasePoller {
           retry?.nextAttemptAt ?? new Date(),
         );
         this.logger.warn(
-          { eventId: event.id, eventType: event.eventType, attempt: event.attemptCount },
+          {
+            // The error and its stack: this logged neither, so the one line that
+            // reports a projection failure said only that one had happened.
+            err: error,
+            eventId: event.id,
+            eventType: event.eventType,
+            attempt: event.attemptCount,
+            maxAttempts: MAX_PROJECTION_ATTEMPTS,
+          },
           'projection failed',
         );
       }

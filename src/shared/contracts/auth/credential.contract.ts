@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidEmail } from '@/shared/utils/normalize';
 
 /**
  * A mobile number is MEANINGLESS WITHOUT A COUNTRY (schema.md). The API takes
@@ -22,7 +23,22 @@ export const MobileInputSchema = z
     path: ['countryCode'],
   });
 
-export const EmailSchema = z.string().trim().min(3).max(254);
+/**
+ * An email address, actually checked to be one.
+ *
+ * It was `string().min(3).max(254)`, so `POST /employees` and signup accepted
+ * `not-an-address` — invited somebody at it, tried to send a code there, and
+ * wrote it to the database. The validator is the SAME one the normalizers use
+ * (isValidEmail), rather than zod's, so a value that passes here cannot then be
+ * rejected deeper in: one definition of "an email address", used at the boundary
+ * and in the domain.
+ */
+export const EmailSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(254)
+  .refine((value) => isValidEmail(value.toLowerCase()), { message: 'expected an email address' });
 
 /**
  * The strength policy, applied where a password is CHOSEN: signup, reset, change.

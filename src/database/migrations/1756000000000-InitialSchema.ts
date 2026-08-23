@@ -92,7 +92,10 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         ref_id                UUID         NOT NULL DEFAULT gen_random_uuid(),
         identity_id           BIGINT       NOT NULL,
         enterprise_id         BIGINT       NOT NULL,
-        employee_kind           VARCHAR(30)  NOT NULL DEFAULT 'enterprise',
+        -- 'business', not 'enterprise': EmployeeKind has business and support,
+        -- and 'enterprise' is not a member of it. Any row that took this default
+        -- carried a value no code could interpret.
+        employee_kind           VARCHAR(30)  NOT NULL DEFAULT 'business',
         status                VARCHAR(30)  NOT NULL DEFAULT 'invited',
         invited_by_employee_id  BIGINT,
         invited_at            TIMESTAMPTZ,
