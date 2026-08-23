@@ -564,7 +564,8 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
 
   // --- the customer directory and search --------------------------------
   await run(`
-      CREATE INDEX customers_directory_idx ON customers (enterprise_id, last_seen_at DESC, id)
+      CREATE INDEX customers_directory_idx
+      ON customers (enterprise_id, last_seen_at DESC NULLS LAST, id DESC)
       WHERE is_deleted = false
     `);
   // Trigram on display_name alone: BIGINT has no GIN operator class, so a
@@ -603,11 +604,37 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
       CREATE INDEX posts_feed_idx ON posts (enterprise_id, channel_id, published_at DESC, id)
       WHERE is_deleted = false
     `);
+  // The unfiltered feed, in the order it is actually requested. See
+  // conversations_inbox_order_idx for why the existing one cannot serve it.
+  await run(`
+      CREATE INDEX posts_feed_order_idx
+      ON posts (enterprise_id, published_at DESC NULLS LAST, id DESC)
+      WHERE is_deleted = false
+    `);
 
   // --- the inbox --------------------------------------------------------
   await run(`
       CREATE INDEX conversations_inbox_idx
       ON conversations (enterprise_id, status, last_message_at DESC, id) WHERE is_deleted = false
+    `);
+  /*
+   * THE SORT ORDER, SPELLED THE WAY THE QUERY ASKS FOR IT.
+   *
+   * conversations_inbox_idx cannot serve the unfiltered list: `status` sits in
+   * the middle, and a gap there breaks the ordering the remaining columns would
+   * otherwise give. Its directions disagree too — a DESC index column is NULLS
+   * FIRST in Postgres while the query says NULLS LAST, and its `id` is ASC where
+   * the query wants DESC. So every page of the inbox sorted the whole tenant.
+   *
+   * Kept ALONGSIDE rather than replacing it, because the status-filtered list and
+   * the assignee index still want their own leading columns. That is two more
+   * indexes to maintain on write, which is the trade: a conversation is written
+   * a handful of times and listed on every page load.
+   */
+  await run(`
+      CREATE INDEX conversations_inbox_order_idx
+      ON conversations (enterprise_id, last_message_at DESC NULLS LAST, id DESC)
+      WHERE is_deleted = false
     `);
   await run(`
       CREATE INDEX conversations_assignee_idx

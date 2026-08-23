@@ -54,7 +54,20 @@ export async function createTestApp(): Promise<TestApp> {
   );
   app.useGlobalFilters(app.get(AllExceptionsFilter));
 
-  await app.init();
+  /*
+   * LISTENING ONCE, not per request.
+   *
+   * `app.init()` alone leaves the HTTP server unbound, so supertest binds it for
+   * every single request and closes it again afterwards. That start/stop cycle is
+   * the source of an intermittent 400 `request aborted` and `socket hang up`:
+   * body-parser sees a socket that went away mid-body, and the failure lands on
+   * whichever test happened to be running — a different one each time, and never
+   * reproducible on its own.
+   *
+   * Binding once, here, means every `request(app.getHttpServer())` in every file
+   * talks to a server that is already up and stays up until close().
+   */
+  await app.listen(0);
 
   const db = app.get<DataSource>(getDataSourceToken());
   return {

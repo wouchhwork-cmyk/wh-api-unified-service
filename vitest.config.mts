@@ -56,6 +56,8 @@ export default defineConfig({
           testTimeout: 120_000,
           hookTimeout: 180_000,
           fileParallelism: false,
+          maxWorkers: 1,
+          minWorkers: 1,
         },
       },
       {
@@ -64,8 +66,17 @@ export default defineConfig({
           name: 'e2e',
           include: ['test/e2e/**/*.spec.ts'],
           environment: 'node',
-          // Its OWN database, not the integration suite's: both TRUNCATE in
-          // beforeEach, and projects run alongside each other.
+          /*
+           * Its OWN database, not the integration suite's: both TRUNCATE in
+           * beforeEach, and vitest runs projects alongside each other.
+           *
+           * A fork-per-file pool used to be configured here as well, to stop
+           * files contaminating each other. It was a workaround for a
+           * misdiagnosis — the real cause was the harness never binding its HTTP
+           * server, so supertest bound and unbound it per request and
+           * body-parser occasionally saw a socket that had gone away mid-body.
+           * See test/e2e/app.harness.ts.
+           */
           setupFiles: ['test/env-setup-e2e.ts'],
           /*
            * A PROCESS PER FILE, and one file at a time.
@@ -80,11 +91,11 @@ export default defineConfig({
            * A fork per file cannot leak anything to the next one, whatever a
            * shutdown hook forgets.
            */
-          pool: 'forks',
-          poolOptions: { forks: { singleFork: false, isolate: true } },
           testTimeout: 120_000,
           hookTimeout: 180_000,
           fileParallelism: false,
+          maxWorkers: 1,
+          minWorkers: 1,
         },
       },
     ],

@@ -145,38 +145,36 @@ but `Replied` exists in the enum and is unused.
 
 ### ~~1.8 One test fails intermittently, unexplained~~ — SOLVED
 
-Two causes, both found by looping the combined suite until it broke and reading
-the actual error rather than the assertion.
+Reproduced by looping the combined suite until it broke and reading the actual
+error rather than the assertion. It took three passes, because the first two
+causes were real bugs that were not the cause.
 
-**The e2e and integration suites shared one database.** Both TRUNCATE in
-beforeEach, and vitest runs projects alongside each other — `fileParallelism` and
-`maxWorkers` serialise files WITHIN a project, not across them. So they wiped
-each other's fixtures, and whichever test lost the race failed. That is why it
-was never the same test twice, and why it always passed when run alone. The e2e
-suite has its own database now.
+**The cause: the harness never bound its HTTP server.** `createTestApp` called
+`app.init()` and nothing else, so supertest bound the server for every single
+request and unbound it afterwards. That start/stop cycle occasionally left
+body-parser looking at a socket that had gone away mid-body, which surfaces as
+`400 request aborted` or `socket hang up` — landing on whichever test happened
+to be running. That is why it was never the same test twice and never
+reproducible alone. Binding once in `beforeAll` fixed it: 14 clean e2e runs and
+22 clean combined runs, against a baseline of roughly one failure in six.
 
-**Then it still failed, as `socket hang up`.** Every e2e file boots the whole
-application and closes it again, and sharing one worker process meant one file's
-teardown could land while another file's request was in flight. The e2e project
-runs a fork per file now, so nothing can leak to the next file whatever a
-shutdown hook forgets.
+Two real defects were found on the way, and are fixed on their own merits:
 
-**And one shutdown hook did forget.** `InboxEventsService.onModuleInit` starts
-its LISTEN connection without awaiting — deliberately, so a slow database cannot
-delay boot — so `onApplicationShutdown` could run while that connect was still in
-flight, find `this.client` null, and let the finished connection be assigned
-afterwards. That client outlived its application: a leak per suite in tests, and
-one per failed-then-recovered boot in production. It checks for shutdown after
-connecting now, and ends the client it built.
+- **The e2e and integration suites shared one database.** Both TRUNCATE in
+  beforeEach, and vitest runs projects alongside each other — `fileParallelism`
+  and `maxWorkers` serialise files WITHIN a project, not across them. The e2e
+  suite has its own database now.
+- **Two LISTEN clients could outlive their application.** `onModuleInit` starts
+  the connection without awaiting, deliberately, so `onApplicationShutdown` could
+  run mid-connect, find the client null, and let the finished connection be
+  assigned afterwards. Both services check for shutdown after connecting now, and
+  end a client whose LISTEN failed.
 
-Failing roughly one combined run in six before; eight consecutive clean runs
-after.
-
-Found alongside it: `ensureDatabaseExists` had NEVER created a database. It read
-`count(*)` and compared against the string `'0'`, while pg-types.ts registers a
-global int8 parser that returns a number — so the comparison was always true and
-the function always reported "already there". It looked correct only because
-every database it had been pointed at already existed.
+And `ensureDatabaseExists` had NEVER created a database: it read `count(*)` and
+compared against the string `'0'`, while pg-types.ts registers a global int8
+parser that returns a number — so the comparison was always true and it always
+reported "already there". It looked correct only because every database it had
+been pointed at already existed.
 
 ### 1.9 Smaller, but real — **S each**
 
