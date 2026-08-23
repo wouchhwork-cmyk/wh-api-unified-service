@@ -61,6 +61,8 @@ pnpm dev          # db:sync + build + start — the whole loop, one command
 pnpm db:sync      # dev only: just the schema
 pnpm db:migrate   # qa and prod: hand-written SQL, reviewed, ordered
 pnpm test:schema  # pre-deploy: does the migration still match the entities?
+pnpm verify       # everything CI runs: typecheck, lint, format, the whole suite
+pnpm predeploy    # verify plus the schema-parity gate
 ```
 
 Day to day: change an entity, run `pnpm dev`. That is the only manual step, and

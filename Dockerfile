@@ -26,6 +26,10 @@ COPY --from=build --chown=app:app /app/dist ./dist
 COPY --from=build --chown=app:app /app/package.json ./
 USER app
 EXPOSE 3000
+# dist/migrate.js is in this image on purpose: the mandated deploy order is
+# migrations first, then code, and before it existed the runtime image had no way
+# to apply one — scripts/ is excluded from the build and tsx is pruned. Run it as
+# a job with the same image and `command: ["node", "dist/migrate.js"]`.
 # tini as PID 1 so SIGTERM reaches Node and graceful shutdown actually runs.
 ENTRYPOINT ["/sbin/tini", "--"]
 # Same image for API and workers; the orchestrator overrides CMD for workers.

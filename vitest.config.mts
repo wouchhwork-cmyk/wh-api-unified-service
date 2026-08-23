@@ -25,6 +25,16 @@ export default defineConfig({
      */
     fileParallelism: false,
     maxWorkers: 1,
+    /*
+     * Creates the test database and syncs its schema before anything runs.
+     *
+     * Without it `pnpm test:all` on a fresh clone failed on a database nothing
+     * had created: the harnesses connect straight to `<name>_test`, and the only
+     * code that could create or shape one lived in scripts/db.ts pointed at the
+     * DEVELOPMENT database. Running the suite was an undocumented two-step every
+     * new machine — and every CI runner — had to be told about out of band.
+     */
+    globalSetup: ['test/global-setup.ts'],
     projects: [
       {
         extends: true,

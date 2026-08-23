@@ -52,13 +52,30 @@ describe('production environment refusals', () => {
     ).toContain('PLATFORM_ADMIN_PASSWORD');
   });
 
-  it('accepts a long platform admin password in production', () => {
+  it('refuses a long DIGIT platform admin password in production', () => {
+    /*
+     * Length alone was the whole rule, so `1234567890123456` passed it. That
+     * matters because .env.dev ships a working admin password and the bootstrap
+     * runs on every boot: a deploy that inherited that file would provision a
+     * full-platform account with a credential that is in the repository.
+     */
     expect(
       issuesFor({
         PLATFORM_ADMIN_ENABLED: 'true',
         PLATFORM_ADMIN_EMAIL: 'admin@wouchh.com',
         PLATFORM_ADMIN_MOBILE: '8408994828',
-        PLATFORM_ADMIN_PASSWORD: 'a'.repeat(20),
+        PLATFORM_ADMIN_PASSWORD: '1234567890123456',
+      }),
+    ).toContain('PLATFORM_ADMIN_PASSWORD');
+  });
+
+  it('accepts a long, mixed platform admin password in production', () => {
+    expect(
+      issuesFor({
+        PLATFORM_ADMIN_ENABLED: 'true',
+        PLATFORM_ADMIN_EMAIL: 'admin@wouchh.com',
+        PLATFORM_ADMIN_MOBILE: '8408994828',
+        PLATFORM_ADMIN_PASSWORD: 'correct-horse-battery-staple!7',
       }),
     ).toEqual([]);
   });

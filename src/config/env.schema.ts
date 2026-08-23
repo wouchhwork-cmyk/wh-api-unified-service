@@ -214,13 +214,30 @@ export const EnvSchema = z
         });
       }
       // A short password on an account that can see and change every business on
-      // the platform is the highest-value credential in the system.
-      if (env.PLATFORM_ADMIN_ENABLED && env.PLATFORM_ADMIN_PASSWORD.length < 16) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['PLATFORM_ADMIN_PASSWORD'],
-          message: 'PLATFORM_ADMIN_PASSWORD must be at least 16 characters in prod',
-        });
+      // the platform is the highest-value credential in the system. The length
+      // check alone would pass `1234567890123456`, so the shape is checked too:
+      // .env.dev ships a working admin password, and this bootstrap runs on every
+      // boot, so a deploy that inherited that file would provision a
+      // full-platform account whose credential is in the repository.
+      if (env.PLATFORM_ADMIN_ENABLED) {
+        if (env.PLATFORM_ADMIN_PASSWORD.length < 16) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['PLATFORM_ADMIN_PASSWORD'],
+            message: 'PLATFORM_ADMIN_PASSWORD must be at least 16 characters in prod',
+          });
+        }
+        if (
+          !/[a-z]/.test(env.PLATFORM_ADMIN_PASSWORD) ||
+          !/[^a-zA-Z0-9]/.test(env.PLATFORM_ADMIN_PASSWORD)
+        ) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['PLATFORM_ADMIN_PASSWORD'],
+            message:
+              'PLATFORM_ADMIN_PASSWORD must mix letters and punctuation in prod — a digit string is guessable at any length',
+          });
+        }
       }
     }
 

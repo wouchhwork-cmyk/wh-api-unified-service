@@ -749,6 +749,14 @@ export class InitialSchema1756000000000 implements MigrationInterface {
  */
 const DROP_ORDER = [
   'audit_logs',
+  /*
+   * oauth_states was MISSING from this list while up() created it, which made
+   * the down() worse than destructive: a revert left the table behind, and the
+   * next migrate aborted on 42P07 inside `transaction: 'all'`, so the database
+   * could neither move forward nor back. It references enterprises and
+   * enterprise_employees, so it goes before both.
+   */
+  'oauth_states',
   'message_attachments',
   'messages',
   'verifications',
