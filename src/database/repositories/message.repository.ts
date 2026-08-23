@@ -135,13 +135,36 @@ export class MessageRepository extends BaseRepository {
     return { id: row.id, refId: row.ref_id };
   }
 
-  /** Lets a retry return the original result instead of erroring. */
+  /**
+   * Lets a retry return the original result instead of erroring.
+   *
+   * It returns what the key was ORIGINALLY used for, not just the outcome. The
+   * uniqueness index is (enterprise_id, idempotency_key), so a client that reuses
+   * a key on a different conversation used to be handed the first conversation's
+   * message and told its reply had been accepted — the reply to the second
+   * customer was never written and nothing anywhere said so. The caller compares
+   * these fields and refuses the mismatch.
+   */
   async findByIdempotencyKey(
     enterpriseId: number,
     idempotencyKey: string,
-  ): Promise<{ id: number; refId: string; status: MessageStatus } | null> {
-    const rows = await this.query<{ id: number; refId: string; status: MessageStatus }>(
-      `SELECT id, ref_id AS "refId", status FROM messages
+  ): Promise<{
+    id: number;
+    refId: string;
+    status: MessageStatus;
+    conversationId: number;
+    isInternalNote: boolean;
+  } | null> {
+    const rows = await this.query<{
+      id: number;
+      refId: string;
+      status: MessageStatus;
+      conversationId: number;
+      isInternalNote: boolean;
+    }>(
+      `SELECT id, ref_id AS "refId", status,
+              conversation_id AS "conversationId", is_internal_note AS "isInternalNote"
+         FROM messages
         WHERE enterprise_id = $1 AND idempotency_key = $2
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), idempotencyKey],

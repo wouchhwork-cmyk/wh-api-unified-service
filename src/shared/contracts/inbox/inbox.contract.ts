@@ -38,13 +38,14 @@ export const ReplyRequestSchema = z
     /**
      * Client-supplied, so a double-click or a retry after a timeout cannot post
      * twice. Backed by a unique index, not an in-memory cache.
+     *
+     * REQUIRED. It was optional, which meant the one write in this service that
+     * reaches a customer had no idempotency at all unless the caller opted in —
+     * and "send the reply twice" is the failure this whole mechanism exists to
+     * prevent. Mint it once per composed message and reuse it for every retry of
+     * that message; a fresh key per attempt protects nothing.
      */
-    idempotencyKey: z
-      .string()
-      .trim()
-      .min(MIN_IDEMPOTENCY_KEY_CHARS)
-      .max(MAX_IDEMPOTENCY_KEY_CHARS)
-      .optional(),
+    idempotencyKey: z.string().trim().min(MIN_IDEMPOTENCY_KEY_CHARS).max(MAX_IDEMPOTENCY_KEY_CHARS),
     /** A team-only note. Never sent, never touches the ledger. */
     internalNote: z.boolean().default(false),
   })

@@ -26,7 +26,8 @@ import { evaluateReplyWindow, replyEventTypeFor } from './reply-window';
 export interface ReplyInput {
   readonly conversationRefId: string;
   readonly body: string;
-  readonly idempotencyKey: string | null;
+  /** Required: see ReplyRequestSchema for why it is not optional. */
+  readonly idempotencyKey: string;
   /** Team-only note: never sent, never touches the ledger. */
   readonly internalNote: boolean;
 }
@@ -149,12 +150,29 @@ export class InboxService {
 
     // An idempotent retry returns the ORIGINAL result rather than a 409: the
     // caller asked for one message and got one message.
-    if (input.idempotencyKey) {
+    {
       const existing = await this.messages.findByIdempotencyKey(
         actor.enterpriseId,
         input.idempotencyKey,
       );
-      if (existing) return { messageRefId: existing.refId, status: existing.status };
+      if (existing) {
+        /*
+         * SAME KEY, SAME REQUEST — or an error.
+         *
+         * The key is unique per TENANT, so reusing one on another conversation
+         * used to return the first conversation's message with a 202: the caller
+         * was told its reply was accepted, the reply was never written, and
+         * nothing anywhere recorded that a customer had been left unanswered.
+         * A reused key is a client bug, and it is told so.
+         */
+        if (
+          existing.conversationId !== conversation.id ||
+          existing.isInternalNote !== input.internalNote
+        ) {
+          throw new AppException(ErrorCode.IdempotencyKeyReused);
+        }
+        return { messageRefId: existing.refId, status: existing.status };
+      }
     }
 
     // An internal note never leaves the building, so the send-path checks below

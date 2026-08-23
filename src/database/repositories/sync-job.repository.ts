@@ -31,7 +31,29 @@ export class SyncJobRepository extends BaseRepository {
        VALUES ($1, $2, $3, $4, $5, now())
        ON CONFLICT (channel_id, job_kind)
          WHERE is_deleted = false AND status IN ('pending','running','paused','rate_limited')
-       DO NOTHING
+       /*
+        * A PAUSED row is REVIVED here, and this is the only way out of paused.
+        *
+        * It used to be DO NOTHING, which made paused a one-way door: the row is
+        * unclaimable but still occupies the live slot in sync_jobs_live_uniq, so
+        * nothing could ever be enqueued for that channel and kind again. A
+        * channel paused for a missing permission stayed dead after the
+        * permission was granted, and the only visible symptom was a backfill
+        * that never ran.
+        *
+        * Reviving on re-request is the right trigger rather than a timer: the
+        * callers are a reconnect and the daily refresh sweep — the two moments
+        * when the reason for the pause may genuinely have changed. If it has
+        * not, the worker pauses it again, which costs one claim a day.
+        */
+       DO UPDATE SET
+         status          = $5,
+         trigger_kind    = EXCLUDED.trigger_kind,
+         next_attempt_at = now(),
+         attempt_count   = 0,
+         last_error      = NULL,
+         updated_at      = now()
+         WHERE sync_jobs.status = 'paused'
        RETURNING id`,
       [
         this.requireEnterprise(input.enterpriseId),

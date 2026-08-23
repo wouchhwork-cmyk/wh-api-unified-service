@@ -109,6 +109,26 @@ export class PlatformService {
       this.platform.listChannels(row.internalId),
     ]);
 
+    /*
+     * A READ IS AUDITED HERE, which is unusual and deliberate.
+     *
+     * Every write in this console records one and every read recorded nothing —
+     * so a platform admin could open a customer's account, see its owner's name,
+     * email, mobile, connected channels and feature entitlements, and leave no
+     * trace whatsoever. "Who at Wouchh looked at my business" is the question a
+     * customer is most entitled to have an answer to, and it had none.
+     *
+     * The LIST is deliberately not audited: it is aggregate metadata across
+     * every tenant, so a row per page view would bury the reads that matter.
+     */
+    await this.audit.record({
+      action: AuditAction.Viewed,
+      entityType: AuditEntityType.Enterprise,
+      entityId: row.internalId,
+      enterpriseId: row.internalId,
+      metadata: { surface: 'platform-console' },
+    });
+
     return {
       ...toListItem(row),
       owner: owner ? toOwner(owner) : null,

@@ -8,9 +8,12 @@ import { EnterpriseRepository } from '@/database/repositories/enterprise.reposit
 import { IdentityRepository } from '@/database/repositories/identity.repository';
 import { SessionRepository } from '@/database/repositories/session.repository';
 import { StaffMemberRepository } from '@/database/repositories/staff-member.repository';
+import { AuditService } from '@/modules/audit';
 import { SecretHashService } from '@/shared/crypto';
 import {
   ActorKind,
+  AuditAction,
+  AuditEntityType,
   DeliveryChannel,
   EmployeeStatus,
   IdentityStatus,
@@ -63,6 +66,7 @@ export class AuthService {
     private readonly hasher: SecretHashService,
     private readonly tokens: TokenService,
     private readonly verifications: VerificationService,
+    private readonly audit: AuditService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(AuthService.name) private readonly logger: PinoLogger,
   ) {}
@@ -363,6 +367,24 @@ export class AuthService {
         actorKind: ActorKind.Staff,
         isImpersonated: true,
       });
+
+      /*
+       * RECORDED, not merely flagged on the token.
+       *
+       * The comment above this branch said "recorded as impersonation" and
+       * nothing was recorded anywhere: is_impersonated went onto the token, and
+       * from there onto the audit rows of whatever the staff member CHANGED —
+       * so entering an account and only reading it left no trace at all. That is
+       * the single event a customer is most entitled to see in an access log.
+       */
+      await this.audit.record({
+        action: AuditAction.Impersonated,
+        entityType: AuditEntityType.Enterprise,
+        entityId: enterprise.id,
+        enterpriseId: enterprise.id,
+        metadata: { staffId: staffRecord.staffId, via: 'switch-enterprise' },
+      });
+
       return {
         accessToken,
         expiresInSeconds: this.tokens.accessTokenLifetimeSeconds(),

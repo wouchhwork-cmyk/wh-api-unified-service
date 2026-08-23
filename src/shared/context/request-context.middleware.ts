@@ -1,5 +1,6 @@
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { NextFunction, Request, Response } from 'express';
 import { RequestContext } from './request-context';
 
@@ -31,8 +32,8 @@ export class RequestContextMiddleware implements NestMiddleware {
       {
         correlationId,
         route: `${request.method} ${request.path}`,
-        ipAddress: request.ip ?? undefined,
-        userAgent: request.get('user-agent') ?? undefined,
+        ipAddress: clientIp(request),
+        userAgent: truncate(request.get('user-agent'), MAX_USER_AGENT_LENGTH),
       },
       () => {
         next();
@@ -48,6 +49,32 @@ export class RequestContextMiddleware implements NestMiddleware {
  * ledger row was written — turning a cosmetic header into a failed webhook.
  */
 const MAX_CORRELATION_ID_LENGTH = 100;
+
+/** audit_logs.user_agent is text, so this is a memory bound rather than a column one. */
+const MAX_USER_AGENT_LENGTH = 512;
+
+/**
+ * The client address, but ONLY if it is actually an address.
+ *
+ * `app.set('trust proxy', 1)` makes request.ip the last hop of
+ * X-Forwarded-For, which is a client-supplied header — and audit_logs.ip_address
+ * is `inet`. So `X-Forwarded-For: not-an-ip` made every audit insert on that
+ * request fail with 22P02: the audit row was silently lost, and where the write
+ * shared a transaction with the work it recorded, that transaction was poisoned
+ * and the endpoint answered 500. A header nobody validated could turn login off.
+ *
+ * Dropped rather than corrected: a value that is not an address tells us nothing
+ * about where the request came from, and inventing one would be worse than null.
+ */
+function clientIp(request: Request): string | undefined {
+  const candidate = request.ip;
+  return candidate && isIP(candidate) !== 0 ? candidate : undefined;
+}
+
+function truncate(value: string | undefined, limit: number): string | undefined {
+  if (!value) return undefined;
+  return value.length <= limit ? value : value.slice(0, limit);
+}
 
 function firstHeader(request: Request, name: string): string | undefined {
   const value = request.headers[name];

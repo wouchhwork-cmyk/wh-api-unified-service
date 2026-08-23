@@ -38,7 +38,10 @@ export class PermissionService {
      * staff-assignable permission whose feature this enterprise actually holds.
      */
     if (claims.actorKind === ActorKind.Staff && claims.staffId !== null) {
-      const codes = await this.permissions.listStaffPermissions(claims.enterpriseId);
+      const codes = await this.permissions.listStaffPermissions(
+        claims.staffId,
+        claims.enterpriseId,
+      );
       return new Set(codes);
     }
 

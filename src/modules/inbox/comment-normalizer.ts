@@ -97,11 +97,28 @@ function normalizeFacebook(change: FacebookCommentChange): NormalizedComment {
     return { skip: 'the comment names no author' };
   }
 
+  /*
+   * FACEBOOK'S parent_id IS THE POST for a top-level comment.
+   *
+   * Taken at face value it made every top-level comment on one post collapse
+   * into a single conversation keyed `comment:<postId>` — with the first
+   * commenter as its customer and everyone else's comments filed underneath —
+   * and, worse, a reply was then POSTed to `<postId>/comments`, which Facebook
+   * accepts as a NEW standalone top-level comment. The agent's answer appeared
+   * on the post, detached from the person it answered.
+   *
+   * So parent_id only counts as a parent COMMENT when it is not the post. When
+   * post_id is absent there is nothing to compare against, and it is taken as
+   * given — the same behaviour as before, and no worse.
+   */
+  const parentCommentId =
+    value.parent_id && value.parent_id !== value.post_id ? value.parent_id : null;
+
   return {
     comment: {
       commentId: value.comment_id,
-      rootCommentId: value.parent_id ?? value.comment_id,
-      parentId: value.parent_id ?? null,
+      rootCommentId: parentCommentId ?? value.comment_id,
+      parentId: parentCommentId,
       postId: value.post_id ?? null,
       text: value.message ?? null,
       // Facebook sends unix SECONDS.

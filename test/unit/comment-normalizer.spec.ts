@@ -62,6 +62,79 @@ describe('normalizeComment', () => {
       });
     });
 
+    it('does NOT treat the post as a parent comment', () => {
+      /*
+       * Facebook sends parent_id = post_id on a TOP-LEVEL comment. Taken at face
+       * value, every top-level comment on one post collapsed into a single
+       * conversation keyed `comment:<postId>` with the first commenter as its
+       * customer — and a reply was POSTed to `<postId>/comments`, which
+       * Facebook accepts as a new standalone comment on the post rather than a
+       * reply to anybody.
+       */
+      const result = normalizeComment(
+        Platform.Facebook,
+        change({
+          item: 'comment',
+          verb: 'add',
+          comment_id: 'CM_1',
+          parent_id: 'POST_1',
+          post_id: 'POST_1',
+          from: { id: 'FB_USER' },
+        }),
+      );
+
+      expect(result).toMatchObject({
+        comment: { commentId: 'CM_1', parentId: null, rootCommentId: 'CM_1' },
+      });
+    });
+
+    it('gives two top-level comments on one post two different threads', () => {
+      const first = normalizeComment(
+        Platform.Facebook,
+        change({
+          item: 'comment',
+          verb: 'add',
+          comment_id: 'CM_1',
+          parent_id: 'POST_1',
+          post_id: 'POST_1',
+          from: { id: 'ADA' },
+        }),
+      );
+      const second = normalizeComment(
+        Platform.Facebook,
+        change({
+          item: 'comment',
+          verb: 'add',
+          comment_id: 'CM_2',
+          parent_id: 'POST_1',
+          post_id: 'POST_1',
+          from: { id: 'GRACE' },
+        }),
+      );
+
+      // The thread key is derived from rootCommentId, so these two must differ
+      // or the two people share one conversation and one customer record.
+      expect(first).toMatchObject({ comment: { rootCommentId: 'CM_1' } });
+      expect(second).toMatchObject({ comment: { rootCommentId: 'CM_2' } });
+    });
+
+    it('still threads a reply when post_id is absent', () => {
+      // Nothing to compare parent_id against, so it is taken as given — the
+      // behaviour before the post-id check, and no worse.
+      const result = normalizeComment(
+        Platform.Facebook,
+        change({
+          item: 'comment',
+          verb: 'add',
+          comment_id: 'CM_3',
+          parent_id: 'CM_1',
+          from: { id: 'FB_USER' },
+        }),
+      );
+
+      expect(result).toMatchObject({ comment: { rootCommentId: 'CM_1', parentId: 'CM_1' } });
+    });
+
     it('skips a feed change that is not a comment', () => {
       const result = normalizeComment(Platform.Facebook, change({ item: 'like', verb: 'add' }));
       expect(result).toEqual({ skip: 'not a comment (item="like")' });

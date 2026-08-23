@@ -16,7 +16,7 @@ import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
-import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS } from '@/shared/constants';
+import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS, SSE_MAX_STREAM_MS } from '@/shared/constants';
 import { InboxEventsService } from './inbox-events.service';
 import { ConversationKind, ConversationStatus, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
@@ -136,8 +136,27 @@ export class InboxController {
     }, SSE_HEARTBEAT_MS);
     heartbeat.unref();
 
+    /*
+     * THE STREAM EXPIRES. It is the one authorisation here with no TTL: checked
+     * once at connect, then delivering this tenant's activity for as long as a
+     * browser tab stayed open — outliving the 15-minute token that opened it,
+     * and outliving the employee's employment. Suspending someone did not stop
+     * their open stream, because nothing re-asked.
+     *
+     * Capping it sends the client back through the guard chain with a current
+     * token, which is where that question is already answered properly. The
+     * client reconnects; an expiring stream is not an error, so it is announced
+     * rather than dropped.
+     */
+    const expiry = setTimeout(() => {
+      write('expired', { reason: 'reconnect to continue' });
+      close();
+    }, SSE_MAX_STREAM_MS);
+    expiry.unref();
+
     const close = (): void => {
       clearInterval(heartbeat);
+      clearTimeout(expiry);
       if (unsubscribe) {
         unsubscribe();
         unsubscribe = null;
@@ -195,7 +214,7 @@ export class InboxController {
     return this.inbox.reply(actor, {
       conversationRefId: refId,
       body: parsed.body,
-      idempotencyKey: parsed.idempotencyKey ?? null,
+      idempotencyKey: parsed.idempotencyKey,
       internalNote: parsed.internalNote,
     });
   }

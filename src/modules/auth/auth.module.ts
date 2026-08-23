@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AppConfigModule, AppConfigService } from '@/config';
+import { AuditModule } from '@/modules/audit';
 import { CommunicationModule } from '@/modules/communication';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -12,6 +13,7 @@ import { VerificationService } from './verification.service';
 @Module({
   imports: [
     AppConfigModule,
+    AuditModule,
     CommunicationModule,
     JwtModule.registerAsync({
       imports: [AppConfigModule],

@@ -73,6 +73,8 @@ export enum ErrorCode {
   MessageNotFound = 'MESSAGE_NOT_FOUND',
   PostNotFound = 'POST_NOT_FOUND',
   VerificationNotFound = 'VERIFICATION_NOT_FOUND',
+  /** A live challenge for this destination already exists — verifications_live_uniq. */
+  VerificationAlreadyPending = 'VERIFICATION_ALREADY_PENDING',
 
   // --- domain -----------------------------------------------------------
   ChannelReauthRequired = 'CHANNEL_REAUTH_REQUIRED',
@@ -83,6 +85,8 @@ export enum ErrorCode {
   ConversationClosed = 'CONVERSATION_CLOSED',
   /** The platform offers no way to answer this kind of item — a review, today. */
   ReplyNotSupported = 'REPLY_NOT_SUPPORTED',
+  /** The same idempotency key was sent for a different request. */
+  IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED',
 
   // --- integration ------------------------------------------------------
   MetaNotConfigured = 'META_NOT_CONFIGURED',

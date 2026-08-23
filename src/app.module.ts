@@ -25,6 +25,7 @@ import {
 } from '@/shared/guards';
 import { AllExceptionsFilter } from '@/shared/filters/all-exceptions.filter';
 import { RequestContextMiddleware } from '@/shared/context/request-context.middleware';
+import { NoStoreMiddleware } from '@/shared/middleware/no-store.middleware';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
 
 @Module({
@@ -113,6 +114,6 @@ export class AppModule implements NestModule {
      * every boot — so this is the same route, spelled the way the router will
      * still accept after the next upgrade.
      */
-    consumer.apply(RequestContextMiddleware).forRoutes('{*path}');
+    consumer.apply(RequestContextMiddleware, NoStoreMiddleware).forRoutes('{*path}');
   }
 }

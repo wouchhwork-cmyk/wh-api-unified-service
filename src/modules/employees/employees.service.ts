@@ -103,6 +103,21 @@ export class EmployeesService {
       }
     }
 
+    /*
+     * HASHED BEFORE THE TRANSACTION OPENS.
+     *
+     * argon2id is deliberately expensive, and inside the transaction that cost
+     * was paid while holding locks. It is computed unconditionally — the
+     * identity may turn out to already exist and the value go unused — because
+     * one wasted hash on a rare path is cheaper than a held lock on every path.
+     *
+     * A token shape, not a numeric code: nobody ever types this, so length beats
+     * memorability, and OTP_STATIC_CODE must never reach it.
+     */
+    const placeholderPasswordHash = await this.hasher.hashPassword(
+      this.hasher.generateSecret(VerificationSecretShape.Token, 32),
+    );
+
     const created = await this.tx.runInTransaction(async () => {
       /*
        * An identity is global: this person may already have a login because they
@@ -128,11 +143,7 @@ export class EmployeesService {
           mobileNationalNumber: mobile?.nationalNumber ?? null,
           // Random, never revealed, and never usable: the invite is the only
           // way in, and completing it replaces this.
-          // A token shape, not a numeric code: nobody types this, so length
-          // beats memorability — and OTP_STATIC_CODE must never reach it.
-          passwordHash: await this.hasher.hashPassword(
-            this.hasher.generateSecret(VerificationSecretShape.Token, 32),
-          ),
+          passwordHash: placeholderPasswordHash,
           firstName: request.firstName,
           lastName: request.lastName ?? null,
         }));

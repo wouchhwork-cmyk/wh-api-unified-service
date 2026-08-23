@@ -16,6 +16,10 @@ export enum AuditAction {
   RoleRevoked = 'role_revoked',
   FeatureRequested = 'feature_requested',
   FeatureDecided = 'feature_decided',
+  /** One of ours entered a customer's account. See AuditService.record. */
+  Impersonated = 'impersonated',
+  /** One of ours read a customer's account from the platform console. */
+  Viewed = 'viewed',
 }
 
 export enum AuditEntityType {

@@ -40,6 +40,12 @@ export const CONSTRAINT_ERROR: Readonly<Record<string, ErrorCode>> = {
   messages_idempotency_uniq: ErrorCode.DuplicateMessage,
   messages_platform_uniq: ErrorCode.DuplicateMessage,
   sync_jobs_live_uniq: ErrorCode.SyncAlreadyRunning,
+  /*
+   * Two simultaneous logins for one address race the supersede-then-insert pair,
+   * and one of them loses on this index. Unmapped, that surfaced as a 500
+   * INTERNAL_ERROR on a perfectly ordinary double-click.
+   */
+  verifications_live_uniq: ErrorCode.VerificationAlreadyPending,
 };
 
 interface PostgresErrorShape {

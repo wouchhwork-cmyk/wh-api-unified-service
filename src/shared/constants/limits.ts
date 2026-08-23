@@ -60,6 +60,18 @@ export const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000;
 export const CREDENTIAL_ATTEMPTS_PER_MINUTE = 10;
 
 /**
+ * How long one SSE stream may stay open before the client must reconnect.
+ *
+ * An open stream was the one authorisation in the service with no expiry: it was
+ * checked once, at connect, and then delivered tenant activity for as long as a
+ * browser tab stayed open — past the 15-minute access token that opened it, and
+ * past the employee being suspended. Capping the stream makes the client come
+ * back through the guard chain with a current token, which is the only place
+ * that check belongs.
+ */
+export const SSE_MAX_STREAM_MS = 10 * 60 * 1000;
+
+/**
  * Backfill policy (schema.md §15).
  *
  * MAX_PAGES_PER_RUN bounds one claim rather than one job: a Page with years of

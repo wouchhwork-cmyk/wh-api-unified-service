@@ -42,6 +42,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.MessageNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.PostNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.VerificationNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.VerificationAlreadyPending]: HttpStatus.CONFLICT,
 
   // 409 — conflicts and invalid transitions
   [ErrorCode.EmailAlreadyRegistered]: HttpStatus.CONFLICT,
@@ -61,6 +62,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.CustomerBlocked]: HttpStatus.CONFLICT,
   [ErrorCode.ConversationClosed]: HttpStatus.CONFLICT,
   [ErrorCode.ReplyNotSupported]: HttpStatus.CONFLICT,
+  [ErrorCode.IdempotencyKeyReused]: HttpStatus.CONFLICT,
   [ErrorCode.ChannelReauthRequired]: HttpStatus.CONFLICT,
   [ErrorCode.ChannelNotManaged]: HttpStatus.CONFLICT,
 
@@ -147,6 +149,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.MessageNotFound]: 'Message not found.',
   [ErrorCode.PostNotFound]: 'Post not found.',
   [ErrorCode.VerificationNotFound]: 'That verification request could not be found.',
+  [ErrorCode.VerificationAlreadyPending]:
+    'A code has already been sent to that address. Use it, or wait for it to expire.',
 
   [ErrorCode.ChannelReauthRequired]: 'This channel needs to be reconnected before you can reply.',
   [ErrorCode.ChannelNotManaged]: 'This channel is not being managed.',
@@ -156,6 +160,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.ConversationClosed]: 'This conversation is closed.',
   [ErrorCode.ReplyNotSupported]:
     'The platform does not accept replies to this kind of item. You can still add an internal note.',
+  [ErrorCode.IdempotencyKeyReused]:
+    'That idempotency key was already used for a different message. Use a new one.',
 
   [ErrorCode.MetaNotConfigured]: 'The Meta integration is not configured on this environment.',
   [ErrorCode.OauthStateInvalid]: 'That connection request is no longer valid. Start again.',

@@ -128,6 +128,17 @@ export class MetaConnectionService implements ProviderConnector {
     // behaviour §18.3 says not to port.
     if (usablePages.length === 0) throw new AppException(ErrorCode.NoPagesFound);
 
+    /*
+     * READ BEFORE THE TRANSACTION, not inside it.
+     *
+     * This is a Graph call — debugToken — and it used to sit in the upsert's
+     * argument list, which put a third-party HTTP round trip inside the
+     * transaction and contradicted the invariant this method's own comment
+     * asserts. It held write locks on provider_connections and channels for as
+     * long as Facebook felt like taking, up to the 10 s request timeout.
+     */
+    const grantedScopes = await this.readGrantedScopes(longLived.access_token);
+
     const persisted = await this.tx.runInTransaction(async () => {
       const connection = await this.connections.upsert({
         enterpriseId,
@@ -138,7 +149,7 @@ export class MetaConnectionService implements ProviderConnector {
         // Encrypted before it reaches Postgres; the column never holds plaintext.
         accessToken: this.cipher.encrypt(longLived.access_token),
         tokenExpiresAt: expiryFrom(longLived.expires_in),
-        grantedScopes: await this.readGrantedScopes(longLived.access_token),
+        grantedScopes,
         connectedByEmployeeId: employeeId,
       });
 

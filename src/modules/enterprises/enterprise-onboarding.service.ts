@@ -72,6 +72,17 @@ export class EnterpriseOnboardingService {
       ? normalizeSlug(request.business.slug)
       : await this.enterprises.findAvailableSlug(normalizeSlug(request.business.name));
 
+    /*
+     * HASHED BEFORE THE TRANSACTION OPENS.
+     *
+     * argon2id is deliberately expensive — that is the whole point of it — and
+     * inside the transaction that cost was paid while holding a write lock on
+     * the just-inserted enterprises row. Every concurrent signup therefore
+     * queued behind somebody else's key-derivation function, which is a
+     * throughput ceiling with no relationship to the database at all.
+     */
+    const passwordHash = await this.hasher.hashPassword(owner.password);
+
     const created = await this.tx.runInTransaction(async () => {
       const enterprise = await this.enterprises.create({
         ...business,
@@ -88,7 +99,7 @@ export class EnterpriseOnboardingService {
         mobileCountryCode: owner.mobile?.countryCode ?? null,
         mobileCallingCode: owner.mobile?.callingCode ?? null,
         mobileNationalNumber: owner.mobile?.nationalNumber ?? null,
-        passwordHash: await this.hasher.hashPassword(owner.password),
+        passwordHash,
         firstName: owner.firstName,
         lastName: owner.lastName,
       });
