@@ -1,4 +1,12 @@
 # ---- deps ----
+# TODO(unpinned base): `node:24-alpine` is a MOVING tag, so two builds of the same
+# commit can ship different base images — which contradicts this repo's own
+# pinning policy and makes a build unreproducible. Pin it by digest with:
+#
+#   docker pull node:24-alpine && docker inspect --format='{{index .RepoDigests 0}}' node:24-alpine
+#
+# Left as a tag rather than a guessed digest: a wrong digest fails the build, and
+# the correct one has to come from a registry this checkout cannot reach.
 FROM node:24-alpine AS deps
 WORKDIR /app
 RUN corepack enable

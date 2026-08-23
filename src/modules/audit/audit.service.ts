@@ -71,8 +71,31 @@ export class AuditService {
         status: event.status ?? AuditStatus.Success,
       });
     } catch (error) {
+      /*
+       * EVERYTHING NEEDED TO RECONSTRUCT THE LOST ROW.
+       *
+       * This logged the action and the entity type and nothing else, so a failed
+       * audit write left no way to know WHAT had happened — which is the one
+       * thing an audit log exists to answer. The log line is the compensating
+       * control for swallowing the error, so it has to carry the record.
+       *
+       * `changes` and `metadata` are ours, not the customer's: field names and
+       * status transitions. The redact list covers `payload` and the named
+       * secrets if either ever carried one.
+       */
       this.logger.error(
-        { err: error, action: event.action, entityType: event.entityType },
+        {
+          err: error,
+          action: event.action,
+          entityType: event.entityType,
+          entityId: event.entityId,
+          enterpriseId: event.enterpriseId,
+          changes: event.changes ?? {},
+          metadata: event.metadata ?? {},
+          actorKind: actor?.actorKind ?? ActorKind.System,
+          actorEmployeeId: actor?.employeeId ?? null,
+          actorStaffId: actor?.staffId ?? null,
+        },
         'FAILED TO WRITE AUDIT LOG — the action itself was not rolled back',
       );
     }

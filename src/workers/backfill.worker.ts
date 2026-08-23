@@ -24,6 +24,7 @@ import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { inboundDedupKey } from '@/modules/ledger/dedup-key.util';
 import {
   SYNC_COMMENTS_PER_POST,
+  SYNC_MESSAGES_PER_CONVERSATION,
   SYNC_MAX_ATTEMPTS,
   SYNC_MAX_PAGES_PER_RUN,
   SYNC_RATE_LIMIT_PARK_MS,
@@ -722,7 +723,27 @@ export class BackfillWorker extends BasePoller {
       }
     }
 
-    for (const message of conversation.messages?.data ?? []) {
+    const messages = conversation.messages?.data ?? [];
+
+    /*
+     * NO SILENT CAPS. Graph nests message paging inside conversation paging, and
+     * this walk reads only the first nested page — so a thread with more than
+     * SYNC_MESSAGES_PER_CONVERSATION messages is TRUNCATED, and nothing said so.
+     * The comment walk already reports its own truncation; this one did not, so
+     * a long thread simply arrived incomplete and looked finished.
+     */
+    if (messages.length >= SYNC_MESSAGES_PER_CONVERSATION) {
+      this.logger.warn(
+        {
+          conversationId: conversation.id,
+          copied: messages.length,
+          channelId: job.channelId,
+        },
+        'thread has more messages than one nested page — the remainder is not backfilled',
+      );
+    }
+
+    for (const message of messages) {
       if (!message.id) continue;
 
       const senderId = message.from?.id ?? null;

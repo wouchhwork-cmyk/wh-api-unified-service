@@ -14,9 +14,27 @@ Sizes are rough: **S** under half a day, **M** a day or two, **L** longer.
 
 ## 0. What the review pass closed, and what it opened
 
-A full review of the branch produced ~160 confirmed findings. The ones fixed are
-struck through in place below; the ones NOT fixed are listed here so nothing is
+A full review of the branch (docs/code-review-2026-08-23.md, since removed)
+raised 307 findings, of which 228 were confirmed by adversarial verification: one
+critical, 25 high, 109 medium, 93 low. All 26 BLOCKING findings are fixed, along
+with most of the medium ones. What is not fixed is listed in §0.1 rather than
 quietly dropped.
+
+Two things the review could not have known, found while fixing it:
+
+- `ensureDatabaseExists` had NEVER created a database. It compared `count(*)`
+  against the string `'0'` while pg-types.ts registers an int8 parser that returns
+  a number, so it always reported "already there". It looked correct only because
+  every database it had been pointed at already existed.
+- `POST /conversations/:refId/status` had never worked either. It bound one
+  parameter as both a column value and an `IN (...)` operand, which Postgres
+  refuses, so every request to it answered 500. Found by calling it — no client
+  called it and no test covered it, which is exactly why the review's own method
+  could not reach it.
+
+The review also said it had run no EXPLAIN. Its three index findings are now
+measured: all four paginated list queries come back index-ordered with no Sort
+node.
 
 The defects worth knowing about, because they say what kind of mistake this
 codebase makes:
@@ -40,17 +58,31 @@ codebase makes:
 - **`posts.like_count` and `posts.share_count` were never written**, because
   nothing asked Meta for a reaction summary — two columns the API sorts on.
 
-### Still open, from the same review
+### 0.1 Still open, from the same review
+
+Fixed items are struck through in place below. These are the ones NOT fixed, so
+none of it is quietly dropped.
 
 | | Size | Note |
 | --- | --- | --- |
-| **Throttler keys grow without bound** | M | The in-memory store never evicts, so the key space is (throttled handlers × every client address ever seen) and a deploy resets every counter. Per-process limits also multiply by replica count. Needs Redis, or a sweep and a cap. |
-| **`/health/detail` is readable by any viewer** | S | It is gated on `enterprise.view`, which every enterprise role holds, and returns platform-wide queue gauges plus database and Meta configuration. No tenant data, so metadata disclosure rather than a boundary break — but it also runs three unfiltered aggregate scans over the event ledgers on every call. |
-| **Staff roles are a fiction** | M | `support` and `ops` are seeded as `RoleScope.Staff` templates and can never be granted: `employee_roles.enterprise_id` is NOT NULL behind a composite foreign key, and a staff template has no enterprise. Staff authority is the `has_all_enterprise_access` flag and nothing else. The permission query is at least fail-closed now — it re-checks the staff row rather than trusting the token. |
-| **`GET /employees` is unpaginated** | S | It returns every employee of a business with no limit and no cursor, unlike every other list in the service. |
-| **The correlation id is still client-supplied** | S | See §1.6 — unchanged. |
-| **`LISTEN` clients have no TCP keepalive** | S | A socket reaped by a NAT gateway without FIN leaves a zombie listener, and the only cost is latency, because every worker still polls on its own timer. Deployment-dependent. |
-| **A committed OpenAPI document** | S | `openapi:export` still points at a script that does not exist, so there is no contract snapshot and no breaking-change check. |
+| **Throttler keys grow without bound** | M | The in-memory store never evicts, so the key space is (throttled handlers × every client address ever seen) and a deploy resets every counter. Per-process limits also multiply by replica count. Needs Redis, or a sweep and a cap. The credential routes at least have their own much tighter budget now. |
+| **Staff roles are a fiction** | M | `support` and `ops` are seeded as `RoleScope.Staff` templates and can never be granted: `employee_roles.enterprise_id` is NOT NULL behind a composite foreign key, and a staff template has no enterprise. Staff authority is the `has_all_enterprise_access` flag and nothing else. The permission query is fail-CLOSED now — it re-reads the staff row rather than trusting the token — so the exposure is gone; what remains is that the two templates mean nothing. |
+| **`GET /employees` is unpaginated** | S | Every employee of a business, no limit and no cursor, unlike every other list. |
+| **The correlation id is still client-supplied** | S | See §1.6. It anchors audit and ledger rows, so a caller chooses the id their actions are filed under. Fine as a trace hint, wrong as an audit key. |
+| **`LISTEN` clients have no TCP keepalive** | S | A socket reaped by a NAT gateway without FIN leaves a zombie listener. Cost is latency only — every worker still polls on its own timer — and it is deployment-dependent. |
+| **Graph responses are not validated** | M | Every response is cast to `T` with no runtime check. Most of the remaining Meta-integration findings collapse into one zod schema at that boundary. |
+| **The webhook subscription is never reconciled** | S | Attempted once at connect. `listSubscribedFields` exists to read it back; nothing calls it on a schedule, so a subscription removed on the Facebook side is invisible until somebody notices the inbox has gone quiet. |
+| **Backfill holds one lease for a serial batch** | M | Claim leases the whole batch, then the work is done row by row, so the tail of a large batch is guaranteed to overrun. Truncation is at least reported now, for both comments and messages. |
+| **A partially-walked sync job sits in `running`** | S | No worker can claim that status; it resumes only via the reaper. |
+| **The daily metrics refresh has no retention** | S | One `inbound_events` row per post per day, kept forever. |
+| **`provider_connections` uniqueness** | S | Keyed on `provider_user_id`, so one tenant can hold two channel rows for the same Page. |
+| **Retention sweeps are unindexed** | S | Both the session and verification sweeps use predicates no index can serve. |
+| **Queue gauges scan three ledgers** | S | Three unfiltered aggregate scans per sample and per `/health/detail`. At least `/health/detail` is platform-staff-only now, so an ordinary role cannot trigger them. |
+| **Three copies of `clampLimit`** | S | The cursor codec was consolidated; the limit clamp was not. |
+| **`handleCallback` is a god method** | M | ~150 lines over eight concerns. |
+| **Some controllers read repositories directly** | S | Auth, Enterprises and Employees each do. |
+| **System roles are never reconciled** | M | Copied once at signup, so a permission added in a later release never reaches an existing tenant. |
+| **No metrics** | M | Counters, latencies and retry gauges still do not exist; logs are the only telemetry. |
 
 ---
 
