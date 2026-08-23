@@ -38,6 +38,21 @@ export const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 export const PLATFORM_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
+ * How long past its lease a SENDING row is left alone before the reaper takes it.
+ *
+ * The reaper cannot tell a dead worker from a slow one. A row was reclaimed the
+ * instant its lease expired, so a reply whose Graph call was merely slow got
+ * re-dispatched while the first request was still in flight — and the customer
+ * received it twice.
+ *
+ * The window that matters is narrow: the relay re-checks its lease immediately
+ * before sending, so a row whose lease lapsed BEFORE its send began is skipped,
+ * not sent. The only in-flight case is a lease that expired mid-call, which is
+ * bounded by the platform timeout. Twice that is the margin.
+ */
+export const SENDING_REAP_GRACE_MS = PLATFORM_REQUEST_TIMEOUT_MS * 2;
+
+/**
  * How many times a single inbound event may fail projection before it is
  * dead-lettered. Was an unnamed 3 at the call site, which meant the retry budget
  * for the busiest queue in the service was invisible to anyone tuning it.
@@ -104,6 +119,20 @@ export const SYNC_RATE_LIMIT_PARK_MS = 15 * 60 * 1000;
  * accepted a few minutes later.
  */
 export const OUTBOUND_RATE_LIMIT_PARK_MS = 5 * 60 * 1000;
+
+/**
+ * How long a throttled send may keep waiting out a rate limit before it is
+ * dead-lettered anyway.
+ *
+ * A rate limit does not consume the attempt budget — the whole point is that it
+ * is a condition to be waited out, and burning attempts on it lost replies the
+ * platform would have accepted minutes later. But "wait forever" is not a
+ * policy either: a quota that never clears has to become visible to an operator
+ * rather than a row that retries until the end of time. Measured from the row's
+ * creation, so the bound is on the REPLY's age, which is what a customer
+ * experiences.
+ */
+export const OUTBOUND_RATE_LIMIT_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
 
 /**
  * LISTEN/NOTIFY channel names.

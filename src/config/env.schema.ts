@@ -104,6 +104,15 @@ export const EnvSchema = z
     PLATFORM_ADMIN_EMAIL: z.string().default(''),
     PLATFORM_ADMIN_MOBILE: z.string().default(''),
     PLATFORM_ADMIN_PASSWORD: z.string().default(''),
+    /**
+     * Overwrite the existing admin's password from configuration on boot.
+     *
+     * OFF by default, and that default IS the security property: provisioning is
+     * create-if-absent, so changing the password in the database sticks. It used
+     * to be re-applied on every boot, which made the committed development
+     * credential heal itself after any rotation.
+     */
+    PLATFORM_ADMIN_FORCE_PASSWORD_RESET: booleanish.default(false),
 
     // --- Observability ----------------------------------------------------
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),

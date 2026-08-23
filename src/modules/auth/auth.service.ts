@@ -93,14 +93,34 @@ export class AuthService {
     }
 
     /*
-     * The password is checked FIRST, before any account state is revealed.
+     * THE LOCK IS READ BEFORE THE PASSWORD BRANCH, and the hash is compared
+     * either way.
      *
-     * Checking lockout or disablement first told an unauthenticated caller
-     * whether an address is registered, and which state it is in — a 403 for a
-     * known account against a 401 for an unknown one. The work is done either
-     * way, so the order costs nothing and closes the disclosure.
+     * The lock used to be consulted only on the SUCCESS path, so a wrong
+     * password incremented the counter and was never once stopped by it: the
+     * control that exists to bound guessing bounded nothing. It is evaluated
+     * here instead, and a locked account terminates the attempt whatever the
+     * password was.
+     *
+     * The comparison still happens first so that TIMING does not reveal the
+     * lock — a locked account must cost an attacker the same argon2id work as
+     * an unlocked one, or the lock becomes the oracle the ordering was designed
+     * to avoid.
      */
+    const locked = identity.lockedUntil !== null && identity.lockedUntil.getTime() > Date.now();
     const passwordOk = await this.hasher.verifyPassword(identity.passwordHash, request.password);
+
+    if (locked && !passwordOk) {
+      /*
+       * The GENERIC failure, and no counter write. Generic because a wrong
+       * guess must not learn that this address is locked — which would confirm
+       * the address exists. No counter write because the lock is already
+       * running: counting further would only let a third party keep extending
+       * somebody else's lockout.
+       */
+      throw new AppException(ErrorCode.AuthInvalidCredentials);
+    }
+
     if (!passwordOk) {
       await this.identities.recordFailedLogin(
         identity.id,
@@ -110,8 +130,12 @@ export class AuthService {
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
-    // Only now, with the password proven, is it safe to say why a valid
-    // credential still cannot sign in.
+    /*
+     * The password is proven, so it is now safe to say WHY a valid credential
+     * still cannot sign in — including the lock, with the time remaining. That
+     * disclosure is deliberate and only reaches somebody who already has the
+     * password.
+     */
     this.assertLoginable(identity);
 
     // --- the password is proven from here on ------------------------------

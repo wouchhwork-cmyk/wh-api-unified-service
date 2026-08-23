@@ -29,7 +29,14 @@ EXPOSE 3000
 # dist/migrate.js is in this image on purpose: the mandated deploy order is
 # migrations first, then code, and before it existed the runtime image had no way
 # to apply one — scripts/ is excluded from the build and tsx is pruned. Run it as
-# a job with the same image and `command: ["node", "dist/migrate.js"]`.
+# a job with the same image:
+#
+#   command: ["node", "dist/migrate.js"]          apply migrations
+#   command: ["node", "dist/migrate.js", "seed"]  install the global catalogue
+#
+# Both are needed before the first signup: the catalogue holds the system-role
+# templates signup copies, and without them it fails with "the owner template is
+# missing". Both are idempotent.
 # tini as PID 1 so SIGTERM reaches Node and graceful shutdown actually runs.
 ENTRYPOINT ["/sbin/tini", "--"]
 # Same image for API and workers; the orchestrator overrides CMD for workers.

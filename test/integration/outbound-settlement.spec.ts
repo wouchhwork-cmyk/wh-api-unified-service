@@ -171,6 +171,115 @@ describe('outbound settlement guards', () => {
     expect(await statusOf(id)).toBe(OutboundEventStatus.Cancelled);
   });
 
+  describe('a rate limit', () => {
+    it('parks without spending an attempt', async () => {
+      /*
+       * The whole point: a rate limit is a condition to be waited out. Treated
+       * as an ordinary retryable failure it burned a three-attempt budget on a
+       * sub-second curve in about three seconds and dead-lettered a reply the
+       * platform would have accepted minutes later.
+       */
+      const id = await enqueue('dedup-throttle');
+      await outbound.claimDueBatch(OWNER, 10, 120);
+
+      const before = await db.query<{ attempt_count: number }[]>(
+        `SELECT attempt_count FROM outbound_events WHERE id = $1`,
+        [id],
+      );
+      expect(Number(before[0]?.attempt_count)).toBe(1);
+
+      const retryAt = new Date(Date.now() + 300_000);
+      const outcome = await outbound.markRateLimited({
+        id,
+        leaseOwner: OWNER,
+        retryAt,
+        error: 'UPSTREAM_RATE_LIMITED: slow down',
+        maxWaitMs: 24 * 60 * 60 * 1000,
+      });
+
+      expect(outcome).toBe('parked');
+      expect(await statusOf(id)).toBe(OutboundEventStatus.Pending);
+
+      const after = await db.query<{ attempt_count: number; next_attempt_at: Date }[]>(
+        `SELECT attempt_count, next_attempt_at FROM outbound_events WHERE id = $1`,
+        [id],
+      );
+      // Refunded, so waiting costs nothing.
+      expect(Number(after[0]?.attempt_count)).toBe(0);
+      expect(after[0]?.next_attempt_at.getTime()).toBeCloseTo(retryAt.getTime(), -3);
+    });
+
+    it('dead-letters a reply that has waited longer than a reply may wait', async () => {
+      // "Wait forever" is not a policy: a quota that never clears has to become
+      // an operator's problem rather than an immortal row.
+      const id = await enqueue('dedup-throttle-old');
+      await outbound.claimDueBatch(OWNER, 10, 120);
+      await db.query(
+        `UPDATE outbound_events SET created_at = now() - interval '2 days' WHERE id = $1`,
+        [id],
+      );
+
+      const outcome = await outbound.markRateLimited({
+        id,
+        leaseOwner: OWNER,
+        retryAt: new Date(Date.now() + 300_000),
+        error: 'still throttled',
+        maxWaitMs: 24 * 60 * 60 * 1000,
+      });
+
+      expect(outcome).toBe('dead_lettered');
+      expect(await statusOf(id)).toBe(OutboundEventStatus.DeadLetter);
+    });
+
+    it('refuses to park a row that is already sent', async () => {
+      const id = await enqueue('dedup-throttle-sent');
+      await outbound.claimDueBatch(OWNER, 10, 120);
+      await outbound.markSent(id, OWNER, 'mid_9');
+
+      const outcome = await outbound.markRateLimited({
+        id,
+        leaseOwner: OWNER,
+        retryAt: new Date(),
+        error: 'late throttle',
+        maxWaitMs: 24 * 60 * 60 * 1000,
+      });
+
+      expect(outcome).toBe('not_applied');
+      expect(await statusOf(id)).toBe(OutboundEventStatus.Sent);
+    });
+  });
+
+  describe('the lease reaper', () => {
+    it('leaves a recently expired SENDING row alone', async () => {
+      /*
+       * The reaper cannot tell a dead worker from a slow one. Reclaiming on lease
+       * expiry alone re-dispatched a reply whose Graph call was merely slow, and
+       * the customer received it twice.
+       */
+      const id = await enqueue('dedup-slow');
+      await outbound.claimDueBatch(OWNER, 10, 120);
+      await db.query(
+        `UPDATE outbound_events SET lease_expires_at = now() - interval '1 second' WHERE id = $1`,
+        [id],
+      );
+
+      expect(await outbound.reclaimExpiredLeases(10)).toBe(0);
+      expect(await statusOf(id)).toBe(OutboundEventStatus.Sending);
+    });
+
+    it('reclaims one whose lease lapsed long enough ago that no send can be in flight', async () => {
+      const id = await enqueue('dedup-dead-worker');
+      await outbound.claimDueBatch(OWNER, 10, 120);
+      await db.query(
+        `UPDATE outbound_events SET lease_expires_at = now() - interval '10 minutes' WHERE id = $1`,
+        [id],
+      );
+
+      expect(await outbound.reclaimExpiredLeases(10)).toBe(1);
+      expect(await statusOf(id)).toBe(OutboundEventStatus.Pending);
+    });
+  });
+
   it('dead-letters once the budget is spent', async () => {
     const id = await enqueue('dedup-dead');
     await outbound.claimDueBatch(OWNER, 10, 120);

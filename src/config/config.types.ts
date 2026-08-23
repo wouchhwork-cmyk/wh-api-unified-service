@@ -87,6 +87,8 @@ export interface PlatformAdminConfig {
   readonly email: string;
   readonly mobile: string;
   readonly password: string;
+  /** Deliberate recovery only: overwrite an EXISTING admin's password on boot. */
+  readonly forcePasswordReset: boolean;
 }
 
 export interface Configuration {

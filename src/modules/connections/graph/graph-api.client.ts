@@ -542,11 +542,61 @@ export class GraphApiClient {
         typeof error.fbtrace_id === 'string' ? error.fbtrace_id : null,
         // Meta's message is safe to keep for diagnosis; it names no token.
         typeof error.message === 'string' ? error.message : `graph ${method} ${path} failed`,
+        // What Meta itself says about waiting, when it says anything.
+        readRetryAfterMinutes(response.headers),
       );
     }
 
     return parsed as T;
   }
+}
+
+/**
+ * Meta's own estimate of when a throttled app may call again, in minutes.
+ *
+ * Both headers carry JSON. `X-App-Usage` is a flat object; the business one is
+ * keyed by business id, each value an ARRAY of per-endpoint objects — so the
+ * largest estimate across all of them is the one to wait for, because any
+ * smaller wait would still be throttled.
+ *
+ * Entirely best-effort: these headers appear only under quota pressure, their
+ * shape is undocumented in places, and a malformed one must not turn a rate
+ * limit into a parse error. Null means "Meta did not say", and the caller falls
+ * back to its own park window.
+ */
+function readRetryAfterMinutes(headers: Headers): number | null {
+  let longest: number | null = null;
+
+  const consider = (value: unknown): void => {
+    if (typeof value !== 'object' || value === null) return;
+    const estimate = (value as { estimated_time_to_regain_access?: unknown })
+      .estimated_time_to_regain_access;
+    if (typeof estimate !== 'number' || !Number.isFinite(estimate) || estimate <= 0) return;
+    longest = longest === null ? estimate : Math.max(longest, estimate);
+  };
+
+  for (const name of ['x-app-usage', 'x-business-use-case-usage', 'x-ad-account-usage']) {
+    const raw = headers.get(name);
+    if (!raw) continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+
+    consider(parsed);
+    // The business-scoped header nests one array of endpoint objects per id.
+    if (typeof parsed === 'object' && parsed !== null) {
+      for (const value of Object.values(parsed as Record<string, unknown>)) {
+        if (Array.isArray(value)) value.forEach(consider);
+        else consider(value);
+      }
+    }
+  }
+
+  return longest;
 }
 
 function safeJsonParse(text: string): unknown {

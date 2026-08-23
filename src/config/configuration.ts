@@ -159,6 +159,7 @@ export function loadConfiguration(): Configuration {
       email: env.PLATFORM_ADMIN_EMAIL.trim().toLowerCase(),
       mobile: env.PLATFORM_ADMIN_MOBILE.trim(),
       password: env.PLATFORM_ADMIN_PASSWORD,
+      forcePasswordReset: env.PLATFORM_ADMIN_FORCE_PASSWORD_RESET,
     },
   };
 }

@@ -7,7 +7,11 @@ import {
   Platform,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
-import { MAX_SEND_ATTEMPTS, NOTIFY_OUTBOUND_CHANNEL } from '@/shared/constants';
+import {
+  MAX_SEND_ATTEMPTS,
+  NOTIFY_OUTBOUND_CHANNEL,
+  SENDING_REAP_GRACE_MS,
+} from '@/shared/constants';
 
 export interface EnqueueOutboundInput {
   readonly enterpriseId: number | null;
@@ -232,6 +236,72 @@ export class OutboundEventRepository extends BaseRepository {
    * never succeed as written — a dead credential, or an ambiguous outcome we
    * refuse to retry because it might send twice.
    */
+  /**
+   * Parks a throttled send WITHOUT spending an attempt.
+   *
+   * A rate limit is a condition designed to be waited out, and it used to be
+   * classified as an ordinary retryable failure against a three-attempt budget
+   * on a sub-second curve — so a brief Meta throttle burned every attempt in
+   * about three seconds and dead-lettered a customer-visible reply. The attempt
+   * is refunded here, so waiting costs nothing.
+   *
+   * Bounded by the ROW'S AGE rather than by a counter: a quota that never clears
+   * must eventually become an operator's problem instead of an immortal row, and
+   * the age of the reply is what the customer actually experiences. Past that
+   * age it dead-letters like any spent row.
+   *
+   * Returns what happened, because a dead letter means the caller must settle
+   * the message and a park means it must not.
+   */
+  async markRateLimited(input: {
+    id: number;
+    leaseOwner: string;
+    retryAt: Date;
+    error: string;
+    maxWaitMs: number;
+  }): Promise<'parked' | 'dead_lettered' | 'not_applied'> {
+    const { rows } = await this.mutate<{ status: OutboundEventStatus }>(
+      `UPDATE outbound_events
+          SET status = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond') THEN $2
+                ELSE $3 END,
+              -- Refunded only on the parking branch; a dead letter keeps its count.
+              attempt_count = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond')
+                  THEN GREATEST(attempt_count - 1, 0)
+                ELSE attempt_count END,
+              dead_lettered_at = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond') THEN NULL
+                ELSE now() END,
+              -- Cast: inside a CASE whose other branch is NULL, Postgres has
+              -- nothing to infer this parameter's type from and settles on text.
+              next_attempt_at = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond')
+                  THEN $5::timestamptz
+                ELSE NULL END,
+              last_error = $4,
+              last_error_at = now(),
+              lease_owner = NULL,
+              lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $7 AND status <> $8
+        RETURNING status`,
+      [
+        input.id,
+        OutboundEventStatus.Pending,
+        OutboundEventStatus.DeadLetter,
+        input.error.slice(0, 2000),
+        input.retryAt,
+        input.maxWaitMs,
+        input.leaseOwner,
+        OutboundEventStatus.Sent,
+      ],
+    );
+
+    const status = rows[0]?.status;
+    if (status === undefined) return 'not_applied';
+    return status === OutboundEventStatus.DeadLetter ? 'dead_lettered' : 'parked';
+  }
+
   async cancel(id: number, leaseOwner: string, reason: string): Promise<boolean> {
     const { affected } = await this.mutate(
       `UPDATE outbound_events
@@ -250,18 +320,38 @@ export class OutboundEventRepository extends BaseRepository {
     return affected === 1;
   }
 
+  /**
+   * Returns rows whose worker died to the runnable pool.
+   *
+   * A SENDING row gets a grace period on top of its lease, and that is the whole
+   * point of this method's shape. The reaper cannot distinguish a dead worker
+   * from a slow one, and it used to reclaim on lease expiry alone — so a reply
+   * whose Graph call was merely slow was re-dispatched while the first request
+   * was still in flight, and the customer received it twice.
+   *
+   * A 'leased' row has no request in flight, so it needs no grace. See
+   * SENDING_REAP_GRACE_MS for why twice the platform timeout is the right margin.
+   */
   async reclaimExpiredLeases(limit: number): Promise<number> {
     const { affected } = await this.mutate(
       `UPDATE outbound_events
           SET status = $1, lease_owner = NULL, lease_expires_at = NULL
         WHERE id IN (
           SELECT id FROM outbound_events
-           WHERE status IN ('leased','sending') AND lease_expires_at < now()
+           WHERE (status = $3 AND lease_expires_at < now())
+              OR (status = $4
+                  AND lease_expires_at < now() - ($5::int * interval '1 millisecond'))
            LIMIT $2
            FOR UPDATE SKIP LOCKED
         )
         RETURNING id`,
-      [OutboundEventStatus.Pending, limit],
+      [
+        OutboundEventStatus.Pending,
+        limit,
+        OutboundEventStatus.Leased,
+        OutboundEventStatus.Sending,
+        SENDING_REAP_GRACE_MS,
+      ],
     );
     return affected;
   }

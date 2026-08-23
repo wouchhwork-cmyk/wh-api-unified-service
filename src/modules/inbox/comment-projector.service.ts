@@ -51,6 +51,7 @@ export class CommentProjectorService {
     platform: Platform,
     inboundEventId: number,
     payload: unknown,
+    ownPlatformIds: readonly string[] = [],
   ): Promise<ProjectionOutcome> {
     /*
      * Both platforms' shapes collapse to one here. Previously this method read
@@ -59,6 +60,10 @@ export class CommentProjectorService {
      */
     const normalized = normalizeComment(platform, payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
+
+    if (isOwnAuthor(normalized.comment.authorPlatformId, ownPlatformIds)) {
+      return { projected: false, reason: OWN_CONTENT_REASON };
+    }
 
     return this.store(
       enterpriseId,
@@ -87,9 +92,15 @@ export class CommentProjectorService {
     platform: Platform,
     inboundEventId: number,
     payload: unknown,
+    ownPlatformIds: readonly string[] = [],
   ): Promise<ProjectionOutcome> {
     const normalized = normalizeMention(platform, payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
+
+    // A business tagging itself is not a mention worth an inbox row.
+    if (isOwnAuthor(normalized.comment.authorPlatformId, ownPlatformIds)) {
+      return { projected: false, reason: OWN_CONTENT_REASON };
+    }
 
     return this.store(
       enterpriseId,
@@ -227,4 +238,29 @@ export class CommentProjectorService {
       return { projected: true };
     });
   }
+}
+
+/**
+ * The reason a projection is skipped when the author is us.
+ *
+ * A SKIP, not a failure: the event was understood perfectly and deliberately not
+ * projected, which is a terminal, visible state rather than something to retry.
+ */
+const OWN_CONTENT_REASON = "the comment is the business's own, not a customer's";
+
+/**
+ * Is this author the connected account itself?
+ *
+ * Meta delivers the business's own comments through the same webhook as a
+ * customer's, and nothing filtered them — so every agent reply that echoed back
+ * created a CUSTOMER record for the business and a conversation attributed to
+ * it, inflating customer counts and engagement with the business's own activity.
+ * The DM projector already had Meta's `is_echo` flag for exactly this; comments
+ * carry no such flag, so the author has to be compared against our own ids.
+ *
+ * Both ids are checked because either can appear: an Instagram comment's author
+ * is the Instagram account, while the Page is what sends on its behalf.
+ */
+function isOwnAuthor(authorPlatformId: string, ownPlatformIds: readonly string[]): boolean {
+  return ownPlatformIds.some((id) => id === authorPlatformId);
 }

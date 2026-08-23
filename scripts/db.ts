@@ -19,6 +19,16 @@ const COMMANDS: readonly Command[] = ['migrate', 'revert', 'drop', 'status', 'sy
 /** Commands that destroy data, and therefore need more than a typo to run. */
 const DESTRUCTIVE: ReadonlySet<Command> = new Set<Command>(['drop', 'revert']);
 
+/** Hosts a destructive command may point at. Compose service names included. */
+const LOCAL_HOSTS: ReadonlySet<string> = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  '0.0.0.0',
+  'postgres',
+  'db',
+]);
+
 function parseCommand(raw: string | undefined): Command {
   if (raw && (COMMANDS as readonly string[]).includes(raw)) return raw as Command;
   throw new Error(`Usage: db.ts <${COMMANDS.join('|')}>`);
@@ -40,9 +50,29 @@ async function main(): Promise<void> {
   console.log(`target: ${database.user}@${database.host}:${database.port}/${database.name}`);
 
   if (DESTRUCTIVE.has(command)) {
+    /*
+     * THE TARGET, NOT THE LABEL.
+     *
+     * NODE_ENV comes from the same --env-file that an exported DB_HOST beats, so
+     * checking it alone is checking the one value the failure mode does not
+     * change. The host and the database name are what decide what gets
+     * destroyed.
+     */
     if (process.env.NODE_ENV !== 'dev') {
       throw new Error(
         `refused: db ${command} is dev-only (NODE_ENV=${process.env.NODE_ENV ?? 'unset'}).`,
+      );
+    }
+    if (!LOCAL_HOSTS.has(database.host.toLowerCase())) {
+      throw new Error(
+        `refused: db ${command} against host "${database.host}", which is not local. ` +
+          'An exported DB_HOST beats --env-file — check your shell.',
+      );
+    }
+    if (!/_(dev|test|local)$/.test(database.name)) {
+      throw new Error(
+        `refused: db ${command} against "${database.name}", which does not end in ` +
+          '_dev, _test or _local, so it is not a disposable database.',
       );
     }
     /*

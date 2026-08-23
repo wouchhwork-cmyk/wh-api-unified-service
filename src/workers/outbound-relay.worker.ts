@@ -12,7 +12,7 @@ import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { parkFor, scheduleRetry } from '@/modules/ledger/backoff.util';
-import { OUTBOUND_RATE_LIMIT_PARK_MS } from '@/shared/constants';
+import { OUTBOUND_RATE_LIMIT_MAX_WAIT_MS, OUTBOUND_RATE_LIMIT_PARK_MS } from '@/shared/constants';
 import { TokenCipherService } from '@/shared/crypto';
 import { ConnectionStatus, MessageStatus, OutboundEventType, Platform } from '@/shared/enums';
 import { ErrorCode } from '@/shared/errors';
@@ -411,28 +411,48 @@ export class OutboundRelayWorker extends BasePoller {
       return;
     }
 
-    const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
-
     /*
-     * A RATE LIMIT IS NOT A BLIP, so it does not get the blip's schedule. The
-     * exponential curve spans about three seconds across the whole attempt
-     * budget, which meant a throttled reply burned every attempt while the limit
-     * was still in force and dead-lettered — the opposite of what a rate limit
-     * asks for. Parked for minutes instead, jittered so a throttled fleet does
-     * not resume in lockstep.
+     * A RATE LIMIT IS NOT A FAILED ATTEMPT.
+     *
+     * It used to be one: an ordinary retryable error on a curve that spans about
+     * three seconds across the whole budget, so a brief Meta throttle burned
+     * every attempt while the limit was still in force and dead-lettered a reply
+     * the platform would have accepted minutes later.
+     *
+     * It now parks without spending an attempt, for as long as META ITSELF says
+     * the quota needs — `estimated_time_to_regain_access`, when the response
+     * carried it — and for a jittered five minutes when Meta said nothing.
+     * Bounded by the reply's age, so a quota that never clears still becomes an
+     * operator's problem rather than an immortal row.
      */
-    const nextAttemptAt =
-      retry === null
-        ? null
-        : mapped.code === ErrorCode.UpstreamRateLimited
-          ? parkFor(OUTBOUND_RATE_LIMIT_PARK_MS)
-          : retry.nextAttemptAt;
+    if (mapped.code === ErrorCode.UpstreamRateLimited) {
+      const advertised = error.retryAfterMinutes;
+      const outcome = await this.outbound.markRateLimited({
+        id: event.id,
+        leaseOwner: this.leaseOwner,
+        retryAt:
+          advertised === null ? parkFor(OUTBOUND_RATE_LIMIT_PARK_MS) : parkFor(advertised * 60_000),
+        error: `${mapped.code}: ${error.message}`,
+        maxWaitMs: OUTBOUND_RATE_LIMIT_MAX_WAIT_MS,
+      });
 
+      this.logger.warn(
+        { eventId: event.id, outcome, advertisedMinutes: advertised },
+        outcome === 'dead_lettered'
+          ? 'rate limited for longer than a reply may wait — dead-lettered'
+          : 'rate limited — parked without spending an attempt',
+      );
+
+      if (outcome === 'dead_lettered') await settleMessage();
+      return;
+    }
+
+    const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
     const applied = await this.outbound.markFailed(
       event.id,
       this.leaseOwner,
       `${mapped.code}: ${error.message}`,
-      nextAttemptAt,
+      retry?.nextAttemptAt ?? null,
     );
     // Only a spent budget is terminal; while retries remain the message stays
     // pending, because it may still be delivered.

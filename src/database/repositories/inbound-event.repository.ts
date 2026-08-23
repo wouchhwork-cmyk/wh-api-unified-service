@@ -24,6 +24,17 @@ export interface InboundEventInput {
   readonly priority?: EventPriority;
 }
 
+/** What a projector needs about the row it is projecting, and about us. */
+export interface ProjectionContext {
+  readonly enterpriseId: number;
+  readonly channelId: number;
+  readonly platform: Platform;
+  /** OUR id on the platform — the one an author id is compared against. */
+  readonly platformChannelId: string;
+  /** The linked Page, for an Instagram channel. Null for a Page itself. */
+  readonly parentPlatformChannelId: string | null;
+}
+
 @Injectable()
 export class InboundEventRepository extends BaseRepository {
   /**
@@ -137,13 +148,32 @@ export class InboundEventRepository extends BaseRepository {
    * data from a webhook, and deriving a tenant from it would be a cross-tenant
    * write primitive.
    */
-  async findProjectionContext(
-    id: number,
-  ): Promise<{ enterpriseId: number; channelId: number; platform: Platform } | null> {
-    const rows = await this.query<{ enterpriseId: number; channelId: number; platform: Platform }>(
-      `SELECT enterprise_id AS "enterpriseId", channel_id AS "channelId", platform
-         FROM inbound_events
-        WHERE id = $1 AND enterprise_id IS NOT NULL AND channel_id IS NOT NULL
+  async findProjectionContext(id: number): Promise<ProjectionContext | null> {
+    const rows = await this.query<ProjectionContext>(
+      /*
+       * The channel's OWN platform ids come along too.
+       *
+       * A projector has to be able to recognise us. Meta delivers the business's
+       * own comments through the same webhook as a customer's, and nothing
+       * filtered them — so every agent reply that echoed back created a CUSTOMER
+       * record for the business itself, and a conversation attributed to it.
+       * The DM projector already had `is_echo` for this; comments have no such
+       * flag, so the comparison has to be against our own id.
+       *
+       * The parent Page id is carried as well, because an Instagram comment's
+       * author is the Instagram account while sends go through the Page — either
+       * can appear as the author of our own content.
+       */
+      `SELECT ie.enterprise_id AS "enterpriseId",
+              ie.channel_id AS "channelId",
+              ie.platform,
+              c.platform_channel_id AS "platformChannelId",
+              parent.platform_channel_id AS "parentPlatformChannelId"
+         FROM inbound_events ie
+         JOIN channels c ON c.id = ie.channel_id AND c.enterprise_id = ie.enterprise_id
+         LEFT JOIN channels parent ON parent.id = c.parent_channel_id
+                                 AND parent.enterprise_id = c.enterprise_id
+        WHERE ie.id = $1 AND ie.enterprise_id IS NOT NULL AND ie.channel_id IS NOT NULL
         LIMIT 1`,
       [id],
     );

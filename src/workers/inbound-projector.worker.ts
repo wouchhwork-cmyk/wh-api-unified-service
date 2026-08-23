@@ -26,6 +26,16 @@ interface ProjectionContext {
   readonly channelId: number;
   readonly platform: Platform;
   readonly inboundEventId: number;
+  /**
+   * OUR OWN ids on the platform — the channel's, and its parent Page's where
+   * there is one.
+   *
+   * Carried so a projector can recognise the business's own content. Meta
+   * delivers our comments through the same webhook as a customer's, and nothing
+   * filtered them, so each agent reply that echoed back created a customer
+   * record for the business itself.
+   */
+  readonly ownPlatformIds: readonly string[];
 }
 
 type Projector = (
@@ -59,6 +69,7 @@ export class InboundProjectorWorker extends BasePoller {
         context.platform,
         context.inboundEventId,
         payload,
+        context.ownPlatformIds,
       ),
     );
     this.projectors.set(InboundEventType.DirectMessage, (context, payload) =>
@@ -77,6 +88,7 @@ export class InboundProjectorWorker extends BasePoller {
         context.platform,
         context.inboundEventId,
         payload,
+        context.ownPlatformIds,
       ),
     );
     this.projectors.set(InboundEventType.PostUpdate, (context, payload) =>
@@ -126,6 +138,11 @@ export class InboundProjectorWorker extends BasePoller {
             channelId: context.channelId,
             platform: context.platform,
             inboundEventId: event.id,
+            // Both, filtered: an Instagram channel has a parent Page, a Page
+            // does not.
+            ownPlatformIds: [context.platformChannelId, context.parentPlatformChannelId].filter(
+              (id): id is string => id !== null,
+            ),
           },
           event.payload,
         );

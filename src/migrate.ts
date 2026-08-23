@@ -1,5 +1,6 @@
 import AppDataSource from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
+import { reportSeed, seedCatalogue } from '@/database/seed/catalogue.seed';
 
 /**
  * The migration job, COMPILED — `node dist/migrate.js`.
@@ -17,11 +18,18 @@ import { loadConfiguration } from '@/config/configuration';
  *
  *   node dist/migrate.js          apply everything pending
  *   node dist/migrate.js status   say whether anything is pending, change nothing
+ *   node dist/migrate.js seed     install the global catalogue (idempotent)
+ *
+ * SEEDING IS HERE FOR THE SAME REASON AS MIGRATING. The catalogue holds the
+ * permissions, features and the system-role templates that signup copies — so
+ * without it the very first signup fails with "the owner template is missing",
+ * and `pnpm db:seed` was as unreachable from the image as `pnpm db:migrate` was.
+ * It is idempotent, so a deploy can run it every time.
  */
 async function main(): Promise<void> {
   const command = process.argv[2] ?? 'up';
-  if (command !== 'up' && command !== 'status') {
-    throw new Error(`Usage: migrate.js <up|status> (got "${command}")`);
+  if (command !== 'up' && command !== 'status' && command !== 'seed') {
+    throw new Error(`Usage: migrate.js <up|status|seed> (got "${command}")`);
   }
 
   const { database } = loadConfiguration();
@@ -36,6 +44,12 @@ async function main(): Promise<void> {
       console.log(pending ? 'migrations are PENDING' : 'schema is up to date');
       // A non-zero exit lets a deploy pipeline gate on this without parsing text.
       process.exitCode = pending ? 1 : 0;
+      return;
+    }
+
+    if (command === 'seed') {
+      const result = await AppDataSource.transaction((manager) => seedCatalogue(manager));
+      reportSeed(result.summaries, result.insertedByRole);
       return;
     }
 

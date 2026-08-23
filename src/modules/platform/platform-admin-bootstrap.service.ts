@@ -85,19 +85,42 @@ export class PlatformAdminBootstrapService implements OnApplicationBootstrap {
     }
   }
 
-  /** Brings an existing identity's password back in line with the configuration. */
+  /**
+   * Leaves an existing admin's password ALONE.
+   *
+   * It used to re-apply the configured value on every boot whenever the two
+   * differed, which made the credential self-healing: an operator who changed
+   * the platform admin's password found the old one working again after the next
+   * restart. Combined with a password that is in this repository's history, that
+   * is a known credential nobody can revoke by changing it.
+   *
+   * Provisioning is create-if-absent now. A deliberate recovery — the password
+   * genuinely lost — is still possible, but it has to be asked for explicitly
+   * through PLATFORM_ADMIN_FORCE_PASSWORD_RESET, and it says so loudly.
+   */
   private async reconcileIdentity(
     identityId: number,
     currentHash: string,
     configuredPassword: string,
   ): Promise<number> {
+    if (!this.config.platformAdmin.forcePasswordReset) {
+      this.logger.info(
+        { identityId },
+        'platform admin already exists — its password is left as it is',
+      );
+      return identityId;
+    }
+
     const matches = await this.hasher.verifyPassword(currentHash, configuredPassword);
     if (!matches) {
       await this.identities.updatePasswordHash(
         identityId,
         await this.hasher.hashPassword(configuredPassword),
       );
-      this.logger.warn({ identityId }, 'platform admin password reset from configuration');
+      this.logger.warn(
+        { identityId },
+        'PLATFORM_ADMIN_FORCE_PASSWORD_RESET is on and overwrote the admin password from configuration — turn it back off',
+      );
     }
     return identityId;
   }

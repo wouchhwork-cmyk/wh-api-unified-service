@@ -13,6 +13,16 @@ export class GraphApiError extends Error {
     readonly type: string | null,
     readonly fbTraceId: string | null,
     message: string,
+    /**
+     * How long Meta says it will be before the quota clears, in MINUTES.
+     *
+     * Read from the X-App-Usage / X-Business-Use-Case-Usage headers, which carry
+     * `estimated_time_to_regain_access`. Null when Meta said nothing — which is
+     * most responses, because the headers only appear once a quota is under
+     * pressure. It exists so a throttled send waits the window Meta named
+     * instead of a number we invented.
+     */
+    readonly retryAfterMinutes: number | null = null,
   ) {
     super(message);
     this.name = 'GraphApiError';

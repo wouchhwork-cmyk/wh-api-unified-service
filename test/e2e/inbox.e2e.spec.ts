@@ -427,14 +427,25 @@ describe('the shared inbox', () => {
       .send({ status: 'active' })
       .expect(200);
 
+    const rivalAuth = { Authorization: `Bearer ${rival.body.data.accessToken as string}` };
+
+    /*
+     * PROVE THE GATE IS OPEN FIRST.
+     *
+     * Both assertions below are 404s, and a 403 from the feature gate would fail
+     * them for a reason that has nothing to do with tenancy — which is exactly
+     * how a fixture problem reads as an intermittent tenancy failure. This line
+     * makes the two distinguishable: if the rival cannot reach its own empty
+     * inbox, the fixture is wrong, and it says so here rather than 20 lines down.
+     */
+    const ownInbox = await http().get('/api/v1/conversations').set(rivalAuth).expect(200);
+    expect(ownInbox.body.data).toEqual([]);
+
     // 404, not 403: a 403 would confirm the ref exists.
-    await http()
-      .get(`/api/v1/conversations/${refId}`)
-      .set('Authorization', `Bearer ${rival.body.data.accessToken as string}`)
-      .expect(404);
+    await http().get(`/api/v1/conversations/${refId}`).set(rivalAuth).expect(404);
     await http()
       .post(`/api/v1/conversations/${refId}/status`)
-      .set('Authorization', `Bearer ${rival.body.data.accessToken as string}`)
+      .set(rivalAuth)
       .send({ status: 'closed' })
       .expect(404);
   });
