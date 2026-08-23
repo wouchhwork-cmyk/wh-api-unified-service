@@ -60,13 +60,22 @@ These have no ticket in any product sense. They are defects in built features,
 found by review or by hand-testing, and each one is a thing that will behave
 incorrectly in production today.
 
-### 1.1 The inbox path has no automated tests at all — **M**
+### 1.1 The inbox path's test coverage — **S remaining**
 
-Ingestion, projection, the inbox reads, the reply transaction and the relay have
-**zero** test coverage. The employees rename touched
-`conversations.assigned_to_employee_id`, `messages.sent_by_employee_id` and both
-projectors, and nothing in the suite would have failed if that rename had broken
-them. It was verified by hand instead:
+Was **zero**. Now covered, all against real Postgres:
+
+| File | What it pins down |
+| --- | --- |
+| `test/e2e/inbox.e2e.spec.ts` | 15 cases: assign, unassign, cross-tenant assign, status, thread pagination, malformed refs, nonsense cursors, no internal ids in a thread, idempotency (missing key, reused key, honest retry), cross-tenant read |
+| `test/integration/conversation-workflow.spec.ts` | every status value, the resolved stamp, the assignee join, cross-tenant writes |
+| `test/integration/outbound-settlement.spec.ts` | the duplicate-send guards, the lease fence, dead-lettering, the attempt budget |
+| `test/integration/keyset-pagination.spec.ts` | both keyset defects, reproduced before being fixed |
+| `test/unit/meta-webhook-signature.spec.ts` | 13 cases on HMAC verification — the only auth on a public write route |
+
+**Still untested:** ingestion end to end (webhook → ledger → projector → domain)
+and the relay's own loop. The projectors and `BackfillWorker` have no direct
+tests at all; they were verified by hand against a live account, and the recipe
+below is still the recipe.
 
 | Step | Verified behaviour |
 | --- | --- |
@@ -78,7 +87,7 @@ them. It was verified by hand instead:
 | Relay | dead credential → `cancelled`, not retried; message `failed` |
 | Idempotent retry | returns the ORIGINAL message; outbound count stays 1 |
 
-**Do this first.** It is the largest untested surface in the service, and the
+The projectors are now the largest untested surface in the service, and the
 recipe above is exactly the test.
 
 ### 1.2 Removing somebody does not end their sessions — **S**
@@ -98,11 +107,14 @@ Every login and every enterprise selection inserts a `sessions` row, with no cap
 and no revocation of prior sessions. Rows are removed only by the 30-day retention
 sweep. No "sign out everywhere".
 
-### 1.4 The OAuth `state` token is not single-use — **M**
+### ~~1.4 The OAuth `state` token is not single-use~~ — WAS ALREADY DONE
 
-Signed and expiring, but replayable inside its window — despite the design doc and
-the endpoint's own Swagger description claiming single-use. Closing it needs
-somewhere to record spent nonces.
+Stale entry, corrected rather than fixed: `OauthStateRepository.consume` is a
+conditional `UPDATE ... WHERE nonce = $1 AND consumed_at IS NULL AND expires_at >
+now()` returning the row, so the first caller wins and a replay resolves to
+nothing. `oauth_states_nonce_uniq` backs it and
+`test/integration/oauth-state.spec.ts` covers it. The entry described the design
+before the table existed.
 
 ### ~~1.5 Malformed reference ids are 500s on the conversation routes~~ — DONE
 
@@ -195,9 +207,12 @@ The schema supports all of these; nothing exposes them.
 - **A business requesting a feature.** `access_requested`, the `features.request`
   permission and the whole request path are modelled and unreachable — only an
   admin can grant. **S**
-- **Customer directory.** `CustomerRepository.listDirectory` is written, with
-  trigram search; no controller exposes it. **S**
-- **Posts.** Modelled and migrated, never synced or served. **L**
+- ~~**Customer directory.**~~ DONE — `GET /customers`, searchable by name or
+  handle, with the split given name and the Instagram handle, and a page in the
+  portal.
+- ~~**Posts.**~~ DONE — synced by the backfill, served by `GET /posts` with
+  previews, engagement counts and a channel filter, and a page in the portal.
+  What is missing is a post DETAIL view showing its comment thread. **M**
 - **Comment hide and delete.** The outbound event types and relay senders exist;
   no endpoint triggers them. **S**
 - **Password reset.** Configured as a token flow in `verification.config.ts`,
