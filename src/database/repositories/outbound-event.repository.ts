@@ -7,7 +7,7 @@ import {
   Platform,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
-import { NOTIFY_OUTBOUND_CHANNEL } from '@/shared/constants';
+import { MAX_SEND_ATTEMPTS, NOTIFY_OUTBOUND_CHANNEL } from '@/shared/constants';
 
 export interface EnqueueOutboundInput {
   readonly enterpriseId: number | null;
@@ -53,9 +53,9 @@ export class OutboundEventRepository extends BaseRepository {
       `INSERT INTO outbound_events
          (enterprise_id, channel_id, destination_kind, destination_id, platform, event_type,
           in_reply_to_event_id, recipient_platform_id, dedup_key, correlation_id, payload,
-          priority, status, scheduled_at, next_attempt_at)
+          priority, status, scheduled_at, next_attempt_at, max_attempts)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-               COALESCE($14, now()))
+               COALESCE($14, now()), $15)
        ON CONFLICT (COALESCE(enterprise_id, 0), dedup_key) DO NOTHING
        RETURNING id`,
       [
@@ -73,6 +73,13 @@ export class OutboundEventRepository extends BaseRepository {
         input.priority ?? EventPriority.Normal,
         input.scheduledAt ? OutboundEventStatus.Scheduled : OutboundEventStatus.Pending,
         input.scheduledAt,
+        /*
+         * Stated rather than left to the column default. The default is 3, while
+         * the policy this service documents is MAX_SEND_ATTEMPTS — so the
+         * constant was dead and the real budget was whatever the migration
+         * happened to say.
+         */
+        MAX_SEND_ATTEMPTS,
       ],
     );
     const row = rows[0];
@@ -173,8 +180,27 @@ export class OutboundEventRepository extends BaseRepository {
     return rows.length === 1;
   }
 
-  async markFailed(id: number, error: string, nextAttemptAt: Date | null): Promise<void> {
-    await this.mutate(
+  /**
+   * Records a failed attempt — but NEVER over a row that is already settled,
+   * and never for a worker that no longer owns it.
+   *
+   * Both guards are load-bearing. Without the status guard a database error
+   * raised after a successful send reached this method and flipped a 'sent' row
+   * back to 'failed'; the relay re-claimed it and delivered the customer the
+   * same reply again, overwriting platform_event_id so the data showed no trace.
+   * Without the lease guard a worker whose lease had already lapsed could
+   * re-schedule a row the reaper had handed to someone else.
+   *
+   * Returns false when neither applied, which is the caller's signal to leave
+   * the message row alone as well.
+   */
+  async markFailed(
+    id: number,
+    leaseOwner: string,
+    error: string,
+    nextAttemptAt: Date | null,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE outbound_events
           SET status = CASE
                 WHEN $5::timestamptz IS NULL OR attempt_count >= max_attempts THEN $2
@@ -186,15 +212,19 @@ export class OutboundEventRepository extends BaseRepository {
               next_attempt_at = $5,
               lease_owner = NULL,
               lease_expires_at = NULL
-        WHERE id = $1`,
+        WHERE id = $1 AND lease_owner = $6 AND status <> $7
+        RETURNING id`,
       [
         id,
         OutboundEventStatus.DeadLetter,
         OutboundEventStatus.Failed,
         error.slice(0, 2000),
         nextAttemptAt,
+        leaseOwner,
+        OutboundEventStatus.Sent,
       ],
     );
+    return affected === 1;
   }
 
   /**
@@ -202,14 +232,22 @@ export class OutboundEventRepository extends BaseRepository {
    * never succeed as written — a dead credential, or an ambiguous outcome we
    * refuse to retry because it might send twice.
    */
-  async cancel(id: number, reason: string): Promise<void> {
-    await this.mutate(
+  async cancel(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE outbound_events
           SET status = $2, last_error = $3, last_error_at = now(),
               lease_owner = NULL, lease_expires_at = NULL
-        WHERE id = $1`,
-      [id, OutboundEventStatus.Cancelled, reason.slice(0, 2000)],
+        WHERE id = $1 AND lease_owner = $4 AND status <> $5
+        RETURNING id`,
+      [
+        id,
+        OutboundEventStatus.Cancelled,
+        reason.slice(0, 2000),
+        leaseOwner,
+        OutboundEventStatus.Sent,
+      ],
     );
+    return affected === 1;
   }
 
   async reclaimExpiredLeases(limit: number): Promise<number> {

@@ -193,13 +193,24 @@ export class MessageRepository extends BaseRepository {
     enterpriseId: number,
     conversationId: number,
     limit: number,
-    beforeId: number | null,
+    cursor: { sortedAt: Date; id: number } | null,
   ): Promise<MessageRow[]> {
     const params: unknown[] = [this.requireEnterprise(enterpriseId), conversationId, limit];
     let keyset = '';
-    if (beforeId !== null) {
-      params.push(beforeId);
-      keyset = `AND id < $${params.length}`;
+    if (cursor) {
+      params.push(cursor.sortedAt, cursor.id);
+      /*
+       * The keyset compares the SAME expression the ORDER BY sorts on. It used
+       * to be a bare `id < $n`, which is only equivalent while id order matches
+       * time order — and the backfill worker breaks exactly that, appending
+       * years-old messages long after today's webhooks. A thread with any
+       * backfilled history therefore hid some messages from page two and
+       * repeated others. No null branch is needed here: created_at is NOT NULL,
+       * so the COALESCE never yields null.
+       */
+      keyset =
+        `AND (COALESCE(platform_sent_at, created_at), id) ` +
+        `< ($${params.length - 1}::timestamptz, $${params.length})`;
     }
 
     return this.query<MessageRow>(
@@ -216,6 +227,27 @@ export class MessageRepository extends BaseRepository {
         LIMIT $3`,
       params,
     );
+  }
+
+  /**
+   * Where a given message sits in the thread's order, so the deprecated
+   * `beforeId` query parameter can be translated into a correct keyset instead
+   * of paginating on an id that does not match the sort.
+   */
+  async findThreadPosition(
+    enterpriseId: number,
+    conversationId: number,
+    messageId: number,
+  ): Promise<{ sortedAt: Date; id: number } | null> {
+    const rows = await this.query<{ sortedAt: Date; id: number }>(
+      `SELECT COALESCE(platform_sent_at, created_at) AS "sortedAt", id
+         FROM messages
+        WHERE enterprise_id = $1 AND conversation_id = $2 AND id = $3
+          AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, messageId],
+    );
+    return rows[0] ?? null;
   }
 
   /** Resolves a platform comment id to our row, for threading replies. */

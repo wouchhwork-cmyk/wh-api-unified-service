@@ -117,7 +117,13 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
       user: database.user,
       password: database.password,
       database: database.name,
-      ...(database.ssl ? { ssl: { rejectUnauthorized: false } } : {}),
+      /*
+       * VERIFIED, like the application pool. This read `rejectUnauthorized:
+       * false`, which sends DB_USER and DB_PASSWORD over a TLS session whose
+       * certificate nobody checked — and data-source.ts proves the environment
+       * can verify it, because the pool every request uses already does.
+       */
+      ...(database.ssl ? { ssl: { rejectUnauthorized: true } } : {}),
       connectionTimeoutMillis: database.connectTimeoutMs,
       application_name: 'wouchh-inbox-events',
     });

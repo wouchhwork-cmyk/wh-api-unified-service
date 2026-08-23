@@ -150,23 +150,35 @@ export class InboundEventRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-  async markProcessed(id: number): Promise<void> {
-    await this.mutate(
+  /**
+   * Settles a projected row — FENCED on the lease, like every other write here.
+   *
+   * A batch that overruns its lease has already been reclaimed and may be owned
+   * by another worker. Writing the outcome then would settle a row that is
+   * mid-flight elsewhere, and the two workers would disagree about what happened
+   * to it. Returns false so the caller can say so rather than assume.
+   */
+  async markProcessed(id: number, leaseOwner: string): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE inbound_events
           SET status = $2, processed_at = now(), lease_owner = NULL, lease_expires_at = NULL
-        WHERE id = $1`,
-      [id, InboundEventStatus.Processed],
+        WHERE id = $1 AND lease_owner = $3
+        RETURNING id`,
+      [id, InboundEventStatus.Processed, leaseOwner],
     );
+    return affected === 1;
   }
 
-  async markSkipped(id: number, reason: string): Promise<void> {
-    await this.mutate(
+  async markSkipped(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE inbound_events
           SET status = $2, processed_at = now(), last_error = $3,
               lease_owner = NULL, lease_expires_at = NULL
-        WHERE id = $1`,
-      [id, InboundEventStatus.Skipped, reason],
+        WHERE id = $1 AND lease_owner = $4
+        RETURNING id`,
+      [id, InboundEventStatus.Skipped, reason, leaseOwner],
     );
+    return affected === 1;
   }
 
   /**
@@ -174,8 +186,13 @@ export class InboundEventRepository extends BaseRepository {
    * is spent, so a poison row stops being retried forever and becomes visible to
    * an operator instead.
    */
-  async markFailed(id: number, error: string, nextAttemptAt: Date): Promise<void> {
-    await this.mutate(
+  async markFailed(
+    id: number,
+    leaseOwner: string,
+    error: string,
+    nextAttemptAt: Date,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
       `UPDATE inbound_events
           SET status = CASE WHEN attempt_count >= max_attempts THEN $2 ELSE $3 END,
               dead_lettered_at = CASE WHEN attempt_count >= max_attempts THEN now() END,
@@ -184,15 +201,19 @@ export class InboundEventRepository extends BaseRepository {
               next_attempt_at = $5,
               lease_owner = NULL,
               lease_expires_at = NULL
-        WHERE id = $1`,
+        WHERE id = $1 AND lease_owner = $6 AND status <> $7
+        RETURNING id`,
       [
         id,
         InboundEventStatus.DeadLetter,
         InboundEventStatus.Failed,
         error.slice(0, 2000),
         nextAttemptAt,
+        leaseOwner,
+        InboundEventStatus.Processed,
       ],
     );
+    return affected === 1;
   }
 
   /** A worker that died mid-batch loses its lease, not the work. */

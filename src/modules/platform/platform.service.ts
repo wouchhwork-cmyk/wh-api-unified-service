@@ -10,6 +10,7 @@ import {
 import { AuditService } from '@/modules/audit';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import { RequestContext } from '@/shared/context';
+import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import {
   AuditAction,
   AuditEntityType,
@@ -83,7 +84,7 @@ export class PlatformService {
       // One extra row answers "is there another page" without a second COUNT
       // over the same predicate.
       limit: limit + 1,
-      cursor: decodeCursor(query.cursor),
+      cursor: decodeEnterpriseCursor(query.cursor),
     });
 
     const hasMore = rows.length > limit;
@@ -92,7 +93,7 @@ export class PlatformService {
 
     return {
       items: page.map(toListItem),
-      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.internalId) : null,
+      nextCursor: hasMore && last ? encodeKeysetCursor(last.createdAt, last.internalId) : null,
       hasMore,
     };
   }
@@ -332,24 +333,11 @@ function clampLimit(limit: number | null): number {
   return Math.min(Math.floor(limit), MAX_PAGE_SIZE);
 }
 
-/** Carries the sort key AND the id, so the order is total and pages cannot skip. */
-function encodeCursor(createdAt: Date, id: number): string {
-  return Buffer.from(JSON.stringify({ t: createdAt.toISOString(), i: id })).toString('base64url');
-}
-
-function decodeCursor(cursor: string | null): { createdAt: Date; id: number } | null {
-  if (!cursor) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
-      t: string;
-      i: number;
-    };
-    if (typeof parsed.i !== 'number' || typeof parsed.t !== 'string') return null;
-    const createdAt = new Date(parsed.t);
-    if (Number.isNaN(createdAt.getTime())) return null;
-    return { createdAt, id: parsed.i };
-  } catch {
-    // Opaque to clients, so there is nothing useful to say: restart at the top.
-    return null;
-  }
+/**
+ * created_at is NOT NULL on enterprises, so a cursor without a timestamp cannot
+ * have come from this listing and is treated as absent rather than trusted.
+ */
+function decodeEnterpriseCursor(cursor: string | null): { createdAt: Date; id: number } | null {
+  const parsed = decodeKeysetCursor(cursor);
+  return parsed?.at ? { createdAt: parsed.at, id: parsed.id } : null;
 }

@@ -14,6 +14,7 @@ import {
   DeliveryChannel,
   EmployeeKind,
   EmployeeStatus,
+  SystemRole,
   VerificationKind,
   VerificationSecretShape,
   VerificationSubjectKind,
@@ -80,6 +81,27 @@ export class EmployeesService {
 
     const role = await this.roles.findByRefId(enterpriseId, request.roleRefId);
     if (!role) throw new AppException(ErrorCode.RoleNotFound);
+
+    /*
+     * NOBODY GRANTS ABOVE THEMSELVES.
+     *
+     * employees.invite is held by the manager role, and without this check the
+     * body could name the OWNER role — so a manager could invite an address they
+     * control, accept the invite, and hold full control of the business,
+     * including billing and the ability to remove the real owner. The permission
+     * that guards the endpoint cannot express this: it says who may invite, not
+     * what they may hand out.
+     *
+     * Checked against the roles the actor actually holds rather than against a
+     * permission, because "can grant owner" is not a permission the catalogue
+     * has — owner is the top of the ladder by definition.
+     */
+    if (role.name === (SystemRole.Owner as string)) {
+      const actorRoles = await this.roles.listRoleNamesForEmployee(enterpriseId, actingEmployeeId);
+      if (!actorRoles.includes(SystemRole.Owner)) {
+        throw new AppException(ErrorCode.PermissionDenied);
+      }
+    }
 
     const created = await this.tx.runInTransaction(async () => {
       /*

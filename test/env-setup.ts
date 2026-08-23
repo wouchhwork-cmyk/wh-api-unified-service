@@ -57,3 +57,17 @@ load('.env.local', false);
  */
 const devDatabase = process.env.DB_NAME ?? 'wouchh_dev';
 process.env.DB_NAME = process.env.TEST_DB_NAME ?? `${devDatabase.replace(/_dev$/, '')}_test`;
+
+/*
+ * RATE LIMITING OFF, DELIBERATELY.
+ *
+ * The e2e suite signs in for almost every test, from one address, well inside a
+ * minute — which is exactly the shape the credential throttle exists to refuse.
+ * Leaving it on made the suite fail on whichever test happened to be eleventh,
+ * which measures the limiter rather than the behaviour under test.
+ *
+ * That the limiter WORKS is covered separately, by asserting the routes carry
+ * the tighter budget (test/unit/credential-throttle.spec.ts), and prod cannot
+ * boot with this off.
+ */
+process.env.RATE_LIMIT_ENABLED = 'false';

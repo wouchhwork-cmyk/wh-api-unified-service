@@ -6,6 +6,27 @@ import type { AppConfigService } from '@/config';
 const CORRELATION_HEADERS = ['x-correlation-id', 'x-request-id'] as const;
 
 /**
+ * Field names that must never appear in a log line, whatever wrote them.
+ *
+ * Named keys only — no `code`, no `id`, nothing overloaded. Each is expanded to
+ * bare, one-deep and two-deep paths below, because a pino wildcard matches
+ * exactly one level.
+ */
+const SENSITIVE_KEYS = [
+  'password',
+  'passwordHash',
+  'accessToken',
+  'refreshToken',
+  'secret',
+  'secretHash',
+  'otpCode',
+  'payload',
+  'appsecret_proof',
+  'authorization',
+  'cookie',
+] as const;
+
+/**
  * Structured logging (backend-design.md §13.2).
  *
  * REDACTION IS AN ALLOWLIST, NOT A DENYLIST. A denylist misses the next field
@@ -77,23 +98,30 @@ export function buildLoggerConfig(config: AppConfigService): Params {
         }),
       },
 
-      // Belt and braces: even if a serialiser is widened later, these paths are
-      // censored.
+      /*
+       * Belt and braces: even if a serialiser is widened later, these paths are
+       * censored.
+       *
+       * A pino wildcard matches ONE level, so each name is listed at the depths
+       * a log object realistically reaches — bare, one deep, and two deep. The
+       * list used to carry only the one-deep form, which meant a secret logged
+       * at the top level, or nested inside a context object, went through in
+       * clear.
+       *
+       * `*.code` is deliberately NOT here. It censored `err.code` — a
+       * machine-readable error code with no user data in it, and the single most
+       * useful field for diagnosing an upstream failure — in every line the
+       * service wrote, while missing the OTP it was added for, which sits at the
+       * top level or two deep. The OTP field is named otpCode precisely so it
+       * can be named here without collateral damage.
+       */
       redact: {
         paths: [
           'req.headers.authorization',
           'req.headers.cookie',
           'req.headers["x-hub-signature-256"]',
           'res.headers["set-cookie"]',
-          '*.password',
-          '*.passwordHash',
-          '*.accessToken',
-          '*.refreshToken',
-          '*.secret',
-          '*.secretHash',
-          '*.code',
-          '*.payload',
-          '*.appsecret_proof',
+          ...SENSITIVE_KEYS.flatMap((key) => [key, `*.${key}`, `*.*.${key}`]),
         ],
         censor: '[redacted]',
       },

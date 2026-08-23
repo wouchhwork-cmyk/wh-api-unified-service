@@ -40,7 +40,8 @@ export interface PendingOtpDelivery {
   /** NORMALIZED: a lower-cased email or an E.164 mobile. */
   readonly destination: string;
   readonly purpose: VerificationKind;
-  readonly code: string;
+  /** See SendOtpCommand.otpCode: named so redaction can be precise. */
+  readonly otpCode: string;
   readonly expiresInSeconds: number;
 }
 
@@ -122,7 +123,7 @@ export class VerificationService {
         channel: input.deliveryChannel,
         destination: input.destination,
         purpose: input.verificationKind,
-        code: secret,
+        otpCode: secret,
         expiresInSeconds,
       },
     };

@@ -6,7 +6,7 @@ import { StaffMemberRepository } from '@/database/repositories/staff-member.repo
 import { TransactionManager } from '@/database/transaction';
 import { SecretHashService } from '@/shared/crypto';
 import { StaffStatus } from '@/shared/enums';
-import { maskMobile, normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
+import { maskEmail, maskMobile, normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
 
 /**
  * Creates the one internal login that can see the whole platform.
@@ -68,7 +68,11 @@ export class PlatformAdminBootstrapService implements OnApplicationBootstrap {
 
       this.logger.warn(
         {
-          email,
+          // Masked, like the mobile beside it. This line named the
+          // platform-admin address in clear on every boot — the single
+          // highest-value login in the system, written to whatever ships the
+          // logs, and PII besides.
+          email: email ? maskEmail(email) : null,
           mobile: mobile ? maskMobile(mobile.canonical) : null,
           realtimeOtp: this.config.otp.realtimeEnabled,
         },

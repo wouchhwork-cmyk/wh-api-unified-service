@@ -109,6 +109,13 @@ export const EnvSchema = z
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     SWAGGER_ENABLED: booleanish.default(false),
     CORS_ORIGINS: z.string().default(''),
+
+    /**
+     * On everywhere by default, and switchable ONLY so the e2e suite can log in
+     * repeatedly from one address without tripping the credential limit. Prod
+     * refuses to boot with it off — see the superRefine below.
+     */
+    RATE_LIMIT_ENABLED: booleanish.default(true),
   })
   .superRefine((env, ctx) => {
     // Meta config is only required when the integration is switched on, so a
@@ -195,6 +202,15 @@ export const EnvSchema = z
           path: ['OTP_REALTIME_ENABLED'],
           message:
             'OTP_REALTIME_ENABLED must be true in prod — a static OTP would bypass verification',
+        });
+      }
+      // Turning the limiter off in prod would remove the only brake on password
+      // and OTP guessing, so it is not a decision a deploy gets to make quietly.
+      if (!env.RATE_LIMIT_ENABLED) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['RATE_LIMIT_ENABLED'],
+          message: 'RATE_LIMIT_ENABLED must be true in prod',
         });
       }
       // A short password on an account that can see and change every business on

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateReplyWindow } from '@/modules/inbox/reply-window';
-import { ConversationKind } from '@/shared/enums';
+import { evaluateReplyWindow, replyEventTypeFor } from '@/modules/inbox/reply-window';
+import { ConversationKind, OutboundEventType } from '@/shared/enums';
 
 /**
  * Meta's 24-hour messaging window, decided before a reply is accepted.
@@ -71,7 +71,7 @@ describe('evaluateReplyWindow', () => {
     expect(result.reason).toContain('has not messaged yet');
   });
 
-  it.each([ConversationKind.CommentThread, ConversationKind.Mention, ConversationKind.StoryReply])(
+  it.each([ConversationKind.CommentThread, ConversationKind.Mention])(
     'applies no window to %s',
     (conversationKind) => {
       // A comment can be answered years later. Applying the messaging window
@@ -86,6 +86,69 @@ describe('evaluateReplyWindow', () => {
       expect(result.reason).toBeNull();
     },
   );
+
+  it('applies the window to a story reply, because it is delivered as a message', () => {
+    // A story reply arrives in the message thread and is answered there, so
+    // Meta's messaging window governs it exactly as it governs a DM. Exempting
+    // it let the reply box stay enabled on a thread Meta would refuse.
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.StoryReply,
+      lastInboundAt: hoursAgo(25),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(false);
+    expect(result.reason).toContain('24 hours');
+  });
+
+  it('allows a story reply inside the window', () => {
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.StoryReply,
+      lastInboundAt: hoursAgo(2),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(true);
+    expect(result.reason).toBeNull();
+  });
+
+  it('refuses a review outright, whatever the timestamps say', () => {
+    // There is no Graph surface to answer one with, so "not right now" would be
+    // the wrong thing to tell an agent — it is never.
+    const result = evaluateReplyWindow({
+      conversationKind: ConversationKind.Review,
+      lastInboundAt: hoursAgo(1),
+      now: NOW,
+    });
+
+    expect(result.canReply).toBe(false);
+    expect(result.reason).toContain('does not accept replies');
+  });
+
+  describe('replyEventTypeFor', () => {
+    it.each([
+      [ConversationKind.DirectMessage, OutboundEventType.DirectMessage],
+      [ConversationKind.StoryReply, OutboundEventType.DirectMessage],
+      [ConversationKind.CommentThread, OutboundEventType.CommentReply],
+      // The bug this map replaced: a mention was sent as a DIRECT MESSAGE
+      // addressed to a comment id, which Meta refuses.
+      [ConversationKind.Mention, OutboundEventType.CommentReply],
+    ])('routes %s to %s', (kind, expected) => {
+      expect(replyEventTypeFor(kind)).toBe(expected);
+    });
+
+    it('has no route for a review', () => {
+      expect(replyEventTypeFor(ConversationKind.Review)).toBeNull();
+    });
+
+    it('covers every conversation kind', () => {
+      // The guard against the next kind being added and silently falling into
+      // whatever the last branch happened to be.
+      for (const kind of Object.values(ConversationKind)) {
+        expect(replyEventTypeFor(kind)).not.toBeUndefined();
+      }
+    });
+  });
 
   it('applies no window to a comment thread with no inbound message either', () => {
     const result = evaluateReplyWindow({

@@ -144,9 +144,17 @@ export class SyncJobRepository extends BaseRepository {
     leaseSeconds: number,
   ): Promise<boolean> {
     const { affected } = await this.mutate(
+      /*
+       * attempt_count is RESET here, because it counts consecutive failures and
+       * a saved page is not a failure. Every claim increments it, and a long
+       * backfill is deliberately claimed many times — one slice per run — so
+       * without this reset a Page with more than SYNC_MAX_ATTEMPTS pages of
+       * history dead-lettered itself partway through a walk that was succeeding.
+       */
       `UPDATE sync_jobs
           SET page_cursor = $3,
               synced_item_count = synced_item_count + $4,
+              attempt_count = 0,
               lease_expires_at = now() + ($5::int * interval '1 second'),
               updated_at = now()
         WHERE id = $1 AND lease_owner = $2 AND status = $6`,

@@ -121,6 +121,28 @@ export class RoleRepository extends BaseRepository {
     });
   }
 
+  /**
+   * The role names one employee currently holds.
+   *
+   * Exists so a grant can be checked against the granter's own authority. Names
+   * rather than ids, because the comparison is against SystemRole — the ids are
+   * per-enterprise, instantiated from the template at signup.
+   */
+  async listRoleNamesForEmployee(enterpriseId: number, employeeId: number): Promise<string[]> {
+    const rows = await this.query<{ name: string }>(
+      `SELECT r.name
+         FROM employee_roles er
+         JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
+        WHERE er.enterprise_id = $1
+          AND er.employee_id = $2
+          AND er.is_deleted = false
+          AND r.is_deleted = false
+          AND r.status = $3`,
+      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active],
+    );
+    return rows.map((row) => row.name);
+  }
+
   /** Grants the owner role created during signup. */
   async grantOwner(
     enterpriseId: number,

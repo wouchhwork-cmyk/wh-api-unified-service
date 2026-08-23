@@ -26,7 +26,7 @@ export class VerificationDeliveryService {
     const result = await this.otp.send({
       channel: delivery.channel,
       destination: delivery.destination,
-      code: delivery.code,
+      otpCode: delivery.otpCode,
       purpose: delivery.purpose,
       expiresInSeconds: delivery.expiresInSeconds,
     });

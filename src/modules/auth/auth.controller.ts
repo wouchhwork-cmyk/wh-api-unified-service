@@ -1,7 +1,9 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { AppConfigService } from '@/config';
+import { CREDENTIAL_ATTEMPTS_PER_MINUTE } from '@/shared/constants';
 import { CurrentActor, Public } from '@/shared/decorators';
 import { VerificationKind } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
@@ -63,6 +65,13 @@ export class AuthController {
 
   @Post('login')
   @Public()
+  /*
+   * Tighter than the global 120/min, because a request here is an attempt at a
+   * password rather than a page of data. The account lock alone does not cover
+   * this: by design it is only consulted once the password is already proven, so
+   * a wrong guess never meets it.
+   */
+  @Throttle({ default: { limit: CREDENTIAL_ATTEMPTS_PER_MINUTE, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Sign in with an email address or a mobile number',
@@ -89,6 +98,9 @@ export class AuthController {
 
   @Post('verify')
   @Public()
+  // An OTP is a six-digit secret: the global budget would allow a fifth of the
+  // keyspace an hour from a single address.
+  @Throttle({ default: { limit: CREDENTIAL_ATTEMPTS_PER_MINUTE, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Submit a verification code and receive a session',
@@ -124,6 +136,8 @@ export class AuthController {
 
   @Post('accept-invite')
   @Public()
+  // The invite token is a bearer secret; the same reasoning as /verify applies.
+  @Throttle({ default: { limit: CREDENTIAL_ATTEMPTS_PER_MINUTE, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Accept an invitation and set a password',
@@ -170,6 +184,7 @@ export class AuthController {
 
   @Post('select-enterprise')
   @Public()
+  @Throttle({ default: { limit: CREDENTIAL_ATTEMPTS_PER_MINUTE, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Exchange a selection token for a session in one business' })
   async selectEnterprise(

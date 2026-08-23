@@ -60,6 +60,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.MessagingWindowClosed]: HttpStatus.CONFLICT,
   [ErrorCode.CustomerBlocked]: HttpStatus.CONFLICT,
   [ErrorCode.ConversationClosed]: HttpStatus.CONFLICT,
+  [ErrorCode.ReplyNotSupported]: HttpStatus.CONFLICT,
   [ErrorCode.ChannelReauthRequired]: HttpStatus.CONFLICT,
   [ErrorCode.ChannelNotManaged]: HttpStatus.CONFLICT,
 
@@ -153,6 +154,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
     'The 24-hour messaging window for this conversation has closed.',
   [ErrorCode.CustomerBlocked]: 'This customer is blocked.',
   [ErrorCode.ConversationClosed]: 'This conversation is closed.',
+  [ErrorCode.ReplyNotSupported]:
+    'The platform does not accept replies to this kind of item. You can still add an internal note.',
 
   [ErrorCode.MetaNotConfigured]: 'The Meta integration is not configured on this environment.',
   [ErrorCode.OauthStateInvalid]: 'That connection request is no longer valid. Start again.',

@@ -13,7 +13,13 @@ export interface SendOtpCommand {
   readonly channel: DeliveryChannel;
   /** Normalized: a lower-cased email or an E.164 mobile. */
   readonly destination: string;
-  readonly code: string;
+  /**
+   * Named otpCode, not code, so the log redaction list can name it precisely.
+   * `code` is one of the most overloaded keys in the process — an error code, a
+   * Meta error code, an HTTP code — so a redact path for it either censors
+   * diagnostics or misses the secret. See logger.config.ts.
+   */
+  readonly otpCode: string;
   /** Which flow asked, so a template can differ per purpose. */
   readonly purpose: string;
   readonly expiresInSeconds: number;

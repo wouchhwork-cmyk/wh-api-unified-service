@@ -16,7 +16,7 @@ import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
-import { SSE_HEARTBEAT_MS } from '@/shared/constants';
+import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS } from '@/shared/constants';
 import { InboxEventsService } from './inbox-events.service';
 import { ConversationKind, ConversationStatus, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
@@ -163,12 +163,16 @@ export class InboxController {
     const result = await this.inbox.readThread(
       actor.enterpriseId,
       refId,
-      parsed.limit ?? 50,
+      parsed.limit ?? DEFAULT_PAGE_SIZE,
+      parsed.cursor ?? null,
       parsed.beforeId ?? null,
     );
     return {
       conversation: toConversationSummary(result.conversation),
       messages: result.messages,
+      // The thread had no pagination surface at all: a conversation with more
+      // than one page of history simply ended, with nothing to say so.
+      pagination: { nextCursor: result.nextCursor, hasMore: result.hasMore },
     };
   }
 

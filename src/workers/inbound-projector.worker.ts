@@ -6,6 +6,7 @@ import { InboundEventRepository } from '@/database/repositories/inbound-event.re
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
 import { PostProjectorService } from '@/modules/inbox/post-projector.service';
+import { MAX_PROJECTION_ATTEMPTS } from '@/shared/constants';
 import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
@@ -99,6 +100,7 @@ export class InboundProjectorWorker extends BasePoller {
       if (!projector) {
         await this.inbound.markSkipped(
           event.id,
+          this.leaseOwner,
           `no projector registered for event_type "${event.eventType}"`,
         );
         continue;
@@ -109,7 +111,11 @@ export class InboundProjectorWorker extends BasePoller {
       // cross-tenant write primitive.
       const context = await this.inbound.findProjectionContext(event.id);
       if (!context) {
-        await this.inbound.markSkipped(event.id, 'the event names no enterprise or channel');
+        await this.inbound.markSkipped(
+          event.id,
+          this.leaseOwner,
+          'the event names no enterprise or channel',
+        );
         continue;
       }
 
@@ -125,19 +131,28 @@ export class InboundProjectorWorker extends BasePoller {
         );
 
         if (outcome.projected) {
-          await this.inbound.markProcessed(event.id);
+          await this.inbound.markProcessed(event.id, this.leaseOwner);
         } else {
           // Not an error: the event was understood and deliberately not
           // projected — an echo of our own send, a like rather than a comment,
           // or something already stored.
-          await this.inbound.markSkipped(event.id, outcome.reason ?? 'not projected');
+          await this.inbound.markSkipped(
+            event.id,
+            this.leaseOwner,
+            outcome.reason ?? 'not projected',
+          );
         }
       } catch (error) {
         // Per-row failure: the batch continues. Retry with jittered backoff, or
         // dead-letter when the budget is spent.
         const message = error instanceof Error ? error.message : 'projection failed';
-        const retry = scheduleRetry(event.attemptCount, 3);
-        await this.inbound.markFailed(event.id, message, retry?.nextAttemptAt ?? new Date());
+        const retry = scheduleRetry(event.attemptCount, MAX_PROJECTION_ATTEMPTS);
+        await this.inbound.markFailed(
+          event.id,
+          this.leaseOwner,
+          message,
+          retry?.nextAttemptAt ?? new Date(),
+        );
         this.logger.warn(
           { eventId: event.id, eventType: event.eventType, attempt: event.attemptCount },
           'projection failed',

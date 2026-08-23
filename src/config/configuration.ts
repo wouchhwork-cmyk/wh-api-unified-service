@@ -34,7 +34,7 @@ function readEnv(): Env {
  * under an older version stay readable because the envelope names its version
  * (schema.md §14).
  */
-function readEncryptionKeys(activeKeyId: string): Map<string, Buffer> {
+function readEncryptionKeys(activeKeyId: string, nodeEnv: string): Map<string, Buffer> {
   const keys = new Map<string, Buffer>();
   const prefix = 'TOKEN_ENCRYPTION_KEY_';
 
@@ -59,6 +59,29 @@ function readEncryptionKeys(activeKeyId: string): Map<string, Buffer> {
     );
   }
 
+  /*
+   * Prod refuses the committed dev key, exactly as it already refuses a
+   * placeholder JWT secret and pepper (env.schema.ts). This key is the one that
+   * protects every Meta access token in the database, and it was the one secret
+   * with no such guard — .env.dev ships a real, working 32-byte value, so a
+   * deploy that forgot to set it would have booted happily and encrypted every
+   * customer's provider tokens under a key that is in the repository.
+   *
+   * Only the ACTIVE key is checked. Older versions must stay loadable or rows
+   * written under them become unreadable, which is the whole point of the
+   * versioned envelope — and a rotation away from a leaked key is exactly what
+   * we want to keep possible.
+   */
+  if (nodeEnv === 'prod') {
+    const active = keys.get(activeKeyId);
+    const marker = active?.toString('utf8').toLowerCase() ?? '';
+    if (/dev-only|placeholder|changeme/.test(marker)) {
+      throw new Error(
+        `refusing to boot prod with a placeholder TOKEN_ENCRYPTION_KEY_${activeKeyId.toUpperCase()}`,
+      );
+    }
+  }
+
   return keys;
 }
 
@@ -78,6 +101,7 @@ export function loadConfiguration(): Configuration {
         .filter(Boolean),
       swaggerEnabled: env.SWAGGER_ENABLED,
       logLevel: env.LOG_LEVEL,
+      rateLimitEnabled: env.RATE_LIMIT_ENABLED,
     },
     database: {
       host: env.DB_HOST,
@@ -103,7 +127,7 @@ export function loadConfiguration(): Configuration {
     },
     crypto: {
       activeKeyId: env.TOKEN_ENCRYPTION_KEY_ID,
-      keys: readEncryptionKeys(env.TOKEN_ENCRYPTION_KEY_ID),
+      keys: readEncryptionKeys(env.TOKEN_ENCRYPTION_KEY_ID, env.NODE_ENV),
       verificationPepper: env.VERIFICATION_HMAC_PEPPER,
     },
     verification: VERIFICATION_CONFIG,

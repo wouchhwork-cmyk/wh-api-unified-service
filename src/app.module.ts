@@ -45,13 +45,33 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     }),
 
     /*
-     * In-memory rate limiting, because there is no Redis in V1. Accepted while
-     * the instance count is small — and the security-critical throttles are
-     * already GLOBAL by construction, because they live in Postgres:
-     * identities.failed_login_count / locked_until for login, and the
+     * In-memory rate limiting, because there is no Redis in V1.
+     *
+     * Its limits are therefore PER PROCESS: two replicas allow twice the traffic
+     * and a deploy resets every counter. That is accepted while the instance
+     * count is small, and it is why the caps that must not be evadable live in
+     * Postgres instead — identities.locked_until for a proven password, and the
      * verifications destination index for send caps.
+     *
+     * What this is NOT is a substitute for either of those. The credential
+     * routes carry their own, much tighter @Throttle for that reason: the
+     * account lock is only consulted once a password is already proven, so it
+     * never sees a wrong guess.
      */
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ThrottlerModule.forRootAsync({
+      imports: [AppConfigModule],
+      inject: [AppConfigService],
+      useFactory: (config: AppConfigService) => ({
+        throttlers: [{ ttl: 60_000, limit: 120 }],
+        /*
+         * The only reason this switch exists: the e2e suite signs in dozens of
+         * times from one address, which is indistinguishable from a guessing
+         * attack and should be. Prod refuses to boot with it off
+         * (env.schema.ts), so it cannot be turned into a production decision.
+         */
+        skipIf: () => !config.app.rateLimitEnabled,
+      }),
+    }),
 
     ScheduleModule.forRoot(),
 

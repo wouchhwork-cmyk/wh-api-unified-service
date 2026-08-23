@@ -11,9 +11,11 @@ import { ProviderConnectionRepository } from '@/database/repositories/provider-c
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
-import { scheduleRetry } from '@/modules/ledger/backoff.util';
+import { parkFor, scheduleRetry } from '@/modules/ledger/backoff.util';
+import { OUTBOUND_RATE_LIMIT_PARK_MS } from '@/shared/constants';
 import { TokenCipherService } from '@/shared/crypto';
 import { ConnectionStatus, MessageStatus, OutboundEventType, Platform } from '@/shared/enums';
+import { ErrorCode } from '@/shared/errors';
 import { BasePoller } from './base-poller';
 
 interface CommentReplyPayload {
@@ -121,6 +123,7 @@ export class OutboundRelayWorker extends BasePoller {
       return;
     }
 
+    let platformId: string | null = null;
     try {
       /*
        * INSTAGRAM SENDS GO TO THE PAGE. Addressing the Instagram account returns
@@ -136,13 +139,31 @@ export class OutboundRelayWorker extends BasePoller {
           ? (channel.parentPlatformChannelId ?? channel.platformChannelId)
           : channel.platformChannelId;
 
-      const platformId = await this.send(
+      platformId = await this.send(
         event,
         channel.platformChannelId,
         token,
         messagingTarget,
         channel.platform,
       );
+    } catch (error) {
+      await this.handleSendFailure(event, error);
+      return;
+    }
+
+    /*
+     * PAST THIS LINE THE SEND HAS ALREADY HAPPENED, so nothing below may be
+     * reported as a send failure.
+     *
+     * The two settlement writes used to sit inside the try above. A database
+     * error after a successful send — a pool reset, a statement_timeout — was
+     * therefore handed to handleSendFailure, which called markFailed on a row
+     * whose status was already 'sent'; the relay re-claimed it and delivered the
+     * customer the same reply a second time, overwriting platform_event_id so
+     * nothing in the data showed it had happened. markFailed now refuses to
+     * touch a settled row, and this try is scoped to the send alone.
+     */
+    try {
       const settled = await this.outbound.markSent(event.id, this.leaseOwner, platformId);
 
       if (!settled) {
@@ -164,7 +185,18 @@ export class OutboundRelayWorker extends BasePoller {
        */
       await this.messages.recordDelivery(event.id, platformId, MessageStatus.Sent);
     } catch (error) {
-      await this.handleSendFailure(event, error);
+      /*
+       * Loud and deliberately swallowed. The reply IS with the customer, so the
+       * one thing we must not do is mark the row failed and send it again. If
+       * markSent itself was what failed the row keeps its 'sending' status and
+       * the reaper will re-queue it — an at-least-once send that only a
+       * read-back can close (schema.md case 5) — and this line is the record
+       * that it happened.
+       */
+      this.logger.error(
+        { eventId: event.id, err: error },
+        'the send succeeded but recording it did not — the ledger row may be re-queued',
+      );
     }
   }
 
@@ -176,7 +208,15 @@ export class OutboundRelayWorker extends BasePoller {
    * never be delivered and never be marked failed.
    */
   private async settleAsFailed(eventId: number, reason: string): Promise<void> {
-    await this.outbound.cancel(eventId, reason);
+    if (!(await this.outbound.cancel(eventId, this.leaseOwner, reason))) {
+      // Either the row is already sent or the lease moved on. Writing the
+      // message as failed anyway would tell an agent a delivered reply failed.
+      this.logger.warn(
+        { eventId },
+        'declined to cancel — the row is already settled or owned by another worker',
+      );
+      return;
+    }
     await this.messages.recordDelivery(eventId, null, MessageStatus.Failed);
   }
 
@@ -234,12 +274,15 @@ export class OutboundRelayWorker extends BasePoller {
   private async handleSendFailure(event: ClaimedOutboundEvent, error: unknown): Promise<void> {
     if (!(error instanceof GraphApiError)) {
       const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
-      await this.outbound.markFailed(
+      const applied = await this.outbound.markFailed(
         event.id,
+        this.leaseOwner,
         error instanceof Error ? error.message : 'send failed',
         retry?.nextAttemptAt ?? null,
       );
-      if (!retry) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+      if (applied && !retry) {
+        await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+      }
       return;
     }
 
@@ -292,19 +335,43 @@ export class OutboundRelayWorker extends BasePoller {
     }
 
     if (!mapped.retryable) {
-      await this.outbound.markFailed(event.id, `${mapped.code}: ${error.message}`, null);
-      await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+      const applied = await this.outbound.markFailed(
+        event.id,
+        this.leaseOwner,
+        `${mapped.code}: ${error.message}`,
+        null,
+      );
+      if (applied) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
       return;
     }
 
     const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
-    await this.outbound.markFailed(
+
+    /*
+     * A RATE LIMIT IS NOT A BLIP, so it does not get the blip's schedule. The
+     * exponential curve spans about three seconds across the whole attempt
+     * budget, which meant a throttled reply burned every attempt while the limit
+     * was still in force and dead-lettered — the opposite of what a rate limit
+     * asks for. Parked for minutes instead, jittered so a throttled fleet does
+     * not resume in lockstep.
+     */
+    const nextAttemptAt =
+      retry === null
+        ? null
+        : mapped.code === ErrorCode.UpstreamRateLimited
+          ? parkFor(OUTBOUND_RATE_LIMIT_PARK_MS)
+          : retry.nextAttemptAt;
+
+    const applied = await this.outbound.markFailed(
       event.id,
+      this.leaseOwner,
       `${mapped.code}: ${error.message}`,
-      retry?.nextAttemptAt ?? null,
+      nextAttemptAt,
     );
     // Only a spent budget is terminal; while retries remain the message stays
     // pending, because it may still be delivered.
-    if (!retry) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+    if (applied && !retry) {
+      await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+    }
   }
 }

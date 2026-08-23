@@ -10,6 +10,7 @@ export interface AppConfig {
   readonly corsOrigins: readonly string[];
   readonly swaggerEnabled: boolean;
   readonly logLevel: string;
+  readonly rateLimitEnabled: boolean;
 }
 
 export interface DatabaseConfig {

@@ -37,9 +37,27 @@ export const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 /** Per-call timeout for a platform HTTP request. */
 export const PLATFORM_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * How many times a single inbound event may fail projection before it is
+ * dead-lettered. Was an unnamed 3 at the call site, which meant the retry budget
+ * for the busiest queue in the service was invisible to anyone tuning it.
+ */
+export const MAX_PROJECTION_ATTEMPTS = 5;
+
 /** Login throttling (schema.md §2). */
 export const MAX_FAILED_LOGINS = 5;
 export const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000;
+
+/**
+ * Per-route throttle for the unauthenticated credential endpoints.
+ *
+ * The global limit is 120/min, which is right for a logged-in client rendering
+ * an inbox and far too generous for a password guess: it allowed 120 attempts a
+ * minute per address against an account-state check that, by design, only
+ * refuses AFTER the password is proven. These are the routes where a request is
+ * an attempt at a secret, so they get their own budget.
+ */
+export const CREDENTIAL_ATTEMPTS_PER_MINUTE = 10;
 
 /**
  * Backfill policy (schema.md §15).
@@ -63,6 +81,17 @@ export const SYNC_MESSAGES_PER_CONVERSATION = 50;
 
 /** How long a rate-limited sync job waits before it may be claimed again. */
 export const SYNC_RATE_LIMIT_PARK_MS = 15 * 60 * 1000;
+
+/**
+ * How long a rate-limited SEND waits before it may be claimed again.
+ *
+ * Deliberately not the exponential curve. That curve is tuned for a transient
+ * fault and spans about three seconds across the whole attempt budget, so a
+ * rate limit — which lasts minutes — used to exhaust every attempt while the
+ * limit was still in force and dead-letter a reply the platform would have
+ * accepted a few minutes later.
+ */
+export const OUTBOUND_RATE_LIMIT_PARK_MS = 5 * 60 * 1000;
 
 /**
  * LISTEN/NOTIFY channel names.

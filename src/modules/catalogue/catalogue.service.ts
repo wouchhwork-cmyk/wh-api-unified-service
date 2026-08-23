@@ -7,6 +7,7 @@ import {
 import { PostRepository, type PostFeedRow } from '@/database/repositories/post.repository';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 
 /** What a list returns before the interceptor wraps it in the envelope. */
 interface Page<T> {
@@ -56,7 +57,7 @@ export class CatalogueService {
       cursor: decodePostCursor(options.cursor),
     });
 
-    return page(rows, limit, (row) => encodeCursor(row.publishedAt, row.id));
+    return page(rows, limit, (row) => encodeKeysetCursor(row.publishedAt, row.id));
   }
 
   async listCustomers(
@@ -72,7 +73,7 @@ export class CatalogueService {
       cursor: decodeCustomerCursor(options.cursor),
     });
 
-    return page(rows, limit, (row) => encodeCursor(row.lastSeenAt, row.id));
+    return page(rows, limit, (row) => encodeKeysetCursor(row.lastSeenAt, row.id));
   }
 }
 
@@ -93,35 +94,14 @@ function clampLimit(limit: number | null): number {
   return Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
 }
 
-/** The cursor is opaque to clients: base64 of the sort key, nothing more. */
-function encodeCursor(at: Date | null, id: number): string {
-  return Buffer.from(JSON.stringify({ t: at?.toISOString() ?? null, i: id })).toString('base64url');
-}
-
-function decodeCursor(cursor: string | null): { at: Date | null; id: number } | null {
-  if (!cursor) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
-      t: string | null;
-      i: number;
-    };
-    if (typeof parsed.i !== 'number') return null;
-    return { at: parsed.t ? new Date(parsed.t) : null, id: parsed.i };
-  } catch {
-    // A malformed cursor restarts from the top rather than erroring: the value
-    // is opaque, so there is nothing useful to tell the caller.
-    return null;
-  }
-}
-
 function decodePostCursor(cursor: string | null): { publishedAt: Date | null; id: number } | null {
-  const parsed = decodeCursor(cursor);
+  const parsed = decodeKeysetCursor(cursor);
   return parsed && { publishedAt: parsed.at, id: parsed.id };
 }
 
 function decodeCustomerCursor(
   cursor: string | null,
 ): { lastSeenAt: Date | null; id: number } | null {
-  const parsed = decodeCursor(cursor);
+  const parsed = decodeKeysetCursor(cursor);
   return parsed && { lastSeenAt: parsed.at, id: parsed.id };
 }

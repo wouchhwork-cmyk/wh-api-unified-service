@@ -20,6 +20,14 @@ export const InboxQuerySchema = z
 export const ThreadQuerySchema = z
   .object({
     limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
+    /** Opaque, from the previous page's `pagination.nextCursor`. */
+    cursor: z.string().max(512).optional(),
+    /**
+     * DEPRECATED, kept so existing callers keep working: a bare id cannot page
+     * this list, because the thread is ordered on the platform's timestamp and
+     * ids are assigned at insert time. The service translates it into a real
+     * keyset. Use `cursor`.
+     */
     beforeId: z.coerce.number().int().positive().optional(),
   })
   .strict();

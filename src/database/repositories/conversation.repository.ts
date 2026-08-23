@@ -149,7 +149,25 @@ export class ConversationRepository extends BaseRepository {
     }
     if (input.cursor) {
       params.push(input.cursor.lastMessageAt, input.cursor.id);
-      filters.push(`AND (cv.last_message_at, cv.id) < ($${params.length - 1}, $${params.length})`);
+      const at = `$${params.length - 1}::timestamptz`;
+      const id = `$${params.length}`;
+      /*
+       * The null case is handled EXPLICITLY, for the same reason it is in
+       * customer.repository.ts and post.repository.ts: row comparison against
+       * NULL yields NULL, so the bare `(last_message_at, id) < ($n, $m)` form
+       * silently dropped every conversation with no messages yet — exactly the
+       * rows ORDER BY ... NULLS LAST puts at the end — from page two onward.
+       * last_message_at is nullable, and a conversation created by an upsert
+       * whose message then lost the dedup race really does keep it null.
+       */
+      filters.push(
+        `AND (
+             (${at} IS NOT NULL AND cv.last_message_at IS NOT NULL
+                AND (cv.last_message_at, cv.id) < (${at}, ${id}))
+          OR (${at} IS NOT NULL AND cv.last_message_at IS NULL)
+          OR (${at} IS NULL AND cv.last_message_at IS NULL AND cv.id < ${id})
+        )`,
+      );
     }
 
     return this.query<ConversationRow>(
@@ -190,7 +208,18 @@ export class ConversationRepository extends BaseRepository {
           SET message_count      = message_count + 1,
               unread_count       = unread_count + $3,
               last_message_at    = GREATEST(COALESCE(last_message_at, $4), $4),
-              last_inbound_at    = CASE WHEN $3 = 1 THEN $4 ELSE last_inbound_at END,
+              /*
+               * GREATEST here too, and for the same reason it guards
+               * last_message_at: backfill appends HISTORIC messages at low
+               * priority, so a webhook from a minute ago is projected before a
+               * message from last year and the plain assignment rewound this
+               * column. That rewind is not cosmetic — evaluateReplyWindow reads
+               * it, so a rewind reports the 24-hour window as long closed on a
+               * conversation the platform would still accept a reply to.
+               */
+              last_inbound_at    = CASE WHEN $3 = 1
+                                        THEN GREATEST(COALESCE(last_inbound_at, $4), $4)
+                                        ELSE last_inbound_at END,
               first_responded_at = CASE WHEN $3 = 0
                                         THEN COALESCE(first_responded_at, $4)
                                         ELSE first_responded_at END

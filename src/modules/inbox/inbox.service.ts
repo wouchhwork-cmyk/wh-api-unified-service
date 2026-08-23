@@ -6,13 +6,12 @@ import {
   type ConversationRow,
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
-import { MessageRepository } from '@/database/repositories/message.repository';
+import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import {
-  ConversationKind,
   ConversationStatus,
   DestinationKind,
   MessageKind,
@@ -20,8 +19,9 @@ import {
   OutboundEventType,
 } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import { outboundDedupKey } from '@/modules/ledger/dedup-key.util';
-import { evaluateReplyWindow } from './reply-window';
+import { evaluateReplyWindow, replyEventTypeFor } from './reply-window';
 
 export interface ReplyInput {
   readonly conversationRefId: string;
@@ -65,7 +65,7 @@ export class InboxService {
       // One extra row is the cheapest way to know whether another page exists,
       // without a second COUNT query over the same predicate.
       limit: limit + 1,
-      cursor: decodeCursor(options.cursor),
+      cursor: decodeInboxCursor(options.cursor),
     });
 
     const hasMore = rows.length > limit;
@@ -74,7 +74,7 @@ export class InboxService {
 
     return {
       items,
-      nextCursor: hasMore && last ? encodeCursor(last.lastMessageAt, last.id) : null,
+      nextCursor: hasMore && last ? encodeKeysetCursor(last.lastMessageAt, last.id) : null,
       hasMore,
     };
   }
@@ -83,16 +83,43 @@ export class InboxService {
     enterpriseId: number,
     conversationRefId: string,
     limit: number,
+    cursor: string | null,
     beforeId: number | null,
-  ): Promise<{ conversation: ConversationRow; messages: unknown[] }> {
+  ): Promise<{
+    conversation: ConversationRow;
+    messages: MessageRow[];
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
-    const messages = await this.messages.listThread(
-      enterpriseId,
-      conversation.id,
-      clampLimit(limit),
-      beforeId,
-    );
-    return { conversation, messages };
+    const size = clampLimit(limit);
+
+    /*
+     * beforeId is the DEPRECATED form of this cursor and is translated rather
+     * than used directly. A bare id cannot page this list correctly: the thread
+     * is ordered on COALESCE(platform_sent_at, created_at) and ids are assigned
+     * at insert time, which the backfill worker breaks by appending years-old
+     * messages after today's — so `id < n` both hides messages and repeats
+     * others. Translating it to the real sort key keeps old callers correct.
+     */
+    const keyset =
+      decodeThreadCursor(cursor) ??
+      (beforeId === null
+        ? null
+        : await this.messages.findThreadPosition(enterpriseId, conversation.id, beforeId));
+
+    const rows = await this.messages.listThread(enterpriseId, conversation.id, size + 1, keyset);
+    const hasMore = rows.length > size;
+    const messages = hasMore ? rows.slice(0, size) : rows;
+    const last = messages[messages.length - 1];
+
+    return {
+      conversation,
+      messages,
+      nextCursor:
+        hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
+      hasMore,
+    };
   }
 
   /**
@@ -178,10 +205,14 @@ export class InboxService {
       });
 
       if (!input.internalNote) {
-        const eventType =
-          conversation.conversationKind === ConversationKind.CommentThread
-            ? OutboundEventType.CommentReply
-            : OutboundEventType.DirectMessage;
+        /*
+         * Resolved from the kind map, not a ternary. Non-null is guaranteed by
+         * the window check above, which refuses a kind the platform gives us no
+         * way to answer — asserted here rather than assumed, because the two
+         * live in different functions.
+         */
+        const eventType = replyEventTypeFor(conversation.conversationKind);
+        if (eventType === null) throw new AppException(ErrorCode.ReplyNotSupported);
 
         const event = await this.outbound.enqueue({
           enterpriseId: actor.enterpriseId,
@@ -297,27 +328,21 @@ function clampLimit(limit: number): number {
   return Math.min(Math.floor(limit), MAX_PAGE_SIZE);
 }
 
-/** The cursor carries the sort key AND the id, so pagination is deterministic. */
-function encodeCursor(lastMessageAt: Date | null, id: number): string {
-  return Buffer.from(JSON.stringify({ t: lastMessageAt?.toISOString() ?? null, i: id })).toString(
-    'base64url',
-  );
+function decodeInboxCursor(
+  cursor: string | null,
+): { lastMessageAt: Date | null; id: number } | null {
+  const parsed = decodeKeysetCursor(cursor);
+  return parsed && { lastMessageAt: parsed.at, id: parsed.id };
 }
 
-function decodeCursor(cursor: string | null): { lastMessageAt: Date | null; id: number } | null {
-  if (!cursor) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
-      t: string | null;
-      i: number;
-    };
-    if (typeof parsed.i !== 'number') return null;
-    return { lastMessageAt: parsed.t ? new Date(parsed.t) : null, id: parsed.i };
-  } catch {
-    // A malformed cursor restarts from the top rather than erroring: it is
-    // opaque to clients, so there is nothing useful to tell them.
-    return null;
-  }
+function decodeThreadCursor(cursor: string | null): { sortedAt: Date; id: number } | null {
+  const parsed = decodeKeysetCursor(cursor);
+  /*
+   * The thread's sort key is COALESCE(platform_sent_at, created_at) and
+   * created_at is NOT NULL, so it can never be null. A cursor claiming
+   * otherwise did not come from this listing.
+   */
+  return parsed?.at ? { sortedAt: parsed.at, id: parsed.id } : null;
 }
 
 /** `comment:123` -> `123`. The prefix is ours; the platform never sees it. */

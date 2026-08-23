@@ -83,7 +83,9 @@ export class QueueListenerService implements OnModuleInit, OnApplicationShutdown
       user: database.user,
       password: database.password,
       database: database.name,
-      ...(database.ssl ? { ssl: { rejectUnauthorized: false } } : {}),
+      // Verified, for the same reason as the application pool: see
+      // inbox-events.service.ts.
+      ...(database.ssl ? { ssl: { rejectUnauthorized: true } } : {}),
       connectionTimeoutMillis: database.connectTimeoutMs,
       application_name: 'wouchh-queue-listener',
     });
