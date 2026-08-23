@@ -26,6 +26,8 @@ import {
 import { AllExceptionsFilter } from '@/shared/filters/all-exceptions.filter';
 import { RequestContextMiddleware } from '@/shared/context/request-context.middleware';
 import { NoStoreMiddleware } from '@/shared/middleware/no-store.middleware';
+import { WebhookBodyLimitMiddleware } from '@/shared/middleware/webhook-body-limit.middleware';
+import { MetaWebhookController } from '@/modules/connections/meta-webhook.controller';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
 
 @Module({
@@ -115,5 +117,18 @@ export class AppModule implements NestModule {
      * still accept after the next upgrade.
      */
     consumer.apply(RequestContextMiddleware, NoStoreMiddleware).forRoutes('{*path}');
+
+    /*
+     * A tighter body limit on the one PUBLIC WRITE route. Declared in the module
+     * rather than in main.ts so the e2e harness — which builds this module and
+     * duplicates main.ts's wiring by hand — cannot drift out of step with it.
+     */
+    /*
+     * Bound to the CONTROLLER, not to a path string. A path here has to agree
+     * with the global prefix and the URI version — `api` and `v1` — and a string
+     * that silently fails to match is a limit that silently does not exist,
+     * which is what happened to the first version of this line.
+     */
+    consumer.apply(WebhookBodyLimitMiddleware).forRoutes(MetaWebhookController);
   }
 }

@@ -26,6 +26,8 @@ export interface IngestSummary {
   readonly accepted: number;
   readonly duplicates: number;
   readonly unmatched: number;
+  /** Items that could not be stored. Meta will not resend these. */
+  readonly failed: number;
 }
 
 @Injectable()
@@ -125,6 +127,7 @@ export class MetaWebhookService {
     let accepted = 0;
     let duplicates = 0;
     let unmatched = 0;
+    let failed = 0;
 
     for (const entry of parsed.entry ?? []) {
       // The enterprise is DERIVED from the channel: a webhook carries no tenant
@@ -146,30 +149,64 @@ export class MetaWebhookService {
       // enterprise, so the copies do not collide with each other.
       for (const channel of channels) {
         for (const item of items) {
-          const result = await this.inbound.insertIgnoringDuplicate({
-            enterpriseId: channel.enterpriseId,
-            channelId: channel.id,
-            sourceKind: SourceKind.Channel,
-            sourceId: entry.id ?? null,
-            platform,
-            eventType: item.eventType,
-            platformEventId: item.platformEventId,
-            dedupKey: item.dedupKey,
-            correlationId,
-            payload: item.payload,
-            receivedAt: entry.time ? new Date(entry.time * 1000) : null,
-          });
+          /*
+           * PER-ITEM ISOLATION, and it is the difference between losing one
+           * event and losing the subscription.
+           *
+           * One unstorable item used to fail the whole delivery. Meta retries a
+           * non-2xx delivery for a while and then DISABLES the subscription —
+           * after which the inbox silently stops filling and nothing in this
+           * service knows why. A single malformed payload, or one row that trips
+           * a constraint we did not anticipate, could therefore take the
+           * integration down permanently.
+           *
+           * So a failed item is counted and logged, and the delivery still
+           * answers 200 for everything that stored. Meta will not resend the
+           * ones that failed — that is the trade — which is why the count is
+           * surfaced and logged at error rather than swallowed.
+           */
+          try {
+            const result = await this.inbound.insertIgnoringDuplicate({
+              enterpriseId: channel.enterpriseId,
+              channelId: channel.id,
+              sourceKind: SourceKind.Channel,
+              sourceId: entry.id ?? null,
+              platform,
+              eventType: item.eventType,
+              platformEventId: item.platformEventId,
+              dedupKey: item.dedupKey,
+              correlationId,
+              payload: item.payload,
+              receivedAt: entry.time ? new Date(entry.time * 1000) : null,
+            });
 
-          if (result.duplicate) duplicates += 1;
-          else accepted += 1;
+            if (result.duplicate) duplicates += 1;
+            else accepted += 1;
+          } catch (error) {
+            failed += 1;
+            // No payload: it carries customer names, handles and message text.
+            this.logger.error(
+              {
+                err: error,
+                enterpriseId: channel.enterpriseId,
+                channelId: channel.id,
+                eventType: item.eventType,
+                platformEventId: item.platformEventId,
+              },
+              'could not store one webhook item — the rest of the delivery continues, and Meta will not resend it',
+            );
+          }
         }
       }
     }
 
     // The payload itself is never logged: it carries customer names, handles and
     // message text.
-    this.logger.info({ platform, accepted, duplicates, unmatched }, 'meta webhook ingested');
-    return { accepted, duplicates, unmatched };
+    this.logger.info(
+      { platform, accepted, duplicates, unmatched, failed },
+      'meta webhook ingested',
+    );
+    return { accepted, duplicates, unmatched, failed };
   }
 
   /** One entry becomes one ledger row per change or per message. */

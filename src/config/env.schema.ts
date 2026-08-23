@@ -34,7 +34,17 @@ export const EnvSchema = z
 
     // --- Auth -------------------------------------------------------------
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
-    JWT_ACCESS_TTL: z.string().default('15m'),
+    /**
+     * A jsonwebtoken duration: `900`, `15m`, `2h`, `7d`.
+     *
+     * Validated rather than accepted as any string. `15min` is not a duration
+     * jsonwebtoken understands, and it throws at SIGNING time — so a typo booted
+     * cleanly, passed every health check, and answered 500 to every login.
+     */
+    JWT_ACCESS_TTL: z
+      .string()
+      .regex(/^\d+(\.\d+)?\s*(ms|s|m|h|d|w|y)?$/, 'expected a duration like 900, 15m, 2h or 7d')
+      .default('15m'),
     JWT_REFRESH_TTL_DAYS: positiveInt.default(7),
     ARGON2_MEMORY_KIB: positiveInt.default(19_456),
     ARGON2_ITERATIONS: positiveInt.default(2),

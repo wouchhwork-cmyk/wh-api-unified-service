@@ -128,7 +128,14 @@ export function buildLoggerConfig(config: AppConfigService): Params {
 
       // Health probes fire constantly and say nothing when they pass.
       autoLogging: {
-        ignore: (request: IncomingMessage) => (request.url ?? '').includes('/health/'),
+        /*
+         * The health ROUTES, not any URL containing that substring. `includes`
+         * meant a request to `/conversations?q=/health/` silenced its own access
+         * log — a caller choosing whether their request is recorded, which is
+         * the same class of problem as a client-supplied audit anchor.
+         */
+        ignore: (request: IncomingMessage) =>
+          /^\/[^/]+\/v\d+\/health(\/|$)/u.test((request.url ?? '').split('?')[0] ?? ''),
       },
     },
   };

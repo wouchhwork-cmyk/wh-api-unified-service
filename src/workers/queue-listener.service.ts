@@ -109,7 +109,21 @@ export class QueueListenerService implements OnModuleInit, OnApplicationShutdown
       }
     } catch (error) {
       this.logger.warn({ err: error }, 'queue listener could not subscribe — polling only');
+      // End it even on failure: a client that connected and then failed its
+      // LISTEN still holds a socket, and this abandoned one on every attempt.
+      await client.end().catch(() => undefined);
       this.scheduleReconnect();
+      return;
+    }
+
+    /*
+     * SHUTDOWN CAN HAVE HAPPENED WHILE WE WERE CONNECTING. Same trap as
+     * InboxEventsService: this is started without awaiting, so the shutdown hook
+     * may already have run and found `this.client` null — after which the
+     * finished connection is assigned and outlives the process's own teardown.
+     */
+    if (this.stopping) {
+      await client.end().catch(() => undefined);
       return;
     }
 
