@@ -117,6 +117,33 @@ export class PostRepository extends BaseRepository {
   }
 
   /**
+   * Our row for a platform post id, so a comment thread can name the post it is
+   * about.
+   *
+   * Both projectors wrote `post_id: null` unconditionally while holding the
+   * platform's post id in the payload — so the column existed, the foreign key
+   * existed, and no conversation was ever linked to its post. The inbox could
+   * not show what a comment was about.
+   *
+   * Scoped to the channel as well as the tenant, because the uniqueness index it
+   * matches is (channel_id, platform_post_id): the same post id can only mean
+   * one row per channel.
+   */
+  async findIdByPlatformPostId(
+    enterpriseId: number,
+    channelId: number,
+    platformPostId: string,
+  ): Promise<number | null> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM posts
+        WHERE enterprise_id = $1 AND channel_id = $2 AND platform_post_id = $3
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), channelId, platformPostId],
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  /**
    * One page of the post feed, newest first.
    *
    * Keyset, not OFFSET: a feed that grows while somebody pages would shift rows

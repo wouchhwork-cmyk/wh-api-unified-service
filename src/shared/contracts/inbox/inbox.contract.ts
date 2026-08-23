@@ -65,6 +65,15 @@ export const AssignRequestSchema = z
 
 export const StatusRequestSchema = z.object({ status: z.enum(ConversationStatus) }).strict();
 
+/**
+ * Marking a thread read takes no input, and says so.
+ *
+ * It was the one mutation with no schema at all, so any body was accepted and
+ * silently ignored — which is how a client comes to send a field it believes is
+ * doing something. `.strict()` on an empty object refuses it instead.
+ */
+export const MarkReadRequestSchema = z.object({}).strict();
+
 export const ConversationSummarySchema = z.object({
   refId: z.uuid(),
   /** Null when nobody has picked it up yet. */

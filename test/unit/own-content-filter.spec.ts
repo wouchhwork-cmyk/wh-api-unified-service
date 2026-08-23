@@ -29,12 +29,20 @@ describe('own-content filtering', () => {
     },
   ) as never;
 
-  const projector = new CommentProjectorService(explode, explode, explode, explode, explode, {
-    debug: () => undefined,
-    info: () => undefined,
-    warn: () => undefined,
-    error: () => undefined,
-  } as never);
+  const projector = new CommentProjectorService(
+    explode,
+    explode,
+    explode,
+    explode,
+    explode,
+    explode,
+    {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    } as never,
+  );
 
   const OUR_PAGE = 'PAGE_1';
   const OUR_INSTAGRAM = 'IG_1';

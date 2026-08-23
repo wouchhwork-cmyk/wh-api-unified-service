@@ -441,8 +441,22 @@ export class CustomerRepository extends BaseRepository {
           AND ci.identifier_kind = $2
           AND ci.identifier_value = $3
           AND ci.is_deleted = false
+          /*
+           * status = 'active' matters twice over. It is what makes this match
+           * customer_identifiers_value_uniq, which is partial on exactly this
+           * predicate — so without it the query cannot use the index. And a
+           * RELEASED identifier is one a carrier reassigned: the whole point of
+           * that status is that the value may now belong to somebody else, and
+           * a LIMIT 1 with no ORDER BY was free to return either of them.
+           */
+          AND ci.status = $4
         LIMIT 1`,
-      [this.requireEnterprise(input.enterpriseId), input.identifierKind, input.identifierValue],
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.identifierKind,
+        input.identifierValue,
+        IdentifierStatus.Active,
+      ],
     );
     return rows[0]?.id ?? null;
   }
@@ -473,7 +487,11 @@ export class CustomerRepository extends BaseRepository {
        VALUES ($1, $2, $3, $4, $4, false, $5, $6, now(), now(), 'active')
        ON CONFLICT (enterprise_id, identifier_kind, identifier_value)
          WHERE status = 'active' AND is_deleted = false
-       DO NOTHING`,
+       DO NOTHING
+       -- Without RETURNING, an INSERT reports zero affected rows whether it
+       -- inserted or not, so this method claimed "already linked" every single
+       -- time, including the time it did the linking.
+       RETURNING id`,
       [
         this.requireEnterprise(input.enterpriseId),
         input.customerId,

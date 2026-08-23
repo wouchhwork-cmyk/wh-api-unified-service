@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateReplyWindow, replyEventTypeFor } from '@/modules/inbox/reply-window';
-import { ConversationKind, OutboundEventType } from '@/shared/enums';
+import { ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
 
 /**
  * Meta's 24-hour messaging window, decided before a reply is accepted.
@@ -123,6 +123,55 @@ describe('evaluateReplyWindow', () => {
 
     expect(result.canReply).toBe(false);
     expect(result.reason).toContain('does not accept replies');
+  });
+
+  describe('a conversation that is no longer open', () => {
+    it.each([ConversationStatus.Resolved, ConversationStatus.Closed, ConversationStatus.Archived])(
+      'refuses a reply on a %s thread',
+      (status) => {
+        /*
+         * Only `archived` was checked on the reply path, so an agent could answer
+         * a conversation a colleague had already resolved — which is the thing a
+         * status is for. Told to the client here rather than only enforced, so the
+         * reply box explains itself instead of answering 409.
+         */
+        const result = evaluateReplyWindow({
+          conversationKind: ConversationKind.CommentThread,
+          lastInboundAt: hoursAgo(1),
+          status,
+          now: NOW,
+        });
+
+        expect(result.canReply).toBe(false);
+        expect(result.reason).toContain(status);
+      },
+    );
+
+    it.each([ConversationStatus.Open, ConversationStatus.Pending])(
+      'allows a reply on a %s thread',
+      (status) => {
+        const result = evaluateReplyWindow({
+          conversationKind: ConversationKind.CommentThread,
+          lastInboundAt: hoursAgo(1),
+          status,
+          now: NOW,
+        });
+
+        expect(result.canReply).toBe(true);
+      },
+    );
+
+    it('ignores status when the caller does not supply one', () => {
+      // The parameter is optional so callers that only care about the platform's
+      // own rules are unaffected.
+      const result = evaluateReplyWindow({
+        conversationKind: ConversationKind.CommentThread,
+        lastInboundAt: hoursAgo(1),
+        now: NOW,
+      });
+
+      expect(result.canReply).toBe(true);
+    });
   });
 
   describe('replyEventTypeFor', () => {

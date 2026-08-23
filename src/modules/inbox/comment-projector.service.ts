@@ -7,6 +7,7 @@ import {
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
+import { PostRepository } from '@/database/repositories/post.repository';
 import { TransactionManager } from '@/database/transaction';
 import {
   ConversationKind,
@@ -41,6 +42,7 @@ export class CommentProjectorService {
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
     private readonly channels: ChannelRepository,
+    private readonly posts: PostRepository,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(CommentProjectorService.name) private readonly logger: PinoLogger,
   ) {}
@@ -220,7 +222,18 @@ export class CommentProjectorService {
         channelId,
         customerId: customer.customerId,
         customerIdentifierId: customer.identifierId,
-        postId: null,
+        /*
+         * The post this thread is about, when we hold it. This was `null`
+         * unconditionally while the platform's post id sat in the payload — so
+         * the column and its foreign key existed and nothing was ever linked,
+         * and the inbox could not say what a comment was on.
+         *
+         * Null is still a legitimate answer: a comment can arrive before the
+         * post has been backfilled, and the thread matters more than the link.
+         */
+        postId: comment.postId
+          ? await this.posts.findIdByPlatformPostId(enterpriseId, channelId, comment.postId)
+          : null,
         platform,
         conversationKind,
         platformThreadId: composeThreadKey(conversationKind, comment.rootCommentId),

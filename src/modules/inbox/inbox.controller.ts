@@ -28,6 +28,7 @@ import type { ActorContext } from '@/shared/context';
 import {
   AssignRequestSchema,
   InboxQuerySchema,
+  MarkReadRequestSchema,
   ReplyRequestSchema,
   StatusRequestSchema,
   ThreadQuerySchema,
@@ -59,15 +60,28 @@ export class InboxController {
     @Query() query: unknown,
   ): Promise<Paginated<unknown>> {
     const parsed = InboxQuerySchema.parse(query);
+    const size = parsed.limit ?? DEFAULT_PAGE_SIZE;
+
+    /*
+     * "MINE" NEEDS A ME. A staff actor has no employeeId, so this resolved to
+     * null — which the repository reads as "no assignment filter" and answers
+     * with the ENTIRE inbox. Asking for your own work and being handed everyone's
+     * is the wrong answer in the more dangerous direction.
+     */
+    const mineOnly = parsed.assignedToMe === 'true';
+    if (mineOnly && actor.employeeId === null) {
+      return paginated([], { limit: size, nextCursor: null, hasMore: false });
+    }
+
     const result = await this.inbox.listInbox(actor.enterpriseId, {
       status: parsed.status ?? null,
-      assignedToEmployeeId: parsed.assignedToMe === 'true' ? actor.employeeId : null,
-      limit: parsed.limit ?? 50,
+      assignedToEmployeeId: mineOnly ? actor.employeeId : null,
+      limit: size,
       cursor: parsed.cursor ?? null,
     });
 
     return paginated(result.items.map(toConversationSummary), {
-      limit: parsed.limit ?? 50,
+      limit: size,
       nextCursor: result.nextCursor,
       hasMore: result.hasMore,
     });
@@ -281,7 +295,12 @@ export class InboxController {
   async markRead(
     @CurrentScopedActor() actor: ScopedActor,
     @Param('refId') refId: string,
+    @Body() body: unknown,
   ): Promise<void> {
+    // Parsed even though it takes nothing: this was the one mutation with no
+    // schema, so any body was accepted and ignored — which is how a client comes
+    // to send a field it believes is doing something.
+    MarkReadRequestSchema.parse(body ?? {});
     await this.inbox.markRead(actor.enterpriseId, RefIdParamSchema.parse(refId));
   }
 }
@@ -337,6 +356,9 @@ function toConversationSummary(row: {
   const window = evaluateReplyWindow({
     conversationKind: row.conversationKind as ConversationKind,
     lastInboundAt: row.lastInboundAt,
+    // Included so a resolved thread reads as "reopen it to reply" rather than
+    // offering a reply box that answers 409.
+    status: row.status as ConversationStatus,
   });
 
   return {

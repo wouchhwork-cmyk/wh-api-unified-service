@@ -24,7 +24,7 @@ import { AuditService } from '@/modules/audit';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import { outboundDedupKey } from '@/modules/ledger/dedup-key.util';
-import { evaluateReplyWindow, replyEventTypeFor } from './reply-window';
+import { CLOSED_TO_REPLIES, evaluateReplyWindow, replyEventTypeFor } from './reply-window';
 
 export interface ReplyInput {
   readonly conversationRefId: string;
@@ -148,7 +148,19 @@ export class InboxService {
       input.conversationRefId,
     );
 
+    /*
+     * A CLOSED THREAD IS CLOSED. Only `archived` refused a reply, so an agent
+     * could answer a conversation somebody else had already resolved — which is
+     * the thing a status is for. An internal note is still allowed: a note is a
+     * record for colleagues, not a message to a customer, and forbidding one on
+     * a resolved thread would stop people writing down why it was resolved.
+     */
+    if (CLOSED_TO_REPLIES.has(conversation.status) && !input.internalNote) {
+      throw new AppException(ErrorCode.ConversationClosed);
+    }
     if (conversation.status === ConversationStatus.Archived) {
+      // Archived refuses even a note: it is the terminal state, and the thread
+      // is out of the working set entirely.
       throw new AppException(ErrorCode.ConversationClosed);
     }
 

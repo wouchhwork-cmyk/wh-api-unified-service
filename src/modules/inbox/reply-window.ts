@@ -1,5 +1,18 @@
 import { MESSAGING_WINDOW_MS } from '@/shared/constants';
-import { ConversationKind, OutboundEventType } from '@/shared/enums';
+import { ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
+
+/**
+ * Statuses that refuse a customer-facing reply.
+ *
+ * `archived` used to be the only one the reply path checked, so a resolved or
+ * closed conversation was still repliable — and CONVERSATION_CLOSED existed as
+ * an error code nothing could raise.
+ */
+export const CLOSED_TO_REPLIES: ReadonlySet<ConversationStatus> = new Set([
+  ConversationStatus.Resolved,
+  ConversationStatus.Closed,
+  ConversationStatus.Archived,
+]);
 
 /**
  * How a reply to each kind of conversation reaches the platform.
@@ -62,8 +75,24 @@ export interface ReplyWindow {
 export function evaluateReplyWindow(input: {
   conversationKind: ConversationKind;
   lastInboundAt: Date | null;
+  /** Omitted by callers that only care about the platform's own rules. */
+  status?: ConversationStatus;
   now?: Date;
 }): ReplyWindow {
+  /*
+   * A CLOSED THREAD FIRST, before any platform rule.
+   *
+   * Told to the client rather than only enforced on it: the reply endpoint
+   * refuses these, and a reply box that accepts text and then answers 409 is
+   * worse than one that explains up front why it is disabled.
+   */
+  if (input.status !== undefined && CLOSED_TO_REPLIES.has(input.status)) {
+    return {
+      canReply: false,
+      reason: `This conversation is ${input.status}. Reopen it to reply, or add an internal note.`,
+    };
+  }
+
   // Answered first, and separately from the window: "no reply is possible here"
   // is a different fact from "not right now", and an agent needs to be told
   // which one they are looking at.
