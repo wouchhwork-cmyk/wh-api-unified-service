@@ -67,6 +67,8 @@ export const StatusRequestSchema = z.object({ status: z.enum(ConversationStatus)
 
 export const ConversationSummarySchema = z.object({
   refId: z.uuid(),
+  /** Null when nobody has picked it up yet. */
+  assignedTo: z.object({ refId: z.uuid(), name: z.string().nullable() }).nullable(),
   conversationKind: z.enum(ConversationKind),
   status: z.enum(ConversationStatus),
   unreadCount: z.number().int(),

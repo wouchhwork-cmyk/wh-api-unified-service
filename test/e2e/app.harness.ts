@@ -42,6 +42,9 @@ export async function createTestApp(): Promise<TestApp> {
   app.setGlobalPrefix(config.app.apiPrefix);
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
   app.use(cookieParser());
+  // Kept in step with main.ts: every response is tenant-scoped and no-store, so
+  // a validator for it is inert at best.
+  app.set('etag', false);
   app.useBodyParser('json', { limit: MAX_JSON_BODY_BYTES });
 
   const reflector = app.get(Reflector);

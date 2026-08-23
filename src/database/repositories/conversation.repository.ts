@@ -43,6 +43,17 @@ export interface ConversationRow {
   readonly customerRefId: string | null;
   readonly customerDisplayName: string | null;
   readonly customerAvatarUrl: string | null;
+  /**
+   * Who is ANSWERING it, joined for the same reason the customer is.
+   *
+   * Both endpoints for setting this already existed and nothing ever read it
+   * back, so every conversation was unassigned forever and the "assigned to me"
+   * filter was permanently empty — which is most of what makes a shared inbox
+   * shared.
+   */
+  readonly assignedToEmployeeId: number | null;
+  readonly assignedToRefId: string | null;
+  readonly assignedToName: string | null;
 }
 
 /**
@@ -109,10 +120,23 @@ export class ConversationRepository extends BaseRepository {
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
-              cu.avatar_url AS "customerAvatarUrl"
+              cu.avatar_url AS "customerAvatarUrl",
+              cv.assigned_to_employee_id AS "assignedToEmployeeId",
+              ae.ref_id AS "assignedToRefId",
+              /*
+               * NULLIF, because CONCAT_WS returns an empty STRING when every
+               * argument is null — so an unassigned conversation reported a name
+               * of '' rather than nothing, and so would one assigned to somebody
+               * whose name we have never learned. Both mean "no name".
+               */
+              NULLIF(TRIM(CONCAT_WS(' ', ai.first_name, ai.last_name)), '') AS "assignedToName"
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
+         LEFT JOIN enterprise_employees ae ON ae.id = cv.assigned_to_employee_id
+                                        AND ae.enterprise_id = cv.enterprise_id
+                                        AND ae.is_deleted = false
+         LEFT JOIN identities ai ON ai.id = ae.identity_id AND ai.is_deleted = false
         WHERE cv.enterprise_id = $1 AND cv.ref_id = $2 AND cv.is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), refId],
@@ -178,10 +202,23 @@ export class ConversationRepository extends BaseRepository {
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
-              cu.avatar_url AS "customerAvatarUrl"
+              cu.avatar_url AS "customerAvatarUrl",
+              cv.assigned_to_employee_id AS "assignedToEmployeeId",
+              ae.ref_id AS "assignedToRefId",
+              /*
+               * NULLIF, because CONCAT_WS returns an empty STRING when every
+               * argument is null — so an unassigned conversation reported a name
+               * of '' rather than nothing, and so would one assigned to somebody
+               * whose name we have never learned. Both mean "no name".
+               */
+              NULLIF(TRIM(CONCAT_WS(' ', ai.first_name, ai.last_name)), '') AS "assignedToName"
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
+         LEFT JOIN enterprise_employees ae ON ae.id = cv.assigned_to_employee_id
+                                        AND ae.enterprise_id = cv.enterprise_id
+                                        AND ae.is_deleted = false
+         LEFT JOIN identities ai ON ai.id = ae.identity_id AND ai.is_deleted = false
         WHERE cv.enterprise_id = $1
           AND cv.is_deleted = false
           ${filters.join('\n          ')}
@@ -239,9 +276,12 @@ export class ConversationRepository extends BaseRepository {
     employeeId: number | null,
   ): Promise<void> {
     await this.mutate(
+      // Cast for the same reason as setStatus: $3 is both a column value and a
+      // comparison operand, and leaving it to inference is how that endpoint
+      // came to return 500 for its whole life.
       `UPDATE conversations
-          SET assigned_to_employee_id = $3,
-              assigned_at = CASE WHEN $3 IS NULL THEN NULL ELSE now() END
+          SET assigned_to_employee_id = $3::bigint,
+              assigned_at = CASE WHEN $3::bigint IS NULL THEN NULL ELSE now() END
         WHERE id = $2 AND enterprise_id = $1 AND is_deleted = false`,
       [this.requireEnterprise(enterpriseId), conversationId, employeeId],
     );
@@ -253,9 +293,20 @@ export class ConversationRepository extends BaseRepository {
     status: ConversationStatus,
   ): Promise<void> {
     await this.mutate(
+      /*
+       * $3 IS CAST EXPLICITLY, twice.
+       *
+       * Without the casts Postgres sees the same parameter used both as a column
+       * value and inside a comparison against string literals, and refuses the
+       * whole statement with "inconsistent types deduced for parameter $3". This
+       * endpoint therefore answered 500 for every request ever made to it — and
+       * nothing noticed, because no UI called it and no test covered it. Same
+       * trap as messages.recordDelivery, which documents it for the same reason.
+       */
       `UPDATE conversations
-          SET status = $3,
-              resolved_at = CASE WHEN $3 IN ('resolved','closed') THEN now() ELSE NULL END
+          SET status = $3::varchar,
+              resolved_at = CASE WHEN $3::varchar IN ('resolved','closed')
+                                 THEN now() ELSE NULL END
         WHERE id = $2 AND enterprise_id = $1 AND is_deleted = false`,
       [this.requireEnterprise(enterpriseId), conversationId, status],
     );
@@ -289,7 +340,13 @@ export class ConversationRepository extends BaseRepository {
   async notifyChanged(input: {
     enterpriseId: number;
     conversationRefId: string;
-    kind: 'inbound' | 'outbound';
+    /*
+     * WHY it changed. A client re-reads regardless, so this is only a hint —
+     * but 'assigned' and 'status' let one decide whether the OPEN thread needs
+     * re-rendering or just the list row, and they are what makes a colleague's
+     * assignment visible without a reload.
+     */
+    kind: 'inbound' | 'outbound' | 'assigned' | 'status';
   }): Promise<void> {
     await this.notifyQueue(
       NOTIFY_INBOX_CHANNEL,

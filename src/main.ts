@@ -54,6 +54,14 @@ async function bootstrap(): Promise<void> {
   // load balancer's.
   app.set('trust proxy', 1);
 
+  /*
+   * No ETag. Express 5 emits a weak one on every JSON response, and every
+   * response here is tenant-scoped and already sent with Cache-Control:
+   * no-store — so the validator is at best inert and at worst an invitation for
+   * an intermediary to treat one business's answer as another's.
+   */
+  app.set('etag', false);
+
   const reflector = app.get(Reflector);
   // The request context is established by middleware (see AppModule), because
   // middleware runs before guards and interceptors do not.

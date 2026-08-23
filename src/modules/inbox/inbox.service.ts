@@ -12,12 +12,15 @@ import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import {
+  AuditAction,
+  AuditEntityType,
   ConversationStatus,
   DestinationKind,
   MessageKind,
   MessageStatus,
   OutboundEventType,
 } from '@/shared/enums';
+import { AuditService } from '@/modules/audit';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import { outboundDedupKey } from '@/modules/ledger/dedup-key.util';
@@ -45,6 +48,7 @@ export class InboxService {
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
     private readonly customers: CustomerRepository,
+    private readonly audit: AuditService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(InboxService.name) private readonly logger: PinoLogger,
   ) {}
@@ -300,13 +304,40 @@ export class InboxService {
     });
   }
 
+  /**
+   * Hands a conversation to a colleague, or takes it back.
+   *
+   * ANNOUNCED and AUDITED, both of which were missing. Without the announcement
+   * a colleague's inbox showed the conversation as unassigned until they
+   * reloaded, which is how two agents end up answering the same customer — the
+   * exact failure a shared inbox exists to prevent. Without the audit row there
+   * was no record of who took what.
+   */
   async assign(
     enterpriseId: number,
     conversationRefId: string,
     employeeId: number | null,
   ): Promise<void> {
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    if (conversation.assignedToEmployeeId === employeeId) return;
+
     await this.conversations.assign(enterpriseId, conversation.id, employeeId);
+
+    await this.audit.record({
+      action: AuditAction.Assigned,
+      entityType: AuditEntityType.Conversation,
+      entityId: conversation.id,
+      enterpriseId,
+      changes: {
+        assignedToEmployeeId: { from: conversation.assignedToEmployeeId, to: employeeId },
+      },
+    });
+
+    await this.conversations.notifyChanged({
+      enterpriseId,
+      conversationRefId: conversation.refId,
+      kind: 'assigned',
+    });
   }
 
   async setStatus(
@@ -315,7 +346,25 @@ export class InboxService {
     status: ConversationStatus,
   ): Promise<void> {
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    // A no-op is reported as success and does nothing: re-resolving an already
+    // resolved conversation is not an error, but it is not an event either.
+    if (conversation.status === status) return;
+
     await this.conversations.setStatus(enterpriseId, conversation.id, status);
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Conversation,
+      entityId: conversation.id,
+      enterpriseId,
+      changes: { status: { from: conversation.status, to: status } },
+    });
+
+    await this.conversations.notifyChanged({
+      enterpriseId,
+      conversationRefId: conversation.refId,
+      kind: 'status',
+    });
   }
 
   async markRead(enterpriseId: number, conversationRefId: string): Promise<void> {

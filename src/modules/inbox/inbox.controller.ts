@@ -283,6 +283,8 @@ function toConversationSummary(row: {
   customerRefId: string | null;
   customerDisplayName: string | null;
   customerAvatarUrl: string | null;
+  assignedToRefId: string | null;
+  assignedToName: string | null;
 }): Record<string, unknown> {
   /*
    * Told to the client, not just enforced on it. A reply box that accepts text
@@ -314,6 +316,14 @@ function toConversationSummary(row: {
           displayName: row.customerDisplayName,
           avatarUrl: row.customerAvatarUrl,
         }
+      : null,
+    /*
+     * Nested like the customer, and for the same reason: null means nobody has
+     * picked this up, which a client has to be able to tell from "assigned to
+     * somebody we have no name for".
+     */
+    assignedTo: row.assignedToRefId
+      ? { refId: row.assignedToRefId, name: row.assignedToName || null }
       : null,
     unreadCount: row.unreadCount,
     messageCount: row.messageCount,

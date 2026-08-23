@@ -224,6 +224,23 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * The public ref for one of our own employee ids.
+   *
+   * Exists so /auth/me can tell a client WHO it is. Without it the inbox could
+   * not offer "assign this to me" — the assign endpoint speaks in refIds, and the
+   * client had no way to learn its own.
+   */
+  async refIdOf(enterpriseId: number, employeeId: number): Promise<string | null> {
+    const rows = await this.query<{ refId: string }>(
+      `SELECT ref_id AS "refId" FROM enterprise_employees
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), employeeId],
+    );
+    return rows[0]?.refId ?? null;
+  }
+
   /** Is this identity already on this business's books, in any state? */
   async findByIdentity(enterpriseId: number, identityId: number): Promise<EmployeeRecord | null> {
     const rows = await this.query<EmployeeRecord>(
