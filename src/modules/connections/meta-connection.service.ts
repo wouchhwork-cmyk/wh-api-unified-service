@@ -198,6 +198,17 @@ export class MetaConnectionService implements ProviderConnector {
             providerConnectionId: connection.id,
             parentChannelId: pageChannel.id,
             platform: Platform.Instagram,
+            /*
+             * ACTIVE ONLY IF ITS PARENT CAN ACT.
+             *
+             * An Instagram channel has no token of its own — every call for it
+             * goes through the linked Page — so a Page that arrived WITHOUT a
+             * token cannot send for it, cannot be subscribed, and will never
+             * receive anything. This was created Active regardless, which reads
+             * on the connections screen as a working channel that is silently
+             * inert. The Page beside it is already marked Error for the same
+             * reason; this just says the same thing about its child.
+             */
             channelKind: ChannelKind.Profile,
             platformChannelId: page.instagramAccountId,
             name: page.instagramUsername,
@@ -205,7 +216,7 @@ export class MetaConnectionService implements ProviderConnector {
             accessToken: null,
             tokenStatus: TokenStatus.NotApplicable,
             metadata: { linkedPageId: page.pageId },
-            status: ChannelStatus.Active,
+            status: page.pageAccessToken ? ChannelStatus.Active : ChannelStatus.Error,
           });
           channelIds.push(igChannel.id);
           instagramCount += 1;

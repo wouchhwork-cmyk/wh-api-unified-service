@@ -104,9 +104,10 @@ export default [
       'scripts/**/*.ts',
       'src/database/seed/**/*.ts',
       'src/main.ts',
-      // The migration job: a one-shot process whose entire output is read from a
-      // deploy log, and which must say what it did before any logger exists.
+      // One-shot processes whose entire output is read from a terminal or a
+      // deploy log, and which must say what they did before any logger exists.
       'src/migrate.ts',
+      'src/export-openapi.ts',
       'src/workers/main.ts',
     ],
     rules: {

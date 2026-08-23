@@ -247,10 +247,33 @@ export class InboundEventRepository extends BaseRepository {
   }
 
   /** A worker that died mid-batch loses its lease, not the work. */
+  /**
+   * Returns rows whose worker died to the runnable pool — or DEAD-LETTERS them
+   * once they have taken too many workers down with them.
+   *
+   * It only ever re-queued, and that is a loop with no exit: an event whose
+   * projection KILLS the process is never marked failed, because nothing runs
+   * after the crash. The reaper hands it straight back, the next worker dies on
+   * it too, and no backoff or attempt budget is ever consulted — the retry path
+   * that bounds ordinary failures does not apply, because an ordinary failure is
+   * one the worker survives to record.
+   *
+   * The claim increments attempt_count, so the count is a true measure of how
+   * many workers this row has been handed to. Past max_attempts it becomes a
+   * dead letter, which is visible in the gauges and to an operator.
+   */
   async reclaimExpiredLeases(limit: number): Promise<number> {
     const { affected } = await this.mutate(
       `UPDATE inbound_events
-          SET status = $1, lease_owner = NULL, lease_expires_at = NULL
+          SET status = CASE WHEN attempt_count >= max_attempts THEN $3 ELSE $1 END,
+              dead_lettered_at = CASE WHEN attempt_count >= max_attempts THEN now() END,
+              last_error = CASE
+                WHEN attempt_count >= max_attempts
+                  THEN 'lease expired repeatedly without settling — the projection may be crashing the worker'
+                ELSE last_error END,
+              last_error_at = CASE WHEN attempt_count >= max_attempts THEN now() ELSE last_error_at END,
+              lease_owner = NULL,
+              lease_expires_at = NULL
         WHERE id IN (
           SELECT id FROM inbound_events
            WHERE status IN ('leased','processing') AND lease_expires_at < now()
@@ -258,7 +281,7 @@ export class InboundEventRepository extends BaseRepository {
            FOR UPDATE SKIP LOCKED
         )
         RETURNING id`,
-      [InboundEventStatus.Pending, limit],
+      [InboundEventStatus.Pending, limit, InboundEventStatus.DeadLetter],
     );
     return affected;
   }

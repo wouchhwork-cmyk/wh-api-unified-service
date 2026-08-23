@@ -2,11 +2,12 @@ import 'reflect-metadata';
 import { VersioningType } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { buildOpenApiDocument } from './openapi';
 import { AppConfigService } from './config';
 import { MAX_JSON_BODY_BYTES } from './shared/constants';
 import { AllExceptionsFilter } from './shared/filters/all-exceptions.filter';
@@ -88,24 +89,7 @@ async function bootstrap(): Promise<void> {
 }
 
 function mountSwagger(app: NestExpressApplication, config: AppConfigService): void {
-  const document = SwaggerModule.createDocument(
-    app,
-    new DocumentBuilder()
-      .setTitle('Wouchh Unified API')
-      .setDescription(
-        'Social inbox, comments and posts for connected enterprises. ' +
-          'Every response uses one envelope: { success, data, meta } or ' +
-          '{ success: false, error: { code, message, details }, meta }.',
-      )
-      .setVersion(config.app.version)
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'accessToken')
-      .addCookieAuth('refreshToken')
-      .addTag('auth', 'Sign in, verification, session and enterprise switching')
-      .addTag('enterprises', 'Business onboarding and profile')
-      .addTag('connections', 'Meta and other provider connections')
-      .addTag('health', 'Liveness, readiness and startup probes')
-      .build(),
-  );
+  const document = buildOpenApiDocument(app, config.app.version);
 
   SwaggerModule.setup(`${config.app.apiPrefix}/docs`, app, document, {
     swaggerOptions: { persistAuthorization: true },

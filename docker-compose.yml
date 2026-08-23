@@ -23,7 +23,10 @@ services:
       - wouchh-pgdata:/var/lib/postgresql
       - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U wouchh -d wouchh']
+      # The database that actually exists. It named `wouchh`, which POSTGRES_DB
+      # does not create — so pg_isready answered for the default database and the
+      # container could report healthy before the init scripts had finished.
+      test: ['CMD-SHELL', 'pg_isready -U wouchh -d wouchh_dev']
       interval: 5s
       timeout: 3s
       retries: 20

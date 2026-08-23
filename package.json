@@ -42,7 +42,7 @@
     "db:seed": "node --env-file=.env.dev --import tsx scripts/seed.ts",
     "db:reset": "DB_CONFIRM=wouchh_dev pnpm db:drop && pnpm db:migrate && pnpm db:seed",
     "db:check": "node --env-file=.env.dev --import tsx scripts/schema-check.ts",
-    "openapi:export": "node --env-file=.env.dev --import tsx scripts/export-openapi.ts",
+    "openapi:export": "pnpm build && node --env-file=.env.dev dist/export-openapi.js",
     "db:status": "node --env-file=.env.dev --import tsx scripts/db.ts status",
     "meta:setup": "node --env-file=.env.dev --import tsx scripts/meta-setup.ts"
   },

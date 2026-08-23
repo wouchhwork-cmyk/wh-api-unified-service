@@ -91,6 +91,16 @@ jobs:
       - name: the schema matches what the entities expect
         run: pnpm db:check
 
+      # The committed contract has to match the code that ships. Without this a
+      # breaking change to a response is indistinguishable from a rename.
+      - name: the committed OpenAPI document is current
+        run: |
+          pnpm openapi:export
+          git diff --exit-code -- openapi.json || {
+            echo '::error::openapi.json is out of date — run pnpm openapi:export and commit it'
+            exit 1
+          }
+
   schema-parity:
     name: pre-deploy — the migration matches the entities
     runs-on: ubuntu-latest

@@ -22,6 +22,28 @@ import type {
   SendResult,
 } from './graph.types';
 
+/**
+ * The webhook fields this app subscribes a Page to.
+ *
+ * INSTAGRAM'S OWN FIELDS ARE HERE TOO, and were missing. A Page subscription
+ * covers the Instagram account linked to it, but only for the fields named — so
+ * `comments`, `mentions` and `messaging_postbacks` for Instagram were never
+ * subscribed, and Instagram comments arrived only through whatever the `feed`
+ * field happened to carry. Named as a constant rather than inline because it is
+ * a policy, and because the read-back in listSubscribedFields compares against
+ * it.
+ */
+export const SUBSCRIBED_FIELDS = [
+  'messages',
+  'messaging_postbacks',
+  'messaging_optins',
+  'feed',
+  'mention',
+  // Instagram, delivered through the linked Page.
+  'comments',
+  'mentions',
+] as const;
+
 const GRAPH_HOST = 'https://graph.facebook.com';
 const DIALOG_HOST = 'https://www.facebook.com';
 
@@ -167,7 +189,7 @@ export class GraphApiClient {
       accessToken: pageAccessToken,
       // Body, not query string: socialLift put these in the URL, which works but
       // logs message content and is not what Meta documents.
-      body: { subscribed_fields: 'messages,messaging_postbacks,feed,mention' },
+      body: { subscribed_fields: SUBSCRIBED_FIELDS.join(',') },
     });
   }
 

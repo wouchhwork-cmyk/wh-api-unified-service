@@ -1,0 +1,877 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "description": "Returns one of three outcomes: authenticated, enterprise_selection_required, or verification_required. Verification is NOT an error — it is a 200 carrying what the client needs next, and never the code itself.",
+        "operationId": "AuthController_login_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "examples": {
+                "byEmail": {
+                  "summary": "By email address",
+                  "value": {
+                    "email": "owner@acmecoffee.com",
+                    "password": "a-long-enough-password"
+                  }
+                },
+                "byMobile": {
+                  "summary": "By mobile number, with an explicit country",
+                  "value": {
+                    "mobile": {
+                      "number": "9876543210",
+                      "countryCode": "IN"
+                    },
+                    "password": "a-long-enough-password"
+                  }
+                },
+                "byE164": {
+                  "summary": "By mobile number already in E.164 form",
+                  "value": {
+                    "mobile": {
+                      "number": "+919876543210"
+                    },
+                    "password": "a-long-enough-password"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Sign in with an email address or a mobile number",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/verify": {
+      "post": {
+        "description": "The client posts back the opaque verificationRefId, never the destination — which keeps the address out of a second request and makes it impossible to verify a code against a different address than it was sent to.",
+        "operationId": "AuthController_verify_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Submit a verification code and receive a session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/accept-invite": {
+      "post": {
+        "description": "How everybody except a business owner gets their first session. The owner created the account and never knew a password for it; this proves the address and sets one, in one step, and moves the employment from invited to active. Both happen together, because a spent code with no password set would leave an account nobody can ever enter.",
+        "operationId": "AuthController_acceptInvite_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Accept an invitation and set a password",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/resend": {
+      "post": {
+        "description": "Always 202, whatever the address. An unknown destination, one with no live challenge, and one still inside its cooldown are indistinguishable — otherwise this would tell a caller who has been invited. It exists because accept-invite spends an attempt per submission: without a resend, anyone who knew a colleague’s address could exhaust the invitation and leave that account permanently unenterable.",
+        "operationId": "AuthController_resend_v1",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "summary": "Send a fresh code to an address that already had one",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/select-enterprise": {
+      "post": {
+        "operationId": "AuthController_selectEnterprise_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Exchange a selection token for a session in one business",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "description": "Every refresh re-checks that the employment is still active, so removing someone takes effect within the access-token lifetime rather than whenever their session ends.",
+        "operationId": "AuthController_refresh_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Exchange the refresh cookie for a new access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/switch-enterprise": {
+      "post": {
+        "operationId": "AuthController_switchEnterprise_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Move the session to another business the actor belongs to",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout_v1",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Revoke the session and clear the cookie",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "description": "What a client needs to decide what to render after a page reload, when all it holds is a token: whether this is an internal admin, which business the session is scoped to, that business's status, and the permission codes. No internal ids are returned — a sequential id would tell a caller how many businesses exist and let them probe for neighbours.",
+        "operationId": "AuthController_me_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The current actor, its scope, and its resolved permissions",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/connections/providers": {
+      "get": {
+        "description": "So a client renders what is actually available rather than hardcoding a list that goes stale the moment a platform is added or withdrawn. Only implemented providers appear.",
+        "operationId": "ConnectionsController_providers_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The platforms that can be connected",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/api/v1/connections/start": {
+      "post": {
+        "description": "One entry point for every platform: send the provider you want. Returns the URL to send the browser to. Today only `meta` is implemented — a provider we recognise but have not built returns 501, which is a different answer from one we do not recognise (422).\n\nPOST rather than GET because it WRITES: the CSRF state is recorded so the callback can spend it exactly once. A GET that mutates would let a link prefetch or a crawler burn states.",
+        "operationId": "ConnectionsController_start_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "examples": {
+                "meta": {
+                  "summary": "Facebook and Instagram",
+                  "value": {
+                    "provider": "meta"
+                  }
+                },
+                "notYetBuilt": {
+                  "summary": "A platform we recognise but have not built — returns 501",
+                  "value": {
+                    "provider": "google"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Begin connecting a platform",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/api/v1/connections": {
+      "get": {
+        "operationId": "ConnectionsController_list_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The provider connections this business holds",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/api/v1/connections/channels": {
+      "get": {
+        "description": "Facebook Pages and the Instagram profiles linked to them. An Instagram channel names its parent Page, because the Page token is what authorises Instagram calls.",
+        "operationId": "ConnectionsController_listChannels_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The channels under those connections",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/api/v1/employees": {
+      "get": {
+        "description": "The business's own people, with their roles and whether they have accepted their invitation. Contact details are masked. Pass includeSupport=true to also see the Wouchh people assigned to this business — who are not its employees.",
+        "operationId": "EmployeesController_list_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Everybody who works here",
+        "tags": [
+          "employees"
+        ]
+      },
+      "post": {
+        "description": "The only way a second person joins a business — there is no employee signup. No password is accepted: the person sets their own from the code that reaches them, so nobody else ever knows it. They arrive as `invited` and can do nothing until they accept.",
+        "operationId": "EmployeesController_create_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "examples": {
+                "byEmail": {
+                  "summary": "An agent, invited by email",
+                  "value": {
+                    "firstName": "Rahul",
+                    "lastName": "Nair",
+                    "email": "rahul@bluebottle.test",
+                    "roleRefId": "11111111-1111-4111-8111-111111111111"
+                  }
+                },
+                "byMobile": {
+                  "summary": "A manager, invited by mobile",
+                  "value": {
+                    "firstName": "Anita",
+                    "mobile": {
+                      "number": "9812345678",
+                      "countryCode": "IN"
+                    },
+                    "roleRefId": "22222222-2222-4222-8222-222222222222"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create a colleague",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/api/v1/employees/roles": {
+      "get": {
+        "description": "Its OWN copies of the role templates, created at signup. Needed before anybody can be invited, since a role is required.",
+        "operationId": "EmployeesController_roleOptions_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The roles this business can assign",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/api/v1/employees/{refId}/status": {
+      "post": {
+        "description": "A status change, never a deletion: what they did has to survive them leaving. Suspending requires a reason, and both are written to the audit trail. You cannot change your own.",
+        "operationId": "EmployeesController_setStatus_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Suspend or reinstate somebody",
+        "tags": [
+          "employees"
+        ]
+      }
+    },
+    "/api/v1/enterprises/signup": {
+      "post": {
+        "description": "One transaction creates the enterprise, the owner identity, the employment, and the enterprise's own copies of the system role templates, then grants the owner role. No session is issued: signup always ends in a verification challenge.",
+        "operationId": "EnterprisesController_signup_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "examples": {
+                "standard": {
+                  "summary": "A business signing up with an owner who has both credentials",
+                  "value": {
+                    "business": {
+                      "name": "Acme Coffee",
+                      "email": "hello@acmecoffee.com",
+                      "mobile": {
+                        "number": "9876543210",
+                        "countryCode": "IN"
+                      },
+                      "websiteUrl": "https://acmecoffee.com",
+                      "country": "IN",
+                      "timezone": "Asia/Kolkata",
+                      "city": "Pune"
+                    },
+                    "owner": {
+                      "firstName": "Priya",
+                      "lastName": "Sharma",
+                      "email": "priya@acmecoffee.com",
+                      "mobile": {
+                        "number": "9876543211",
+                        "countryCode": "IN"
+                      },
+                      "password": "a-long-enough-password"
+                    }
+                  }
+                },
+                "mobileOnly": {
+                  "summary": "An owner with only a mobile number",
+                  "value": {
+                    "business": {
+                      "name": "Zenith Salon",
+                      "email": "hello@zenithsalon.com"
+                    },
+                    "owner": {
+                      "firstName": "Rahul",
+                      "mobile": {
+                        "number": "+919812345678"
+                      },
+                      "password": "a-long-enough-password"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create a business and its owner",
+        "tags": [
+          "enterprises"
+        ]
+      }
+    },
+    "/api/v1/enterprises/current": {
+      "get": {
+        "operationId": "EnterprisesController_current_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The business the current session is scoped to",
+        "tags": [
+          "enterprises"
+        ]
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "description": "Cursor-paginated, newest activity first. The cursor carries the sort key and the row id, so a page can neither skip nor repeat a conversation.",
+        "operationId": "InboxController_list_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The inbox",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/stream": {
+      "get": {
+        "description": "Emits an `inbox` event carrying a conversation ref whenever one changes. The payload is deliberately id-only: re-read the conversation through GET /conversations/:refId.",
+        "operationId": "InboxController_stream_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Live conversation changes (text/event-stream)",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}": {
+      "get": {
+        "operationId": "InboxController_thread_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "One conversation and its messages",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}/reply": {
+      "post": {
+        "description": "Returns 202 with status \"pending\": the message and its outbound ledger row are written in one transaction and the platform call happens afterwards, in the relay. Send the same idempotencyKey to retry safely — a repeat returns the original message rather than a second one.",
+        "operationId": "InboxController_reply_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "summary": "Reply to a conversation",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}/assign": {
+      "post": {
+        "operationId": "InboxController_assign_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Assign a conversation to a team employee, or unassign it",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}/status": {
+      "post": {
+        "operationId": "InboxController_setStatus_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Move a conversation through its workflow",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}/read": {
+      "post": {
+        "description": "An explicit write, rather than a side effect of reading the thread.",
+        "operationId": "InboxController_markRead_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Clear the unread badge",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/posts": {
+      "get": {
+        "description": "Cursor-paginated, newest first. A post with no publish time from the platform sorts last rather than first, so the feed reads chronologically.",
+        "operationId": "CatalogueController_posts_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Posts published by the connected accounts",
+        "tags": [
+          "catalogue"
+        ]
+      }
+    },
+    "/api/v1/customers": {
+      "get": {
+        "description": "Cursor-paginated, most recently seen first. `search` matches the display name.",
+        "operationId": "CatalogueController_customers_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The customer directory",
+        "tags": [
+          "catalogue"
+        ]
+      }
+    },
+    "/api/v1/platform/overview": {
+      "get": {
+        "description": "The numbers behind the admin dashboard: businesses by status, and totals.",
+        "operationId": "PlatformController_overview_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Platform-wide totals",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/enterprises": {
+      "get": {
+        "description": "Newest first, keyset-paginated on (createdAt, id). Optional free-text search over name, slug and email, and an optional status filter.",
+        "operationId": "PlatformController_listEnterprises_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Every business on the platform",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/enterprises/{refId}": {
+      "get": {
+        "description": "Profile, owner (contact details masked), every feature and its state, and every channel the business has connected. No conversation, message or customer content is returned.",
+        "operationId": "PlatformController_getEnterprise_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "One business in full",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/enterprises/{refId}/status": {
+      "post": {
+        "description": "Activation is what lets a business actually use the portal: a signup lands in pending_activation and every tenant-scoped route refuses it until this is called. Suspending requires a reason, and both are written to the audit trail.",
+        "operationId": "PlatformController_setStatus_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Activate or suspend a business",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/enterprises/{refId}/features/{featureKey}": {
+      "post": {
+        "description": "Follows the documented feature state machine. A feature the business never requested can be granted outright, which is how a plan gets provisioned. Declining or revoking requires a reason.",
+        "operationId": "PlatformController_decideFeature_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "featureKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Grant, disable, decline or revoke a feature",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/health/live": {
+      "get": {
+        "description": "NEVER touches the database. A slow query must not restart the process — that is how a database hiccup becomes a cascading restart loop. Failing this kills the pod.",
+        "operationId": "HealthController_live_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Is the process alive?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "description": "Checks the database and that no migration is pending. Failing sheds traffic from the load balancer without killing the process.",
+        "operationId": "HealthController_ready_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Should this instance receive traffic?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/health/startup": {
+      "get": {
+        "description": "Separate from liveness so a slow start does not trigger premature restarts.",
+        "operationId": "HealthController_startup_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Has the process finished booting?",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/health/detail": {
+      "get": {
+        "description": "The three public endpoints deliberately carry no version, hostname, or dependency detail. That information lives here, and it is platform-wide rather than per-tenant — so it is gated on platform staff, not on a tenant permission.",
+        "operationId": "HealthController_detail_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The diagnostic breakdown (platform staff only)",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "Wouchh Unified API",
+    "description": "Social inbox, comments and posts for connected enterprises. Every response uses one envelope: { success, data, meta } or { success: false, error: { code, message, details }, meta }.",
+    "version": "dev",
+    "contact": {}
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Sign in, verification, session and enterprise switching"
+    },
+    {
+      "name": "enterprises",
+      "description": "Business onboarding and profile"
+    },
+    {
+      "name": "connections",
+      "description": "Meta and other provider connections"
+    },
+    {
+      "name": "conversations",
+      "description": "The shared inbox: reading, replying, assigning"
+    },
+    {
+      "name": "employees",
+      "description": "Colleagues, roles and invitations"
+    },
+    {
+      "name": "platform",
+      "description": "The Wouchh console: businesses and their features"
+    },
+    {
+      "name": "health",
+      "description": "Liveness, readiness and startup probes"
+    }
+  ],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "accessToken": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      },
+      "cookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "refreshToken"
+      }
+    },
+    "schemas": {}
+  }
+}
