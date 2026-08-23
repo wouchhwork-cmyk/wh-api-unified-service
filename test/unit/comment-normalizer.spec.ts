@@ -140,12 +140,23 @@ describe('normalizeComment', () => {
       expect(result).toEqual({ skip: 'not a comment (item="like")' });
     });
 
-    it.each(['remove', 'hide'])('skips the "%s" verb', (verb) => {
+    it.each([
+      ['remove', 'removed'],
+      ['hide', 'hidden'],
+      ['unhide', 'unhidden'],
+      ['edited', 'edited'],
+    ])('reads the "%s" verb as a change to a comment we hold', (verb, action) => {
+      /*
+       * These were SKIPPED, and the ledger row for each was thrown away — so a
+       * comment the customer deleted went on sitting in the inbox, and hiding one
+       * changed nothing. The verb is part of the dedup key, so the events had
+       * always been arriving distinctly; nothing was ever done with them.
+       */
       const result = normalizeComment(
         Platform.Facebook,
         change({ item: 'comment', verb, comment_id: 'CM_1', from: { id: 'U' } }),
       );
-      expect(result).toEqual({ skip: `comment verb "${verb}" is not projected yet` });
+      expect(result).toEqual({ moderation: { commentId: 'CM_1', action, text: null } });
     });
 
     it('skips a comment with no author', () => {

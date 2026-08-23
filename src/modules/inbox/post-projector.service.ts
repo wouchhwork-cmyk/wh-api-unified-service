@@ -12,6 +12,19 @@ import type { ProjectionOutcome } from './comment-projector.service';
  */
 interface PostUpdatePayload {
   readonly value?: {
+    /*
+     * A LIVE FEED CHANGE speaks Facebook's vocabulary, not ours. The canonical
+     * fields below come from the backfill worker; these come straight off the
+     * webhook, where a post's text is `message`, its time is unix `created_time`
+     * and its kind is `item`. Both are read, because both arrive: routing the
+     * live one here at all is new — it used to go to the comment projector and
+     * be skipped as "not a comment", so a post published after the connection
+     * did not appear until the next daily refresh walked past it.
+     */
+    readonly item?: string;
+    readonly message?: string;
+    readonly created_time?: number;
+    readonly link?: string;
     readonly post_id?: string;
     readonly caption?: string | null;
     readonly permalink_url?: string | null;
@@ -60,10 +73,14 @@ export class PostProjectorService {
       channelId,
       platform,
       platformPostId: value.post_id,
-      postKind: toPostKind(value.post_kind, platform),
-      caption: normalizeOptionalText(value.caption ?? null),
-      permalinkUrl: value.permalink_url ?? null,
-      publishedAt: parseTimestamp(value.published_at),
+      // Either vocabulary. `item` is the live feed change's kind; post_kind is
+      // the canonical one the backfill produces.
+      postKind: toPostKind(value.post_kind ?? value.item, platform),
+      caption: normalizeOptionalText(value.caption ?? value.message ?? null),
+      permalinkUrl: value.permalink_url ?? value.link ?? null,
+      publishedAt:
+        parseTimestamp(value.published_at) ??
+        (typeof value.created_time === 'number' ? new Date(value.created_time * 1000) : null),
       commentCount: value.comment_count ?? null,
       likeCount: value.like_count ?? null,
       shareCount: value.share_count ?? null,
@@ -108,6 +125,7 @@ function toPostKind(raw: string | null | undefined, platform: Platform): PostKin
   }
 
   switch (value) {
+    // status_type, from the read edge.
     case 'added_photos':
       return PostKind.Image;
     case 'added_video':
@@ -117,6 +135,21 @@ function toPostKind(raw: string | null | undefined, platform: Platform): PostKin
     case 'mobile_status_update':
     case 'created_note':
     case 'published_story':
+      return PostKind.Text;
+    /*
+     * `item`, from a live feed change. A different vocabulary for the same
+     * thing, and it arrives here now that a feed post is routed to this
+     * projector rather than being skipped as "not a comment".
+     */
+    case 'photo':
+      return PostKind.Image;
+    case 'video':
+      return PostKind.Video;
+    case 'share':
+    case 'link':
+      return PostKind.Link;
+    case 'status':
+    case 'post':
       return PostKind.Text;
     default:
       return PostKind.Text;

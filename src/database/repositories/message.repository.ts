@@ -299,6 +299,49 @@ export class MessageRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * Applies a platform-side change to a message we already hold.
+   *
+   * Meta sends an edit, a removal or a hide as its own webhook event, and every
+   * one of them was ingested and then discarded — so a comment the customer had
+   * deleted went on sitting in the inbox, and an agent who hid one saw no change.
+   *
+   * A removal is a SOFT delete: the thread query filters is_deleted, so the
+   * message disappears from the inbox while the record of it having existed —
+   * and of us having answered it — survives. Hard-deleting would take the
+   * agent's own reply thread with it.
+   *
+   * Returns false when we hold no such message, which is not an error: it may
+   * predate the connection, or have been the business's own, or have been skipped
+   * for a reason already recorded.
+   */
+  async applyPlatformModeration(input: {
+    enterpriseId: number;
+    platformMessageId: string;
+    action: 'edited' | 'removed' | 'hidden' | 'unhidden';
+    text: string | null;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE messages
+          SET body = CASE WHEN $3::varchar = 'edited' THEN COALESCE($4::text, body) ELSE body END,
+              is_hidden_on_platform = CASE
+                WHEN $3::varchar = 'hidden' THEN true
+                WHEN $3::varchar = 'unhidden' THEN false
+                ELSE is_hidden_on_platform END,
+              is_deleted = CASE WHEN $3::varchar = 'removed' THEN true ELSE is_deleted END,
+              updated_at = now()
+        WHERE enterprise_id = $1 AND platform_message_id = $2
+        RETURNING id`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.platformMessageId,
+        input.action,
+        input.text,
+      ],
+    );
+    return affected > 0;
+  }
+
   /** Resolves a platform comment id to our row, for threading replies. */
   async findIdByPlatformId(
     enterpriseId: number,

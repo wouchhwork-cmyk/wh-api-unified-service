@@ -227,7 +227,7 @@ export class MetaWebhookService {
     }[] = [];
 
     for (const change of entry.changes ?? []) {
-      const eventType = mapChangeField(change.field);
+      const eventType = mapChangeField(change.field, change.value);
       const platformEventId = extractId(change.value);
       const verb = extractVerb(change.value);
       items.push({
@@ -259,9 +259,27 @@ export class MetaWebhookService {
   }
 }
 
-function mapChangeField(field: string | undefined): InboundEventType {
+/**
+ * Which projector an entry's change belongs to.
+ *
+ * `feed` IS NOT ONLY COMMENTS. Facebook's feed field covers posts, photos,
+ * videos, shares, likes and comments, discriminated by `value.item` — and this
+ * mapped the whole field to Comment, so a post published after the connection
+ * was routed to the comment projector, skipped there as "not a comment", and
+ * never reached the posts table until the next daily metrics refresh happened to
+ * walk past it.
+ *
+ * The value is inspected rather than only the field, because the field alone
+ * genuinely does not say.
+ */
+function mapChangeField(field: string | undefined, value: unknown): InboundEventType {
   switch (field) {
-    case 'feed':
+    case 'feed': {
+      const item = readItem(value);
+      // A comment is the only feed item the inbox treats as a conversation.
+      // Everything else — status, photo, video, share — is a change to a POST.
+      return item === 'comment' ? InboundEventType.Comment : InboundEventType.PostUpdate;
+    }
     case 'comments':
       return InboundEventType.Comment;
     case 'mention':
@@ -306,6 +324,13 @@ function extractVerb(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return null;
   const verb = (value as Record<string, unknown>).verb;
   return typeof verb === 'string' && verb ? verb : null;
+}
+
+/** Facebook's feed discriminator: comment, status, photo, video, share, like. */
+function readItem(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const item = (value as { item?: unknown }).item;
+  return typeof item === 'string' ? item : null;
 }
 
 function extractId(value: unknown): string | null {

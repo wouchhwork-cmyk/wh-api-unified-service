@@ -71,7 +71,49 @@ export interface CanonicalComment {
   readonly authorIdentifierKind?: IdentifierKind;
 }
 
-export type NormalizedComment = { readonly comment: CanonicalComment } | { readonly skip: string };
+/**
+ * What Meta did to a comment that already exists.
+ *
+ * These verbs were INGESTED and then discarded: a ledger row was written, the
+ * projector skipped it, and the inbox went on showing a comment the customer had
+ * deleted or the business had hidden. The verb is part of the dedup key, so the
+ * events did arrive distinctly — nothing was ever done with them.
+ */
+export type CommentModeration = {
+  readonly commentId: string;
+  readonly action: 'edited' | 'removed' | 'hidden' | 'unhidden';
+  /** The new text, for an edit. Null for everything else. */
+  readonly text: string | null;
+};
+
+export type NormalizedComment =
+  | { readonly comment: CanonicalComment }
+  | { readonly moderation: CommentModeration }
+  | { readonly skip: string };
+
+/**
+ * Meta's verb, as an action on a comment we may already hold.
+ *
+ * `add` returns null: that is a new comment, not a change to one. Anything
+ * unrecognised also returns null and is treated as an addition, which is the
+ * behaviour before these existed.
+ */
+function moderationAction(verb: string | undefined): CommentModeration['action'] | null {
+  switch (verb) {
+    case 'edited':
+    case 'edit':
+      return 'edited';
+    case 'remove':
+    case 'removed':
+      return 'removed';
+    case 'hide':
+      return 'hidden';
+    case 'unhide':
+      return 'unhidden';
+    default:
+      return null;
+  }
+}
 
 /**
  * Turns either platform's comment event into one shape.
@@ -102,9 +144,19 @@ function normalizeFacebook(change: FacebookCommentChange): NormalizedComment {
   if (!value || value.item !== 'comment' || !value.comment_id) {
     return { skip: `not a comment (item="${value?.item ?? 'none'}")` };
   }
-  if (isNonProjectingVerb(value.verb)) {
-    return { skip: `comment verb "${value.verb}" is not projected yet` };
+  /*
+   * A CHANGE to a comment, not a new one. Handled before the author check,
+   * because a removal carries no `from` at all — which is why these used to be
+   * dropped twice over: once by the verb guard, and once by a check for an
+   * author that a removal was never going to have.
+   */
+  const action = moderationAction(value.verb);
+  if (action !== null) {
+    return {
+      moderation: { commentId: value.comment_id, action, text: value.message ?? null },
+    };
   }
+
   if (!value.from?.id) {
     return { skip: 'the comment names no author' };
   }
@@ -149,8 +201,10 @@ function normalizeInstagram(change: InstagramCommentChange): NormalizedComment {
   if (!value?.id) {
     return { skip: 'the instagram comment carries no id' };
   }
-  if (isNonProjectingVerb(value.verb)) {
-    return { skip: `comment verb "${value.verb}" is not projected yet` };
+
+  const action = moderationAction(value.verb);
+  if (action !== null) {
+    return { moderation: { commentId: value.id, action, text: value.text ?? null } };
   }
 
   /*
@@ -177,11 +231,6 @@ function normalizeInstagram(change: InstagramCommentChange): NormalizedComment {
       authorHandle: value.from.username ?? value.username ?? null,
     },
   };
-}
-
-/** A removal or a hide is not a new message; those need their own path. */
-function isNonProjectingVerb(verb: string | undefined): boolean {
-  return verb === 'remove' || verb === 'hide';
 }
 
 /**
@@ -292,9 +341,12 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
   // the post. Without one there is nothing to key a message on.
   const mentionId = value?.comment_id ?? value?.post_id;
   if (!mentionId) return { skip: 'the mention names no post or comment' };
-  if (isNonProjectingVerb(value?.verb)) {
-    return { skip: `mention verb "${value?.verb}" is not projected yet` };
+
+  const action = moderationAction(value?.verb);
+  if (action !== null) {
+    return { moderation: { commentId: mentionId, action, text: value?.message ?? null } };
   }
+
   if (!value?.sender_id) return { skip: 'the mention names no author' };
 
   return {

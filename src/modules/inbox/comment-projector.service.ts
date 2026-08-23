@@ -19,7 +19,7 @@ import {
 } from '@/shared/enums';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
 import { normalizeComment, normalizeMention } from './comment-normalizer';
-import type { CanonicalComment } from './comment-normalizer';
+import type { CanonicalComment, CommentModeration } from './comment-normalizer';
 
 export interface ProjectionOutcome {
   readonly projected: boolean;
@@ -61,6 +61,15 @@ export class CommentProjectorService {
     const normalized = normalizeComment(platform, payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
 
+    /*
+     * A CHANGE to a comment we may already hold — an edit, a removal, a hide.
+     * These were ingested and then dropped, so the inbox went on showing a
+     * comment the customer had deleted.
+     */
+    if ('moderation' in normalized) {
+      return this.applyModeration(enterpriseId, normalized.moderation);
+    }
+
     if (isOwnAuthor(normalized.comment.authorPlatformId, ownPlatformIds)) {
       return { projected: false, reason: OWN_CONTENT_REASON };
     }
@@ -97,6 +106,10 @@ export class CommentProjectorService {
     const normalized = normalizeMention(platform, payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
 
+    if ('moderation' in normalized) {
+      return this.applyModeration(enterpriseId, normalized.moderation);
+    }
+
     // A business tagging itself is not a mention worth an inbox row.
     if (isOwnAuthor(normalized.comment.authorPlatformId, ownPlatformIds)) {
       return { projected: false, reason: OWN_CONTENT_REASON };
@@ -113,6 +126,41 @@ export class CommentProjectorService {
         ? CustomerFirstSource.InstagramComment
         : CustomerFirstSource.FacebookComment,
     );
+  }
+
+  /**
+   * Applies what Meta did to a comment we already stored.
+   *
+   * These events were arriving all along — the verb is part of the dedup key, so
+   * each one got its own ledger row — and the projector threw every one away. A
+   * customer deleting their comment, or an agent hiding one, changed nothing in
+   * the inbox.
+   *
+   * A comment we never stored is a SKIP rather than a failure: it may predate the
+   * connection, or have been the business's own, or have been dropped for a
+   * reason this projector already recorded. Retrying would not make it appear.
+   */
+  private async applyModeration(
+    enterpriseId: number,
+    moderation: CommentModeration,
+  ): Promise<ProjectionOutcome> {
+    const applied = await this.messages.applyPlatformModeration({
+      enterpriseId,
+      platformMessageId: moderation.commentId,
+      action: moderation.action,
+      text: moderation.text,
+    });
+
+    if (!applied) {
+      return {
+        projected: false,
+        reason: `nothing stored for comment ${moderation.commentId} to ${moderation.action}`,
+      };
+    }
+
+    // No text: an edit's new body is the customer's words.
+    this.logger.debug({ enterpriseId, action: moderation.action }, 'comment moderation applied');
+    return { projected: true };
   }
 
   private async store(
