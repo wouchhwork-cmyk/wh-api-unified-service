@@ -135,6 +135,17 @@ export const OUTBOUND_RATE_LIMIT_PARK_MS = 5 * 60 * 1000;
 export const OUTBOUND_RATE_LIMIT_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The window the dead-letter gauge warns on.
+ *
+ * The gauge counted every dead letter ever recorded, so one poison message from
+ * last month pinned the alarm at WARN permanently — and an alarm that is always
+ * on is an alarm nobody reads, which is worse than no alarm. The cumulative
+ * total is still reported, for context; only the RECENT count decides whether
+ * anything is wrong right now.
+ */
+export const DEAD_LETTER_ALERT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
  * LISTEN/NOTIFY channel names.
  *
  * Notification is an OPTIMISATION, never the delivery guarantee: every worker

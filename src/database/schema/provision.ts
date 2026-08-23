@@ -38,11 +38,23 @@ export async function ensureDatabaseExists(database: DatabaseConfig): Promise<bo
 
   await admin.initialize();
   try {
-    const existing: { count: string }[] = await admin.query(
-      'SELECT count(*) AS count FROM pg_database WHERE datname = $1',
+    /*
+     * EXISTENCE IS ASKED AS A BOOLEAN, not counted and string-compared.
+     *
+     * This read `count(*)` and compared the result against the STRING '0' —
+     * which is what node-postgres returns for a bigint by default, and is not
+     * what it returns here: pg-types.ts registers a global int8 parser that
+     * coerces bigints to numbers. So the comparison was `0 !== '0'`, always
+     * true, and this function never once created a database. It looked like it
+     * worked only because every database it was ever pointed at already existed;
+     * the day a new suite needed one, every test in it failed on "database does
+     * not exist" two processes away from the cause.
+     */
+    const existing = await admin.query<{ present: boolean }[]>(
+      'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1) AS present',
       [database.name],
     );
-    if (existing[0]?.count !== '0') return false;
+    if (existing[0]?.present === true) return false;
 
     // The name comes from our own configuration, never from a request, and
     // CREATE DATABASE takes no parameters — so it has to be interpolated.

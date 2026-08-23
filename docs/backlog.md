@@ -143,23 +143,40 @@ invitation acceptance — though `AuditAction` declares all of them. A reply is
 also still unaudited; the message row is the record, which is arguably enough,
 but `Replied` exists in the enum and is unused.
 
-### 1.8 One test fails intermittently, unexplained — **M**
+### ~~1.8 One test fails intermittently, unexplained~~ — SOLVED
 
-Twice now, a single test has failed in a combined `pnpm test:all` run and then
-passed on every subsequent run — including three consecutive clean runs
-immediately afterwards, and every per-project run. Both times unreproducible, so
-both times I could not name the test with confidence.
+Two causes, both found by looping the combined suite until it broke and reading
+the actual error rather than the assertion.
 
-Recorded rather than dismissed, because "fails one run in N" is the failure mode
-that erodes trust in a suite fastest, and the suite is the only thing standing
-between a rename and a silent break.
+**The e2e and integration suites shared one database.** Both TRUNCATE in
+beforeEach, and vitest runs projects alongside each other — `fileParallelism` and
+`maxWorkers` serialise files WITHIN a project, not across them. So they wiped
+each other's fixtures, and whichever test lost the race failed. That is why it
+was never the same test twice, and why it always passed when run alone. The e2e
+suite has its own database now.
 
-Where to look first: everything shares one database (`wouchh_test`), and
-`beforeEach` TRUNCATEs. Root-level `fileParallelism: false` and `maxWorkers: 1`
-serialise files, so it is not two files racing — more likely an app instance from
-a finished file still holding a connection, or a worker poller started by one
-suite touching rows during another. A per-file database, or capturing the failure
-with `--reporter=json` on a loop until it reproduces, would settle it.
+**Then it still failed, as `socket hang up`.** Every e2e file boots the whole
+application and closes it again, and sharing one worker process meant one file's
+teardown could land while another file's request was in flight. The e2e project
+runs a fork per file now, so nothing can leak to the next file whatever a
+shutdown hook forgets.
+
+**And one shutdown hook did forget.** `InboxEventsService.onModuleInit` starts
+its LISTEN connection without awaiting — deliberately, so a slow database cannot
+delay boot — so `onApplicationShutdown` could run while that connect was still in
+flight, find `this.client` null, and let the finished connection be assigned
+afterwards. That client outlived its application: a leak per suite in tests, and
+one per failed-then-recovered boot in production. It checks for shutdown after
+connecting now, and ends the client it built.
+
+Failing roughly one combined run in six before; eight consecutive clean runs
+after.
+
+Found alongside it: `ensureDatabaseExists` had NEVER created a database. It read
+`count(*)` and compared against the string `'0'`, while pg-types.ts registers a
+global int8 parser that returns a number — so the comparison was always true and
+the function always reported "already there". It looked correct only because
+every database it had been pointed at already existed.
 
 ### 1.9 Smaller, but real — **S each**
 

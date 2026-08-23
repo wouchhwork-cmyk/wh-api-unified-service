@@ -45,24 +45,36 @@ function load(file: string, required: boolean): void {
   }
 }
 
-export function loadTestEnv(): void {
+/**
+ * @param suffix which database this suite gets — see below for why it differs.
+ */
+export function loadTestEnv(suffix: '_test' | '_e2e' = '_test'): void {
   load('.env.dev', true);
   load('.env.local', false);
 
   /*
-   * TESTS GET THEIR OWN DATABASE, ALWAYS.
+   * A DATABASE PER SUITE, AND NEVER THE DEVELOPMENT ONE.
    *
-   * The integration and e2e suites TRUNCATE tenant data in beforeEach. Pointed at
-   * the development database that is fine right up until somebody is clicking
-   * through the portal while a test run wipes the business they were looking at —
-   * and it is worse against a permanent local install than a disposable container,
-   * because there is no `down -v` to put it back.
+   * Never the development one because these suites TRUNCATE tenant data in
+   * beforeEach, which is fine right up until somebody is clicking through the
+   * portal while a run wipes the business they were looking at.
    *
-   * Derived rather than configured, so a new environment cannot forget to set it,
-   * and overridable by a real TEST_DB_NAME for a CI service container.
+   * Per SUITE because integration and e2e both truncate, and they interleave:
+   * fileParallelism and maxWorkers serialise files WITHIN a project, and vitest
+   * still runs projects alongside each other. Sharing one database, they wiped
+   * each other's fixtures — and the symptom was the worst kind, an arbitrary
+   * test failing perhaps one combined run in five and passing every time it ran
+   * alone. Three different tests were caught that way before the cause was.
+   *
+   * Derived rather than configured, so a new environment cannot forget to set
+   * it. TEST_DB_NAME overrides the base for a CI service container, and keeps
+   * the per-suite suffix so the override cannot re-merge them.
    */
-  const devDatabase = process.env.DB_NAME ?? 'wouchh_dev';
-  process.env.DB_NAME = process.env.TEST_DB_NAME ?? `${devDatabase.replace(/_dev$/, '')}_test`;
+  const base = (process.env.TEST_DB_NAME ?? process.env.DB_NAME ?? 'wouchh_dev').replace(
+    /_(dev|test|e2e)$/,
+    '',
+  );
+  process.env.DB_NAME = `${base}${suffix}`;
 
   /*
    * RATE LIMITING OFF, DELIBERATELY.

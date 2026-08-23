@@ -216,6 +216,29 @@ export class AuthService {
           await this.employees.activate(employment.employeeId, enterpriseId);
         }
       }
+
+      /*
+       * SETTING A PASSWORD SIGNS EVERY OTHER DEVICE OUT.
+       *
+       * It did not, and this path is where that matters most: an identity is
+       * global, so accepting a second business's invitation REPLACES the
+       * password this person already used elsewhere. Anyone holding a session
+       * minted under the old one kept it — which is the textbook reason a
+       * password change revokes sessions, and the exact case
+       * revokeAllForIdentity was written for and never called from.
+       *
+       * Inside the transaction, so a rolled-back password change does not sign
+       * anybody out for nothing. The caller is issued a fresh session
+       * immediately afterwards, so the person doing this is not logged out of
+       * the request they are making.
+       */
+      const revoked = await this.sessions.revokeAllForIdentity(identity.id);
+      if (revoked > 0) {
+        this.logger.info(
+          { identityId: identity.id, revoked },
+          'password set — existing sessions for this identity were revoked',
+        );
+      }
     });
 
     this.logger.info({ enterpriseId }, 'invitation accepted and password set');

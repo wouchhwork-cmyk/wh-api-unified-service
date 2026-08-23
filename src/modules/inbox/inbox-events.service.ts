@@ -143,7 +143,27 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
       await client.query(`LISTEN ${quoteIdentifier(NOTIFY_INBOX_CHANNEL)}`);
     } catch (error) {
       this.logger.warn({ err: error }, 'inbox event listener could not subscribe');
+      // End it even on failure: a client that connected and then failed its
+      // LISTEN still holds a socket, and this used to abandon one on every
+      // attempt.
+      await client.end().catch(() => undefined);
       this.scheduleReconnect();
+      return;
+    }
+
+    /*
+     * SHUTDOWN CAN HAVE HAPPENED WHILE WE WERE CONNECTING.
+     *
+     * onModuleInit starts this without awaiting — deliberately, so a slow
+     * database cannot delay the API's boot — which means onApplicationShutdown
+     * may already have run and found `this.client` still null. Without this
+     * check the connection completes afterwards, is assigned, and outlives the
+     * application: a pg client nobody owns, holding a LISTEN. In tests, where
+     * apps are created and closed repeatedly in one process, that is a leak per
+     * suite; in production it is one per failed-then-recovered boot.
+     */
+    if (this.stopping) {
+      await client.end().catch(() => undefined);
       return;
     }
 

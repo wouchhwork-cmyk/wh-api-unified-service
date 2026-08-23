@@ -181,19 +181,29 @@ export class InboxController {
     @Query() query: unknown,
   ): Promise<unknown> {
     const parsed = ThreadQuerySchema.parse(query);
+    const size = parsed.limit ?? DEFAULT_PAGE_SIZE;
     const result = await this.inbox.readThread(
       actor.enterpriseId,
       RefIdParamSchema.parse(refId),
-      parsed.limit ?? DEFAULT_PAGE_SIZE,
+      size,
       parsed.cursor ?? null,
       parsed.beforeId ?? null,
     );
     return {
       conversation: toConversationSummary(result.conversation),
       messages: result.messages.map(toMessage),
-      // The thread had no pagination surface at all: a conversation with more
-      // than one page of history simply ended, with nothing to say so.
-      pagination: { nextCursor: result.nextCursor, hasMore: result.hasMore },
+      /*
+       * Lifted into meta.pagination by the envelope interceptor, so this reads
+       * the same as every other list. The thread had no pagination surface at
+       * all before — a conversation with more than one page of history simply
+       * ended, with nothing to say so — and its first version put this in
+       * `data`, which was a second envelope shape for clients to learn.
+       */
+      pagination: {
+        limit: size,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore,
+      },
     };
   }
 

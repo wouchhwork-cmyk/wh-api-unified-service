@@ -13,6 +13,7 @@ import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { parkFor, scheduleRetry } from '@/modules/ledger/backoff.util';
 import { OUTBOUND_RATE_LIMIT_MAX_WAIT_MS, OUTBOUND_RATE_LIMIT_PARK_MS } from '@/shared/constants';
+import { TransactionManager } from '@/database/transaction';
 import { TokenCipherService } from '@/shared/crypto';
 import { ConnectionStatus, MessageStatus, OutboundEventType, Platform } from '@/shared/enums';
 import { ErrorCode } from '@/shared/errors';
@@ -47,6 +48,7 @@ export class OutboundRelayWorker extends BasePoller {
     private readonly messages: MessageRepository,
     private readonly graph: GraphApiClient,
     private readonly cipher: TokenCipherService,
+    private readonly tx: TransactionManager,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(OutboundRelayWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -58,7 +60,23 @@ export class OutboundRelayWorker extends BasePoller {
     const claimed = await this.outbound.claimDueBatch(this.leaseOwner, batchSize, leaseSeconds);
 
     for (const event of claimed) {
-      await this.deliver(event);
+      /*
+       * PER-ROW ISOLATION. One row's unexpected failure used to abandon the rest
+       * of the batch mid-flight, leaving up to nineteen claimed rows leased and
+       * untouched until the reaper aged them out — so a single poison row could
+       * stall the queue for a whole lease period, repeatedly.
+       *
+       * The settle paths already handle every failure they expect; this catches
+       * the ones nobody predicted.
+       */
+      try {
+        await this.deliver(event);
+      } catch (error) {
+        this.logger.error(
+          { eventId: event.id, err: error },
+          'delivering one event threw unexpectedly — the rest of the batch continues',
+        );
+      }
     }
     return claimed.length;
   }
@@ -231,6 +249,20 @@ export class OutboundRelayWorker extends BasePoller {
    * never be delivered and never be marked failed.
    */
   private async settleAsFailed(
+    enterpriseId: number | null,
+    eventId: number,
+    reason: string,
+  ): Promise<void> {
+    /*
+     * ONE TRANSACTION, because this method's own contract is that the two writes
+     * must not diverge — and without one they could: a cancelled ledger row
+     * whose message still reads 'pending' leaves an agent watching a reply that
+     * will never be delivered and never be marked failed.
+     */
+    await this.tx.runInTransaction(() => this.settle(enterpriseId, eventId, reason));
+  }
+
+  private async settle(
     enterpriseId: number | null,
     eventId: number,
     reason: string,

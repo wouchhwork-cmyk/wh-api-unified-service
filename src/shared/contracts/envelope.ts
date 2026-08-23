@@ -79,3 +79,26 @@ export function isPaginated<T>(value: unknown): value is Paginated<T> {
     typeof (value as Paginated<T>).pagination === 'object'
   );
 }
+
+/**
+ * A result that is NOT itself a list but carries a page of one.
+ *
+ * The conversation thread is the case: its payload is a conversation AND its
+ * messages, so it cannot be a bare `Paginated`. Without this it put its
+ * pagination in `data.pagination` while every other list put it in
+ * `meta.pagination` — one envelope with two shapes, which a client has to learn
+ * per endpoint.
+ */
+export interface PaginatedWithin {
+  readonly pagination: PaginationMeta;
+}
+
+export function carriesPagination(value: unknown): value is PaginatedWithin {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as PaginatedWithin).pagination === 'object' &&
+    (value as PaginatedWithin).pagination !== null
+  );
+}

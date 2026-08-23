@@ -3,7 +3,12 @@ import { Reflector } from '@nestjs/core';
 import { map, type Observable } from 'rxjs';
 import { RAW_RESPONSE_KEY } from '@/shared/decorators/raw-response.decorator';
 import { RequestContext } from '@/shared/context';
-import { isPaginated, type Envelope, type ResponseMeta } from '@/shared/contracts/envelope';
+import {
+  carriesPagination,
+  isPaginated,
+  type Envelope,
+  type ResponseMeta,
+} from '@/shared/contracts/envelope';
 
 /**
  * Wraps every controller return value in the success envelope, so NO CONTROLLER
@@ -37,6 +42,17 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor {
             data: payload.items,
             meta: { ...meta, pagination: payload.pagination },
           };
+        }
+
+        /*
+         * A result that carries a page WITHOUT being one — the conversation
+         * thread, which is a conversation and its messages. The pagination is
+         * lifted into meta so there is ONE envelope rather than one shape for a
+         * bare list and another for anything else.
+         */
+        if (carriesPagination(payload)) {
+          const { pagination, ...rest } = payload;
+          return { success: true, data: rest, meta: { ...meta, pagination } };
         }
 
         return { success: true, data: payload ?? null, meta };

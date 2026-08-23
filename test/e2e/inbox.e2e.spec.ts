@@ -247,7 +247,10 @@ describe('the shared inbox', () => {
     // exist and be honest, which it did not before: a long thread simply
     // stopped, with nothing to say there was more.
     expect(first.body.data.messages).toHaveLength(1);
-    expect(first.body.data.pagination).toEqual({ nextCursor: null, hasMore: false });
+    // In META, like every other list. Its first version put this in `data`,
+    // which made one envelope into two shapes.
+    expect(first.body.data.pagination).toBeUndefined();
+    expect(first.body.meta.pagination).toEqual({ limit: 1, nextCursor: null, hasMore: false });
   });
 
   it('answers a malformed reference with 422, not 500', async () => {

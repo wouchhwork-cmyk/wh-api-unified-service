@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { DEAD_LETTER_ALERT_WINDOW_MS } from '@/shared/constants';
 import { BaseRepository } from './base.repository';
 
 export interface QueueGauge {
@@ -17,6 +18,14 @@ export interface QueueGauge {
   readonly leased: number;
   /** Terminal failures. Any non-zero value here is a human's problem. */
   readonly deadLettered: number;
+  /**
+   * Dead letters within DEAD_LETTER_ALERT_WINDOW_MS.
+   *
+   * The alarm reads THIS, not the cumulative count. One poison message from
+   * last month used to pin the gauge at WARN permanently, and an alarm that is
+   * always on is one nobody reads.
+   */
+  readonly recentDeadLettered: number;
 }
 
 /**
@@ -43,7 +52,9 @@ export class QueueMetricsRepository extends BaseRepository {
                 min(created_at) FILTER (WHERE status IN ('pending','failed')
                                    AND COALESCE(next_attempt_at, created_at) <= now()) AS oldest_due,
                 count(*) FILTER (WHERE status IN ('leased','processing'))          AS leased,
-                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered
+                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered,
+                count(*) FILTER (WHERE status = 'dead_letter'
+                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
            FROM inbound_events
        ),
        outbound AS (
@@ -54,7 +65,9 @@ export class QueueMetricsRepository extends BaseRepository {
                 min(created_at) FILTER (WHERE status IN ('pending','scheduled','failed')
                                    AND COALESCE(next_attempt_at, scheduled_at, created_at) <= now()) AS oldest_due,
                 count(*) FILTER (WHERE status IN ('leased','sending'))             AS leased,
-                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered
+                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered,
+                count(*) FILTER (WHERE status = 'dead_letter'
+                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
            FROM outbound_events
        ),
        sync AS (
@@ -68,7 +81,9 @@ export class QueueMetricsRepository extends BaseRepository {
                                    AND status IN ('pending','failed','rate_limited')
                                    AND COALESCE(next_attempt_at, rate_limited_until, created_at) <= now()) AS oldest_due,
                 count(*) FILTER (WHERE is_deleted = false AND status = 'running')  AS leased,
-                count(*) FILTER (WHERE is_deleted = false AND status = 'dead_letter') AS dead_lettered
+                count(*) FILTER (WHERE is_deleted = false AND status = 'dead_letter') AS dead_lettered,
+                count(*) FILTER (WHERE is_deleted = false AND status = 'dead_letter'
+                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
            FROM sync_jobs
        ),
        combined AS (
@@ -81,9 +96,13 @@ export class QueueMetricsRepository extends BaseRepository {
                    ELSE floor(EXTRACT(EPOCH FROM (now() - oldest_due)))::int
               END                                                     AS "oldestDueAgeSeconds",
               leased::int                                             AS "leased",
-              dead_lettered::int                                      AS "deadLettered"
+              dead_lettered::int                                      AS "deadLettered",
+              recent_dead_lettered::int                               AS "recentDeadLettered"
          FROM combined
         ORDER BY queue`,
+      // Postgres has no parameter form for an interval literal, so it arrives as
+      // a string and is cast. Milliseconds keeps the constant in one unit.
+      [`${DEAD_LETTER_ALERT_WINDOW_MS} milliseconds`],
     );
   }
 }

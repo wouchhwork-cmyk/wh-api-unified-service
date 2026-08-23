@@ -4,6 +4,7 @@ import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise
 import type { EmployeeListRow } from '@/database/repositories/enterprise-employee.repository';
 import { IdentityRepository } from '@/database/repositories/identity.repository';
 import { RoleRepository } from '@/database/repositories/role.repository';
+import { SessionRepository } from '@/database/repositories/session.repository';
 import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
 import { VerificationService, type PendingOtpDelivery } from '@/modules/auth/verification.service';
@@ -48,6 +49,7 @@ export class EmployeesService {
     private readonly verifications: VerificationService,
     private readonly hasher: SecretHashService,
     private readonly audit: AuditService,
+    private readonly sessions: SessionRepository,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(EmployeesService.name) private readonly logger: PinoLogger,
   ) {}
@@ -257,6 +259,29 @@ export class EmployeesService {
       status,
     );
     if (!applied) throw new AppException(ErrorCode.ConcurrentModification);
+
+    /*
+     * SUSPENDING SOMEBODY SIGNS THEM OUT.
+     *
+     * It did not. revokeAllForIdentity existed with no callers anywhere, and
+     * AuthService.refresh only re-checks employment when the caller passes
+     * ?enterpriseRefId — so a suspended person kept refreshing indefinitely and
+     * their access token stayed valid for its full life. "Suspended" meant
+     * "cannot sign in again", not "is signed out", which is not what anybody
+     * pressing that button believes.
+     *
+     * The identity is global, so this ends every session — including ones for
+     * OTHER businesses this person works for. That is the deliberate choice:
+     * over-revoking costs a colleague one sign-in, and under-revoking leaves a
+     * suspended account working.
+     */
+    if (status === EmployeeStatus.Suspended) {
+      const revoked = await this.sessions.revokeAllForIdentity(employee.identityId);
+      this.logger.info(
+        { enterpriseId, employeeId: employee.employeeId, revoked },
+        'employee suspended — every session for that identity was revoked',
+      );
+    }
 
     await this.audit.record({
       action: AuditAction.Updated,

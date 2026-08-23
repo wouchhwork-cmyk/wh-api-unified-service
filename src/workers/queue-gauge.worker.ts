@@ -41,9 +41,16 @@ export class QueueGaugeWorker {
       return;
     }
 
+    /*
+       RECENT dead letters, not the cumulative total. The total counted every
+       dead letter ever recorded, so one poison message pinned this at WARN
+       permanently — and an alarm that is always on is worse than none, because
+       it trains whoever reads the logs to ignore it. The total is still
+       reported below, for context.
+     */
     const worrying = gauges.filter(
       (gauge) =>
-        gauge.deadLettered > 0 ||
+        gauge.recentDeadLettered > 0 ||
         (gauge.oldestDueAgeSeconds ?? 0) > QueueGaugeWorker.LAG_WARN_SECONDS,
     );
 
@@ -56,6 +63,7 @@ export class QueueGaugeWorker {
           lagSeconds: gauge.oldestDueAgeSeconds,
           leased: gauge.leased,
           deadLettered: gauge.deadLettered,
+          recentDeadLettered: gauge.recentDeadLettered,
         },
       ]),
     );
