@@ -39,6 +39,12 @@ const INITIAL_SYNCS: readonly SyncJobKind[] = [
   SyncJobKind.BackfillPosts,
   SyncJobKind.BackfillComments,
   SyncJobKind.BackfillConversations,
+  /*
+   * Mentions only have history on Instagram, and the walk reports "finished,
+   * nothing added" for a Page rather than failing — so this is enqueued for both
+   * platforms rather than branching here on something the walk already knows.
+   */
+  SyncJobKind.BackfillMentions,
 ] as const;
 
 @Injectable()

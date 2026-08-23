@@ -25,6 +25,8 @@ export const PostSummarySchema = z.object({
   publishedAt: z.date().nullable(),
   commentCount: z.number().int(),
   likeCount: z.number().int(),
+  /** Facebook only; Instagram exposes no share count, so it stays 0 there. */
+  shareCount: z.number().int(),
   channelRefId: z.uuid(),
   channelName: z.string().nullable(),
   media: z

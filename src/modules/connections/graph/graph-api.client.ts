@@ -16,6 +16,7 @@ import type {
   GraphEdge,
   GraphFeedPost,
   GraphInstagramMedia,
+  GraphInstagramTag,
   GraphMeResponse,
   GraphTokenResponse,
   SendResult,
@@ -196,11 +197,27 @@ export class GraphApiClient {
     return { platformId: result.id };
   }
 
-  async hideComment(commentId: string, hidden: boolean, pageAccessToken: string): Promise<void> {
-    await this.request('POST', commentId, {
-      accessToken: pageAccessToken,
-      body: { is_hidden: String(hidden) },
-    });
+  /**
+   * Hides or unhides a comment.
+   *
+   * THE PARAMETER NAME DIFFERS BY PLATFORM: a Page comment takes `is_hidden`, an
+   * Instagram comment takes `hide`. Sending is_hidden to Instagram is not an
+   * error — Meta accepts the call and ignores the unknown field — so hiding an
+   * Instagram comment reported success and did nothing at all, which is the
+   * worst possible outcome for a moderation action.
+   *
+   * Same shape as replyToComment, which differs by platform for the same reason.
+   */
+  async hideComment(
+    commentId: string,
+    hidden: boolean,
+    pageAccessToken: string,
+    platform: Platform = Platform.Facebook,
+  ): Promise<void> {
+    const body =
+      platform === Platform.Instagram ? { hide: String(hidden) } : { is_hidden: String(hidden) };
+
+    await this.request('POST', commentId, { accessToken: pageAccessToken, body });
   }
 
   async deleteComment(commentId: string, pageAccessToken: string): Promise<void> {
@@ -279,6 +296,17 @@ export class GraphApiClient {
       'status_type',
       'full_picture',
       'attachments{type,media}',
+      /*
+       * Engagement counts, each asked for by name. Without these three,
+       * posts.like_count and posts.share_count stayed at their column default of
+       * zero for every Facebook post — columns the API sorts on and nothing ever
+       * wrote. `comment_summary` is aliased because `comments` is already used
+       * above for the actual comment rows and Graph will not return one field
+       * twice under one name.
+       */
+      'reactions.summary(total_count).limit(0)',
+      'comment_summary:comments.summary(total_count).limit(0)',
+      'shares',
       ...(options.withComments
         ? [
             `comments.limit(${SYNC_COMMENTS_PER_POST}){id,message,created_time,from{id,name},parent{id}}`,
@@ -342,7 +370,10 @@ export class GraphApiClient {
     return this.request<GraphEdge<GraphInstagramMedia>>('GET', `${instagramUserId}/media`, {
       accessToken,
       params: {
-        fields: `id,caption,media_type,permalink,timestamp,comments_count,media_url,thumbnail_url,${commentFields}`,
+        // like_count is requested explicitly for the same reason the Facebook
+        // reaction summary is: the column exists, is sorted on, and was never
+        // written because nothing asked the platform for it.
+        fields: `id,caption,media_type,permalink,timestamp,comments_count,like_count,media_url,thumbnail_url,${commentFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
       },
@@ -373,6 +404,46 @@ export class GraphApiClient {
         ...(after ? { after } : {}),
       },
     });
+  }
+
+  /**
+   * Posts by OTHER people that tagged this Instagram account — the `tags` edge.
+   *
+   * The only way to see the ones that happened before the app was connected.
+   * Meta's `mentions` webhook covers comment mentions from now on and has no
+   * history, so without this a business's mention feed starts empty and stays
+   * that way for anything older than the connection.
+   */
+  async listInstagramTags(
+    instagramUserId: string,
+    accessToken: string,
+    after?: string,
+  ): Promise<GraphEdge<GraphInstagramTag>> {
+    return this.request<GraphEdge<GraphInstagramTag>>('GET', `${instagramUserId}/tags`, {
+      accessToken,
+      params: {
+        fields:
+          'id,caption,media_type,media_url,permalink,timestamp,username,like_count,comments_count',
+        limit: String(SYNC_PAGE_SIZE),
+        ...(after ? { after } : {}),
+      },
+    });
+  }
+
+  /**
+   * Which fields this app is actually subscribed to on a Page.
+   *
+   * The READ side of subscribePageToApp, and it exists because the write side
+   * succeeding is not evidence: a subscription can be removed from the Facebook
+   * side at any time, and the only symptom is webhooks quietly stopping. This
+   * turns "nothing has arrived for a week" into a question with an answer.
+   */
+  async listSubscribedFields(pageId: string, pageAccessToken: string): Promise<string[]> {
+    const result = await this.request<{
+      data?: { subscribed_fields?: string[] }[];
+    }>('GET', `${pageId}/subscribed_apps`, { accessToken: pageAccessToken });
+
+    return result.data?.[0]?.subscribed_fields ?? [];
   }
 
   /**

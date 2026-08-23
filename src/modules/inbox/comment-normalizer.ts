@@ -1,4 +1,5 @@
-import { Platform } from '@/shared/enums';
+import { IdentifierKind, Platform } from '@/shared/enums';
+import { normalizeOptionalText } from '@/shared/utils/normalize';
 
 /**
  * Facebook sends a FEED change: one shape covering posts, likes, shares and
@@ -57,6 +58,17 @@ export interface CanonicalComment {
    * the person can be addressed and searched by, not just a label.
    */
   readonly authorHandle: string | null;
+  /**
+   * What KIND of thing authorPlatformId is.
+   *
+   * Normally an app-scoped id the platform issued — a PSID or an IGSID — and
+   * the projector derives that from the platform. It is stated here for the one
+   * case where the platform gives no id at all: Instagram's `tags` edge, which
+   * returns another person's media with a `username` and nothing else. A handle
+   * is a weaker identity than an id (it can be changed and reused), so it is
+   * recorded AS a handle rather than passed off as an id.
+   */
+  readonly authorIdentifierKind?: IdentifierKind;
 }
 
 export type NormalizedComment = { readonly comment: CanonicalComment } | { readonly skip: string };
@@ -211,6 +223,16 @@ interface InstagramMentionChange {
   readonly value?: {
     readonly media_id?: string;
     readonly comment_id?: string;
+    /*
+     * The fields below come from the BACKFILL, not from the webhook. The
+     * `tags` edge returns the tagging media itself — caption, permalink,
+     * timestamp and the tagger's handle — which is everything the projector
+     * needs, and is why an Instagram mention is no longer a dead end.
+     */
+    readonly username?: string;
+    readonly caption?: string;
+    readonly permalink?: string;
+    readonly timestamp?: string;
   };
 }
 
@@ -225,11 +247,42 @@ interface InstagramMentionChange {
 export function normalizeMention(platform: Platform, payload: unknown): NormalizedComment {
   if (platform === Platform.Instagram) {
     const value = (payload as InstagramMentionChange).value;
-    const target = value?.comment_id ?? value?.media_id;
+    const target = value?.media_id ?? value?.comment_id;
+    if (!target) return { skip: 'the instagram mention names nothing' };
+
+    /*
+     * A HANDLE IS THE ONLY IDENTITY THE tags EDGE OFFERS.
+     *
+     * The webhook carries a media or comment id and nothing else, which is why
+     * a live Instagram mention is still skipped — there is no author and no
+     * text to project. The BACKFILL reads /tags, which returns the tagging
+     * media with the tagger's username, so those do project.
+     *
+     * The handle is marked as a handle rather than passed off as an app-scoped
+     * id: it can be changed and reused, and a later comment from the same
+     * person WILL carry a real IGSID, so the two must be distinguishable.
+     */
+    if (!value?.username) {
+      return {
+        skip: `instagram mention ${target} carries no author — the webhook gives none, and only a /tags backfill can supply it`,
+      };
+    }
+
     return {
-      skip: target
-        ? `instagram mention ${target} carries no author or text — projecting it needs a second graph read`
-        : 'the instagram mention names nothing',
+      comment: {
+        commentId: target,
+        // A mention opens its own thread: it is somebody else's post, so there
+        // is no comment of ours for it to hang under.
+        rootCommentId: target,
+        parentId: null,
+        postId: value.media_id ?? null,
+        text: normalizeOptionalText(value.caption ?? null),
+        createdAt: parseInstagramTimestamp(value.timestamp),
+        authorPlatformId: value.username,
+        authorName: value.username,
+        authorHandle: value.username,
+        authorIdentifierKind: IdentifierKind.InstagramUsername,
+      },
     };
   }
 

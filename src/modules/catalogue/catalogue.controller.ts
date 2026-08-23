@@ -97,6 +97,7 @@ function toPostSummary(row: PostFeedRow): Record<string, unknown> {
     publishedAt: row.publishedAt,
     commentCount: Number(row.commentCount),
     likeCount: Number(row.likeCount),
+    shareCount: Number(row.shareCount),
     /*
      * Null rather than an empty object when there is no preview, so a client can
      * branch on presence. An Instagram url is signed and expires, so a client

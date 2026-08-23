@@ -18,6 +18,8 @@ interface PostUpdatePayload {
     readonly published_at?: string | null;
     readonly post_kind?: string | null;
     readonly comment_count?: number | null;
+    readonly like_count?: number | null;
+    readonly share_count?: number | null;
     readonly media?: { url?: string; thumbnailUrl?: string; type?: string } | null;
   };
 }
@@ -63,6 +65,8 @@ export class PostProjectorService {
       permalinkUrl: value.permalink_url ?? null,
       publishedAt: parseTimestamp(value.published_at),
       commentCount: value.comment_count ?? null,
+      likeCount: value.like_count ?? null,
+      shareCount: value.share_count ?? null,
       media: value.media ?? null,
     });
 

@@ -256,7 +256,10 @@ export class OutboundRelayWorker extends BasePoller {
       case OutboundEventType.CommentHide: {
         const payload = event.payload as CommentModerationPayload;
         if (!payload.commentId) throw new Error('incomplete comment hide');
-        await this.graph.hideComment(payload.commentId, payload.hidden ?? true, token);
+        // Instagram takes `hide`, Facebook takes `is_hidden`. Meta ignores the
+        // wrong one silently, so passing the platform is what makes the call do
+        // anything at all.
+        await this.graph.hideComment(payload.commentId, payload.hidden ?? true, token, platform);
         return null;
       }
       case OutboundEventType.CommentDelete: {

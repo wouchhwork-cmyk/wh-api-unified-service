@@ -3,6 +3,15 @@ export enum SyncJobKind {
   BackfillPosts = 'backfill_posts',
   BackfillComments = 'backfill_comments',
   BackfillConversations = 'backfill_conversations',
+  /**
+   * Instagram's `tags` edge — posts by other people that tagged this account.
+   *
+   * The only source of mention HISTORY. Meta's `mentions` webhook carries a
+   * media or comment id and no author, so a live mention cannot be projected at
+   * all; without this walk a business's mention feed starts empty and stays
+   * that way for anything older than the connection.
+   */
+  BackfillMentions = 'backfill_mentions',
   RefreshProfile = 'refresh_profile',
   RefreshPostMetrics = 'refresh_post_metrics',
 }

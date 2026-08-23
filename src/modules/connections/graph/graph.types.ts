@@ -132,6 +132,21 @@ export interface GraphFeedPost {
   full_picture?: string;
   attachments?: { data?: { type?: string; media?: { image?: { src?: string } } }[] };
   comments?: GraphEdge<GraphComment>;
+  /*
+   * ENGAGEMENT COUNTS, and each has to be asked for by name.
+   *
+   * A Page post carries none of them by default, so posts.like_count and
+   * posts.share_count sat at their column default of 0 for every Facebook post
+   * ever synced — a "top posts" sort over a column nothing writes.
+   *
+   * `reactions.summary(total_count)` is the count of ALL reaction types, which is
+   * what a business means by likes; the individual breakdown would need a
+   * request per type. `comments.summary(total_count)` is the platform's own
+   * count, deliberately separate from the comments we have actually stored.
+   */
+  reactions?: { summary?: { total_count?: number } };
+  comment_summary?: { summary?: { total_count?: number } };
+  shares?: { count?: number };
 }
 
 export interface GraphConversationMessage {
@@ -190,5 +205,27 @@ export interface GraphInstagramMedia {
   thumbnail_url?: string;
   timestamp?: string;
   comments_count?: number;
+  /** Requested explicitly; without it posts.like_count stays at zero. */
+  like_count?: number;
   comments?: GraphEdge<GraphInstagramComment>;
+}
+
+/**
+ * A post by SOMEONE ELSE that tagged this Instagram account — the `tags` edge.
+ *
+ * Distinct from a comment mention, which arrives on the `mentions` webhook
+ * field: this is the account being tagged in another person's media, and there
+ * is no webhook for the ones that happened before the app was connected.
+ */
+export interface GraphInstagramTag {
+  id: string;
+  caption?: string;
+  media_type?: string;
+  media_url?: string;
+  permalink?: string;
+  timestamp?: string;
+  /** The handle of the person whose post this is. */
+  username?: string;
+  like_count?: number;
+  comments_count?: number;
 }

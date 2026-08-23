@@ -48,6 +48,7 @@ const IMPLEMENTED_JOB_KINDS: ReadonlySet<SyncJobKind> = new Set([
   SyncJobKind.BackfillPosts,
   SyncJobKind.BackfillComments,
   SyncJobKind.BackfillConversations,
+  SyncJobKind.BackfillMentions,
   SyncJobKind.RefreshProfile,
   SyncJobKind.RefreshPostMetrics,
 ]);
@@ -273,6 +274,9 @@ export class BackfillWorker extends BasePoller {
     if (channel.platform === Platform.Instagram) {
       // Guarded when the job was claimed.
       const pageId = channel.parentPlatformChannelId as string;
+      if (job.jobKind === SyncJobKind.BackfillMentions) {
+        return this.instagramTagPage(job, channel.platformChannelId, token, correlationId, cursor);
+      }
       if (job.jobKind === SyncJobKind.BackfillConversations) {
         return this.instagramConversationPage(
           job,
@@ -296,7 +300,75 @@ export class BackfillWorker extends BasePoller {
     if (job.jobKind === SyncJobKind.BackfillConversations) {
       return this.conversationPage(job, channel.platformChannelId, token, correlationId, cursor);
     }
+    if (job.jobKind === SyncJobKind.BackfillMentions) {
+      /*
+       * Facebook mentions arrive on the `feed` webhook and have no separate read
+       * edge to walk — there is no `{pageId}/tags`. Reported as finished with
+       * nothing added rather than paused: nothing is wrong, and pausing would
+       * hold the live slot for a channel whose other syncs are fine.
+       */
+      return { itemsAdded: 0, nextCursor: null, finished: true };
+    }
     return this.commentPage(job, channel.platformChannelId, token, correlationId, cursor, posts);
+  }
+
+  /**
+   * One page of Instagram tags: posts by OTHER people that named this account.
+   *
+   * Emitted as Mention events through the same ledger as everything else, so the
+   * existing projector resolves the person, opens the thread and stores the
+   * message. The tagger is identified by HANDLE — the tags edge offers no id at
+   * all — and the normalizer marks it as a handle so it is never confused with
+   * the IGSID a later comment from the same person will carry.
+   */
+  private async instagramTagPage(
+    job: ClaimedSyncJob,
+    instagramUserId: string,
+    token: string,
+    correlationId: string,
+    cursor: string | null,
+  ): Promise<SliceResult> {
+    const edge = await this.graph.listInstagramTags(instagramUserId, token, cursor ?? undefined);
+
+    let added = 0;
+    for (const tag of edge.data ?? []) {
+      if (!tag.id || !tag.username) continue;
+
+      const payload = {
+        field: 'mentions',
+        value: {
+          media_id: tag.id,
+          username: tag.username,
+          caption: tag.caption,
+          permalink: tag.permalink,
+          timestamp: tag.timestamp,
+        },
+      };
+
+      const result = await this.inbound.insertIgnoringDuplicate({
+        enterpriseId: job.enterpriseId,
+        channelId: job.channelId,
+        sourceKind: SourceKind.Channel,
+        sourceId: instagramUserId,
+        platform: Platform.Instagram,
+        eventType: InboundEventType.Mention,
+        platformEventId: tag.id,
+        dedupKey: inboundDedupKey(Platform.Instagram, InboundEventType.Mention, tag.id),
+        correlationId,
+        payload,
+        // The platform's own timestamp, not now: this is history, and the
+        // ledger's receivedAt is what orders it against everything else.
+        receivedAt: tag.timestamp ? new Date(tag.timestamp) : new Date(),
+        priority: EventPriority.Low,
+      });
+      if (result.id !== null) added += 1;
+    }
+
+    return {
+      itemsAdded: added,
+      nextCursor: edge.paging?.cursors?.after ?? null,
+      finished: !edge.paging?.next,
+    };
   }
 
   /** One page of Instagram media, emitting a ledger row per comment found. */
@@ -320,6 +392,9 @@ export class BackfillWorker extends BasePoller {
           publishedAt: media.timestamp ?? null,
           kind: media.media_type ?? null,
           commentCount: media.comments_count ?? null,
+          likeCount: media.like_count ?? null,
+          // Instagram exposes no share count on the media edge.
+          shareCount: null,
           media: instagramMedia(media),
         });
         if (stored) added += 1;
@@ -455,7 +530,15 @@ export class BackfillWorker extends BasePoller {
               permalink: post.permalink_url ?? null,
               publishedAt: post.created_time ?? null,
               kind: post.status_type ?? null,
-              commentCount: null,
+              /*
+               * The PLATFORM's counts, each of which had to be asked for by name
+               * in listPagePosts. They were all null here, so posts.like_count
+               * and posts.share_count stayed at zero for every Facebook post the
+               * service had ever synced.
+               */
+              commentCount: post.comment_summary?.summary?.total_count ?? null,
+              likeCount: post.reactions?.summary?.total_count ?? null,
+              shareCount: post.shares?.count ?? null,
               media: facebookMedia(post),
             }),
           )
@@ -751,6 +834,8 @@ export class BackfillWorker extends BasePoller {
       publishedAt: string | null;
       kind: string | null;
       commentCount: number | null;
+      likeCount: number | null;
+      shareCount: number | null;
       media: { url?: string; thumbnailUrl?: string; type?: string } | null;
     },
   ): Promise<boolean> {
@@ -765,6 +850,8 @@ export class BackfillWorker extends BasePoller {
         published_at: post.publishedAt,
         post_kind: post.kind,
         comment_count: post.commentCount,
+        like_count: post.likeCount,
+        share_count: post.shareCount,
         media: post.media,
       },
     };

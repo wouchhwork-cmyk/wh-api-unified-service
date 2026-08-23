@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeComment } from '@/modules/inbox/comment-normalizer';
-import { Platform } from '@/shared/enums';
+import { normalizeComment, normalizeMention } from '@/modules/inbox/comment-normalizer';
+import { IdentifierKind, Platform } from '@/shared/enums';
 
 /**
  * The two platforms' comment shapes, collapsed to one.
@@ -236,6 +236,83 @@ describe('normalizeComment', () => {
     it('skips a payload with no comment id', () => {
       const result = normalizeComment(Platform.Instagram, change({ text: 'orphan' }));
       expect(result).toEqual({ skip: 'the instagram comment carries no id' });
+    });
+  });
+
+  describe('mentions', () => {
+    it('projects an instagram tag, keyed on the handle it is given', () => {
+      /*
+       * Instagram mentions used to be a dead end: the webhook carries a media or
+       * comment id and NO author, so every one was skipped and a business's
+       * mention feed was permanently empty. The /tags backfill supplies the
+       * tagger's username, which is the only identity that edge offers — so it
+       * is recorded AS a handle rather than passed off as an app-scoped id,
+       * because a later comment from the same person will carry a real IGSID.
+       */
+      const result = normalizeMention(Platform.Instagram, {
+        field: 'mentions',
+        value: {
+          media_id: 'IG_MEDIA_9',
+          username: 'ada',
+          caption: 'look at this',
+          permalink: 'https://instagram.test/p/9',
+          timestamp: '2026-05-01T10:00:00+0000',
+        },
+      });
+
+      expect(result).toMatchObject({
+        comment: {
+          commentId: 'IG_MEDIA_9',
+          rootCommentId: 'IG_MEDIA_9',
+          parentId: null,
+          postId: 'IG_MEDIA_9',
+          text: 'look at this',
+          authorPlatformId: 'ada',
+          authorHandle: 'ada',
+          authorIdentifierKind: IdentifierKind.InstagramUsername,
+        },
+      });
+    });
+
+    it('still skips a live instagram mention webhook, and says why', () => {
+      // Nothing has changed here: the webhook gives no author, and inventing one
+      // would file somebody else's post against the wrong person.
+      const result = normalizeMention(Platform.Instagram, {
+        field: 'mentions',
+        value: { media_id: 'IG_MEDIA_1' },
+      });
+
+      expect(result).toMatchObject({ skip: expect.stringContaining('carries no author') });
+    });
+
+    it('skips an instagram mention that names nothing at all', () => {
+      expect(normalizeMention(Platform.Instagram, { field: 'mentions', value: {} })).toEqual({
+        skip: 'the instagram mention names nothing',
+      });
+    });
+
+    it('reads a facebook mention, which carries its own author', () => {
+      const result = normalizeMention(Platform.Facebook, {
+        field: 'mention',
+        value: {
+          verb: 'add',
+          post_id: 'POST_7',
+          sender_id: 'FB_USER',
+          sender_name: 'Grace',
+          message: 'nice work',
+          created_time: 1_700_000_000,
+        },
+      });
+
+      expect(result).toMatchObject({
+        comment: {
+          commentId: 'POST_7',
+          authorPlatformId: 'FB_USER',
+          authorName: 'Grace',
+          // Facebook exposes no handle, and the projector derives the id kind.
+          authorHandle: null,
+        },
+      });
     });
   });
 });

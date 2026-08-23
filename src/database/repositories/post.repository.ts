@@ -12,6 +12,7 @@ export interface PostFeedRow {
   readonly publishedAt: Date | null;
   readonly commentCount: number;
   readonly likeCount: number;
+  readonly shareCount: number;
   readonly media: { url?: string; thumbnailUrl?: string; type?: string } | null;
   readonly status: PostStatus;
   readonly channelRefId: string;
@@ -28,6 +29,14 @@ export interface UpsertPostInput {
   readonly permalinkUrl: string | null;
   readonly publishedAt: Date | null;
   readonly commentCount: number | null;
+  /**
+   * Reactions of every type on Facebook, likes on Instagram — what a business
+   * means by "likes". Null when this walk did not ask for metrics, which is not
+   * the same as zero and must not overwrite what is stored.
+   */
+  readonly likeCount: number | null;
+  /** Facebook only; Instagram exposes no share count on the media edge. */
+  readonly shareCount: number | null;
   /**
    * `{ url, thumbnailUrl, type }`, or null when the platform offered no
    * preview. Stored as jsonb because the shape differs per platform and per
@@ -54,8 +63,10 @@ export class PostRepository extends BaseRepository {
     const { rows } = await this.mutate<{ id: number; created: boolean }>(
       `INSERT INTO posts
          (enterprise_id, channel_id, platform, platform_post_id, post_kind,
-          caption, permalink_url, published_at, comment_count, media, status, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 0), COALESCE($10, '{}'::jsonb), $11, now())
+          caption, permalink_url, published_at, comment_count, like_count, share_count,
+          media, status, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 0), COALESCE($10, 0),
+               COALESCE($11, 0), COALESCE($12, '{}'::jsonb), $13, now())
        ON CONFLICT (channel_id, platform_post_id)
        DO UPDATE SET
          post_kind     = EXCLUDED.post_kind,
@@ -63,6 +74,16 @@ export class PostRepository extends BaseRepository {
          permalink_url = COALESCE(EXCLUDED.permalink_url, posts.permalink_url),
          published_at  = COALESCE(EXCLUDED.published_at, posts.published_at),
          comment_count = GREATEST(EXCLUDED.comment_count, posts.comment_count),
+         /*
+          * GREATEST for the same reason as comment_count: a walk that did not ask
+          * for metrics sends 0, and letting that win would reset a real count to
+          * zero and make a popular post look untouched. The trade is that a
+          * genuine DECREASE — a retracted like, a deleted comment — is not
+          * reflected until the count climbs past its old high water mark, which
+          * is the cheaper wrong answer.
+          */
+         like_count    = GREATEST(EXCLUDED.like_count, posts.like_count),
+         share_count   = GREATEST(EXCLUDED.share_count, posts.share_count),
          /*
           * Only overwritten by something non-empty. An Instagram media url
           * expires, so a refresh that returns one must replace the stale one —
@@ -83,6 +104,8 @@ export class PostRepository extends BaseRepository {
         input.permalinkUrl,
         input.publishedAt,
         input.commentCount,
+        input.likeCount,
+        input.shareCount,
         input.media === null ? null : JSON.stringify(input.media),
         PostStatus.Published,
       ],
@@ -146,6 +169,7 @@ export class PostRepository extends BaseRepository {
               p.comment_count      AS "commentCount",
               p.media,
               p.like_count         AS "likeCount",
+              p.share_count        AS "shareCount",
               p.status,
               c.ref_id             AS "channelRefId",
               c.name               AS "channelName"

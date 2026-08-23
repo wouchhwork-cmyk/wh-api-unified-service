@@ -113,10 +113,19 @@ export class CommentProjectorService {
     conversationKind: ConversationKind,
     firstSource: CustomerFirstSource,
   ): Promise<ProjectionOutcome> {
+    /*
+     * Stated by the normalizer when it has to be, derived otherwise.
+     *
+     * Instagram's `tags` edge — the only source of mention HISTORY — returns
+     * another person's media with a username and no id at all, so a mention
+     * backfilled from it is keyed on the handle and says so. Everything else
+     * carries an app-scoped id the platform issued.
+     */
     const identifierKind =
-      platform === Platform.Instagram
+      comment.authorIdentifierKind ??
+      (platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId
-        : IdentifierKind.FacebookUserId;
+        : IdentifierKind.FacebookUserId);
 
     return this.tx.runInTransaction(async () => {
       const customer = await this.customers.resolveOrCreate({
@@ -138,7 +147,7 @@ export class CommentProjectorService {
        * searched for. Non-primary, because the numeric id is what survives a
        * rename.
        */
-      if (comment.authorHandle) {
+      if (comment.authorHandle && identifierKind !== IdentifierKind.InstagramUsername) {
         await this.customers.linkIdentifier({
           enterpriseId,
           customerId: customer.customerId,
