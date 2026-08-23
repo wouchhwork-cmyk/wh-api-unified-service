@@ -14,6 +14,8 @@ import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
+import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import type { MessageRow } from '@/database/repositories/message.repository';
 import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
 import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS, SSE_MAX_STREAM_MS } from '@/shared/constants';
@@ -181,14 +183,14 @@ export class InboxController {
     const parsed = ThreadQuerySchema.parse(query);
     const result = await this.inbox.readThread(
       actor.enterpriseId,
-      refId,
+      RefIdParamSchema.parse(refId),
       parsed.limit ?? DEFAULT_PAGE_SIZE,
       parsed.cursor ?? null,
       parsed.beforeId ?? null,
     );
     return {
       conversation: toConversationSummary(result.conversation),
-      messages: result.messages,
+      messages: result.messages.map(toMessage),
       // The thread had no pagination surface at all: a conversation with more
       // than one page of history simply ended, with nothing to say so.
       pagination: { nextCursor: result.nextCursor, hasMore: result.hasMore },
@@ -212,7 +214,7 @@ export class InboxController {
   ): Promise<ReplyResponse> {
     const parsed = ReplyRequestSchema.parse(body);
     return this.inbox.reply(actor, {
-      conversationRefId: refId,
+      conversationRefId: RefIdParamSchema.parse(refId),
       body: parsed.body,
       idempotencyKey: parsed.idempotencyKey,
       internalNote: parsed.internalNote,
@@ -239,7 +241,7 @@ export class InboxController {
       employeeId = employee.employeeId;
     }
 
-    await this.inbox.assign(actor.enterpriseId, refId, employeeId);
+    await this.inbox.assign(actor.enterpriseId, RefIdParamSchema.parse(refId), employeeId);
   }
 
   @Post(':refId/status')
@@ -252,7 +254,11 @@ export class InboxController {
     @Body() body: unknown,
   ): Promise<void> {
     const parsed = StatusRequestSchema.parse(body);
-    await this.inbox.setStatus(actor.enterpriseId, refId, parsed.status as ConversationStatus);
+    await this.inbox.setStatus(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      parsed.status as ConversationStatus,
+    );
   }
 
   @Post(':refId/read')
@@ -266,11 +272,37 @@ export class InboxController {
     @CurrentScopedActor() actor: ScopedActor,
     @Param('refId') refId: string,
   ): Promise<void> {
-    await this.inbox.markRead(actor.enterpriseId, refId);
+    await this.inbox.markRead(actor.enterpriseId, RefIdParamSchema.parse(refId));
   }
 }
 
 /** Entities are never returned directly; this is what keeps ids and internals in. */
+/**
+ * One message, with NO internal ids.
+ *
+ * The thread used to return the row as it came out of the database — `id`,
+ * `customerId` and `sentByEmployeeId`, all internal bigints. That is the one
+ * thing this API's own tests assert elsewhere that it never does, and it is
+ * useless besides: a client cannot turn an employee id into a name. It gets the
+ * name instead.
+ */
+function toMessage(row: MessageRow): Record<string, unknown> {
+  return {
+    refId: row.refId,
+    direction: row.direction,
+    body: row.body,
+    messageKind: row.messageKind,
+    status: row.status,
+    isRead: row.isRead,
+    isInternalNote: row.isInternalNote,
+    platformSentAt: row.platformSentAt,
+    createdAt: row.createdAt,
+    // Null for anything the customer sent, and for a message projected from a
+    // webhook rather than typed by somebody here.
+    sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
+  };
+}
+
 function toConversationSummary(row: {
   refId: string;
   conversationKind: string;

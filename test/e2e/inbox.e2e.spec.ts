@@ -71,15 +71,20 @@ describe('the shared inbox', () => {
       .send({ status: 'active' })
       .expect(200);
 
-    // The inbox is feature-gated, and the gate is real: without this every
-    // request below is a 403 rather than a failure of what is under test.
-    await http()
-      .post(
-        `/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/features/unified_inbox`,
-      )
-      .set(adminAuth)
-      .send({ status: 'active' })
-      .expect(200);
+    /*
+     * Every surface here is feature-gated, and the gate is real: without these
+     * every request below is a 403 rather than a failure of what is under test.
+     * That the gate itself works is asserted in the platform-console suite.
+     */
+    for (const feature of ['unified_inbox', 'post_insights', 'customer_directory']) {
+      await http()
+        .post(
+          `/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/features/${feature}`,
+        )
+        .set(adminAuth)
+        .send({ status: 'active' })
+        .expect(200);
+    }
 
     return {
       ownerToken: verified.body.data.accessToken as string,
@@ -243,6 +248,146 @@ describe('the shared inbox', () => {
     // stopped, with nothing to say there was more.
     expect(first.body.data.messages).toHaveLength(1);
     expect(first.body.data.pagination).toEqual({ nextCursor: null, hasMore: false });
+  });
+
+  it('answers a malformed reference with 422, not 500', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    /*
+     * ref_id is a `uuid` column, so an unvalidated path segment reached Postgres
+     * and came back as 22P02 — a 500 on input the caller controls. The schema to
+     * prevent that already existed and was applied on the platform and employee
+     * routes but not here.
+     */
+    await http().get('/api/v1/conversations/not-a-uuid').set(auth).expect(422);
+    await http().post('/api/v1/conversations/not-a-uuid/read').set(auth).expect(422);
+    await http()
+      .post('/api/v1/conversations/not-a-uuid/status')
+      .set(auth)
+      .send({ status: 'open' })
+      .expect(422);
+    await http().get('/api/v1/posts?channelRefId=not-a-uuid').set(auth).expect(422);
+  });
+
+  it('restarts a listing from the top when the cursor is nonsense', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    // The cursor is OPAQUE: clients must not build one, so there is nothing
+    // useful to tell them about a bad one. It must not be a 500 either — the
+    // three hand-rolled decoders it replaced all bound an Invalid Date into the
+    // query.
+    const garbage = await http().get('/api/v1/conversations?cursor=garbage').set(auth).expect(200);
+    expect(garbage.body.data).toHaveLength(1);
+
+    const badDate = Buffer.from('{"t":"nope","i":1}').toString('base64url');
+    await http().get(`/api/v1/customers?cursor=${badDate}`).set(auth).expect(200);
+  });
+
+  it('returns a thread without a single internal id', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const thread = await http()
+      .get(`/api/v1/conversations/${refId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    // It used to return the row as it came out of the database: id, customerId
+    // and sentByEmployeeId, all internal bigints — the one thing this API's own
+    // platform-console test asserts it never does.
+    const message = thread.body.data.messages[0];
+    expect(Object.keys(message).sort()).toEqual([
+      'body',
+      'createdAt',
+      'direction',
+      'isInternalNote',
+      'isRead',
+      'messageKind',
+      'platformSentAt',
+      'refId',
+      'sentBy',
+      'status',
+    ]);
+  });
+
+  it('names the colleague who sent a reply', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'we open at nine', internalNote: true, idempotencyKey: 'note-one-key' })
+      .expect(202);
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const note = thread.body.data.messages.find(
+      (m: { isInternalNote: boolean }) => m.isInternalNote,
+    );
+    // A name, not an id: a client cannot turn an employee id into anything.
+    expect(note.sentBy).toEqual({ refId: expect.any(String), name: 'Meera Iyer' });
+  });
+
+  it('refuses a reply with no idempotency key at all', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    // The one write that reaches a customer had no idempotency unless the caller
+    // opted in, which is exactly backwards.
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ body: 'hello', internalNote: true })
+      .expect(422);
+  });
+
+  it('refuses a key already used for a different message', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'first', internalNote: true, idempotencyKey: 'shared-key-x' })
+      .expect(202);
+
+    /*
+     * Same key, different request. It used to return the FIRST message with a
+     * 202: the caller was told its second reply was accepted, the reply was
+     * never written, and nothing recorded that a customer had been left
+     * unanswered.
+     */
+    const conflict = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'second', internalNote: false, idempotencyKey: 'shared-key-x' })
+      .expect(409);
+    expect(conflict.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+  });
+
+  it('returns the original message when the SAME request is retried', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    const body = { body: 'once', internalNote: true, idempotencyKey: 'retry-key-xx' };
+
+    const first = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send(body)
+      .expect(202);
+    const again = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send(body)
+      .expect(202);
+
+    expect(again.body.data.messageRefId).toBe(first.body.data.messageRefId);
   });
 
   it('never lets one business read another’s conversation', async () => {

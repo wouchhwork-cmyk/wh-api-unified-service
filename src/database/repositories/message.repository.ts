@@ -48,6 +48,14 @@ export interface MessageRow {
   readonly createdAt: Date;
   readonly customerId: number | null;
   readonly sentByEmployeeId: number | null;
+  /**
+   * WHO on the team sent it, joined rather than looked up per row.
+   *
+   * The thread used to hand the client `sentByEmployeeId` — an internal bigint —
+   * which is both a leak and useless: a client cannot turn it into a name.
+   */
+  readonly sentByRefId: string | null;
+  readonly sentByName: string | null;
 }
 
 @Injectable()
@@ -189,21 +197,32 @@ export class MessageRepository extends BaseRepository {
    * it sent, not which message.
    */
   async recordDelivery(
+    enterpriseId: number,
     outboundEventId: number,
     platformMessageId: string | null,
     status: MessageStatus,
   ): Promise<void> {
     await this.mutate(
-      // $2 and $3 are cast explicitly: without the casts Postgres sees $3 used
-      // both as a column value and inside a comparison, and fails with
-      // "inconsistent types deduced for parameter $3".
+      /*
+       * TENANT-SCOPED, like every other statement in this file. It keyed on
+       * outbound_event_id alone, and the database cannot backstop that: the
+       * foreign key to outbound_events is single-column, there is no
+       * (id, enterprise_id) parent key on it, and messages_outbound_event_idx is
+       * not unique. No reachable caller passes a foreign id today — the relay
+       * only ever passes a row it just claimed — but "no caller does" is not the
+       * same as "no caller can".
+       *
+       * $3 and $4 are cast explicitly: without the casts Postgres sees $4 used
+       * both as a column value and inside a comparison, and fails with
+       * "inconsistent types deduced for parameter $4".
+       */
       `UPDATE messages
-          SET platform_message_id = COALESCE($2::varchar, platform_message_id),
-              status = $3::varchar,
-              platform_sent_at = CASE WHEN $3::varchar = 'sent'
+          SET platform_message_id = COALESCE($3::varchar, platform_message_id),
+              status = $4::varchar,
+              platform_sent_at = CASE WHEN $4::varchar = 'sent'
                                       THEN now() ELSE platform_sent_at END
-        WHERE outbound_event_id = $1`,
-      [outboundEventId, platformMessageId, status],
+        WHERE enterprise_id = $1 AND outbound_event_id = $2`,
+      [this.requireEnterprise(enterpriseId), outboundEventId, platformMessageId, status],
     );
   }
 
@@ -232,21 +251,28 @@ export class MessageRepository extends BaseRepository {
        * so the COALESCE never yields null.
        */
       keyset =
-        `AND (COALESCE(platform_sent_at, created_at), id) ` +
+        `AND (COALESCE(m.platform_sent_at, m.created_at), m.id) ` +
         `< ($${params.length - 1}::timestamptz, $${params.length})`;
     }
 
     return this.query<MessageRow>(
-      `SELECT id, ref_id AS "refId", direction, body, message_kind AS "messageKind", status,
-              is_read AS "isRead", is_internal_note AS "isInternalNote",
-              platform_sent_at AS "platformSentAt", created_at AS "createdAt",
-              customer_id AS "customerId", sent_by_employee_id AS "sentByEmployeeId"
-         FROM messages
-        WHERE enterprise_id = $1
-          AND conversation_id = $2
-          AND is_deleted = false
+      `SELECT m.id, m.ref_id AS "refId", m.direction, m.body,
+              m.message_kind AS "messageKind", m.status,
+              m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
+              m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
+              m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
+              se.ref_id AS "sentByRefId",
+              NULLIF(TRIM(CONCAT_WS(' ', si.first_name, si.last_name)), '') AS "sentByName"
+         FROM messages m
+         LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
+                                          AND se.enterprise_id = m.enterprise_id
+                                          AND se.is_deleted = false
+         LEFT JOIN identities si ON si.id = se.identity_id AND si.is_deleted = false
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
           ${keyset}
-        ORDER BY COALESCE(platform_sent_at, created_at) DESC, id DESC
+        ORDER BY COALESCE(m.platform_sent_at, m.created_at) DESC, m.id DESC
         LIMIT $3`,
       params,
     );

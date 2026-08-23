@@ -1,7 +1,7 @@
 # What is left to do
 
-Everything known to be missing or wrong, as of the employees/platform work being
-finished. Written to be picked up cold: each item says what is wrong, why it
+Everything known to be missing or wrong, as of the review pass on
+`feature/base-setup` (23 August 2026). Written to be picked up cold: each item says what is wrong, why it
 matters, and roughly what it costs.
 
 Grouped by **risk**, not by feature area — the first section is things that are
@@ -9,6 +9,48 @@ already shipped and already wrong, which is a different kind of urgent from thin
 that do not exist yet.
 
 Sizes are rough: **S** under half a day, **M** a day or two, **L** longer.
+
+---
+
+## 0. What the review pass closed, and what it opened
+
+A full review of the branch produced ~160 confirmed findings. The ones fixed are
+struck through in place below; the ones NOT fixed are listed here so nothing is
+quietly dropped.
+
+The defects worth knowing about, because they say what kind of mistake this
+codebase makes:
+
+- **The relay could send a customer the same reply twice.** Its settlement writes
+  shared a try with the Graph call, so a database error AFTER a successful send
+  was reported as a send failure — and `markFailed` had no status guard, so it
+  flipped a `sent` row back to `failed` and the relay re-claimed it.
+- **`POST /conversations/:refId/status` had never worked.** It bound one parameter
+  as both a column value and an `IN (...)` operand, which Postgres refuses, so it
+  answered 500 for every request ever made to it. Found by calling it: no client
+  called it and no test covered it.
+- **Two keyset queries did not match their own ORDER BY**, so rows were silently
+  unreachable — conversations with no messages yet, and half of any thread with
+  backfilled history.
+- **A reply to a MENTION was sent as a direct message addressed to a comment id**,
+  and every top-level Facebook comment on one post collapsed into one
+  conversation, because `parent_id` is the POST on a top-level comment.
+- **Hiding an Instagram comment did nothing.** The parameter is `hide` there and
+  `is_hidden` on a Page, and Meta ignores the wrong one silently.
+- **`posts.like_count` and `posts.share_count` were never written**, because
+  nothing asked Meta for a reaction summary — two columns the API sorts on.
+
+### Still open, from the same review
+
+| | Size | Note |
+| --- | --- | --- |
+| **Throttler keys grow without bound** | M | The in-memory store never evicts, so the key space is (throttled handlers × every client address ever seen) and a deploy resets every counter. Per-process limits also multiply by replica count. Needs Redis, or a sweep and a cap. |
+| **`/health/detail` is readable by any viewer** | S | It is gated on `enterprise.view`, which every enterprise role holds, and returns platform-wide queue gauges plus database and Meta configuration. No tenant data, so metadata disclosure rather than a boundary break — but it also runs three unfiltered aggregate scans over the event ledgers on every call. |
+| **Staff roles are a fiction** | M | `support` and `ops` are seeded as `RoleScope.Staff` templates and can never be granted: `employee_roles.enterprise_id` is NOT NULL behind a composite foreign key, and a staff template has no enterprise. Staff authority is the `has_all_enterprise_access` flag and nothing else. The permission query is at least fail-closed now — it re-checks the staff row rather than trusting the token. |
+| **`GET /employees` is unpaginated** | S | It returns every employee of a business with no limit and no cursor, unlike every other list in the service. |
+| **The correlation id is still client-supplied** | S | See §1.6 — unchanged. |
+| **`LISTEN` clients have no TCP keepalive** | S | A socket reaped by a NAT gateway without FIN leaves a zombie listener, and the only cost is latency, because every worker still polls on its own timer. Deployment-dependent. |
+| **A committed OpenAPI document** | S | `openapi:export` still points at a script that does not exist, so there is no contract snapshot and no breaking-change check. |
 
 ---
 
@@ -62,12 +104,13 @@ Signed and expiring, but replayable inside its window — despite the design doc
 the endpoint's own Swagger description claiming single-use. Closing it needs
 somewhere to record spent nonces.
 
-### 1.5 Malformed reference ids are 500s on the conversation routes — **S**
+### ~~1.5 Malformed reference ids are 500s on the conversation routes~~ — DONE
 
-None of the six `/conversations` routes validate the path parameter, so
-`GET /conversations/not-a-uuid` reaches Postgres, raises `22P02` and surfaces as
-`INTERNAL_ERROR`. The platform and employees routes already use
-`RefIdParamSchema`; apply it here.
+`RefIdParamSchema` is applied on every `/conversations` route, and
+`test/e2e/inbox.e2e.spec.ts` asserts 422 rather than 500 on all four. The same
+class of defect turned up twice more and is fixed with it: a client-supplied
+`X-Forwarded-For` that is not an address was written into an `inet` column, and
+an opaque cursor carrying `{"t":"nope"}` bound an Invalid Date into a query.
 
 ### 1.6 The correlation id is client-supplied — **S**
 
@@ -76,12 +119,17 @@ None of the six `/conversations` routes validate the path parameter, so
 used as the audit anchor — so a caller can choose the id their actions are filed
 under. Fine as a trace hint, wrong as an audit key.
 
-### 1.7 Audit coverage is two modules deep — **M**
+### 1.7 Audit coverage — **S remaining**
 
-Only the platform console and the employees module write `audit_logs`. Auth
-(login, logout, verification, invitation acceptance) and the inbox (reply,
-assign, status change) write nothing, though `AuditAction` already declares
-`Login`, `LoginFailed`, `Logout`, `Verified`, `Assigned` and `Replied`.
+Mostly closed. Now written: staff impersonation (`impersonated`, the event a
+customer is most entitled to see, and which previously left no trace at all),
+platform-console reads of one business (`viewed`), conversation assignment
+(`assigned`) and conversation status changes (`updated`).
+
+Still silent: **auth** — login, `login_failed`, logout, verification and
+invitation acceptance — though `AuditAction` declares all of them. A reply is
+also still unaudited; the message row is the record, which is arguably enough,
+but `Replied` exists in the enum and is unused.
 
 ### 1.8 One test fails intermittently, unexplained — **M**
 
@@ -106,8 +154,10 @@ with `--reporter=json` on a loop until it reproduces, would settle it.
 - **Resend cooldown is configured and unenforced.** `resendCooldownMs` is read by
   nothing; only the hourly per-destination cap of 5 applies, and it counts every
   verification kind to that destination. There is also no resend endpoint.
-- **`recordDelivery` has no tenant predicate.** It keys on
-  `outbound_event_id` alone, unlike every other write in that repository.
+- ~~**`recordDelivery` has no tenant predicate.**~~ DONE — it takes the
+  enterprise and scopes on it, and the relay threads its own claimed row's
+  tenant through. The one caller with no tenant (an event naming no enterprise)
+  now says out loud that the message cannot be settled.
 - **Only `archived` blocks a reply,** despite a `CONVERSATION_CLOSED` code
   existing; resolved and closed threads are still repliable.
 - **A role's scope is not enforced at assignment.** Only the composite foreign
@@ -126,7 +176,7 @@ Machinery that exists, is migrated, has indexes, and is never read.
 
 | | Size | What is missing |
 | --- | --- | --- |
-| **Backfill** | M | `sync_jobs` rows are enqueued when a channel connects. Nothing claims them, so a business that connects a Page sees only what arrives *after* it connected — no history. The lease reaper does not cover `sync_jobs` either, though the index for it exists. |
+| ~~**Backfill**~~ | DONE | `BackfillWorker` claims `sync_jobs` and the reaper covers them. Four walks are implemented — posts, comments, conversations and Instagram `tags` for mention history — and they synthesise webhook-shaped rows into `inbound_events` so the live projectors do the work. What remains is Meta-side: `pages_read_user_content` for Facebook comments, and Advanced Access for conversation visibility. |
 | **Attachments** | M | Inbound media is never downloaded. A DM with an attachment becomes a message marked as an image regardless of real type, and no `message_attachments` row is written — despite a partial index built for exactly that query. |
 | **Token expiry warnings** | S | `SweeperWorker.flagExpiringTokens` emits a debug line and moves no token to an expiring state, so a channel whose token dies simply goes quiet. `EXPIRY_SWEEP_CRON` is validated, plumbed to config, and read by nothing. |
 | **Feature expiry** | S | Nothing acts on `enterprise_features.expires_at`; a feature never moves to `expired` on its own. |
@@ -177,7 +227,15 @@ The schema supports all of these; nothing exposes them.
 The portal is deliberately plain, with no build step and no dependencies. It
 exists to prove the API flows, and none of it is written to last.
 
-- **Inbox UI** — the largest missing screen, and the product's whole point. **L**
+- ~~**Inbox UI**~~ — built: list, filters, thread with pagination, reply with a
+  reply-window gate, assignment, status, and live updates over SSE. What is left
+  is a design pass, not a screen. **DONE**
+- **A post detail view** showing a post's own comment thread. **M**
+- **Customer → conversations click-through** from the directory. **S**
+- **Live updates on the posts and customers pages** — the inbox has them; those
+  two still need a reload. **S**
+- **Queue depth is not surfaced anywhere.** `/health/detail` carries the gauges
+  and no screen reads them. **S**
 - **Connect Meta UI** — a button that starts the OAuth flow and shows connected
   channels. Blocked on §4. **M**
 - **Feature request UI** for a business, once §3 exists. **S**
@@ -192,10 +250,10 @@ exists to prove the API flows, and none of it is written to last.
 
 | | Size | Note |
 | --- | --- | --- |
-| **CI pipeline** | M | `.github/workflows` does not exist. Nothing enforces typecheck, lint, format, tests, `db:check`, or `pnpm test:schema` — all of which pass today and can silently stop. |
+| ~~**CI pipeline**~~ | DONE | `.github/workflows/ci.yml` runs typecheck, lint, format, the whole suite, `dist/migrate.js` the way a deploy does, and `db:check`; schema parity is a separate job so a deliberate drift does not turn the suite red. `pnpm verify` and `pnpm predeploy` run the same gates locally. |
 | **Committed OpenAPI document** | S | `package.json` has an `openapi:export` script pointing at `scripts/export-openapi.ts`, **which does not exist**. So the script fails, there is no committed `openapi.json`, and no breaking-change check. |
 | **Regenerate the migration before the first deploy** | M | Development now uses `pnpm db:sync`, so the migration is deliberately drifting from the entities. `pnpm test:schema` is the alarm. Nothing is in production yet, so the cheapest path is to regenerate the initial migration from the settled schema rather than accumulate deltas. |
-| **Docker image never built** | S | The Dockerfile and compose entries exist and have never been exercised. |
+| **Docker image never built** | S | The Dockerfile and compose entries exist and have never been exercised. It can at least run a migration now — `dist/migrate.js` is compiled into it, which it was not before, so the mandated migrations-then-code order is executable rather than only documented. |
 | **A real email/SMS provider** | M | `OTP_REALTIME_ENABLED=false` everywhere, and every code is `666666`. Production refuses to boot that way, so this blocks any real deployment. The provider seam is one binding in the communication module. |
 | **Metrics** | M | Structured logs and correlation ids exist; there are no counters, latencies or retry gauges. `@nestjs/terminus` is a declared dependency with zero references — the health module is hand-rolled. |
 | **Secret manager** | M | Secrets come from the environment. No rotation path beyond `TOKEN_ENCRYPTION_KEY_ID`, which is designed for it and untested. |

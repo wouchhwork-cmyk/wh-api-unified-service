@@ -65,13 +65,17 @@ export class OutboundRelayWorker extends BasePoller {
 
   private async deliver(event: ClaimedOutboundEvent): Promise<void> {
     if (event.enterpriseId === null || event.channelId === null) {
-      await this.settleAsFailed(event.id, 'the event names no channel to send through');
+      await this.settleAsFailed(
+        event.enterpriseId,
+        event.id,
+        'the event names no channel to send through',
+      );
       return;
     }
 
     const channel = await this.channels.findSendContext(event.enterpriseId, event.channelId);
     if (!channel) {
-      await this.settleAsFailed(event.id, 'the channel no longer exists');
+      await this.settleAsFailed(event.enterpriseId, event.id, 'the channel no longer exists');
       return;
     }
 
@@ -81,15 +85,23 @@ export class OutboundRelayWorker extends BasePoller {
      * delays every other item in the queue and tells the operator nothing new.
      */
     if (channel.reauthRequired) {
-      await this.settleAsFailed(event.id, 'the channel needs re-authentication');
+      await this.settleAsFailed(
+        event.enterpriseId,
+        event.id,
+        'the channel needs re-authentication',
+      );
       return;
     }
     if (!channel.isManaged) {
-      await this.settleAsFailed(event.id, 'the channel is not managed');
+      await this.settleAsFailed(event.enterpriseId, event.id, 'the channel is not managed');
       return;
     }
     if (!channel.effectiveAccessToken) {
-      await this.settleAsFailed(event.id, 'no usable access token for the channel');
+      await this.settleAsFailed(
+        event.enterpriseId,
+        event.id,
+        'no usable access token for the channel',
+      );
       return;
     }
 
@@ -104,7 +116,11 @@ export class OutboundRelayWorker extends BasePoller {
         { channelId: channel.channelId, err: error },
         'could not decrypt a channel token — key loss or tampering',
       );
-      await this.settleAsFailed(event.id, 'the channel token could not be decrypted');
+      await this.settleAsFailed(
+        event.enterpriseId,
+        event.id,
+        'the channel token could not be decrypted',
+      );
       return;
     }
 
@@ -183,7 +199,14 @@ export class OutboundRelayWorker extends BasePoller {
        * messages_outbound_event_idx exists. Without this the message would stay
        * 'pending' forever even though the reply was delivered.
        */
-      await this.messages.recordDelivery(event.id, platformId, MessageStatus.Sent);
+      await this.messages.recordDelivery(
+        // Non-null past the first guard in this method, which returns when the
+        // event names no enterprise.
+        event.enterpriseId,
+        event.id,
+        platformId,
+        MessageStatus.Sent,
+      );
     } catch (error) {
       /*
        * Loud and deliberately swallowed. The reply IS with the customer, so the
@@ -207,7 +230,11 @@ export class OutboundRelayWorker extends BasePoller {
    * message still showing 'pending' means the agent watches a reply that will
    * never be delivered and never be marked failed.
    */
-  private async settleAsFailed(eventId: number, reason: string): Promise<void> {
+  private async settleAsFailed(
+    enterpriseId: number | null,
+    eventId: number,
+    reason: string,
+  ): Promise<void> {
     if (!(await this.outbound.cancel(eventId, this.leaseOwner, reason))) {
       // Either the row is already sent or the lease moved on. Writing the
       // message as failed anyway would tell an agent a delivered reply failed.
@@ -217,7 +244,22 @@ export class OutboundRelayWorker extends BasePoller {
       );
       return;
     }
-    await this.messages.recordDelivery(eventId, null, MessageStatus.Failed);
+
+    /*
+     * NULLABLE, because one caller genuinely has no tenant: the row that names
+     * no enterprise at all. The message write is tenant-scoped now, so there is
+     * nothing safe to write for that row — said out loud rather than skipped
+     * quietly, because a message stuck at 'pending' forever is what an agent
+     * sees.
+     */
+    if (enterpriseId === null) {
+      this.logger.error(
+        { eventId, reason },
+        'cancelled an event with no enterprise — any message it belongs to stays pending',
+      );
+      return;
+    }
+    await this.messages.recordDelivery(enterpriseId, eventId, null, MessageStatus.Failed);
   }
 
   private async send(
@@ -275,6 +317,22 @@ export class OutboundRelayWorker extends BasePoller {
   }
 
   private async handleSendFailure(event: ClaimedOutboundEvent, error: unknown): Promise<void> {
+    /*
+     * Resolved once. The message write-back is tenant-scoped, and this row's
+     * enterprise is nullable — so a row with no tenant settles the LEDGER and
+     * says that its message cannot be settled, rather than throwing here.
+     */
+    const enterpriseId = event.enterpriseId;
+    const settleMessage = async (): Promise<void> => {
+      if (enterpriseId === null) {
+        this.logger.error(
+          { eventId: event.id },
+          'a failed event names no enterprise — any message it belongs to stays pending',
+        );
+        return;
+      }
+      await this.messages.recordDelivery(enterpriseId, event.id, null, MessageStatus.Failed);
+    };
     if (!(error instanceof GraphApiError)) {
       const retry = scheduleRetry(event.attemptCount, event.maxAttempts);
       const applied = await this.outbound.markFailed(
@@ -284,7 +342,7 @@ export class OutboundRelayWorker extends BasePoller {
         retry?.nextAttemptAt ?? null,
       );
       if (applied && !retry) {
-        await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+        await settleMessage();
       }
       return;
     }
@@ -309,7 +367,11 @@ export class OutboundRelayWorker extends BasePoller {
           ConnectionStatus.Revoked,
         );
       }
-      await this.settleAsFailed(event.id, 'the provider rejected the credential');
+      await this.settleAsFailed(
+        event.enterpriseId,
+        event.id,
+        'the provider rejected the credential',
+      );
       return;
     }
 
@@ -331,6 +393,7 @@ export class OutboundRelayWorker extends BasePoller {
         'send failed ambiguously — not retrying, because the platform may have accepted it',
       );
       await this.settleAsFailed(
+        event.enterpriseId,
         event.id,
         'the outcome was ambiguous; a read-back is required before any retry',
       );
@@ -344,7 +407,7 @@ export class OutboundRelayWorker extends BasePoller {
         `${mapped.code}: ${error.message}`,
         null,
       );
-      if (applied) await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+      if (applied) await settleMessage();
       return;
     }
 
@@ -374,7 +437,7 @@ export class OutboundRelayWorker extends BasePoller {
     // Only a spent budget is terminal; while retries remain the message stays
     // pending, because it may still be delivered.
     if (applied && !retry) {
-      await this.messages.recordDelivery(event.id, null, MessageStatus.Failed);
+      await settleMessage();
     }
   }
 }
