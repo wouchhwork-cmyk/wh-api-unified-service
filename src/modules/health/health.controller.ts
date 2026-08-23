@@ -1,7 +1,6 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Public, RequirePermission } from '@/shared/decorators';
-import { Permission } from '@/shared/enums';
+import { Public, RequirePlatformAdmin } from '@/shared/decorators';
 import { HealthService, type HealthReport, type LivenessReport } from './health.service';
 
 /**
@@ -56,12 +55,24 @@ export class HealthController {
   }
 
   @Get('detail')
-  @RequirePermission(Permission.EnterpriseView)
+  /*
+   * PLATFORM STAFF, not any authenticated viewer.
+   *
+   * It was gated on `enterprise.view`, which every enterprise role holds
+   * including the read-only viewer — and it returns PLATFORM-WIDE queue gauges
+   * plus database and Meta configuration. No tenant data, so this was metadata
+   * disclosure rather than a boundary break, but it is one business being shown
+   * the shape of every other one's traffic. It also runs three unfiltered
+   * aggregate scans over the event ledgers on every call, which is not something
+   * to leave reachable by an ordinary role.
+   */
+  @RequirePlatformAdmin()
   @ApiOperation({
-    summary: 'The diagnostic breakdown (authenticated)',
+    summary: 'The diagnostic breakdown (platform staff only)',
     description:
       'The three public endpoints deliberately carry no version, hostname, or dependency detail. ' +
-      'That information lives here, behind authentication.',
+      'That information lives here, and it is platform-wide rather than per-tenant — so it is ' +
+      'gated on platform staff, not on a tenant permission.',
   })
   async detail(): Promise<Record<string, unknown>> {
     return this.health.detail();

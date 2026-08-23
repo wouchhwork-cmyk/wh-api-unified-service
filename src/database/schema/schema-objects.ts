@@ -96,7 +96,29 @@ export async function applyPreTableObjects(run: SqlRunner): Promise<void> {
  * the (id, enterprise_id) parent unique keys in section 3 MUST exist before the
  * composite foreign keys in section 4 can reference them.
  */
-export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
+export async function applyPostTableObjects(
+  run: SqlRunner,
+  options: { appRole?: string | null } = {},
+): Promise<void> {
+  /*
+   * THE APPLICATION ROLE, SET RATHER THAN ASSUMED.
+   *
+   * The append-only grant at the end of this function reads
+   * `current_setting('wouchh.app_role')`, and nothing in the repository ever set
+   * it — so the control was inert in every environment while reading, in the
+   * schema, as though it were in force. It is set here from configuration, so
+   * naming a distinct DB_APP_ROLE makes it real and leaving it unset leaves it
+   * honestly absent.
+   *
+   * set_config with `is_local = false` so it survives to the end of this run
+   * whether or not the caller wrapped it in a transaction.
+   */
+  if (options.appRole) {
+    await run(
+      `SELECT set_config('wouchh.app_role', '${options.appRole.replace(/'/g, "''")}', false)`,
+    );
+  }
+
   // 3. Unique indexes
   //
   // The (id, enterprise_id) keys come FIRST: a composite foreign key requires
@@ -774,6 +796,8 @@ export async function applyPostTableObjects(run: SqlRunner): Promise<void> {
   //
   // Applied only when the application role is distinct from the migration
   // role; in dev they are the same user and revoking would break the trigger.
+  // DB_APP_ROLE is what sets the GUC this reads — without it, nothing here
+  // happens, which is what "the control is not configured" should look like.
   // =======================================================================
   await run(`
       DO $$

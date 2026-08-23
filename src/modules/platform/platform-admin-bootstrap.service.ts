@@ -59,6 +59,27 @@ export class PlatformAdminBootstrapService implements OnApplicationBootstrap {
           (email ? await this.identities.findByEmail(email) : null) ??
           (mobile ? await this.identities.findByMobile(mobile.canonical) : null);
 
+        /*
+         * AN EXISTING BUSINESS IDENTITY IS NOT ADOPTED.
+         *
+         * A collision here used to promote whoever already owned that address to
+         * platform staff — so configuring the admin as an address a customer had
+         * already signed up with silently handed that customer full reach over
+         * every business on the platform. The realistic path to it is a typo.
+         *
+         * An identity that is ALREADY platform staff is fine: that is this
+         * bootstrap's own row from a previous boot. Anything else is refused, and
+         * loudly, because the operator has to change the configuration.
+         */
+        if (existing && !(await this.staff.findActiveByIdentity(existing.id))) {
+          this.logger.error(
+            { identityId: existing.id },
+            'refusing to provision the platform admin: that credential already belongs to a ' +
+              'non-staff identity. Change PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_MOBILE.',
+          );
+          return;
+        }
+
         const identityId = existing
           ? await this.reconcileIdentity(existing.id, existing.passwordHash, admin.password)
           : await this.createIdentity(admin, email, mobile);

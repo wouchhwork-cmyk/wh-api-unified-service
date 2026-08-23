@@ -26,6 +26,16 @@ export const EnvSchema = z
     DB_USER: z.string().min(1),
     DB_PASSWORD: z.string().min(1),
     DB_SSL: booleanish,
+    /**
+     * The role the APPLICATION connects as, when it differs from the one that
+     * runs migrations.
+     *
+     * Naming it is what turns the audit_logs append-only grant from a comment
+     * into a control: the schema revokes UPDATE and DELETE on that table from
+     * this role. Left unset, nothing is revoked — which is the honest state when
+     * one role does everything, as it does in development.
+     */
+    DB_APP_ROLE: z.string().default(''),
     DB_POOL_MAX: positiveInt.default(10),
     DB_STATEMENT_TIMEOUT_MS: positiveInt.default(10_000),
     DB_CONNECT_TIMEOUT_MS: positiveInt.default(5_000),

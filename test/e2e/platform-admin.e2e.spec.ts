@@ -71,6 +71,62 @@ describe('the platform admin console', () => {
     return response.body.data.accessToken as string;
   }
 
+  it('keeps /health/detail away from an ordinary tenant role', async () => {
+    /*
+     * It was gated on `enterprise.view`, which EVERY enterprise role holds
+     * including the read-only viewer — and it returns platform-wide queue gauges
+     * plus database and Meta configuration. One business could see the shape of
+     * every other one's traffic, and could make three unfiltered aggregate scans
+     * over the event ledgers by asking.
+     */
+    const { token } = await onboardBusiness();
+
+    await http().get('/api/v1/health/detail').set('Authorization', `Bearer ${token}`).expect(403);
+  });
+
+  it('serves /health/detail to platform staff', async () => {
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+
+    const detail = await http()
+      .get('/api/v1/health/detail')
+      .set('Authorization', `Bearer ${admin.body.data.accessToken as string}`)
+      .expect(200);
+
+    expect(detail.body.data).toHaveProperty('queues');
+  });
+
+  it('refuses to adopt a business identity as the platform admin', async () => {
+    /*
+     * A collision used to PROMOTE whoever already owned that address to platform
+     * staff — so configuring the admin as an address a customer had signed up
+     * with silently handed that customer full reach over every business. The
+     * realistic path to it is a typo.
+     */
+    const { refId } = await onboardBusiness();
+    expect(refId).toBeTruthy();
+
+    const owner: { id: string }[] = await db.query(`SELECT id FROM identities WHERE email = $1`, [
+      SIGNUP.owner.email,
+    ]);
+    const ownerId = owner[0]?.id;
+
+    // Point the bootstrap at the owner's address and run it again.
+    const configured = process.env.PLATFORM_ADMIN_EMAIL;
+    process.env.PLATFORM_ADMIN_EMAIL = SIGNUP.owner.email;
+    try {
+      await provisionPlatformAdmin(app);
+    } finally {
+      if (configured === undefined) delete process.env.PLATFORM_ADMIN_EMAIL;
+      else process.env.PLATFORM_ADMIN_EMAIL = configured;
+    }
+
+    const staff: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM staff_members WHERE identity_id = $1 AND is_deleted = false`,
+      [ownerId],
+    );
+    expect(staff[0]?.count).toBe(0);
+  });
+
   it('issues the fixed code while realtime delivery is off', async () => {
     await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
 

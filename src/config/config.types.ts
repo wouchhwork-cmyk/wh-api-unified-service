@@ -20,6 +20,8 @@ export interface DatabaseConfig {
   readonly user: string;
   readonly password: string;
   readonly ssl: boolean;
+  /** The application's own role, when distinct from the migration role. */
+  readonly appRole: string | null;
   readonly poolMax: number;
   readonly statementTimeoutMs: number;
   readonly connectTimeoutMs: number;

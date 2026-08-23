@@ -68,7 +68,7 @@ export default async function setup(): Promise<void> {
       const dataSource = new DataSource(buildDataSourceOptions(target));
       await dataSource.initialize();
       try {
-        const report = await syncSchema(dataSource);
+        const report = await syncSchema(dataSource, { appRole: target.appRole });
         console.log(
           `test schema ready on ${target.name} ` +
             `(${report.applied} objects applied, ${report.existing} already present)`,

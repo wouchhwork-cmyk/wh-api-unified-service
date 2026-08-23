@@ -86,26 +86,34 @@ export async function ensureDatabaseExists(database: DatabaseConfig): Promise<bo
  * scripts/ is also excluded from the compiled build, so a copy there is a copy
  * nothing else can reach.
  */
-export async function syncSchema(dataSource: DataSource): Promise<SyncReport> {
+export async function syncSchema(
+  dataSource: DataSource,
+  options: { appRole?: string | null } = {},
+): Promise<SyncReport> {
   await applyPreTableObjects((sql) => dataSource.query(sql));
   await dataSource.synchronize();
 
   let applied = 0;
   let existing = 0;
-  await applyPostTableObjects(async (sql) => {
-    try {
-      const result = await dataSource.query(sql);
-      applied += 1;
-      return result;
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      if (code && ALREADY_EXISTS.has(code)) {
-        existing += 1;
-        return undefined;
+  await applyPostTableObjects(
+    async (sql) => {
+      try {
+        const result = await dataSource.query(sql);
+        applied += 1;
+        return result;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code && ALREADY_EXISTS.has(code)) {
+          existing += 1;
+          return undefined;
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    },
+    // Passed through so the audit_logs append-only grant applies. Without it
+    // that control reads as though it were in force and does nothing.
+    { appRole: options.appRole ?? null },
+  );
 
   const stamped = await stampMigrationsAsApplied(dataSource);
   return { applied, existing, stamped };

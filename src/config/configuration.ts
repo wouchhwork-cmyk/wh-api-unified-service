@@ -110,6 +110,7 @@ export function loadConfiguration(): Configuration {
       user: env.DB_USER,
       password: env.DB_PASSWORD,
       ssl: env.DB_SSL,
+      appRole: env.DB_APP_ROLE.trim() || null,
       poolMax: env.DB_POOL_MAX,
       statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
       connectTimeoutMs: env.DB_CONNECT_TIMEOUT_MS,

@@ -136,7 +136,7 @@ async function main(): Promise<void> {
         break;
       }
       case 'sync': {
-        const report = await syncSchema(AppDataSource);
+        const report = await syncSchema(AppDataSource, { appRole: database.appRole });
         console.log('tables now match the entities');
         console.log(
           `indexes, foreign keys, checks, triggers and grants: ` +
