@@ -72,6 +72,44 @@ export function composeThreadKey(kind: ConversationKind, platformId: string): st
 @Injectable()
 export class ConversationRepository extends BaseRepository {
   /**
+   * What a resync needs to know about a conversation: which channel it belongs
+   * to, and WHO it is with as the platform names them.
+   *
+   * The identifier comes from customer_identifiers rather than by splitting the
+   * composed thread key. The key would work — it is `dm:<scoped id>` — but it is
+   * OUR construction, and reversing it would silently start returning the wrong
+   * thing the day the prefix scheme changes. The identifier row is what the
+   * platform actually said.
+   */
+  async findResyncTarget(
+    enterpriseId: number,
+    conversationRefId: string,
+  ): Promise<{
+    id: number;
+    channelId: number;
+    conversationKind: ConversationKind;
+    targetPlatformId: string | null;
+  } | null> {
+    const rows = await this.query<{
+      id: number;
+      channelId: number;
+      conversationKind: ConversationKind;
+      targetPlatformId: string | null;
+    }>(
+      `SELECT c.id, c.channel_id AS "channelId",
+              c.conversation_kind AS "conversationKind",
+              ci.identifier_value AS "targetPlatformId"
+         FROM conversations c
+         LEFT JOIN customer_identifiers ci ON ci.id = c.customer_identifier_id
+                                          AND ci.enterprise_id = c.enterprise_id
+                                          AND ci.is_deleted = false
+        WHERE c.enterprise_id = $1 AND c.ref_id = $2 AND c.is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), conversationRefId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Finds or creates the thread. The conflict target is
    * conversations_thread_uniq (channel_id, platform_thread_id), which has NO
    * is_deleted predicate: an archived-then-revived thread must reattach rather

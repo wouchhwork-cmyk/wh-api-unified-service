@@ -15,6 +15,8 @@ import { mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import type {
   GraphComment,
   GraphConversation,
+  GraphEdge,
+  GraphMessageAttachment,
   GraphFeedPost,
   GraphInstagramComment,
   GraphInstagramMedia,
@@ -42,6 +44,40 @@ import { BasePoller } from './base-poller';
 import { splitPersonName } from '@/shared/utils/person-name';
 
 /**
+ * The read edge's attachment shape, expressed the way a webhook would say it.
+ *
+ * Graph nests the link under `image_data`, `video_data` or `file_url` and names
+ * no type at all; a webhook says `{ type, payload: { url } }`. Everything
+ * downstream — GIF detection, story mentions, media kinds — is written against
+ * the webhook shape, so the translation happens once, here.
+ */
+function toWebhookAttachments(
+  attachments: readonly GraphMessageAttachment[],
+): { type: string; payload: { url: string } }[] {
+  const translated: { type: string; payload: { url: string } }[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.image_data?.url) {
+      translated.push({ type: 'image', payload: { url: attachment.image_data.url } });
+      continue;
+    }
+    if (attachment.video_data?.url) {
+      translated.push({ type: 'video', payload: { url: attachment.video_data.url } });
+      continue;
+    }
+    if (attachment.file_url) {
+      // `file` covers documents and voice notes; the mime type on the row is
+      // what tells them apart, and the normalizer keeps it.
+      translated.push({ type: 'file', payload: { url: attachment.file_url } });
+    }
+    // An attachment with no link at all is dropped: there is nothing to store
+    // and nothing to show, and a row with a null url would only look broken.
+  }
+
+  return translated;
+}
+
+/**
  * The kinds this worker can actually walk. Anything else is paused rather than
  * silently routed to the wrong walk.
  */
@@ -49,9 +85,16 @@ const IMPLEMENTED_JOB_KINDS: ReadonlySet<SyncJobKind> = new Set([
   SyncJobKind.BackfillPosts,
   SyncJobKind.BackfillComments,
   SyncJobKind.BackfillConversations,
+  SyncJobKind.ResyncConversation,
   SyncJobKind.BackfillMentions,
   SyncJobKind.RefreshProfile,
   SyncJobKind.RefreshPostMetrics,
+]);
+
+/** The kinds that read the conversations edge. */
+const CONVERSATION_KINDS: ReadonlySet<SyncJobKind> = new Set([
+  SyncJobKind.BackfillConversations,
+  SyncJobKind.ResyncConversation,
 ]);
 
 interface ClaimedSyncJob {
@@ -59,6 +102,8 @@ interface ClaimedSyncJob {
   readonly enterpriseId: number;
   readonly channelId: number;
   readonly jobKind: SyncJobKind;
+  /** Set for a resync: whose thread this job is about. */
+  readonly targetPlatformId: string | null;
   readonly pageCursor: string | null;
   readonly attemptCount: number;
 }
@@ -278,7 +323,7 @@ export class BackfillWorker extends BasePoller {
       if (job.jobKind === SyncJobKind.BackfillMentions) {
         return this.instagramTagPage(job, channel.platformChannelId, token, correlationId, cursor);
       }
-      if (job.jobKind === SyncJobKind.BackfillConversations) {
+      if (CONVERSATION_KINDS.has(job.jobKind)) {
         return this.instagramConversationPage(
           job,
           channel.platformChannelId,
@@ -298,7 +343,7 @@ export class BackfillWorker extends BasePoller {
       );
     }
 
-    if (job.jobKind === SyncJobKind.BackfillConversations) {
+    if (CONVERSATION_KINDS.has(job.jobKind)) {
       return this.conversationPage(job, channel.platformChannelId, token, correlationId, cursor);
     }
     if (job.jobKind === SyncJobKind.BackfillMentions) {
@@ -480,7 +525,12 @@ export class BackfillWorker extends BasePoller {
     correlationId: string,
     cursor: string | null,
   ): Promise<SliceResult> {
-    const edge = await this.graph.listInstagramConversations(pageId, token, cursor ?? undefined);
+    const edge = await this.graph.listInstagramConversations(
+      pageId,
+      token,
+      cursor ?? undefined,
+      job.targetPlatformId ?? undefined,
+    );
 
     let added = 0;
     for (const conversation of edge.data ?? []) {
@@ -492,6 +542,27 @@ export class BackfillWorker extends BasePoller {
         Platform.Instagram,
         instagramUserId,
       );
+    }
+
+    return this.conversationSlice(job, edge, added);
+  }
+
+  /**
+   * Where a conversation walk goes next.
+   *
+   * A TARGETED job is finished after one page, always. Meta returns at most one
+   * conversation for a `user_id` and only its 20 most recent messages, so there
+   * is no second page to fetch — and following `paging.next` if the edge
+   * offered one would quietly turn a one-thread repair back into a walk of the
+   * whole account, which is the cost this job exists to avoid.
+   */
+  private conversationSlice(
+    job: ClaimedSyncJob,
+    edge: GraphEdge<GraphConversation>,
+    added: number,
+  ): SliceResult {
+    if (job.targetPlatformId !== null) {
+      return { itemsAdded: added, nextCursor: null, finished: true };
     }
 
     return {
@@ -632,18 +703,19 @@ export class BackfillWorker extends BasePoller {
     correlationId: string,
     cursor: string | null,
   ): Promise<SliceResult> {
-    const edge = await this.graph.listPageConversations(pageId, token, cursor ?? undefined);
+    const edge = await this.graph.listPageConversations(
+      pageId,
+      token,
+      cursor ?? undefined,
+      job.targetPlatformId ?? undefined,
+    );
 
     let added = 0;
     for (const conversation of edge.data ?? []) {
       added += await this.emitMessages(job, conversation, correlationId, Platform.Facebook, pageId);
     }
 
-    return {
-      itemsAdded: added,
-      nextCursor: edge.paging?.cursors?.after ?? null,
-      finished: !edge.paging?.next,
-    };
+    return this.conversationSlice(job, edge, added);
   }
 
   private async emitMessages(
@@ -766,6 +838,15 @@ export class BackfillWorker extends BasePoller {
           ? (namesById.get(senderId) ?? message.from?.name ?? null)
           : null;
 
+      /*
+       * Translated into the WEBHOOK's attachment shape, not stored in the read
+       * edge's own. The projector already knows how to read a webhook, so a
+       * message recovered by a resync ends up identical to the same message
+       * delivered live — one normalizer, one set of rules, no second place for
+       * story mentions and GIFs to be classified differently.
+       */
+      const attachments = toWebhookAttachments(message.attachments?.data ?? []);
+
       const payload = {
         sender: {
           id: senderId ?? undefined,
@@ -777,6 +858,7 @@ export class BackfillWorker extends BasePoller {
           mid: message.id,
           text: message.message,
           is_echo: isEcho,
+          ...(attachments.length > 0 ? { attachments } : {}),
         },
       };
 

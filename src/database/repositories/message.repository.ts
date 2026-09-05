@@ -115,6 +115,27 @@ export class MessageRepository extends BaseRepository {
   }
 
   /**
+   * Whether we already hold the platform's message.
+   *
+   * Used to tell a harmless `message_edit` — Meta sends one a second after most
+   * attachments — from the one that means a delivery was lost: an edit naming a
+   * message id that never arrived is the only signal we get that a webhook went
+   * missing.
+   */
+  async existsByPlatformMessageId(
+    enterpriseId: number,
+    platformMessageId: string,
+  ): Promise<boolean> {
+    const rows = await this.query<{ one: number }>(
+      `SELECT 1 AS one FROM messages
+        WHERE enterprise_id = $1 AND platform_message_id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), platformMessageId],
+    );
+    return rows.length > 0;
+  }
+
+  /**
    * Records an outbound message as PENDING.
    *
    * Called inside the caller's transaction alongside the outbound_events row —

@@ -27,6 +27,17 @@ export class SyncJob extends PublicEntity {
   status!: SyncJobStatus;
 
   /**
+   * WHO this job is about, when it is about one person.
+   *
+   * The Instagram- or Page-scoped id, passed to the conversations edge as
+   * `user_id`. NULL for a channel-wide walk, which is most jobs. It is part of
+   * the live-uniqueness rule, so two customers' resyncs never collide while a
+   * second channel-wide walk of the same kind still cannot be queued.
+   */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  targetPlatformId!: string | null;
+
+  /**
    * The platform's paging cursor — where to resume. Deliberately opaque TEXT:
    * every platform's cursor format is different and none should be parsed.
    */

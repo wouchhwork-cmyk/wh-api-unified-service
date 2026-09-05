@@ -288,6 +288,24 @@ export class InboxController {
     );
   }
 
+  @Post(':refId/resync')
+  @RequirePermission(Permission.ConversationsManage)
+  @ApiOperation({
+    summary: 'Re-read this thread from the platform',
+    description:
+      'Repairs a gap left by a webhook that never arrived. Meta serves only the ' +
+      '20 most recent messages of a thread, so this recovers a recent gap and ' +
+      'cannot reach further back. Safe to call repeatedly: the projector dedups ' +
+      'on the platform message id, and a resync already in flight is reported as ' +
+      'queued: false rather than started twice.',
+  })
+  async resync(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+  ): Promise<{ queued: boolean }> {
+    return this.inbox.requestResync(actor.enterpriseId, RefIdParamSchema.parse(refId));
+  }
+
   @Post(':refId/read')
   @RequirePermission(Permission.ConversationsView)
   @HttpCode(HttpStatus.NO_CONTENT)

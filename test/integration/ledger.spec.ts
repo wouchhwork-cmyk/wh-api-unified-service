@@ -174,7 +174,7 @@ describe('transport ledger', () => {
       const result: unknown = await db.query(
         `INSERT INTO sync_jobs (enterprise_id, channel_id, job_kind, trigger_kind, status)
          VALUES ($1,$2,'backfill_posts','initial_connect','pending')
-         ON CONFLICT (channel_id, job_kind)
+         ON CONFLICT (channel_id, job_kind, COALESCE(target_platform_id, ''))
            WHERE is_deleted = false AND status IN ('pending','running','paused','rate_limited')
          DO NOTHING
          RETURNING id`,

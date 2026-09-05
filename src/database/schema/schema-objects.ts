@@ -292,9 +292,17 @@ export async function applyPostTableObjects(
       ON outbound_events (COALESCE(enterprise_id, 0), dedup_key)
     `);
 
-  // --- one live sync job of a kind per channel ---------------------------
+  // --- one live sync job of a kind per channel, per target ---------------
+  /*
+   * COALESCE, not the bare column: a unique index treats every NULL as
+   * distinct, so `(channel_id, job_kind, target_platform_id)` would let an
+   * unlimited number of channel-wide backfills queue up — the exact thing this
+   * index exists to prevent. Empty string stands in for "the whole channel",
+   * which no platform id can collide with.
+   */
   await run(`
-      CREATE UNIQUE INDEX sync_jobs_live_uniq ON sync_jobs (channel_id, job_kind)
+      CREATE UNIQUE INDEX sync_jobs_live_uniq
+      ON sync_jobs (channel_id, job_kind, COALESCE(target_platform_id, ''))
       WHERE is_deleted = false
         AND status IN ('pending','running','paused','rate_limited')
     `);

@@ -104,7 +104,13 @@ export const SYNC_MAX_ATTEMPTS = 5;
  * than pretending it copied everything.
  */
 export const SYNC_COMMENTS_PER_POST = 50;
-export const SYNC_MESSAGES_PER_CONVERSATION = 50;
+/*
+ * TWENTY, because that is Meta's ceiling, not ours: "You can only get details
+ * about the 20 most recent messages in the conversation. If you query a message
+ * that is older than the last 20, you will see an error that the message has
+ * been deleted." Asking for 50 implied a depth the edge cannot serve.
+ */
+export const SYNC_MESSAGES_PER_CONVERSATION = 20;
 
 /** How long a rate-limited sync job waits before it may be claimed again. */
 export const SYNC_RATE_LIMIT_PARK_MS = 15 * 60 * 1000;

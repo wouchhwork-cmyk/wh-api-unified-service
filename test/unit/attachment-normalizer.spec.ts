@@ -150,4 +150,29 @@ describe('normalizing a message attachment', () => {
     expect(isStableMediaUrl('https://media0.giphy.com/x')).toBe(true);
     expect(extractAssetId('not a url')).toBeNull();
   });
+
+  it('reads what the backfill translated, exactly as if it were live', () => {
+    /*
+     * The read edge nests the link under image_data and names no type; the
+     * worker translates that into the webhook shape before this sees it. Pinned
+     * here because the whole point is that a message recovered by a resync ends
+     * up identical to the same message delivered live — one set of rules, not
+     * two.
+     */
+    const media = normalizeAttachments([
+      { type: 'image', payload: { url: 'https://lookaside.fbsbx.com/x?asset_id=99&signature=s' } },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Image);
+    expect(media.attachments[0]?.metadata.assetId).toBe('99');
+  });
+
+  it('keeps a backfilled document as a file', () => {
+    const media = normalizeAttachments([
+      { type: 'file', payload: { url: 'https://x.test/a.pdf' } },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Document);
+    expect(media.messageKind).toBe(MessageKind.File);
+  });
 });

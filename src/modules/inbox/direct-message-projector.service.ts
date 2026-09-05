@@ -7,6 +7,7 @@ import {
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
 import {
   ConversationKind,
@@ -15,6 +16,8 @@ import {
   IdentifierSource,
   IdentifierVerificationStatus,
   Platform,
+  SyncJobKind,
+  SyncTriggerKind,
 } from '@/shared/enums';
 import type { ProjectionOutcome } from './comment-projector.service';
 import { normalizeAttachments, type PlatformAttachment } from './attachment-normalizer';
@@ -51,6 +54,12 @@ interface MessagingEvent {
     /** The button the customer tapped, if they tapped one. */
     readonly quick_reply?: { readonly payload?: string };
   };
+  /**
+   * Meta's edit notification. It arrives about a second after most attachment
+   * messages as a harmless duplicate — and occasionally INSTEAD of the message,
+   * which is the only evidence we ever get that a delivery was lost.
+   */
+  readonly message_edit?: { readonly mid?: string; readonly num_edit?: number };
   /** How the customer arrived — an ad, an ig link, a ref parameter. */
   readonly referral?: {
     readonly ref?: string;
@@ -67,6 +76,7 @@ export class DirectMessageProjectorService {
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
     private readonly attachments: MessageAttachmentRepository,
+    private readonly syncJobs: SyncJobRepository,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(DirectMessageProjectorService.name) private readonly logger: PinoLogger,
   ) {}
@@ -80,6 +90,10 @@ export class DirectMessageProjectorService {
   ): Promise<ProjectionOutcome> {
     const event = payload as MessagingEvent;
     const message = event.message;
+
+    if (event.message_edit?.mid) {
+      return this.handleMessageEdit(enterpriseId, channelId, event);
+    }
 
     if (!message?.mid) return { projected: false, reason: 'the event carries no message id' };
     // Same reason as above: capture what the guard proved, for use in the closure.
@@ -227,5 +241,61 @@ export class DirectMessageProjectorService {
       );
       return { projected: true };
     });
+  }
+
+  /**
+   * A `message_edit` notification.
+   *
+   * Meta sends one about a second after most attachment messages, naming a
+   * message id we already hold — a duplicate, and nothing to do. But sometimes
+   * it sends the edit and never sends the message: observed on live traffic on
+   * 2026-09-05, when a sticker arrived only as an edit for an id that had never
+   * been delivered, so the sticker simply did not exist in the inbox and nothing
+   * anywhere said so.
+   *
+   * That unknown id is the ONLY signal a webhook was lost, so it is used as one:
+   * the customer's thread is queued for a re-read from the platform. Not
+   * projected here — the edit carries no sender name, no text and no attachment,
+   * so there is nothing to store; the resync fetches the real message.
+   *
+   * enqueueIfAbsent dedups on (channel, kind, target), so a burst of edits for
+   * one person queues one job.
+   */
+  private async handleMessageEdit(
+    enterpriseId: number,
+    channelId: number,
+    event: MessagingEvent,
+  ): Promise<ProjectionOutcome> {
+    const mid = event.message_edit?.mid;
+    if (!mid) return { projected: false, reason: 'the event carries no message id' };
+
+    if (await this.messages.existsByPlatformMessageId(enterpriseId, mid)) {
+      return { projected: false, reason: 'a message_edit for a message we already hold' };
+    }
+
+    const senderId = event.sender?.id;
+    if (!senderId) {
+      return { projected: false, reason: 'a message_edit for an unknown message, with no sender' };
+    }
+
+    const queued = await this.syncJobs.enqueueIfAbsent({
+      enterpriseId,
+      channelId,
+      jobKind: SyncJobKind.ResyncConversation,
+      triggerKind: SyncTriggerKind.Scheduled,
+      targetPlatformId: senderId,
+    });
+
+    this.logger.warn(
+      { enterpriseId, channelId, queued },
+      'a message_edit named a message we never received — the delivery was lost, resync queued',
+    );
+
+    return {
+      projected: false,
+      reason: queued
+        ? 'a message_edit for a message we never received — resync queued'
+        : 'a message_edit for a message we never received — a resync is already in flight',
+    };
   }
 }

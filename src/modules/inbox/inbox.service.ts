@@ -11,6 +11,7 @@ import {
   type AttachmentRow,
 } from '@/database/repositories/message-attachment.repository';
 import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
@@ -18,17 +19,32 @@ import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import {
   AuditAction,
   AuditEntityType,
+  ConversationKind,
   ConversationStatus,
   DestinationKind,
   MessageKind,
   MessageStatus,
   OutboundEventType,
+  SyncJobKind,
+  SyncTriggerKind,
 } from '@/shared/enums';
 import { AuditService } from '@/modules/audit';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import { outboundDedupKey } from '@/modules/ledger/dedup-key.util';
 import { CLOSED_TO_REPLIES, evaluateReplyWindow, replyEventTypeFor } from './reply-window';
+
+/**
+ * The kinds the platform can be asked about again.
+ *
+ * Only message threads: a comment thread has no conversations edge, and a
+ * mention has no single participant to scope the request by. StoryReply is a
+ * message thread with a different label, so it belongs here.
+ */
+const RESYNCABLE_KINDS: ReadonlySet<ConversationKind> = new Set([
+  ConversationKind.DirectMessage,
+  ConversationKind.StoryReply,
+]);
 
 export interface ReplyInput {
   readonly conversationRefId: string;
@@ -50,6 +66,7 @@ export class InboxService {
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
     private readonly attachments: MessageAttachmentRepository,
+    private readonly syncJobs: SyncJobRepository,
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
     private readonly customers: CustomerRepository,
@@ -87,6 +104,64 @@ export class InboxService {
       nextCursor: hasMore && last ? encodeKeysetCursor(last.lastMessageAt, last.id) : null,
       hasMore,
     };
+  }
+
+  /**
+   * Asks the platform for this one thread again.
+   *
+   * REPAIR, not history. Meta drops a webhook often enough to matter — on
+   * 2026-09-05 a sticker arrived as a `message_edit` for a message id that was
+   * never delivered, so the message simply did not exist here — and the
+   * conversations edge can be asked for a single participant with `user_id`.
+   * The projector dedups on the platform message id, so re-reading a thread we
+   * already have is a no-op rather than a duplicate.
+   *
+   * It is deliberately not the channel-wide backfill: that walks every
+   * conversation the business has, holds the channel's one live slot for the
+   * kind, and is meant to run once at connect.
+   *
+   * Meta serves only the 20 most recent messages of a thread, so this recovers a
+   * recent gap and cannot reach further back.
+   */
+  async requestResync(
+    enterpriseId: number,
+    conversationRefId: string,
+  ): Promise<{ queued: boolean }> {
+    const target = await this.conversations.findResyncTarget(enterpriseId, conversationRefId);
+    if (!target) throw new AppException(ErrorCode.ConversationNotFound);
+
+    /*
+     * Only a message thread. A comment thread is not a conversation as far as
+     * the platform is concerned — it has no conversations edge — and a mention
+     * has no participant to scope by.
+     */
+    if (!RESYNCABLE_KINDS.has(target.conversationKind)) {
+      throw new AppException(ErrorCode.ConversationResyncUnsupported);
+    }
+    // No identifier means nothing to pass as user_id, so the walk would silently
+    // widen to the whole account.
+    if (!target.targetPlatformId) {
+      throw new AppException(ErrorCode.ConversationResyncUnsupported);
+    }
+
+    /*
+     * `queued: false` is a SUCCESS: a resync for this thread is already waiting
+     * or running, and a second one would do the same work twice. It is what
+     * makes the endpoint safe to call from a button somebody can double-click.
+     */
+    const queued = await this.syncJobs.enqueueIfAbsent({
+      enterpriseId,
+      channelId: target.channelId,
+      jobKind: SyncJobKind.ResyncConversation,
+      triggerKind: SyncTriggerKind.Manual,
+      targetPlatformId: target.targetPlatformId,
+    });
+
+    this.logger.info(
+      { enterpriseId, conversationRefId, queued },
+      queued ? 'conversation resync queued' : 'a resync for this thread is already in flight',
+    );
+    return { queued };
   }
 
   async readThread(

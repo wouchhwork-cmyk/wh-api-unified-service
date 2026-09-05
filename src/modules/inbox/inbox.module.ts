@@ -6,6 +6,7 @@ import { MessageAttachmentRepository } from '@/database/repositories/message-att
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { AuditModule } from '@/modules/audit';
 import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
@@ -27,6 +28,7 @@ const PROVIDERS = [
   PostRepository,
   OutboundEventRepository,
   ChannelRepository,
+  SyncJobRepository,
 ];
 
 /**

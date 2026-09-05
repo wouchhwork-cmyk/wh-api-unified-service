@@ -149,12 +149,31 @@ export interface GraphFeedPost {
   shares?: { count?: number };
 }
 
+/**
+ * Media on a backfilled message.
+ *
+ * A DIFFERENT SHAPE from the webhook's, for the same thing: the read edge nests
+ * the link under `image_data` / `video_data` / `file_url` and names no type,
+ * where a webhook says `{type, payload:{url}}`. The worker translates one into
+ * the other so a message recovered by a resync stores exactly what the same
+ * message would have stored had its webhook arrived.
+ */
+export interface GraphMessageAttachment {
+  id?: string;
+  name?: string;
+  mime_type?: string;
+  image_data?: { url?: string; width?: number; height?: number };
+  video_data?: { url?: string; width?: number; height?: number };
+  file_url?: string;
+}
+
 export interface GraphConversationMessage {
   id: string;
   message?: string;
   created_time?: string;
   from?: GraphActor;
   to?: { data?: GraphActor[] };
+  attachments?: GraphEdge<GraphMessageAttachment>;
 }
 
 export interface GraphConversation {

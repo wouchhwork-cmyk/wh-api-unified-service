@@ -25,11 +25,13 @@ export class SyncJobRepository extends BaseRepository {
     channelId: number;
     jobKind: SyncJobKind;
     triggerKind: SyncTriggerKind;
+    /** One person's thread, or the whole channel when absent. */
+    targetPlatformId?: string | null;
   }): Promise<boolean> {
     const { affected } = await this.mutate(
-      `INSERT INTO sync_jobs (enterprise_id, channel_id, job_kind, trigger_kind, status, next_attempt_at)
-       VALUES ($1, $2, $3, $4, $5, now())
-       ON CONFLICT (channel_id, job_kind)
+      `INSERT INTO sync_jobs (enterprise_id, channel_id, job_kind, trigger_kind, status, next_attempt_at, target_platform_id)
+       VALUES ($1, $2, $3, $4, $5, now(), $6)
+       ON CONFLICT (channel_id, job_kind, COALESCE(target_platform_id, ''))
          WHERE is_deleted = false AND status IN ('pending','running','paused','rate_limited')
        /*
         * A PAUSED row is REVIVED here, and this is the only way out of paused.
@@ -61,6 +63,7 @@ export class SyncJobRepository extends BaseRepository {
         input.jobKind,
         input.triggerKind,
         SyncJobStatus.Pending,
+        input.targetPlatformId ?? null,
       ],
     );
     if (affected > 0) await this.notifyQueue(NOTIFY_SYNC_CHANNEL);
@@ -105,6 +108,7 @@ export class SyncJobRepository extends BaseRepository {
       enterpriseId: number;
       channelId: number;
       jobKind: SyncJobKind;
+      targetPlatformId: string | null;
       pageCursor: string | null;
       attemptCount: number;
       syncedItemCount: number;
@@ -115,6 +119,7 @@ export class SyncJobRepository extends BaseRepository {
       enterprise_id: number;
       channel_id: number;
       job_kind: SyncJobKind;
+      target_platform_id: string | null;
       page_cursor: string | null;
       attempt_count: number;
       synced_item_count: number;
@@ -135,8 +140,8 @@ export class SyncJobRepository extends BaseRepository {
            LIMIT $5
            FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, enterprise_id, channel_id, job_kind, page_cursor,
-                  attempt_count, synced_item_count`,
+        RETURNING id, enterprise_id, channel_id, job_kind, target_platform_id,
+                  page_cursor, attempt_count, synced_item_count`,
       [SyncJobStatus.Running, leaseOwner, leaseSeconds, [...CLAIMABLE_SYNC_JOB_STATUSES], limit],
     );
 
@@ -145,6 +150,7 @@ export class SyncJobRepository extends BaseRepository {
       enterpriseId: row.enterprise_id,
       channelId: row.channel_id,
       jobKind: row.job_kind,
+      targetPlatformId: row.target_platform_id,
       pageCursor: row.page_cursor,
       attemptCount: row.attempt_count,
       syncedItemCount: row.synced_item_count,

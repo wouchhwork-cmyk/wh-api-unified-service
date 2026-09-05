@@ -356,8 +356,17 @@ export class GraphApiClient {
     pageId: string,
     pageAccessToken: string,
     after?: string,
+    /**
+     * ONE participant's thread, by their Page-scoped id.
+     *
+     * Meta supports filtering the conversations edge to a single person, which
+     * turns a repair from a walk of the whole account into one call. Without it
+     * the only way to recover a message a webhook never delivered is to re-read
+     * every conversation the business has.
+     */
+    userId?: string,
   ): Promise<GraphEdge<GraphConversation>> {
-    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}}}`;
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}},attachments{id,name,mime_type,image_data,video_data,file_url}}`;
 
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken: pageAccessToken,
@@ -365,6 +374,7 @@ export class GraphApiClient {
         fields: `id,updated_time,participants{id,name,username},${messageFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
+        ...(userId ? { user_id: userId } : {}),
       },
     });
   }
@@ -414,8 +424,10 @@ export class GraphApiClient {
     pageId: string,
     accessToken: string,
     after?: string,
+    /** One participant's thread, by IGSID — see listPageConversations. */
+    userId?: string,
   ): Promise<GraphEdge<GraphConversation>> {
-    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}}}`;
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}},attachments{id,name,mime_type,image_data,video_data,file_url}}`;
 
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken,
@@ -424,6 +436,7 @@ export class GraphApiClient {
         fields: `id,updated_time,participants{id,name,username},${messageFields}`,
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
+        ...(userId ? { user_id: userId } : {}),
       },
     });
   }

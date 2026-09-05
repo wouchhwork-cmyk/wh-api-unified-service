@@ -61,6 +61,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.MessagingWindowClosed]: HttpStatus.CONFLICT,
   [ErrorCode.CustomerBlocked]: HttpStatus.CONFLICT,
   [ErrorCode.ConversationClosed]: HttpStatus.CONFLICT,
+  [ErrorCode.ConversationResyncUnsupported]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.ReplyNotSupported]: HttpStatus.CONFLICT,
   [ErrorCode.IdempotencyKeyReused]: HttpStatus.CONFLICT,
   [ErrorCode.ChannelReauthRequired]: HttpStatus.CONFLICT,
@@ -146,6 +147,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.ChannelNotFound]: 'Channel not found.',
   [ErrorCode.CustomerNotFound]: 'Customer not found.',
   [ErrorCode.ConversationNotFound]: 'Conversation not found.',
+  [ErrorCode.ConversationResyncUnsupported]:
+    'Only a message thread can be re-read from the platform.',
   [ErrorCode.MessageNotFound]: 'Message not found.',
   [ErrorCode.PostNotFound]: 'Post not found.',
   [ErrorCode.VerificationNotFound]: 'That verification request could not be found.',

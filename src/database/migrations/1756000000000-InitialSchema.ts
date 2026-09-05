@@ -372,6 +372,7 @@ export class InitialSchema1756000000000 implements MigrationInterface {
         job_kind            VARCHAR(50)   NOT NULL,
         trigger_kind        VARCHAR(30)   NOT NULL,
         status              VARCHAR(30)   NOT NULL DEFAULT 'pending',
+        target_platform_id  VARCHAR(255),
         page_cursor         TEXT,
         window_start_at     TIMESTAMPTZ,
         window_end_at       TIMESTAMPTZ,

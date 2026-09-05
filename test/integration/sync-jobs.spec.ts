@@ -171,7 +171,7 @@ describe('sync job queue', () => {
     const second = await db.query(
       `INSERT INTO sync_jobs (enterprise_id, channel_id, job_kind, trigger_kind, status, next_attempt_at)
        VALUES ($1,$2,'backfill_comments','reconnect','pending',now())
-       ON CONFLICT (channel_id, job_kind)
+       ON CONFLICT (channel_id, job_kind, COALESCE(target_platform_id, ''))
          WHERE is_deleted = false AND status IN ('pending','running','paused','rate_limited')
        DO NOTHING
        RETURNING id`,

@@ -12,6 +12,20 @@ export enum SyncJobKind {
    * that way for anything older than the connection.
    */
   BackfillMentions = 'backfill_mentions',
+  /**
+   * One customer's message thread, re-read from the platform.
+   *
+   * Repair, not history. A webhook that never arrived — Meta drops one often
+   * enough to matter — leaves a hole nothing else fills, and the Conversations
+   * API can be asked for exactly one participant's thread with `user_id`. It is
+   * deliberately NOT BackfillConversations: that walks every conversation on the
+   * channel, holds the channel's one live slot, and is meant to run once at
+   * connect.
+   *
+   * Meta returns only the 20 most recent messages of a thread, so this recovers
+   * a recent gap and cannot reach back further than that.
+   */
+  ResyncConversation = 'resync_conversation',
   RefreshProfile = 'refresh_profile',
   RefreshPostMetrics = 'refresh_post_metrics',
 }

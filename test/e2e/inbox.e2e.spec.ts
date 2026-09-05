@@ -55,8 +55,25 @@ describe('the shared inbox', () => {
   const http = () => request(app.getHttpServer());
   const code = (): string => process.env.OTP_STATIC_CODE ?? '666666';
 
-  async function onboardedBusiness(): Promise<{ ownerToken: string; enterpriseRefId: string }> {
-    const signup = await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+  async function onboardedBusiness(
+    /**
+     * Distinguishes a SECOND business in one test. Signup is unique on email, so
+     * without this a tenant-isolation test 409s on its own fixture before it
+     * reaches what it means to assert.
+     */
+    suffix = '',
+  ): Promise<{ ownerToken: string; enterpriseRefId: string }> {
+    const payload = suffix
+      ? {
+          business: {
+            ...SIGNUP.business,
+            name: `Rival ${suffix}`,
+            email: `hello${suffix}@rival.test`,
+          },
+          owner: { ...SIGNUP.owner, email: `owner${suffix}@rival.test` },
+        }
+      : SIGNUP;
+    const signup = await http().post('/api/v1/enterprises/signup').send(payload).expect(201);
     const verified = await http()
       .post('/api/v1/auth/verify')
       .send({ verificationRefId: signup.body.data.verificationRefId, code: code() })
@@ -93,6 +110,55 @@ describe('the shared inbox', () => {
   }
 
   /** A channel, a customer and one comment thread with a message in it. */
+  /**
+   * A DIRECT MESSAGE thread with a platform identifier behind it — the only
+   * shape a resync can act on, because the identifier is what becomes `user_id`.
+   */
+  async function seedDirectMessageThread(
+    enterpriseRefId: string,
+  ): Promise<{ refId: string; channelId: string }> {
+    const enterprise: { id: string }[] = await db.query(
+      `SELECT id FROM enterprises WHERE ref_id = $1`,
+      [enterpriseRefId],
+    );
+    const enterpriseId = enterprise[0]?.id;
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu-dm','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id, name)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1','Acme IG') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'genzrelics','instagram_dm',$2) RETURNING id`,
+      [enterpriseId, channel[0]?.id],
+    );
+    const identifier: { id: string }[] = await db.query(
+      `INSERT INTO customer_identifiers
+         (enterprise_id, customer_id, identifier_kind, identifier_value, identifier_value_raw, source)
+       VALUES ($1,$2,'instagram_user_id','1774658693722714','1774658693722714','platform')
+       RETURNING id`,
+      [enterpriseId, customer[0]?.id],
+    );
+    const conversation: { ref_id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, customer_identifier_id, platform,
+          conversation_kind, platform_thread_id, status, message_count, last_message_at)
+       VALUES ($1,$2,$3,$4,'instagram','direct_message','dm:1774658693722714','open',1, now())
+       RETURNING ref_id`,
+      [enterpriseId, channel[0]?.id, customer[0]?.id, identifier[0]?.id],
+    );
+
+    return { refId: conversation[0]?.ref_id as string, channelId: channel[0]?.id as string };
+  }
+
   async function seedConversation(enterpriseRefId: string): Promise<string> {
     const enterprise: { id: string }[] = await db.query(
       `SELECT id FROM enterprises WHERE ref_id = $1`,
@@ -457,5 +523,63 @@ describe('the shared inbox', () => {
       .set(rivalAuth)
       .send({ status: 'closed' })
       .expect(404);
+  });
+
+  it('queues a resync for a message thread, and refuses to queue it twice', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const first = await http().post(`/api/v1/conversations/${refId}/resync`).set(auth).expect(201);
+    expect(first.body.data).toEqual({ queued: true });
+
+    /*
+     * queued:false, not an error. The button is clickable twice and the same
+     * repair must not run twice — but a caller has done nothing wrong.
+     */
+    const second = await http().post(`/api/v1/conversations/${refId}/resync`).set(auth).expect(201);
+    expect(second.body.data).toEqual({ queued: false });
+
+    const jobs: { job_kind: string; target_platform_id: string }[] = await db.query(
+      `SELECT job_kind, target_platform_id FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    expect(jobs).toHaveLength(1);
+    // The identifier is what becomes user_id on the conversations edge; without
+    // it the walk silently widens to every conversation on the account.
+    expect(jobs[0]?.target_platform_id).toBe('1774658693722714');
+  });
+
+  it('refuses to resync a comment thread', async () => {
+    // A comment thread has no conversations edge to re-read. 422 with a reason,
+    // rather than a job that could never do anything.
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const response = await http()
+      .post(`/api/v1/conversations/${refId}/resync`)
+      .set({ Authorization: `Bearer ${ownerToken}` })
+      .expect(422);
+
+    expect(response.body.error.code).toBe('CONVERSATION_RESYNC_UNSUPPORTED');
+  });
+
+  it("will not resync another business's conversation", async () => {
+    const owner = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(owner.enterpriseRefId);
+    const stranger = await onboardedBusiness('2');
+
+    // Tenant scoping: a valid ref_id from someone else's account must read as
+    // "not found", never as a thread this caller may repair.
+    await http()
+      .post(`/api/v1/conversations/${refId}/resync`)
+      .set({ Authorization: `Bearer ${stranger.ownerToken}` })
+      .expect(404);
+  });
+
+  it('refuses a resync without permission', async () => {
+    const { enterpriseRefId } = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(enterpriseRefId);
+
+    await http().post(`/api/v1/conversations/${refId}/resync`).expect(401);
   });
 });

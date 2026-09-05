@@ -83,6 +83,8 @@ export enum ErrorCode {
   MessagingWindowClosed = 'MESSAGING_WINDOW_CLOSED',
   CustomerBlocked = 'CUSTOMER_BLOCKED',
   ConversationClosed = 'CONVERSATION_CLOSED',
+  /** Only a message thread can be re-read from the platform. */
+  ConversationResyncUnsupported = 'CONVERSATION_RESYNC_UNSUPPORTED',
   /** The platform offers no way to answer this kind of item — a review, today. */
   ReplyNotSupported = 'REPLY_NOT_SUPPORTED',
   /** The same idempotency key was sent for a different request. */
