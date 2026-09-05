@@ -6,6 +6,10 @@ import {
   type ConversationRow,
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
+import {
+  MessageAttachmentRepository,
+  type AttachmentRow,
+} from '@/database/repositories/message-attachment.repository';
 import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
@@ -45,6 +49,7 @@ export class InboxService {
   constructor(
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
+    private readonly attachments: MessageAttachmentRepository,
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
     private readonly customers: CustomerRepository,
@@ -93,6 +98,7 @@ export class InboxService {
   ): Promise<{
     conversation: ConversationRow;
     messages: MessageRow[];
+    attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
     nextCursor: string | null;
     hasMore: boolean;
   }> {
@@ -118,9 +124,25 @@ export class InboxService {
     const messages = hasMore ? rows.slice(0, size) : rows;
     const last = messages[messages.length - 1];
 
+    /*
+     * ONE query for the whole page's media, not one per message. Only messages
+     * that claim attachments are asked about, so a thread of plain text costs
+     * nothing at all.
+     */
+    const withMedia = messages.filter((message) => message.hasAttachments).map((m) => m.id);
+    const attachmentRows = await this.attachments.listForMessages(enterpriseId, withMedia);
+
+    const attachmentsByMessageId = new Map<number, AttachmentRow[]>();
+    for (const row of attachmentRows) {
+      const existing = attachmentsByMessageId.get(row.messageId);
+      if (existing) existing.push(row);
+      else attachmentsByMessageId.set(row.messageId, [row]);
+    }
+
     return {
       conversation,
       messages,
+      attachmentsByMessageId,
       nextCursor:
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,

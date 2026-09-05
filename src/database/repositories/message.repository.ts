@@ -13,6 +13,15 @@ export interface InsertInboundMessageInput {
   readonly body: string | null;
   readonly platformSentAt: Date | null;
   readonly parentMessageId: number | null;
+  /** Set alongside the message_attachments rows the caller is about to write. */
+  readonly hasAttachments?: boolean;
+  /**
+   * Platform facts with no column of their own — a reply's parent mid, a quick
+   * reply's payload, an ad referral. Kept because they are the raw material for
+   * features that do not exist yet, and are unrecoverable once the ledger row
+   * ages out.
+   */
+  readonly metadata?: Record<string, unknown>;
 }
 
 export interface InsertOutboundMessageInput {
@@ -44,6 +53,7 @@ export interface MessageRow {
   readonly status: MessageStatus;
   readonly isRead: boolean;
   readonly isInternalNote: boolean;
+  readonly hasAttachments: boolean;
   readonly platformSentAt: Date | null;
   readonly createdAt: Date;
   readonly customerId: number | null;
@@ -78,8 +88,9 @@ export class MessageRepository extends BaseRepository {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, customer_id, inbound_event_id,
-          platform_message_id, message_kind, body, platform_sent_at, parent_message_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          platform_message_id, message_kind, body, platform_sent_at, parent_message_id, status,
+          has_attachments, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
        ON CONFLICT (enterprise_id, platform_message_id) WHERE platform_message_id IS NOT NULL
        DO NOTHING
        RETURNING id, ref_id`,
@@ -95,6 +106,8 @@ export class MessageRepository extends BaseRepository {
         input.platformSentAt,
         input.parentMessageId,
         MessageStatus.Delivered,
+        input.hasAttachments ?? false,
+        JSON.stringify(input.metadata ?? {}),
       ],
     );
     const row = rows[0];
@@ -259,6 +272,7 @@ export class MessageRepository extends BaseRepository {
       `SELECT m.id, m.ref_id AS "refId", m.direction, m.body,
               m.message_kind AS "messageKind", m.status,
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
+              m.has_attachments AS "hasAttachments",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
               se.ref_id AS "sentByRefId",

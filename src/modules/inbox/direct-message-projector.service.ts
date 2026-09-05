@@ -5,6 +5,7 @@ import {
   composeThreadKey,
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
+import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { TransactionManager } from '@/database/transaction';
 import {
@@ -13,10 +14,10 @@ import {
   IdentifierKind,
   IdentifierSource,
   IdentifierVerificationStatus,
-  MessageKind,
   Platform,
 } from '@/shared/enums';
 import type { ProjectionOutcome } from './comment-projector.service';
+import { normalizeAttachments, type PlatformAttachment } from './attachment-normalizer';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
 
 /** Meta's messaging entry shape. */
@@ -36,7 +37,26 @@ interface MessagingEvent {
     readonly mid?: string;
     readonly text?: string;
     readonly is_echo?: boolean;
-    readonly attachments?: readonly { readonly type?: string }[];
+    readonly is_unsupported?: boolean;
+    readonly attachments?: readonly PlatformAttachment[];
+    /**
+     * What this message answers. `mid` is another message of ours; `story` is
+     * set when the customer replied to one of OUR stories, which is a different
+     * event from being mentioned in theirs.
+     */
+    readonly reply_to?: {
+      readonly mid?: string;
+      readonly story?: { readonly url?: string; readonly id?: string };
+    };
+    /** The button the customer tapped, if they tapped one. */
+    readonly quick_reply?: { readonly payload?: string };
+  };
+  /** How the customer arrived — an ad, an ig link, a ref parameter. */
+  readonly referral?: {
+    readonly ref?: string;
+    readonly source?: string;
+    readonly type?: string;
+    readonly ad_id?: string;
   };
 }
 
@@ -46,6 +66,7 @@ export class DirectMessageProjectorService {
     private readonly customers: CustomerRepository,
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
+    private readonly attachments: MessageAttachmentRepository,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(DirectMessageProjectorService.name) private readonly logger: PinoLogger,
   ) {}
@@ -75,6 +96,31 @@ export class DirectMessageProjectorService {
 
     const senderId = event.sender?.id;
     if (!senderId) return { projected: false, reason: 'the message names no sender' };
+
+    /*
+     * The attachment IS the message for a story mention, so this has to happen
+     * before anything is written. It also decides the message kind, which used
+     * to be "image if there are any attachments at all".
+     */
+    const media = normalizeAttachments(message.attachments);
+
+    /*
+     * Platform facts with no column of their own.
+     *
+     * Kept deliberately: each one is the raw material for a feature that does
+     * not exist yet — threading a reply to its parent, attributing a
+     * conversation to the ad that started it, showing which story a customer
+     * was answering — and none of it is recoverable once the ledger row ages
+     * out. Storing it costs a few bytes on a row we are already writing.
+     */
+    const platformFacts: Record<string, unknown> = {};
+    if (media.isStoryMention) platformFacts.isStoryMention = true;
+    if (message.reply_to?.mid) platformFacts.replyToPlatformMessageId = message.reply_to.mid;
+    if (message.reply_to?.story?.id) platformFacts.replyToStoryId = message.reply_to.story.id;
+    if (message.reply_to?.story?.url) platformFacts.replyToStoryUrl = message.reply_to.story.url;
+    if (message.quick_reply?.payload) platformFacts.quickReplyPayload = message.quick_reply.payload;
+    if (message.is_unsupported === true) platformFacts.isUnsupported = true;
+    if (event.referral) platformFacts.referral = event.referral;
 
     const identifierKind =
       platform === Platform.Instagram
@@ -120,13 +166,33 @@ export class DirectMessageProjectorService {
         customerId: customer.customerId,
         inboundEventId,
         platformMessageId,
-        messageKind: message.attachments?.length ? MessageKind.Image : MessageKind.Text,
+        messageKind: media.messageKind,
         body: message.text ?? null,
         platformSentAt: event.timestamp ? new Date(event.timestamp) : null,
         parentMessageId: null,
+        hasAttachments: media.attachments.length > 0,
+        metadata: platformFacts,
       });
 
       if (!inserted) return { projected: false, reason: 'the message was already projected' };
+
+      /*
+       * Written INSIDE the projection transaction: a message row claiming
+       * has_attachments with no attachment rows behind it would be a lie the
+       * thread endpoint renders as an empty bubble.
+       */
+      if (media.attachments.length > 0) {
+        await this.attachments.insertMany(
+          media.attachments.map((attachment) => ({
+            enterpriseId,
+            messageId: inserted.id,
+            mediaKind: attachment.mediaKind,
+            sourceUrl: attachment.sourceUrl,
+            sortOrder: attachment.sortOrder,
+            metadata: attachment.metadata,
+          })),
+        );
+      }
 
       const occurredAt = event.timestamp ? new Date(event.timestamp) : new Date();
       await this.conversations.recordMessage({

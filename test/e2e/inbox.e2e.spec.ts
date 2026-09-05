@@ -303,6 +303,9 @@ describe('the shared inbox', () => {
     // platform-console test asserts it never does.
     const message = thread.body.data.messages[0];
     expect(Object.keys(message).sort()).toEqual([
+      // Added when attachments started being stored: a message whose entire
+      // content is its media used to arrive here as an empty body.
+      'attachments',
       'body',
       'createdAt',
       'direction',
@@ -314,6 +317,9 @@ describe('the shared inbox', () => {
       'sentBy',
       'status',
     ]);
+    // Additive: a text message still carries the key, as an empty list, so a
+    // client never has to test for its presence.
+    expect(message.attachments).toEqual([]);
   });
 
   it('names the colleague who sent a reply', async () => {

@@ -28,6 +28,12 @@ export enum MessageKind {
   Audio = 'audio',
   Sticker = 'sticker',
   StoryReply = 'story_reply',
+  /**
+   * A document, a shared link, a location — anything whose attachment is not
+   * playable media. Added when attachments started being stored: `share` and
+   * `file` had no honest kind and were being recorded as text.
+   */
+  File = 'file',
 }
 
 export enum MessageStatus {

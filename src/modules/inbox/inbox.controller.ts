@@ -15,6 +15,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
 import type { MessageRow } from '@/database/repositories/message.repository';
 import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
@@ -205,7 +206,9 @@ export class InboxController {
     );
     return {
       conversation: toConversationSummary(result.conversation),
-      messages: result.messages.map(toMessage),
+      messages: result.messages.map((row) =>
+        toMessage(row, result.attachmentsByMessageId.get(row.id) ?? []),
+      ),
       /*
        * Lifted into meta.pagination by the envelope interceptor, so this reads
        * the same as every other list. The thread had no pagination surface at
@@ -315,7 +318,10 @@ export class InboxController {
  * useless besides: a client cannot turn an employee id into a name. It gets the
  * name instead.
  */
-function toMessage(row: MessageRow): Record<string, unknown> {
+function toMessage(
+  row: MessageRow,
+  attachments: readonly AttachmentRow[],
+): Record<string, unknown> {
   return {
     refId: row.refId,
     direction: row.direction,
@@ -326,6 +332,19 @@ function toMessage(row: MessageRow): Record<string, unknown> {
     isInternalNote: row.isInternalNote,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
+    /*
+     * `url` is the PLATFORM's CDN link, passed through rather than proxied.
+     * Meta's terms forbid storing or caching the media itself, so there is
+     * nothing of ours to serve; the link dies with the story, about 24 hours,
+     * which is why `expires` tells the client to expect that rather than treat
+     * a broken image as a bug.
+     */
+    attachments: attachments.map((attachment) => ({
+      mediaKind: attachment.mediaKind,
+      url: attachment.sourceUrl,
+      expires: attachment.storageKey === null,
+      platformType: attachment.metadata.platformType ?? null,
+    })),
     // Null for anything the customer sent, and for a message projected from a
     // webhook rather than typed by somebody here.
     sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
