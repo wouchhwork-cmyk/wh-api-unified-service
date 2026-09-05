@@ -215,4 +215,29 @@ describe('message attachments', () => {
     expect(await attachments.insertMany([])).toBe(0);
     expect(await attachments.listForMessages(enterpriseId, [])).toHaveLength(0);
   });
+
+  it('does not mark a stable link as expiring', async () => {
+    /*
+     * The contradiction this pins: a GIF was coming back as mediaKind "gif" —
+     * correctly recognised as permanent — and expires:true in the same object,
+     * because expires was derived from storageKey alone. The UI would then be
+     * ready to report a perfectly good Giphy link as "no longer available".
+     */
+    const message = await insertMessage(MessageKind.Image, 'MID_GIF', true);
+    await attachments.insertMany([
+      {
+        enterpriseId,
+        messageId: message.id,
+        mediaKind: MediaKind.Gif,
+        sourceUrl: 'https://media2.giphy.com/media/v1.Y2lk/gKrbnqo25MlI2TUC78/200.gif',
+        sortOrder: 0,
+        metadata: { platformType: 'image', stableUrl: true },
+      },
+    ]);
+
+    const rows = await attachments.listForMessages(enterpriseId, [message.id]);
+    // What the controller derives `expires` from.
+    expect(rows[0]?.metadata.stableUrl).toBe(true);
+    expect(rows[0]?.storageKey).toBeNull();
+  });
 });

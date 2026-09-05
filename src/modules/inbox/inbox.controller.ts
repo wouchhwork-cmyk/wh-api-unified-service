@@ -360,7 +360,17 @@ function toMessage(
     attachments: attachments.map((attachment) => ({
       mediaKind: attachment.mediaKind,
       url: attachment.sourceUrl,
-      expires: attachment.storageKey === null,
+      /*
+       * Whether this link will stop working.
+       *
+       * `storageKey === null` alone was WRONG, and visibly so: a GIF comes from
+       * Giphy, is public and permanent, and was still being reported as
+       * expiring — so the UI stood ready to tell somebody their GIF was "no
+       * longer available on the platform" when nothing of the sort had
+       * happened. What expires is a Meta CDN link, which is exactly what
+       * stableUrl records.
+       */
+      expires: attachment.storageKey === null && attachment.metadata.stableUrl !== true,
       platformType: attachment.metadata.platformType ?? null,
     })),
     // Null for anything the customer sent, and for a message projected from a
