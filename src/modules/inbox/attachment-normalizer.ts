@@ -89,21 +89,74 @@ export function extractAssetId(url: string | null | undefined): string | null {
   }
 }
 
-/**
- * Whether a link points at media we host nothing of and that expires.
+/*
+ * TWO SEPARATE QUESTIONS, deliberately answered by two predicates.
  *
- * Meta's own CDN signs a link that dies with the content — 24 hours for a story.
- * A GIF, by contrast, is delivered as a plain Giphy link, which is public and
- * stable, so it does NOT need the "may stop rendering" treatment in the UI.
- * Observed on live traffic: a GIF arrives as type `image` with a giphy.com URL.
+ * They were one — "is this a known GIF host" decided both whether to render an
+ * animation and whether to warn that the link might vanish — and that made a
+ * host we do not recognise wrong twice over: its GIF rendered as a still, AND a
+ * permanent third-party link was advertised as expiring.
  */
-const STABLE_MEDIA_HOSTS = ['giphy.com', 'tenor.com'];
 
-export function isStableMediaUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
+/**
+ * Links that STOP WORKING, which is a thing we actually know rather than guess.
+ *
+ * Meta signs its media URLs and they die with the content they point at — about
+ * 24 hours for a story. Every host below is Meta's; anything else belongs to
+ * somebody whose links we have no reason to think are temporary, so an
+ * unrecognised host is treated as permanent. That is the honest default: we can
+ * name what expires, and claiming a stranger's link is about to vanish would be
+ * an invention.
+ */
+const EXPIRING_MEDIA_HOSTS = ['fbsbx.com', 'fbcdn.net', 'cdninstagram.com'];
+
+/** Hosts whose `image` really means an animation. */
+const GIF_HOSTS = ['giphy.com', 'tenor.com'];
+
+function hostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    return STABLE_MEDIA_HOSTS.some((stable) => host === stable || host.endsWith(`.${stable}`));
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Matches a host or any subdomain of it, and NOTHING ELSE.
+ *
+ * The dot matters: a bare `endsWith('giphy.com')` also matches
+ * `giphy.com.evil.test`, which is how an attacker gets their link treated as
+ * trusted.
+ */
+function hostMatches(host: string, domains: readonly string[]): boolean {
+  return domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
+
+export function isExpiringMediaUrl(url: string | null | undefined): boolean {
+  const host = hostOf(url);
+  return host !== null && hostMatches(host, EXPIRING_MEDIA_HOSTS);
+}
+
+/** Kept as the inverse, since that is what the row and the API talk about. */
+export function isStableMediaUrl(url: string | null | undefined): boolean {
+  return hostOf(url) !== null && !isExpiringMediaUrl(url);
+}
+
+/**
+ * Whether an `image` is really an animation.
+ *
+ * Meta gives no type for this at all, so it takes both signals: a host we know
+ * serves GIFs, or a path that ends in .gif — which catches a source we have
+ * never seen, the case a fixed host list can only ever get wrong.
+ */
+export function isAnimatedImageUrl(url: string | null | undefined): boolean {
+  const host = hostOf(url);
+  if (host === null) return false;
+  if (hostMatches(host, GIF_HOSTS)) return true;
+
+  try {
+    return new URL(url as string).pathname.toLowerCase().endsWith('.gif');
   } catch {
     return false;
   }
@@ -124,7 +177,7 @@ function toMediaKind(attachment: PlatformAttachment): MediaKind {
    * and a client that renders one as a still picture loses the whole point of
    * it. The Giphy host is the only signal Meta gives.
    */
-  if (mediaKind === MediaKind.Image && isStableMediaUrl(attachment.payload?.url)) {
+  if (mediaKind === MediaKind.Image && isAnimatedImageUrl(attachment.payload?.url)) {
     return MediaKind.Gif;
   }
 

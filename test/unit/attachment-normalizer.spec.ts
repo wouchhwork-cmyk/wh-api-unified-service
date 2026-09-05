@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractAssetId,
+  isAnimatedImageUrl,
+  isExpiringMediaUrl,
   isStableMediaUrl,
   normalizeAttachments,
 } from '@/modules/inbox/attachment-normalizer';
@@ -145,10 +147,52 @@ describe('normalizing a message attachment', () => {
     expect(media.attachments[0]?.metadata.assetId).toBeUndefined();
   });
 
-  it('does not mistake a lookalike host for a stable one', () => {
-    expect(isStableMediaUrl('https://giphy.com.evil.test/x')).toBe(false);
-    expect(isStableMediaUrl('https://media0.giphy.com/x')).toBe(true);
+  it('does not mistake a lookalike host for a trusted one', () => {
+    // Without the dot, endsWith('giphy.com') also matches this — which is how
+    // an attacker gets their link treated as a known GIF source.
+    expect(isAnimatedImageUrl('https://giphy.com.evil.test/x.png')).toBe(false);
+    expect(isAnimatedImageUrl('https://media0.giphy.com/x')).toBe(true);
+    expect(isExpiringMediaUrl('https://fbcdn.net.evil.test/x')).toBe(false);
     expect(extractAssetId('not a url')).toBeNull();
+  });
+
+  it('decides expiry by whose CDN it is, not by whether we recognise the host', () => {
+    /*
+     * We can NAME what expires: Meta signs its media links and they die with
+     * the content. A stranger's link is not ours to declare temporary — saying
+     * so would have the UI report a perfectly good image as "no longer
+     * available on the platform".
+     */
+    expect(isExpiringMediaUrl('https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1')).toBe(
+      true,
+    );
+    expect(isExpiringMediaUrl('https://scontent.cdninstagram.com/v/x.jpg')).toBe(true);
+    expect(isExpiringMediaUrl('https://scontent-lhr8-1.xx.fbcdn.net/v/x.jpg')).toBe(true);
+
+    expect(isExpiringMediaUrl('https://media2.giphy.com/media/x/200.gif')).toBe(false);
+    // The case that matters: a host nothing here has ever seen.
+    expect(isExpiringMediaUrl('https://cdn.some-new-thing.test/x.png')).toBe(false);
+    expect(isStableMediaUrl('https://cdn.some-new-thing.test/x.png')).toBe(true);
+  });
+
+  it('still sees a GIF from a host it has never heard of', () => {
+    // A fixed host list can only ever be wrong about the next source Meta uses,
+    // so the extension is the second signal. Rendered as a still, a GIF loses
+    // the entire point of being one.
+    const media = normalizeAttachments([
+      { type: 'image', payload: { url: 'https://cdn.some-new-thing.test/funny.gif' } },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Gif);
+    expect(media.attachments[0]?.metadata.stableUrl).toBe(true);
+  });
+
+  it('does not call a plain image from an unknown host a GIF', () => {
+    const media = normalizeAttachments([
+      { type: 'image', payload: { url: 'https://cdn.some-new-thing.test/photo.jpg' } },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Image);
   });
 
   it('reads what the backfill translated, exactly as if it were live', () => {
