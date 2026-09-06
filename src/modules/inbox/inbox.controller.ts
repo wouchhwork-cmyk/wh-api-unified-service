@@ -420,6 +420,7 @@ function toConversationSummary(row: {
   customerRefId: string | null;
   customerDisplayName: string | null;
   customerAvatarUrl: string | null;
+  customerProfile: Record<string, unknown>;
   assignedToRefId: string | null;
   assignedToName: string | null;
 }): Record<string, unknown> {
@@ -455,6 +456,14 @@ function toConversationSummary(row: {
           refId: row.customerRefId,
           displayName: row.customerDisplayName,
           avatarUrl: row.customerAvatarUrl,
+          /*
+           * Only the three facts an agent acts on, not the whole metadata bag:
+           * a customer's stored metadata is ours to grow, and shipping it
+           * wholesale would make every future key part of the public contract.
+           */
+          followsUs: row.customerProfile.followsUs ?? null,
+          isVerified: row.customerProfile.isVerified ?? null,
+          followerCount: row.customerProfile.followerCount ?? null,
         }
       : null,
     /*

@@ -44,6 +44,12 @@ export interface ConversationRow {
   readonly customerDisplayName: string | null;
   readonly customerAvatarUrl: string | null;
   /**
+   * What the platform said about this person: whether they follow the business,
+   * whether they are verified, how many followers. Triage signals, kept on the
+   * customer and useless while nothing serves them.
+   */
+  readonly customerProfile: Record<string, unknown>;
+  /**
    * Who is ANSWERING it, joined for the same reason the customer is.
    *
    * Both endpoints for setting this already existed and nothing ever read it
@@ -190,6 +196,7 @@ export class ConversationRepository extends BaseRepository {
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
               cu.avatar_url AS "customerAvatarUrl",
+              cu.metadata AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
               /*
@@ -272,6 +279,7 @@ export class ConversationRepository extends BaseRepository {
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
               cu.avatar_url AS "customerAvatarUrl",
+              cu.metadata AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
               /*
