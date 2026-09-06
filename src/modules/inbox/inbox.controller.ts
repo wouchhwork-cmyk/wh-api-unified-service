@@ -21,7 +21,13 @@ import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
 import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS, SSE_MAX_STREAM_MS } from '@/shared/constants';
 import { InboxEventsService } from './inbox-events.service';
-import { ConversationKind, ConversationStatus, MessageDirection, Permission } from '@/shared/enums';
+import {
+  ConversationKind,
+  ConversationStatus,
+  MediaKind,
+  MessageDirection,
+  Permission,
+} from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import { evaluateReplyWindow } from './reply-window';
@@ -337,6 +343,38 @@ export class InboxController {
  * useless besides: a client cannot turn an employee id into a name. It gets the
  * name instead.
  */
+/**
+ * HOW THE CLIENT SHOULD PRESENT AN ATTACHMENT.
+ *
+ * The media kind says what the thing IS; this says what can be done with the
+ * link we hold, which is a different question. A shared reel and a shared post
+ * are both "somebody sent me an Instagram thing", but one gives a permalink
+ * that can only be followed and the other gives a real image that can be shown.
+ *
+ * Decided here rather than in each client: a second client would otherwise have
+ * to rediscover that `share` means a permalink and `ig_post` does not, and get
+ * it subtly wrong.
+ */
+function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'audio' | 'link' {
+  // A share carries an instagram.com permalink, never media — whatever its
+  // media kind happens to say.
+  if (attachment.metadata.platformType === 'share') return 'link';
+  if (!attachment.sourceUrl) return 'link';
+
+  switch (attachment.mediaKind) {
+    case MediaKind.Image:
+    case MediaKind.Gif:
+    case MediaKind.Sticker:
+      return 'image';
+    case MediaKind.Video:
+      return 'video';
+    case MediaKind.Audio:
+      return 'audio';
+    default:
+      return 'link';
+  }
+}
+
 function toMessage(
   row: MessageRow,
   attachments: readonly AttachmentRow[],
@@ -394,6 +432,14 @@ function toMessage(
        */
       expires: attachment.storageKey === null && attachment.metadata.stableUrl !== true,
       platformType: attachment.metadata.platformType ?? null,
+      /*
+       * A shared post's caption. Without it the thread shows a picture with no
+       * hint of what was sent or why, which for a shared advert is most of the
+       * message.
+       */
+      title: attachment.metadata.title ?? null,
+      /** Show it, play it, or link to it — see renderAsFor. */
+      renderAs: renderAsFor(attachment),
     })),
     // Null for anything the customer sent, and for a message projected from a
     // webhook rather than typed by somebody here.

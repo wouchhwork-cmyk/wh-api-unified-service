@@ -17,9 +17,21 @@ export interface PlatformAttachment {
   readonly type?: string;
   readonly payload?: {
     readonly url?: string;
+    /**
+     * A SHARED STORY PUTS ITS LINK HERE, not in `url`.
+     *
+     * Reading only `url` meant an ig_story arrived with no link at all: the row
+     * was stored, the media was gone, and the thread showed an attachment that
+     * could neither be shown nor followed.
+     */
+    readonly story_media_url?: string;
+    readonly story_media_id?: string;
     readonly sticker_id?: number | string;
+    /** A shared post's caption. */
     readonly title?: string;
     readonly reel_video_id?: string;
+    /** The shared post's media id, as Meta's own APIs address it. */
+    readonly ig_post_media_id?: string;
   };
 }
 
@@ -50,6 +62,20 @@ export const STORY_MENTION_TYPE = 'story_mention';
 const MEDIA_KIND_BY_TYPE: Readonly<Record<string, MediaKind>> = {
   image: MediaKind.Image,
   [STORY_MENTION_TYPE]: MediaKind.Image,
+  /*
+   * A post the customer shared INTO the chat. Unlike `share`, which gives only
+   * a permalink, this arrives with a real CDN image and the post's caption — so
+   * it can be shown rather than linked. It was landing as a document and
+   * rendering as a link labelled "ig_post", which told an agent nothing about
+   * what had been sent to them.
+   */
+  ig_post: MediaKind.Image,
+  /*
+   * A story somebody shared INTO the chat — distinct from a story_mention,
+   * which is a story that named us. Both arrive as a CDN link that may be a
+   * photo or a video, which the client discovers by trying.
+   */
+  ig_story: MediaKind.Image,
   video: MediaKind.Video,
   ig_reel: MediaKind.Video,
   reel: MediaKind.Video,
@@ -197,7 +223,9 @@ export function normalizeAttachments(
 
   const normalized = attachments.map((attachment, index): NormalizedAttachment => {
     const type = attachment.type?.trim().toLowerCase() ?? null;
-    const sourceUrl = attachment.payload?.url ?? null;
+    // Meta puts a shared story's link under its own key; everything else uses
+    // `url`. Both are the same thing to us.
+    const sourceUrl = attachment.payload?.url ?? attachment.payload?.story_media_url ?? null;
     const assetId = extractAssetId(sourceUrl);
 
     const metadata: Record<string, unknown> = {};
@@ -214,6 +242,19 @@ export function normalizeAttachments(
     // "this image is gone" and "this image failed to load".
     if (sourceUrl) metadata.stableUrl = isStableMediaUrl(sourceUrl);
     if (attachment.payload?.reel_video_id) metadata.reelVideoId = attachment.payload.reel_video_id;
+    /*
+     * The post's own id, which outlives the CDN link exactly as a story's asset
+     * id does — and unlike the asset id, it is the id Meta's own APIs address
+     * that post by.
+     */
+    if (attachment.payload?.ig_post_media_id) {
+      metadata.postMediaId = attachment.payload.ig_post_media_id;
+    }
+    // The story's own id. Meta will not resolve it to an owner for us, but it
+    // still identifies WHICH story after the link has expired.
+    if (attachment.payload?.story_media_id) {
+      metadata.storyMediaId = attachment.payload.story_media_id;
+    }
 
     return { mediaKind: toMediaKind(attachment), sourceUrl, sortOrder: index, metadata };
   });

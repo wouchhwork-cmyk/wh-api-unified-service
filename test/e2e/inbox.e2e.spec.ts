@@ -422,6 +422,8 @@ describe('the shared inbox', () => {
     ]);
     // Additive: a text message still carries the key, as an empty list, so a
     // client never has to test for its presence.
+    // Empty for a text message; each entry carries renderAs so a client never
+    // has to work out whether a link can be shown or only followed.
     expect(message.attachments).toEqual([]);
     // Null for an ordinary message; an object with refId, excerpt, direction
     // and isSelfReply when the customer answered one in particular.

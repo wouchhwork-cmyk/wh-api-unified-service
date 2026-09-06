@@ -243,4 +243,53 @@ describe('normalizing a message attachment', () => {
       true,
     );
   });
+
+  it('shows a shared post rather than linking to it', () => {
+    /*
+     * `ig_post` is not `share`. A share gives a permalink and nothing else; a
+     * shared post arrives with a real CDN image, the caption, and the post's
+     * own media id. It was landing as a document and rendering as a link
+     * labelled "ig_post", which said nothing about what had been sent.
+     */
+    const media = normalizeAttachments([
+      {
+        type: 'ig_post',
+        payload: {
+          url: 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=17901866775551277&signature=x',
+          title: 'Get US FDA Certification Within 24 Hours',
+          ig_post_media_id: '17901866775551277',
+        },
+      },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Image);
+    expect(media.messageKind).toBe(MessageKind.Image);
+    expect(media.attachments[0]?.metadata.title).toContain('FDA');
+    // The id Meta's own APIs address that post by, which outlives the link.
+    expect(media.attachments[0]?.metadata.postMediaId).toBe('17901866775551277');
+    expect(media.attachments[0]?.metadata.stableUrl).toBe(false);
+  });
+
+  it("finds a shared story's link, which Meta puts under its own key", () => {
+    /*
+     * ig_story carries `story_media_url`, not `url`. Reading only `url` meant
+     * the attachment row was stored with no link at all — an attachment that
+     * could neither be shown nor followed. Seen on live traffic.
+     */
+    const media = normalizeAttachments([
+      {
+        type: 'ig_story',
+        payload: {
+          story_media_id: '18031245590895452',
+          story_media_url:
+            'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=18031245590895452&signature=x',
+        },
+      },
+    ]);
+
+    expect(media.attachments[0]?.sourceUrl).toContain('lookaside.fbsbx.com');
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Image);
+    expect(media.attachments[0]?.metadata.storyMediaId).toBe('18031245590895452');
+    expect(media.attachments[0]?.metadata.platformType).toBe('ig_story');
+  });
 });
