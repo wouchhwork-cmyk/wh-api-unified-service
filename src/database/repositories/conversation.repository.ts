@@ -69,6 +69,13 @@ export function composeThreadKey(kind: ConversationKind, platformId: string): st
   return `${THREAD_KEY_PREFIX[kind]}:${platformId}`;
 }
 
+export interface UpsertConversationResult {
+  readonly id: number;
+  readonly refId: string;
+  /** False when the thread already existed and this message joined it. */
+  readonly created: boolean;
+}
+
 @Injectable()
 export class ConversationRepository extends BaseRepository {
   /**
@@ -115,8 +122,8 @@ export class ConversationRepository extends BaseRepository {
    * is_deleted predicate: an archived-then-revived thread must reattach rather
    * than fork.
    */
-  async upsert(input: UpsertConversationInput): Promise<{ id: number; refId: string }> {
-    const { rows } = await this.mutate<{ id: number; ref_id: string }>(
+  async upsert(input: UpsertConversationInput): Promise<UpsertConversationResult> {
+    const { rows } = await this.mutate<{ id: number; ref_id: string; created: boolean }>(
       `INSERT INTO conversations
          (enterprise_id, channel_id, customer_id, customer_identifier_id, post_id, platform,
           conversation_kind, platform_thread_id, subject, status)
@@ -130,7 +137,14 @@ export class ConversationRepository extends BaseRepository {
          subject    = COALESCE(EXCLUDED.subject, conversations.subject),
          post_id    = COALESCE(EXCLUDED.post_id, conversations.post_id),
          is_deleted = false
-       RETURNING id, ref_id`,
+       /*
+        * WHETHER THIS ROW IS NEW, which an upsert otherwise hides. xmax is 0 on
+        * a genuine insert and non-zero when the conflict branch updated an
+        * existing row — the only way Postgres will tell you, since RETURNING
+        * looks identical either way. Callers need it to keep per-customer
+        * counters honest without a second round trip to ask.
+        */
+       RETURNING id, ref_id, (xmax = 0) AS created`,
       [
         this.requireEnterprise(input.enterpriseId),
         input.channelId,
@@ -146,7 +160,24 @@ export class ConversationRepository extends BaseRepository {
     );
     const row = rows[0];
     if (!row) throw new Error('conversations upsert returned no row');
-    return { id: row.id, refId: row.ref_id };
+
+    /*
+     * customers.conversation_count is maintained HERE rather than left to every
+     * caller, because there are three of them — two projectors and the backfill
+     * — and a counter that any one of them can forget is a counter that lies.
+     * It was declared DEFAULT 0 and never written to at all, so it read 0 for
+     * every customer who had ever had a conversation.
+     */
+    if (row.created) {
+      await this.mutate(
+        `UPDATE customers
+            SET conversation_count = conversation_count + 1, updated_at = now()
+          WHERE id = $1 AND enterprise_id = $2`,
+        [input.customerId, this.requireEnterprise(input.enterpriseId)],
+      );
+    }
+
+    return { id: row.id, refId: row.ref_id, created: row.created };
   }
 
   async findByRefId(enterpriseId: number, refId: string): Promise<ConversationRow | null> {

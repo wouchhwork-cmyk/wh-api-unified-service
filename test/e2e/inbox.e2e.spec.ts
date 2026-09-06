@@ -380,12 +380,16 @@ describe('the shared inbox', () => {
       'messageKind',
       'platformSentAt',
       'refId',
+      // Added when Instagram replies started being threaded: null unless the
+      // customer answered one specific message.
+      'replyTo',
       'sentBy',
       'status',
     ]);
     // Additive: a text message still carries the key, as an empty list, so a
     // client never has to test for its presence.
     expect(message.attachments).toEqual([]);
+    expect(message.replyTo).toBeNull();
   });
 
   it('names the colleague who sent a reply', async () => {

@@ -3,6 +3,8 @@ import { loadConfiguration } from '@/config/configuration';
 import type { DatabaseConfig } from '@/config/config.types';
 import { ENTITIES } from './entities';
 import { InitialSchema1756000000000 } from './migrations/1756000000000-InitialSchema';
+import { ConversationResync1757000000000 } from './migrations/1757000000000-ConversationResync';
+import { RepairConversationCounts1757100000000 } from './migrations/1757100000000-RepairConversationCounts';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -42,7 +44,18 @@ export function buildDataSourceOptions(
     // Explicit lists, never globs: TypeORM resolves globs at runtime and
     // requires the files itself, which bypasses the build's transform.
     entities: [...ENTITIES],
-    migrations: [InitialSchema1756000000000],
+    /*
+     * IN ORDER, and every one of them listed. The list is explicit rather than
+     * a glob, which is deliberate — but it also means a migration file that
+     * nobody adds here is dead: `migrate` reports "no pending migrations" and
+     * the change silently never reaches any database. Both of the entries below
+     * were written and, until this line, would never have run.
+     */
+    migrations: [
+      InitialSchema1756000000000,
+      ConversationResync1757000000000,
+      RepairConversationCounts1757100000000,
+    ],
     migrationsTableName: 'schema_migrations',
 
     // Implements schema.md's snake_case ↔ camelCase contract in ONE place.

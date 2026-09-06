@@ -338,4 +338,108 @@ describe('conversation resync jobs', () => {
     );
     expect(count[0]?.count).toBe(0);
   });
+
+  it('threads a reply onto the message it answers', async () => {
+    /*
+     * Instagram lets somebody answer one specific message and names it in
+     * reply_to.mid. parent_message_id existed and nothing ever filled it, so a
+     * threaded reply was stored as a loose line and the inbox could not tell
+     * which of several outbound messages it was aimed at.
+     */
+    const messages = new MessageRepository(db);
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      messages,
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('p1'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682400000,
+      message: { mid: 'PARENT_MID', text: 'tell me man' },
+    });
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('p2'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682501255,
+      message: {
+        mid: 'CHILD_MID',
+        text: 'Reply',
+        reply_to: { mid: 'PARENT_MID', is_self_reply: false },
+      },
+    });
+
+    const rows: { body: string; parent_body: string | null; metadata: Record<string, unknown> }[] =
+      await db.query(
+        `SELECT m.body, p.body AS parent_body, m.metadata
+           FROM messages m LEFT JOIN messages p ON p.id = m.parent_message_id
+          WHERE m.platform_message_id = 'CHILD_MID'`,
+      );
+    expect(rows[0]?.parent_body).toBe('tell me man');
+    expect(rows[0]?.metadata.replyIsSelfReply).toBe(false);
+  });
+
+  it('keeps the reply readable when the parent was never delivered', async () => {
+    /*
+     * A reply to a message whose webhook Meta dropped. The link cannot be made
+     * — but the message itself must still arrive, and the platform id is kept
+     * so the link can be made later without asking Meta again.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','orphan-reply','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    const outcome = await projector.project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      Number(rows[0]?.id),
+      {
+        sender: { id: BOB },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682694662,
+        message: {
+          mid: 'ORPHAN_CHILD',
+          text: 'Hehee',
+          reply_to: { mid: 'NEVER_ARRIVED', is_self_reply: true },
+        },
+      },
+    );
+
+    expect(outcome.projected).toBe(true);
+    const stored: { parent_message_id: number | null; metadata: Record<string, unknown> }[] =
+      await db.query(
+        `SELECT parent_message_id, metadata FROM messages WHERE platform_message_id = 'ORPHAN_CHILD'`,
+      );
+    expect(stored[0]?.parent_message_id).toBeNull();
+    expect(stored[0]?.metadata.replyToPlatformMessageId).toBe('NEVER_ARRIVED');
+    expect(stored[0]?.metadata.replyIsSelfReply).toBe(true);
+  });
 });

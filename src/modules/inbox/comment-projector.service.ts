@@ -278,6 +278,8 @@ export class CommentProjectorService {
         platform,
         inbound: true,
         conversationId: conversation.id,
+        // Only the message that opened the thread counts as a new conversation.
+        conversationCreated: conversation.created,
       });
 
       /*

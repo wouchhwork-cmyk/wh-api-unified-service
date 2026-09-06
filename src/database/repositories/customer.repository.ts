@@ -206,17 +206,28 @@ export class CustomerRepository extends BaseRepository {
     platform: Platform;
     inbound: boolean;
     conversationId: number | null;
+    /**
+     * Whether this message OPENED the conversation.
+     *
+     * conversation_count sat at 0 next to message counts that were being
+     * maintained properly, so the one number saying "how many separate threads
+     * has this person started on this channel" was the one number that was
+     * wrong. It cannot be derived here — every message would look like a new
+     * thread — so the caller, which just upserted the conversation, says.
+     */
+    conversationCreated?: boolean;
   }): Promise<void> {
     await this.mutate(
       `INSERT INTO customer_engagements
          (enterprise_id, customer_id, channel_id, platform, first_engaged_at, last_engaged_at,
-          inbound_message_count, outbound_message_count, last_conversation_id)
-       VALUES ($1, $2, $3, $4, now(), now(), $5, $6, $7)
+          inbound_message_count, outbound_message_count, conversation_count, last_conversation_id)
+       VALUES ($1, $2, $3, $4, now(), now(), $5, $6, $8, $7)
        ON CONFLICT (enterprise_id, customer_id, channel_id) WHERE is_deleted = false
        DO UPDATE SET
          last_engaged_at        = now(),
          inbound_message_count  = customer_engagements.inbound_message_count + $5,
          outbound_message_count = customer_engagements.outbound_message_count + $6,
+         conversation_count     = customer_engagements.conversation_count + $8,
          last_conversation_id   = COALESCE(EXCLUDED.last_conversation_id,
                                            customer_engagements.last_conversation_id)`,
       [
@@ -227,6 +238,7 @@ export class CustomerRepository extends BaseRepository {
         input.inbound ? 1 : 0,
         input.inbound ? 0 : 1,
         input.conversationId,
+        input.conversationCreated === true ? 1 : 0,
       ],
     );
   }

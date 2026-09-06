@@ -55,6 +55,8 @@ interface MessagingEvent {
      */
     readonly reply_to?: {
       readonly mid?: string;
+      /** True when they answered their OWN earlier message, not ours. */
+      readonly is_self_reply?: boolean;
       readonly story?: { readonly url?: string; readonly id?: string };
     };
     /** The button the customer tapped, if they tapped one. */
@@ -136,6 +138,12 @@ export class DirectMessageProjectorService {
     const platformFacts: Record<string, unknown> = {};
     if (media.isStoryMention) platformFacts.isStoryMention = true;
     if (message.reply_to?.mid) platformFacts.replyToPlatformMessageId = message.reply_to.mid;
+    // The platform's own word for it. Derivable from the parent's direction —
+    // but only while we hold the parent, and a lost delivery is exactly when we
+    // do not.
+    if (message.reply_to?.is_self_reply !== undefined) {
+      platformFacts.replyIsSelfReply = message.reply_to.is_self_reply;
+    }
     if (message.reply_to?.story?.id) platformFacts.replyToStoryId = message.reply_to.story.id;
     if (message.reply_to?.story?.url) platformFacts.replyToStoryUrl = message.reply_to.story.url;
     if (message.quick_reply?.payload) platformFacts.quickReplyPayload = message.quick_reply.payload;
@@ -218,6 +226,22 @@ export class DirectMessageProjectorService {
         subject: null,
       });
 
+      /*
+       * WHAT THIS REPLIES TO. Instagram lets somebody answer one specific
+       * message, and `reply_to.mid` names it — our own outbound reply, usually.
+       * parent_message_id existed and nothing ever filled it, so a threaded
+       * reply was stored as a loose message and the inbox could not draw the
+       * exchange the way the customer sees it.
+       *
+       * Null when we do not hold the parent — a reply to a message whose
+       * delivery was lost, or one older than anything we keep. The platform id
+       * stays in metadata either way, so the link can be made later without
+       * asking Meta again.
+       */
+      const parentMessageId = message.reply_to?.mid
+        ? await this.messages.findIdByPlatformMessageId(enterpriseId, message.reply_to.mid)
+        : null;
+
       const inserted = await this.messages.insertInbound({
         enterpriseId,
         conversationId: conversation.id,
@@ -227,7 +251,7 @@ export class DirectMessageProjectorService {
         messageKind: media.messageKind,
         body: message.text ?? null,
         platformSentAt: event.timestamp ? new Date(event.timestamp) : null,
-        parentMessageId: null,
+        parentMessageId,
         hasAttachments: media.attachments.length > 0,
         metadata: platformFacts,
       });
@@ -267,6 +291,8 @@ export class DirectMessageProjectorService {
         platform,
         inbound: true,
         conversationId: conversation.id,
+        // Only the message that opened the thread counts as a new conversation.
+        conversationCreated: conversation.created,
       });
 
       /*
@@ -313,7 +339,7 @@ export class DirectMessageProjectorService {
     const mid = event.message_edit?.mid;
     if (!mid) return { projected: false, reason: 'the event carries no message id' };
 
-    if (await this.messages.existsByPlatformMessageId(enterpriseId, mid)) {
+    if ((await this.messages.findIdByPlatformMessageId(enterpriseId, mid)) !== null) {
       return { projected: false, reason: 'a message_edit for a message we already hold' };
     }
 

@@ -54,6 +54,14 @@ export interface MessageRow {
   readonly isRead: boolean;
   readonly isInternalNote: boolean;
   readonly hasAttachments: boolean;
+  /**
+   * The message this one answers, when the customer replied to one in
+   * particular. Its ref_id, never its internal id, and a short excerpt so the
+   * thread can show WHAT was answered without the parent having to be on the
+   * same page.
+   */
+  readonly parentRefId: string | null;
+  readonly parentExcerpt: string | null;
   readonly platformSentAt: Date | null;
   readonly createdAt: Date;
   readonly customerId: number | null;
@@ -115,24 +123,25 @@ export class MessageRepository extends BaseRepository {
   }
 
   /**
-   * Whether we already hold the platform's message.
+   * Our id for a message the platform names, if we hold it.
    *
-   * Used to tell a harmless `message_edit` — Meta sends one a second after most
-   * attachments — from the one that means a delivery was lost: an edit naming a
-   * message id that never arrived is the only signal we get that a webhook went
-   * missing.
+   * Two callers, one query. It tells a harmless `message_edit` — Meta sends one
+   * a second after most attachments — from the one that means a delivery was
+   * lost, and it resolves `reply_to.mid` into the row a reply is answering, so
+   * a threaded exchange can be drawn the way the customer sees it rather than
+   * as a flat list.
    */
-  async existsByPlatformMessageId(
+  async findIdByPlatformMessageId(
     enterpriseId: number,
     platformMessageId: string,
-  ): Promise<boolean> {
-    const rows = await this.query<{ one: number }>(
-      `SELECT 1 AS one FROM messages
+  ): Promise<number | null> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM messages
         WHERE enterprise_id = $1 AND platform_message_id = $2 AND is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), platformMessageId],
     );
-    return rows.length > 0;
+    return rows[0]?.id ?? null;
   }
 
   /**
@@ -297,12 +306,19 @@ export class MessageRepository extends BaseRepository {
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
               se.ref_id AS "sentByRefId",
-              NULLIF(TRIM(CONCAT_WS(' ', si.first_name, si.last_name)), '') AS "sentByName"
+              NULLIF(TRIM(CONCAT_WS(' ', si.first_name, si.last_name)), '') AS "sentByName",
+              pm.ref_id AS "parentRefId",
+              -- Trimmed here rather than in the client: the thread should not
+              -- carry a second full copy of a message it may already be showing.
+              LEFT(NULLIF(pm.body, ''), 120) AS "parentExcerpt"
          FROM messages m
          LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
                                           AND se.enterprise_id = m.enterprise_id
                                           AND se.is_deleted = false
          LEFT JOIN identities si ON si.id = se.identity_id AND si.is_deleted = false
+         LEFT JOIN messages pm ON pm.id = m.parent_message_id
+                              AND pm.enterprise_id = m.enterprise_id
+                              AND pm.is_deleted = false
         WHERE m.enterprise_id = $1
           AND m.conversation_id = $2
           AND m.is_deleted = false

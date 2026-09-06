@@ -376,6 +376,12 @@ function toMessage(
     // Null for anything the customer sent, and for a message projected from a
     // webhook rather than typed by somebody here.
     sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
+    /*
+     * WHAT THIS ANSWERS. Instagram lets a customer reply to one specific
+     * message; without this the thread shows their "Reply" as a loose line and
+     * nobody can tell which of five outbound messages it was aimed at.
+     */
+    replyTo: row.parentRefId ? { refId: row.parentRefId, excerpt: row.parentExcerpt } : null,
   };
 }
 
