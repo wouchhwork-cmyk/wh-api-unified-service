@@ -331,7 +331,11 @@ export class InboxService {
      * An internal note answers nothing on the platform — it is a record for
      * colleagues — so a target is refused there rather than quietly ignored.
      */
-    let replyTarget: { id: number; platformMessageId: string | null } | null = null;
+    let replyTarget: {
+      id: number;
+      platformMessageId: string | null;
+      deletedOnPlatform: boolean;
+    } | null = null;
     if (input.replyToMessageRefId !== undefined) {
       replyTarget = await this.messages.findReplyTarget(
         actor.enterpriseId,
@@ -346,6 +350,19 @@ export class InboxService {
        * agent asked for.
        */
       if (!replyTarget.platformMessageId) throw new AppException(ErrorCode.ReplyNotSupported);
+
+      /*
+       * UNSENT ON THE PLATFORM. We keep the row and still show it, but Meta no
+       * longer has the message and refuses reply_to against it with a bare
+       * "Invalid parameter" — which the relay can only dead-letter, so the
+       * agent's reply is lost after they have typed it. Refused here instead,
+       * before anything is written or sent.
+       *
+       * The control is hidden for these anyway; this covers a message unsent
+       * between the thread being opened and the reply being sent, which is
+       * exactly how it happened the first time.
+       */
+      if (replyTarget.deletedOnPlatform) throw new AppException(ErrorCode.ReplyNotSupported);
     }
 
     return this.tx.runInTransaction(async () => {

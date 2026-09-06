@@ -987,4 +987,47 @@ describe('conversation resync jobs', () => {
     );
     expect(threads[0]?.count).toBe(0);
   });
+
+  it('will not offer to reply to a message the platform no longer has', async () => {
+    /*
+     * Meta refuses reply_to against an unsent message with a bare "Invalid
+     * parameter", which the relay can only dead-letter — so the agent's reply
+     * is lost after they typed it. Seen exactly that way: the customer unsent a
+     * message at 17:03:35 and a reply to it was rejected at 17:09:41.
+     *
+     * The row is still kept and still shown; it just cannot be threaded onto.
+     */
+    const messages = new MessageRepository(db);
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'unsend tester','instagram_dm',$2) RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    const conversation: { id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+          platform_thread_id, status)
+       VALUES ($1,$2,$3,'instagram','direct_message','dm:unsent','open') RETURNING id`,
+      [enterpriseId, channelId, customer[0]?.id],
+    );
+    const stored: { ref_id: string }[] = await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, direction, platform_message_id, message_kind, body,
+          status, is_read, platform_deleted_at)
+       VALUES ($1,$2,'inbound','UNSENT_TARGET','text','they took it back','delivered',false, now())
+       RETURNING ref_id`,
+      [enterpriseId, conversation[0]?.id],
+    );
+
+    const target = await messages.findReplyTarget(
+      enterpriseId,
+      Number(conversation[0]?.id),
+      stored[0]?.ref_id as string,
+    );
+    // Found — the row is kept — but flagged as unthreadable.
+    expect(target?.deletedOnPlatform).toBe(true);
+
+    const row = await messages.listThread(enterpriseId, Number(conversation[0]?.id), 10, null);
+    expect(row[0]?.canBeRepliedTo).toBe(false);
+  });
 });

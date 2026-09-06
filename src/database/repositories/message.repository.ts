@@ -253,9 +253,18 @@ export class MessageRepository extends BaseRepository {
     enterpriseId: number,
     conversationId: number,
     refId: string,
-  ): Promise<{ id: number; platformMessageId: string | null } | null> {
-    const rows = await this.query<{ id: number; platformMessageId: string | null }>(
-      `SELECT id, platform_message_id AS "platformMessageId"
+  ): Promise<{
+    id: number;
+    platformMessageId: string | null;
+    deletedOnPlatform: boolean;
+  } | null> {
+    const rows = await this.query<{
+      id: number;
+      platformMessageId: string | null;
+      deletedOnPlatform: boolean;
+    }>(
+      `SELECT id, platform_message_id AS "platformMessageId",
+              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform"
          FROM messages
         WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
           AND is_deleted = false
@@ -580,7 +589,12 @@ export class MessageRepository extends BaseRepository {
               m.message_kind AS "messageKind", m.status,
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
-              (m.platform_message_id IS NOT NULL AND m.is_internal_note = false)
+              (m.platform_message_id IS NOT NULL
+                 AND m.is_internal_note = false
+                 -- Unsent on the platform: Meta refuses reply_to for a message
+                 -- it no longer has, with a bare "Invalid parameter". We keep
+                 -- the row and show it; the platform will not thread onto it.
+                 AND m.platform_deleted_at IS NULL)
                 AS "canBeRepliedTo",
               m.platform_deleted_at AS "platformDeletedAt",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
