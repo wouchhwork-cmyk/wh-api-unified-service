@@ -192,6 +192,23 @@ export class DirectMessageProjectorService {
     if (message.is_unsupported === true) platformFacts.isUnsupported = true;
     if (event.referral) platformFacts.referral = event.referral;
 
+    /*
+     * A RECOVERED MESSAGE WITH NOTHING IN IT.
+     *
+     * Meta exposes a shared post, story or reel only on the live webhook. Every
+     * read path returns it empty — the conversations edge, and the message node
+     * asked directly for attachments, shares, story and sticker. So when a
+     * delivery is dropped and the resync recovers the message, we get its id and
+     * its timestamp and no content, ever.
+     *
+     * Marked rather than left blank: the thread was showing "(no text)", which
+     * reads as a customer sending an empty message. What actually happened is
+     * that they sent something and the platform will not tell us what.
+     */
+    if (event.recovered === true && !message?.text && media.attachments.length === 0) {
+      platformFacts.contentUnavailable = true;
+    }
+
     const identifierKind =
       platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId

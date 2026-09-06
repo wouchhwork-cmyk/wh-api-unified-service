@@ -1030,4 +1030,82 @@ describe('conversation resync jobs', () => {
     const row = await messages.listThread(enterpriseId, Number(conversation[0]?.id), 10, null);
     expect(row[0]?.canBeRepliedTo).toBe(false);
   });
+
+  it('marks a recovered message whose content the platform will not return', async () => {
+    /*
+     * Meta exposes a shared post, story or reel ONLY on the live webhook. Every
+     * read path returns it empty — the conversations edge, and the message node
+     * asked directly for attachments, shares, story and sticker. So a dropped
+     * delivery leaves a message with an id, a time, and no content, for good.
+     *
+     * The thread showed "(no text)", which reads as the customer sending an
+     * empty message — the one thing that did not happen.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'backfill','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('u1'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      recovered: true,
+      timestamp: 1788696752960,
+      message: { mid: 'EMPTY_RECOVERED', text: '' },
+    });
+
+    const marked: { metadata: Record<string, unknown> }[] = await db.query(
+      `SELECT metadata FROM messages WHERE platform_message_id = 'EMPTY_RECOVERED'`,
+    );
+    expect(marked[0]?.metadata.contentUnavailable).toBe(true);
+  });
+
+  it('does not mark a live message that simply carries no text', async () => {
+    // A live delivery with an attachment and no caption is complete, not
+    // damaged — claiming the platform withheld something would be a lie.
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','live-empty','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: BOB },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788696752960,
+      message: {
+        mid: 'LIVE_WITH_MEDIA',
+        text: '',
+        attachments: [{ type: 'image', payload: { url: 'https://x.test/a.jpg' } }],
+      },
+    });
+
+    const stored: { metadata: Record<string, unknown> }[] = await db.query(
+      `SELECT metadata FROM messages WHERE platform_message_id = 'LIVE_WITH_MEDIA'`,
+    );
+    expect(stored[0]?.metadata.contentUnavailable).toBeUndefined();
+  });
 });

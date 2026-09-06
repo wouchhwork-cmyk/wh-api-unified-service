@@ -403,6 +403,7 @@ describe('the shared inbox', () => {
       'attachments',
       'body',
       'canBeRepliedTo',
+      'contentUnavailable',
       'createdAt',
       'deletedOnPlatform',
       'deletedOnPlatformAt',

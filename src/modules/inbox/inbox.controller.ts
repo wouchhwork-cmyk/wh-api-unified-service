@@ -408,6 +408,13 @@ function toMessage(
         : null,
     /** When the customer read it. Outbound only; null until they do. */
     seenAt: typeof row.metadata.seenAt === 'string' ? row.metadata.seenAt : null,
+    /*
+     * The customer sent something the platform will not describe. Recovered
+     * after a dropped delivery, and Meta exposes a shared post or story only on
+     * the live webhook — so this message has an id and a time and no content,
+     * permanently. The client says so instead of showing an empty bubble.
+     */
+    contentUnavailable: row.metadata.contentUnavailable === true,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
     /*
