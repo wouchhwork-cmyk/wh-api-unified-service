@@ -1,8 +1,24 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
+import { ConversationRepository } from '@/database/repositories/conversation.repository';
+import { CustomerRepository } from '@/database/repositories/customer.repository';
+import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
+import { MessageRepository } from '@/database/repositories/message.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
-import { SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
+import { TransactionManager } from '@/database/transaction';
+import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
+import { Platform, SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
 import { createTestDataSource, truncateTenantData } from './db.harness';
+
+/** The projector logs; nothing here asserts on it. */
+function silentLogger(): never {
+  return {
+    info: () => undefined,
+    warn: () => undefined,
+    debug: () => undefined,
+    error: () => undefined,
+  } as never;
+}
 
 /**
  * Per-conversation resync, against real Postgres.
@@ -140,5 +156,98 @@ describe('conversation resync jobs', () => {
     const claimed = await syncJobs.claimBatch('worker-a', 10, 120);
     const job = claimed.find((row) => row.jobKind === SyncJobKind.BackfillConversations);
     expect(job?.targetPlatformId).toBeNull();
+  });
+
+  it('stores a handle that arrives with a recovered message', async () => {
+    /*
+     * The ordering bug this pins. Meta's participants edge returns
+     * `username` and the backfill used to link it itself — but only for a
+     * customer that ALREADY EXISTED, and on a resync the customer is created
+     * afterwards, by the projector reading the events the backfill emitted. So
+     * on first contact the handle was resolved, used for the display name, and
+     * then thrown away, and the person could not be found by the name they are
+     * actually known by.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+
+    const event: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'backfill','instagram','direct_message','instagram:direct_message:h1','{}')
+       RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    const outcome = await projector.project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      Number(event[0]?.id),
+      {
+        sender: { id: ALICE, name: 'lokhandesmasalahouse', username: 'lokhandesmasalahouse' },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788679733587,
+        message: { mid: 'RECOVERED_1', text: 'Hii' },
+      },
+    );
+    expect(outcome.projected).toBe(true);
+
+    const identifiers: { identifier_kind: string; identifier_value: string }[] = await db.query(
+      `SELECT identifier_kind, identifier_value FROM customer_identifiers
+        WHERE enterprise_id = $1 ORDER BY identifier_kind`,
+      [enterpriseId],
+    );
+
+    // BOTH: the scoped id the platform addresses them by, and the handle a
+    // colleague would actually search for.
+    expect(identifiers.map((row) => row.identifier_kind)).toEqual([
+      'instagram_user_id',
+      'instagram_username',
+    ]);
+    expect(identifiers[1]?.identifier_value).toBe('lokhandesmasalahouse');
+  });
+
+  it('stores no handle when the platform did not give one', async () => {
+    // A live webhook carries neither name nor handle, and inventing one from
+    // the numeric id would be worse than having none.
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+
+    const event: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','instagram:direct_message:h2','{}')
+       RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(event[0]?.id), {
+      sender: { id: BOB },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788679733587,
+      message: { mid: 'LIVE_1', text: 'hello' },
+    });
+
+    const kinds: { identifier_kind: string }[] = await db.query(
+      `SELECT identifier_kind FROM customer_identifiers
+        WHERE enterprise_id = $1 AND identifier_value = $2`,
+      [enterpriseId, BOB],
+    );
+    expect(kinds.map((row) => row.identifier_kind)).toEqual(['instagram_user_id']);
   });
 });

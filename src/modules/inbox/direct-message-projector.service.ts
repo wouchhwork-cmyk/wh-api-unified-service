@@ -33,6 +33,12 @@ interface MessagingEvent {
      * first seen through a direct message used to have none at all.
      */
     readonly name?: string;
+    /**
+     * Also backfill-only, and also absent from a live webhook. An Instagram
+     * handle is a SECOND IDENTIFIER, not a label: it is how a person is
+     * addressed and searched for.
+     */
+    readonly username?: string;
   };
   readonly recipient?: { readonly id?: string };
   readonly timestamp?: number;
@@ -156,6 +162,23 @@ export class DirectMessageProjectorService {
         source: IdentifierSource.Platform,
         verificationStatus: IdentifierVerificationStatus.Verified,
       });
+
+      /*
+       * The handle goes in customer_identifiers, next to the numeric id, rather
+       * than only into display_name. It arrives only on a backfilled or
+       * resynced event — a live webhook has no name and no handle — and the
+       * backfill cannot store it itself, because at the moment it walks the
+       * participants this customer does not exist yet. resolveOrCreate above is
+       * the first point at which there is anything to attach it to.
+       */
+      if (platform === Platform.Instagram && event.sender?.username) {
+        await this.customers.linkIdentifier({
+          enterpriseId,
+          customerId: customer.customerId,
+          identifierKind: IdentifierKind.InstagramUsername,
+          identifierValue: event.sender.username,
+        });
+      }
 
       /*
        * The DM thread key is the SENDER's scoped id, not the message id: every

@@ -733,6 +733,15 @@ export class BackfillWorker extends BasePoller {
      * once per thread rather than per message.
      */
     const namesById = new Map<string, string>();
+    /*
+     * Handles are carried on the EVENT for the same reason names are, and it
+     * took a lost DM to notice they were not. The linking below only fires for a
+     * customer that already exists — but on a resync the customer is created
+     * afterwards, by the projector reading these events. So on first contact the
+     * handle was resolved, used for the display name, and then dropped, and the
+     * person could never be found by the name they are actually known as.
+     */
+    const handlesById = new Map<string, string>();
     for (const participant of conversation.participants?.data ?? []) {
       /*
        * A NAME and a HANDLE are different things and only one of them splits.
@@ -744,6 +753,7 @@ export class BackfillWorker extends BasePoller {
       const name = personName ?? handle;
       if (!participant.id || !name) continue;
       namesById.set(participant.id, name);
+      if (handle) handlesById.set(participant.id, handle);
 
       /*
        * Written straight to the customer, not left to the message projection.
@@ -847,10 +857,15 @@ export class BackfillWorker extends BasePoller {
        */
       const attachments = toWebhookAttachments(message.attachments?.data ?? []);
 
+      const senderHandle =
+        senderId !== null && !isEcho ? (handlesById.get(senderId) ?? null) : null;
+
       const payload = {
         sender: {
           id: senderId ?? undefined,
           ...(senderName ? { name: senderName } : {}),
+          // Instagram only; Facebook's participants edge exposes no handle.
+          ...(senderHandle ? { username: senderHandle } : {}),
         },
         recipient: { id: selfPlatformId },
         timestamp: toUnixMilliseconds(message.created_time),
