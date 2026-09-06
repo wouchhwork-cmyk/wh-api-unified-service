@@ -53,8 +53,21 @@ import { splitPersonName } from '@/shared/utils/person-name';
  */
 function toWebhookAttachments(
   attachments: readonly GraphMessageAttachment[],
+  shares: readonly { link?: string }[] = [],
 ): { type: string; payload: { url: string } }[] {
   const translated: { type: string; payload: { url: string } }[] = [];
+
+  /*
+   * A SHARE IS NOT AN ATTACHMENT as far as Graph is concerned — it has its own
+   * edge, and `attachments` comes back empty for one. So a shared reel arrived
+   * as a message with no text and no media, which renders as a blank line.
+   *
+   * The link is a public instagram.com permalink rather than a signed CDN URL,
+   * so unlike everything else here it does not expire.
+   */
+  for (const share of shares) {
+    if (share.link) translated.push({ type: 'share', payload: { url: share.link } });
+  }
 
   for (const attachment of attachments) {
     if (attachment.image_data?.url) {
@@ -544,7 +557,95 @@ export class BackfillWorker extends BasePoller {
       );
     }
 
+    /*
+     * Only for a TARGETED job. The profile is one call per person, which is
+     * right for a repair about one customer and wrong for a walk of an account
+     * with hundreds — that would turn a single backfill into hundreds of
+     * rate-limited requests for data nobody asked for.
+     */
+    if (job.targetPlatformId) {
+      await this.applyCustomerProfile(job, job.targetPlatformId, token);
+    }
+
     return this.conversationSlice(job, edge, added);
+  }
+
+  /**
+   * Fills in who this customer actually is: their picture, their real display
+   * name, and whether they follow the business.
+   *
+   * The conversations edge gives an id and a handle and nothing else, so
+   * without this a customer has no avatar at all and is labelled by their
+   * handle rather than their name.
+   *
+   * IT NEVER FAILS THE JOB. Recovering the messages is the point; a profile is
+   * an improvement on top, and letting a 400 here undo a repair that already
+   * worked would trade something that matters for something that does not.
+   */
+  private async applyCustomerProfile(
+    job: ClaimedSyncJob,
+    scopedId: string,
+    token: string,
+  ): Promise<void> {
+    try {
+      const customerId = await this.customers.findIdByIdentifier({
+        enterpriseId: job.enterpriseId,
+        identifierKind: IdentifierKind.InstagramUserId,
+        identifierValue: scopedId,
+      });
+      /*
+       * Nothing to attach it to yet: a resync can run before the projector has
+       * read the events it just emitted. The participants edge still supplies a
+       * name through those events, so nothing is lost — only the picture waits
+       * for the next resync.
+       */
+      if (customerId === null) return;
+
+      const profile = await this.graph.getInstagramUserProfile(scopedId, token);
+
+      /*
+       * NOT SPLIT INTO first/last. An Instagram account name belongs to a
+       * person or to a business and the API does not say which — "Lokhande's
+       * Masala House" became first_name "Lokhande's", last_name "Masala House",
+       * which is not a name anybody has. The display name is the whole truth
+       * here; first_name stays for sources that genuinely give one, like a
+       * Facebook profile.
+       */
+      const applied = await this.customers.applyPlatformProfile({
+        enterpriseId: job.enterpriseId,
+        customerId,
+        displayName: profile.name ?? profile.username ?? null,
+        firstName: null,
+        lastName: null,
+        avatarUrl: profile.profile_pic ?? null,
+        profile: {
+          ...(profile.follower_count === undefined
+            ? {}
+            : { followerCount: profile.follower_count }),
+          ...(profile.is_verified_user === undefined
+            ? {}
+            : { isVerified: profile.is_verified_user }),
+          ...(profile.is_user_follow_business === undefined
+            ? {}
+            : { followsUs: profile.is_user_follow_business }),
+          ...(profile.is_business_follow_user === undefined
+            ? {}
+            : { weFollowThem: profile.is_business_follow_user }),
+          // The picture link expires after a few days; this says how old it is.
+          ...(profile.profile_pic ? { profileFetchedAt: new Date().toISOString() } : {}),
+        },
+      });
+
+      this.logger.debug(
+        { channelId: job.channelId, applied },
+        'customer profile applied from the platform',
+      );
+    } catch (error) {
+      this.logger.warn(
+        { channelId: job.channelId, error: (error as Error).message },
+        'could not read the customer profile — the messages were still recovered',
+      );
+    }
   }
 
   /**
@@ -855,7 +956,10 @@ export class BackfillWorker extends BasePoller {
        * delivered live — one normalizer, one set of rules, no second place for
        * story mentions and GIFs to be classified differently.
        */
-      const attachments = toWebhookAttachments(message.attachments?.data ?? []);
+      const attachments = toWebhookAttachments(
+        message.attachments?.data ?? [],
+        message.shares?.data ?? [],
+      );
 
       const senderHandle =
         senderId !== null && !isEcho ? (handlesById.get(senderId) ?? null) : null;
@@ -874,6 +978,9 @@ export class BackfillWorker extends BasePoller {
           text: message.message,
           is_echo: isEcho,
           ...(attachments.length > 0 ? { attachments } : {}),
+          // Passed through unchanged: the projector reads the webhook shape,
+          // and this edge happens to use the same one.
+          ...(message.reply_to?.mid ? { reply_to: message.reply_to } : {}),
         },
       };
 

@@ -21,7 +21,7 @@ import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
 import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS, SSE_MAX_STREAM_MS } from '@/shared/constants';
 import { InboxEventsService } from './inbox-events.service';
-import { ConversationKind, ConversationStatus, Permission } from '@/shared/enums';
+import { ConversationKind, ConversationStatus, MessageDirection, Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import { evaluateReplyWindow } from './reply-window';
@@ -377,11 +377,34 @@ function toMessage(
     // webhook rather than typed by somebody here.
     sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
     /*
-     * WHAT THIS ANSWERS. Instagram lets a customer reply to one specific
-     * message; without this the thread shows their "Reply" as a loose line and
-     * nobody can tell which of five outbound messages it was aimed at.
+     * WHAT THIS ANSWERS, and what kind of reply it is.
+     *
+     * Present whenever the message IS a reply, even when we do not hold the
+     * message it answers — a reply to a delivery Meta dropped. `refId` is null
+     * in that case, which is the honest way to say "this answered something we
+     * cannot show you" rather than presenting it as an ordinary line.
+     *
+     * The client needs THREE states, not two: an ordinary message, an answer to
+     * something we sent, and an answer to something the customer said earlier.
+     * `isSelfReply` is the platform's own word for the third; `direction` says
+     * the same thing from our side, and falls back to it when the platform did
+     * not send the flag — which is every message recovered before the resync
+     * started asking for reply_to.
      */
-    replyTo: row.parentRefId ? { refId: row.parentRefId, excerpt: row.parentExcerpt } : null,
+    replyTo:
+      row.parentRefId !== null || typeof row.metadata.replyToPlatformMessageId === 'string'
+        ? {
+            refId: row.parentRefId,
+            excerpt: row.parentExcerpt,
+            direction: row.parentDirection,
+            isSelfReply:
+              typeof row.metadata.replyIsSelfReply === 'boolean'
+                ? row.metadata.replyIsSelfReply
+                : row.parentDirection === null
+                  ? null
+                  : row.parentDirection === MessageDirection.Inbound,
+          }
+        : null,
   };
 }
 

@@ -62,6 +62,10 @@ export interface MessageRow {
    */
   readonly parentRefId: string | null;
   readonly parentExcerpt: string | null;
+  /** Whether the answered message was ours or theirs. */
+  readonly parentDirection: MessageDirection | null;
+  /** Carries replyToPlatformMessageId and replyIsSelfReply. */
+  readonly metadata: Record<string, unknown>;
   readonly platformSentAt: Date | null;
   readonly createdAt: Date;
   readonly customerId: number | null;
@@ -310,7 +314,9 @@ export class MessageRepository extends BaseRepository {
               pm.ref_id AS "parentRefId",
               -- Trimmed here rather than in the client: the thread should not
               -- carry a second full copy of a message it may already be showing.
-              LEFT(NULLIF(pm.body, ''), 120) AS "parentExcerpt"
+              LEFT(NULLIF(pm.body, ''), 120) AS "parentExcerpt",
+              pm.direction AS "parentDirection",
+              m.metadata
          FROM messages m
          LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
                                           AND se.enterprise_id = m.enterprise_id

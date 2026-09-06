@@ -20,6 +20,7 @@ import type {
   GraphMeResponse,
   GraphTokenResponse,
   SendResult,
+  GraphInstagramUserProfile,
 } from './graph.types';
 
 /**
@@ -366,7 +367,7 @@ export class GraphApiClient {
      */
     userId?: string,
   ): Promise<GraphEdge<GraphConversation>> {
-    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}},attachments{id,name,mime_type,image_data,video_data,file_url}}`;
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}},attachments{id,name,mime_type,image_data,video_data,file_url},reply_to,shares}`;
 
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken: pageAccessToken,
@@ -375,6 +376,28 @@ export class GraphApiClient {
         limit: String(SYNC_PAGE_SIZE),
         ...(after ? { after } : {}),
         ...(userId ? { user_id: userId } : {}),
+      },
+    });
+  }
+
+  /**
+   * One Instagram customer's profile, by their scoped id.
+   *
+   * The conversations edge gives an id and a handle; this is the only source of
+   * the picture, the real display name, and whether they follow the business.
+   * Verified against the live account with the Page token already in use — no
+   * additional permission was needed beyond what messaging already requires.
+   */
+  async getInstagramUserProfile(
+    instagramScopedId: string,
+    accessToken: string,
+  ): Promise<GraphInstagramUserProfile> {
+    return this.request<GraphInstagramUserProfile>('GET', instagramScopedId, {
+      accessToken,
+      params: {
+        fields:
+          'name,username,profile_pic,follower_count,is_verified_user,' +
+          'is_user_follow_business,is_business_follow_user',
       },
     });
   }
@@ -427,7 +450,7 @@ export class GraphApiClient {
     /** One participant's thread, by IGSID — see listPageConversations. */
     userId?: string,
   ): Promise<GraphEdge<GraphConversation>> {
-    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}},attachments{id,name,mime_type,image_data,video_data,file_url}}`;
+    const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}},attachments{id,name,mime_type,image_data,video_data,file_url},reply_to,shares}`;
 
     return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
       accessToken,

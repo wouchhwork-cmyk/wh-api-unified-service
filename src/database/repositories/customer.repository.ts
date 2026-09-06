@@ -381,6 +381,53 @@ export class CustomerRepository extends BaseRepository {
    * Guarded on display_name IS NULL, so a re-walk can fill a gap but never
    * overwrite a name already held. Returns whether a row was actually named.
    */
+  /**
+   * Applies a platform profile to a customer: picture, real name, and the
+   * facts that have no column of their own.
+   *
+   * DISTINCT FROM nameByIdentifier, which fills gaps and never overwrites. This
+   * one is authoritative — it is the platform's own answer to "who is this",
+   * fetched deliberately — so it replaces what is there, EXCEPT where the
+   * platform gave nothing.
+   *
+   * avatar_url is a decaying link: Meta's profile picture URL expires after a
+   * few days. `profileFetchedAt` records when it was taken so a refresh knows
+   * how stale it is, rather than the UI discovering a broken image.
+   */
+  async applyPlatformProfile(input: {
+    enterpriseId: number;
+    customerId: number;
+    displayName: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+    /** follower_count, is_verified_user, the two follow flags. */
+    profile: Record<string, unknown>;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE customers
+          SET display_name = COALESCE($3, display_name),
+              first_name   = COALESCE($4, first_name),
+              last_name    = COALESCE($5, last_name),
+              avatar_url   = COALESCE($6, avatar_url),
+              -- Merged, not replaced: metadata is shared with anything else
+              -- that has learned something about this person.
+              metadata     = metadata || $7::jsonb,
+              updated_at   = now()
+        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false`,
+      [
+        input.customerId,
+        this.requireEnterprise(input.enterpriseId),
+        input.displayName,
+        input.firstName,
+        input.lastName,
+        input.avatarUrl,
+        JSON.stringify(input.profile),
+      ],
+    );
+    return affected > 0;
+  }
+
   async nameByIdentifier(input: {
     enterpriseId: number;
     identifierKind: IdentifierKind;

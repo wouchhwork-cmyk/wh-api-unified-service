@@ -158,6 +158,28 @@ export interface GraphFeedPost {
  * the other so a message recovered by a resync stores exactly what the same
  * message would have stored had its webhook arrived.
  */
+/**
+ * An Instagram customer's public profile, by their scoped id.
+ *
+ * A SEPARATE CALL from the conversations edge, which gives an id and a handle
+ * and nothing else — no picture, no follower count, and not even the person's
+ * real display name, only their handle. Everything here was reachable with the
+ * token we already hold and was simply never asked for.
+ */
+export interface GraphInstagramUserProfile {
+  id?: string;
+  /** The DISPLAY name, which differs from the handle: "genZrelics" vs "genzrelics". */
+  name?: string;
+  username?: string;
+  /** Expires after a few days, so it is a link to refresh, not one to keep. */
+  profile_pic?: string;
+  follower_count?: number;
+  is_verified_user?: boolean;
+  /** Whether the customer follows the business — triage signal for an inbox. */
+  is_user_follow_business?: boolean;
+  is_business_follow_user?: boolean;
+}
+
 export interface GraphMessageAttachment {
   id?: string;
   name?: string;
@@ -174,6 +196,21 @@ export interface GraphConversationMessage {
   from?: GraphActor;
   to?: { data?: GraphActor[] };
   attachments?: GraphEdge<GraphMessageAttachment>;
+  /**
+   * Present when this message answered one in particular — the same shape the
+   * webhook sends. A recovered thread that omitted it came back as a flat list
+   * of unrelated lines, which is not what the customer saw when they wrote it.
+   */
+  reply_to?: { mid?: string; is_self_reply?: boolean };
+  /**
+   * A reel, post or profile the customer SHARED into the chat.
+   *
+   * A separate edge from `attachments`, which returns nothing for a share — so
+   * a shared reel arrived as a message with empty text and no media, indistinct
+   * from a blank line. What it gives is a public instagram.com permalink, which
+   * unlike the CDN links does not expire.
+   */
+  shares?: GraphEdge<{ link?: string; name?: string; description?: string }>;
 }
 
 export interface GraphConversation {

@@ -219,4 +219,28 @@ describe('normalizing a message attachment', () => {
     expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Document);
     expect(media.messageKind).toBe(MessageKind.File);
   });
+
+  it('keeps a shared reel as a link that does not expire', () => {
+    /*
+     * A share arrives on its own Graph edge — `attachments` is empty for one —
+     * so a shared reel used to be a message with no text and no media, which
+     * renders as a blank line. The link is a public instagram.com permalink,
+     * not a signed CDN URL, so it must not be marked as expiring.
+     */
+    const media = normalizeAttachments([
+      { type: 'share', payload: { url: 'https://www.instagram.com/reel/Dc6OpRuDgQ5/' } },
+    ]);
+
+    expect(media.attachments[0]?.mediaKind).toBe(MediaKind.Document);
+    expect(media.attachments[0]?.metadata.platformType).toBe('share');
+    expect(media.attachments[0]?.metadata.stableUrl).toBe(true);
+    expect(media.messageKind).toBe(MessageKind.File);
+  });
+
+  it('treats an instagram.com link as permanent and a lookaside link as not', () => {
+    expect(isExpiringMediaUrl('https://www.instagram.com/reel/Dc6OpRuDgQ5/')).toBe(false);
+    expect(isExpiringMediaUrl('https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1')).toBe(
+      true,
+    );
+  });
 });
