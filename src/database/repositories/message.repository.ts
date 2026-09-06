@@ -266,6 +266,52 @@ export class MessageRepository extends BaseRepository {
   }
 
   /**
+   * Stamps the platform's id onto a reply the portal sent but has not heard
+   * back about yet.
+   *
+   * Meta echoes our own send back to us, and that echo can outrun the relay
+   * recording the send's platform id. Without this the echo looks like a
+   * message we have never seen and would be stored a SECOND time, beside the
+   * row the reply flow already wrote.
+   *
+   * Matched on the body within the conversation, oldest unstamped first, which
+   * is the only thing the echo and the pending row have in common — the echo
+   * carries no idempotency key and the pending row carries no platform id.
+   */
+  async claimPendingOutbound(
+    enterpriseId: number,
+    conversationId: number,
+    body: string | null,
+    platformMessageId: string,
+  ): Promise<number | null> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `UPDATE messages
+          SET platform_message_id = $4, updated_at = now()
+        WHERE id = (
+          SELECT id FROM messages
+           WHERE enterprise_id = $1
+             AND conversation_id = $2
+             AND direction = $5
+             AND platform_message_id IS NULL
+             AND is_internal_note = false
+             AND is_deleted = false
+             AND COALESCE(body, '') = COALESCE($3, '')
+           ORDER BY id
+           LIMIT 1
+        )
+        RETURNING id`,
+      [
+        this.requireEnterprise(enterpriseId),
+        conversationId,
+        body,
+        platformMessageId,
+        MessageDirection.Outbound,
+      ],
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  /**
    * Records a message WE sent that this system never saw being sent.
    *
    * A reply typed in the Instagram app rather than in the portal exists only on

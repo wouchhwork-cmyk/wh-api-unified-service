@@ -144,18 +144,17 @@ export class DirectMessageProjectorService {
      */
     if (message.is_echo === true) {
       /*
-       * A LIVE echo is Meta handing our own send back to us, and the reply flow
-       * already wrote that row — projecting it would duplicate the message and
-       * attribute our words to the customer.
+       * WHETHER WE ALREADY HOLD IT, not whether the event was live.
        *
-       * A RECOVERED one is the opposite: a reply typed in the Instagram app
-       * rather than the portal exists only on the platform, so this is the only
-       * copy there will ever be. Discarding it left the inbox showing one side
-       * of a conversation.
+       * The first rule here was "live echoes are ours, recovered ones are not",
+       * and it was wrong in the case that matters most: a reply typed in the
+       * INSTAGRAM APP is echoed live, the portal never sent it, and there is no
+       * row anywhere — so both of a business's own replies were discarded and
+       * the thread read as a monologue. Observed on live traffic.
+       *
+       * What actually distinguishes them is possession, which projectOwnMessage
+       * checks directly.
        */
-      if (event.recovered !== true) {
-        return { projected: false, reason: 'an echo of our own outbound message' };
-      }
       return this.projectOwnMessage(enterpriseId, channelId, platform, inboundEventId, event);
     }
 
@@ -448,6 +447,36 @@ export class DirectMessageProjectorService {
         subject: null,
       });
 
+      /*
+       * Already recorded, because the portal sent it and the relay stamped the
+       * platform's id on the row. Nothing to do.
+       */
+      if (
+        (await this.messages.findIdByPlatformMessageId(enterpriseId, platformMessageId)) !== null
+      ) {
+        return { projected: false, reason: 'an echo of a message we already recorded' };
+      }
+
+      /*
+       * Or the portal sent it and the echo BEAT the relay's own record of the
+       * platform id. Stamping the pending row is the right outcome twice over:
+       * no duplicate, and the row gains the id it was waiting for — which is
+       * also what lets a customer reply to it be threaded.
+       */
+      const claimed = await this.messages.claimPendingOutbound(
+        enterpriseId,
+        conversation.id,
+        message?.text ?? null,
+        platformMessageId,
+      );
+      if (claimed !== null) {
+        await this.messages.adoptOrphanReplies(enterpriseId, claimed, platformMessageId);
+        return {
+          projected: false,
+          reason: 'an echo of a send still in flight; its id is recorded',
+        };
+      }
+
       const inserted = await this.messages.insertRecoveredOutbound({
         enterpriseId,
         conversationId: conversation.id,
@@ -461,7 +490,7 @@ export class DirectMessageProjectorService {
         metadata: { recoveredFromPlatform: true },
       });
 
-      // Already held, because the portal sent it and the relay stamped its id.
+      // Lost a race with another worker projecting the same echo.
       if (!inserted) return { projected: false, reason: 'our own message was already recorded' };
 
       if (media.attachments.length > 0) {

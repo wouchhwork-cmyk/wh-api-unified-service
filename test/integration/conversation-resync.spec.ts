@@ -645,9 +645,16 @@ describe('conversation resync jobs', () => {
     expect(linked[0]?.body).toBe('tell me man');
   });
 
-  it('still ignores a live echo, which the reply flow already recorded', async () => {
-    // Without the `recovered` marker this is Meta handing back a message the
-    // portal just sent; projecting it would duplicate the row.
+  it('ignores an echo of a message we already hold', async () => {
+    /*
+     * The rule is POSSESSION, not liveness. The first version of this asked
+     * whether the event was live, and was wrong in the case that matters: a
+     * reply typed in the Instagram app is echoed live, the portal never sent
+     * it, and discarding it left the thread reading as a monologue.
+     *
+     * Here the portal did send it and the relay stamped the platform's id, so
+     * the echo must change nothing.
+     */
     const projector = new DirectMessageProjectorService(
       new CustomerRepository(db),
       new ConversationRepository(db),
@@ -657,13 +664,33 @@ describe('conversation resync jobs', () => {
       new TransactionManager(db, silentLogger()),
       silentLogger(),
     );
+
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'echo tester','instagram_dm',$2) RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    const conversation: { id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+          platform_thread_id, status)
+       VALUES ($1,$2,$3,'instagram','direct_message',$4,'open') RETURNING id`,
+      [enterpriseId, channelId, customer[0]?.id, `dm:${ALICE}`],
+    );
+    await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, direction, platform_message_id, message_kind, body,
+          status, is_read)
+       VALUES ($1,$2,'outbound','ALREADY_HELD','text','sent from the portal','sent',true)`,
+      [enterpriseId, conversation[0]?.id],
+    );
+
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
          (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
        VALUES ($1,$2,'webhook','instagram','direct_message','live-echo','{}') RETURNING id`,
       [enterpriseId, channelId],
     );
-
     const outcome = await projector.project(
       enterpriseId,
       channelId,
@@ -673,15 +700,74 @@ describe('conversation resync jobs', () => {
         sender: { id: 'IG_1' },
         recipient: { id: ALICE },
         timestamp: 1788682400000,
-        message: { mid: 'LIVE_ECHO', text: 'sent from the portal', is_echo: true },
+        message: { mid: 'ALREADY_HELD', text: 'sent from the portal', is_echo: true },
       },
     );
 
     expect(outcome.projected).toBe(false);
-    const stored: { count: number }[] = await db.query(
-      `SELECT count(*)::int FROM messages WHERE platform_message_id = 'LIVE_ECHO'`,
+    const count: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM messages WHERE platform_message_id = 'ALREADY_HELD'`,
     );
-    expect(stored[0]?.count).toBe(0);
+    expect(count[0]?.count).toBe(1);
+  });
+
+  it('stamps a send the echo beat, rather than storing it twice', async () => {
+    /*
+     * Meta's echo can outrun the relay recording the platform id. The pending
+     * row and the echo share only their body — the echo carries no idempotency
+     * key and the row carries no platform id — so that is what matches them.
+     * Getting this wrong means two copies of every reply the portal sends.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'race tester','instagram_dm',$2) RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    const conversation: { id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+          platform_thread_id, status)
+       VALUES ($1,$2,$3,'instagram','direct_message',$4,'open') RETURNING id`,
+      [enterpriseId, channelId, customer[0]?.id, `dm:${BOB}`],
+    );
+    await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, direction, message_kind, body, status, is_read)
+       VALUES ($1,$2,'outbound','text','still in flight','sending',true)`,
+      [enterpriseId, conversation[0]?.id],
+    );
+
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','race-echo','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: 'IG_1' },
+      recipient: { id: BOB },
+      timestamp: 1788682400000,
+      message: { mid: 'RACED_MID', text: 'still in flight', is_echo: true },
+    });
+
+    const stored: { count: number; platform_message_id: string | null }[] = await db.query(
+      `SELECT count(*)::int AS count, min(platform_message_id) AS platform_message_id
+         FROM messages WHERE conversation_id = $1 AND direction = 'outbound'`,
+      [conversation[0]?.id],
+    );
+    // ONE row, and it gained the id it was waiting for.
+    expect(stored[0]?.count).toBe(1);
+    expect(stored[0]?.platform_message_id).toBe('RACED_MID');
   });
 
   describe('events about a message rather than being one', () => {
