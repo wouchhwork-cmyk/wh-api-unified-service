@@ -250,4 +250,92 @@ describe('conversation resync jobs', () => {
     );
     expect(kinds.map((row) => row.identifier_kind)).toEqual(['instagram_user_id']);
   });
+
+  it('asks for a name when a live DM creates a nameless customer', async () => {
+    /*
+     * Instagram's messaging webhook carries a scoped id and nothing else, so a
+     * customer whose first contact is a DM has no name and no way to get one —
+     * the inbox showed "Unnamed customer" for somebody whose handle Meta hands
+     * over for a single call. The resync is that call.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('n1'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788679733587,
+      message: { mid: 'NAMELESS_1', text: 'hello' },
+    });
+
+    const queued: { target_platform_id: string }[] = await db.query(
+      `SELECT target_platform_id FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    expect(queued.map((row) => row.target_platform_id)).toEqual([ALICE]);
+
+    /*
+     * And ONE request per person, not one per message: the second message from
+     * the same customer must not queue anything, or a chatty conversation would
+     * become a request per line.
+     */
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('n2'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788679734587,
+      message: { mid: 'NAMELESS_2', text: 'still here' },
+    });
+
+    const after: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    expect(after[0]?.count).toBe(1);
+  });
+
+  it('does not ask when the message already carries a name', async () => {
+    // A backfilled or resynced event brings the name with it; asking again
+    // would be a wasted call against a rate-limited API.
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'backfill','instagram','direct_message','named','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: BOB, name: 'somebody', username: 'somebody' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788679733587,
+      message: { mid: 'NAMED_1', text: 'hello' },
+    });
+
+    const count: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    expect(count[0]?.count).toBe(0);
+  });
 });

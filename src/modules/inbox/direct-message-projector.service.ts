@@ -164,6 +164,27 @@ export class DirectMessageProjectorService {
       });
 
       /*
+       * A NEW customer from a live webhook has NO NAME, and never will without
+       * asking for one: Instagram's messaging payload carries a scoped id and
+       * nothing else, so the inbox shows "Unnamed customer" for someone whose
+       * handle Meta will hand over for a single API call. The conversations
+       * edge returns participants{id,name,username}, which is the same call the
+       * resync already makes.
+       *
+       * Only on CREATION, so this is one request per person rather than one per
+       * message — and enqueueIfAbsent collapses a burst into a single job.
+       */
+      if (customer.created && !event.sender?.name && !event.sender?.username) {
+        await this.syncJobs.enqueueIfAbsent({
+          enterpriseId,
+          channelId,
+          jobKind: SyncJobKind.ResyncConversation,
+          triggerKind: SyncTriggerKind.Scheduled,
+          targetPlatformId: senderId,
+        });
+      }
+
+      /*
        * The handle goes in customer_identifiers, next to the numeric id, rather
        * than only into display_name. It arrives only on a backfilled or
        * resynced event — a live webhook has no name and no handle — and the
