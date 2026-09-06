@@ -245,6 +245,7 @@ export class InboxController {
       body: parsed.body,
       idempotencyKey: parsed.idempotencyKey,
       internalNote: parsed.internalNote,
+      replyToMessageRefId: parsed.replyToMessageRefId,
     });
   }
 
@@ -348,6 +349,12 @@ function toMessage(
     status: row.status,
     isRead: row.isRead,
     isInternalNote: row.isInternalNote,
+    /*
+     * Whether the client may offer "reply to this one". A note and a send still
+     * in the relay both exist here with no id the platform would recognise, and
+     * offering a control that can only fail is worse than offering none.
+     */
+    canBeRepliedTo: row.canBeRepliedTo,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
     /*

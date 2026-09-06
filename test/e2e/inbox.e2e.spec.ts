@@ -159,25 +159,54 @@ describe('the shared inbox', () => {
     return { refId: conversation[0]?.ref_id as string, channelId: channel[0]?.id as string };
   }
 
-  async function seedConversation(enterpriseRefId: string): Promise<string> {
+  async function seedConversation(
+    enterpriseRefId: string,
+    threadKey = 'comment:1',
+  ): Promise<string> {
     const enterprise: { id: string }[] = await db.query(
       `SELECT id FROM enterprises WHERE ref_id = $1`,
       [enterpriseRefId],
     );
     const enterpriseId = enterprise[0]?.id;
 
+    /*
+     * Reused when it already exists: a business has ONE Meta connection, and a
+     * test that seeds a second conversation for the same enterprise must not
+     * trip provider_connections_uniq trying to invent another.
+     */
     const connection: { id: string }[] = await db.query(
       `INSERT INTO provider_connections
          (enterprise_id, provider, provider_category, provider_user_id, access_token)
-       VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
+       VALUES ($1,'meta','social','fbu','envelope')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
       [enterpriseId],
     );
+    const connectionId =
+      connection[0]?.id ??
+      (
+        await db.query<{ id: string }[]>(
+          `SELECT id FROM provider_connections WHERE enterprise_id = $1 LIMIT 1`,
+          [enterpriseId],
+        )
+      )[0]?.id;
+
     const channel: { id: string }[] = await db.query(
       `INSERT INTO channels
          (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id, name)
-       VALUES ($1,$2,'facebook','page','PAGE_1','Blue Bottle') RETURNING id`,
-      [connection[0]?.id, enterpriseId],
+       VALUES ($1,$2,'facebook','page','PAGE_1','Blue Bottle')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [connectionId, enterpriseId],
     );
+    const channelId =
+      channel[0]?.id ??
+      (
+        await db.query<{ id: string }[]>(
+          `SELECT id FROM channels WHERE enterprise_id = $1 LIMIT 1`,
+          [enterpriseId],
+        )
+      )[0]?.id;
     const customer: { id: string }[] = await db.query(
       `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
        VALUES ($1,'Grace Hopper','facebook_comment',$2) RETURNING id`,
@@ -187,9 +216,9 @@ describe('the shared inbox', () => {
       `INSERT INTO conversations
          (enterprise_id, channel_id, customer_id, platform, conversation_kind,
           platform_thread_id, status, message_count, last_message_at)
-       VALUES ($1,$2,$3,'facebook','comment_thread','comment:1','open',1, now())
+       VALUES ($1,$2,$3,'facebook','comment_thread',$4,'open',1, now())
        RETURNING ref_id, id`,
-      [enterpriseId, channel[0]?.id, customer[0]?.id],
+      [enterpriseId, channelId, customer[0]?.id, threadKey],
     );
     await db.query(
       `INSERT INTO messages
@@ -373,6 +402,7 @@ describe('the shared inbox', () => {
       // content is its media used to arrive here as an empty body.
       'attachments',
       'body',
+      'canBeRepliedTo',
       'createdAt',
       'direction',
       'isInternalNote',
@@ -587,5 +617,54 @@ describe('the shared inbox', () => {
     const { refId } = await seedDirectMessageThread(enterpriseRefId);
 
     await http().post(`/api/v1/conversations/${refId}/resync`).expect(401);
+  });
+
+  it('refuses to answer a message from another conversation', async () => {
+    /*
+     * The reply target is scoped to the conversation as well as the tenant.
+     * Meta would refuse a mid from a different thread anyway, and accepting the
+     * ref_id would confirm that it exists.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const strangerRefId = thread.body.data.messages[0].refId;
+
+    const other = await seedConversation(enterpriseRefId, 'comment:2');
+    const response = await http()
+      .post(`/api/v1/conversations/${other}/reply`)
+      .set(auth)
+      .send({
+        body: 'answering',
+        idempotencyKey: 'reply-cross-1',
+        replyToMessageRefId: strangerRefId,
+      })
+      .expect(404);
+
+    expect(response.body.error.code).toBe('MESSAGE_NOT_FOUND');
+  });
+
+  it('refuses a reply target on an internal note', async () => {
+    // A note is a record for colleagues and answers nothing on the platform, so
+    // a target there is a mistake rather than something to ignore silently.
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const target = thread.body.data.messages[0].refId;
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({
+        body: 'a note',
+        idempotencyKey: 'reply-note-1',
+        internalNote: true,
+        replyToMessageRefId: target,
+      })
+      .expect(422);
   });
 });

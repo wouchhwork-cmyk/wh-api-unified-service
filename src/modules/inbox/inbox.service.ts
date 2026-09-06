@@ -53,6 +53,8 @@ export interface ReplyInput {
   readonly idempotencyKey: string;
   /** Team-only note: never sent, never touches the ledger. */
   readonly internalNote: boolean;
+  /** Answer ONE message in particular, by its ref_id in this conversation. */
+  readonly replyToMessageRefId?: string | undefined;
 }
 
 export interface ReplyResult {
@@ -322,6 +324,30 @@ export class InboxService {
 
     const employeeId = actor.employeeId;
 
+    /*
+     * WHAT THIS ANSWERS, resolved BEFORE the transaction opens so a bad ref_id
+     * is a 404 rather than a rolled-back write.
+     *
+     * An internal note answers nothing on the platform — it is a record for
+     * colleagues — so a target is refused there rather than quietly ignored.
+     */
+    let replyTarget: { id: number; platformMessageId: string | null } | null = null;
+    if (input.replyToMessageRefId !== undefined) {
+      replyTarget = await this.messages.findReplyTarget(
+        actor.enterpriseId,
+        conversation.id,
+        input.replyToMessageRefId,
+      );
+      if (!replyTarget) throw new AppException(ErrorCode.MessageNotFound);
+      /*
+       * A message we hold but the platform never gave an id — an internal note,
+       * or a send that has not left the relay yet. There is nothing to quote to
+       * Meta, and sending without reply_to would silently drop the threading the
+       * agent asked for.
+       */
+      if (!replyTarget.platformMessageId) throw new AppException(ErrorCode.ReplyNotSupported);
+    }
+
     return this.tx.runInTransaction(async () => {
       const message = await this.messages.insertOutbound({
         enterpriseId: actor.enterpriseId,
@@ -331,7 +357,9 @@ export class InboxService {
         body: input.body,
         messageKind: MessageKind.Text,
         idempotencyKey: input.idempotencyKey,
-        parentMessageId: null,
+        // The same link the inbound side keeps, so the thread reads the same
+        // way whoever wrote the reply.
+        parentMessageId: replyTarget?.id ?? null,
         isInternalNote: input.internalNote,
       });
 
@@ -362,7 +390,12 @@ export class InboxService {
           payload:
             eventType === OutboundEventType.CommentReply
               ? { commentId: stripThreadPrefix(conversation.platformThreadId), message: input.body }
-              : { message: input.body },
+              : {
+                  message: input.body,
+                  ...(replyTarget?.platformMessageId
+                    ? { replyToPlatformMessageId: replyTarget.platformMessageId }
+                    : {}),
+                },
           scheduledAt: null,
         });
 

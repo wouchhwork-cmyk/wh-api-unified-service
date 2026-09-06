@@ -257,6 +257,14 @@ export class GraphApiClient {
     recipientPlatformId: string,
     message: string,
     pageAccessToken: string,
+    /**
+     * The platform id of the message this answers.
+     *
+     * Sits BESIDE `message`, not inside it — Meta rejects it nested. Omitted
+     * entirely when absent rather than sent as null, because an empty reply_to
+     * is an error rather than "no reply".
+     */
+    replyToPlatformMessageId?: string,
   ): Promise<SendResult> {
     const result = await this.request<{ message_id?: string; id?: string }>(
       'POST',
@@ -267,6 +275,9 @@ export class GraphApiClient {
           recipient: JSON.stringify({ id: recipientPlatformId }),
           message: JSON.stringify({ text: message }),
           messaging_type: 'RESPONSE',
+          ...(replyToPlatformMessageId
+            ? { reply_to: JSON.stringify({ mid: replyToPlatformMessageId }) }
+            : {}),
         },
       },
     );

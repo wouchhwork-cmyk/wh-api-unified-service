@@ -48,8 +48,24 @@ export const ReplyRequestSchema = z
     idempotencyKey: z.string().trim().min(MIN_IDEMPOTENCY_KEY_CHARS).max(MAX_IDEMPOTENCY_KEY_CHARS),
     /** A team-only note. Never sent, never touches the ledger. */
     internalNote: z.boolean().default(false),
+    /**
+     * Answer ONE message in particular, the way the customer can answer ours.
+     * The ref_id of a message in this same conversation; the platform is given
+     * that message's own id. Absent means an ordinary reply to the thread.
+     */
+    replyToMessageRefId: z.uuid().optional(),
   })
-  .strict();
+  .strict()
+  /*
+   * A note answers nothing on the platform — it is a record for colleagues, and
+   * never sent. Asking to thread one is a malformed request rather than
+   * something to accept and quietly ignore, so it is refused here as a
+   * validation error rather than deeper as a conflict.
+   */
+  .refine((value) => !(value.internalNote && value.replyToMessageRefId !== undefined), {
+    message: 'an internal note cannot reply to a specific message',
+    path: ['replyToMessageRefId'],
+  });
 
 export const ReplyResponseSchema = z.object({
   messageRefId: z.uuid(),

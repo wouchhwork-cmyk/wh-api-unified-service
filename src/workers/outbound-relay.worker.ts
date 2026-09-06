@@ -25,6 +25,8 @@ interface CommentReplyPayload {
 }
 interface DirectMessagePayload {
   readonly message?: string;
+  /** Set when the agent answered one message in particular. */
+  readonly replyToPlatformMessageId?: string;
 }
 interface CommentModerationPayload {
   readonly commentId?: string;
@@ -324,6 +326,7 @@ export class OutboundRelayWorker extends BasePoller {
           event.recipientPlatformId,
           payload.message,
           token,
+          payload.replyToPlatformMessageId,
         );
         return result.platformId;
       }

@@ -60,6 +60,13 @@ export interface MessageRow {
    * thread can show WHAT was answered without the parent having to be on the
    * same page.
    */
+  /**
+   * Whether the PLATFORM can be asked to answer this one in particular.
+   *
+   * False for an internal note and for a send still in the relay: both exist
+   * here and neither has an id Meta would recognise.
+   */
+  readonly canBeRepliedTo: boolean;
   readonly parentRefId: string | null;
   readonly parentExcerpt: string | null;
   /** Whether the answered message was ours or theirs. */
@@ -124,6 +131,30 @@ export class MessageRepository extends BaseRepository {
     );
     const row = rows[0];
     return row ? { id: row.id, refId: row.ref_id } : null;
+  }
+
+  /**
+   * A message by ref_id, scoped to ONE conversation.
+   *
+   * Both halves matter. The enterprise scope is the tenant boundary; the
+   * conversation scope stops an agent answering a message from a different
+   * thread, which Meta would refuse anyway and which would leak that a given
+   * ref_id exists.
+   */
+  async findReplyTarget(
+    enterpriseId: number,
+    conversationId: number,
+    refId: string,
+  ): Promise<{ id: number; platformMessageId: string | null } | null> {
+    const rows = await this.query<{ id: number; platformMessageId: string | null }>(
+      `SELECT id, platform_message_id AS "platformMessageId"
+         FROM messages
+        WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
+          AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, refId],
+    );
+    return rows[0] ?? null;
   }
 
   /**
@@ -395,6 +426,8 @@ export class MessageRepository extends BaseRepository {
               m.message_kind AS "messageKind", m.status,
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
+              (m.platform_message_id IS NOT NULL AND m.is_internal_note = false)
+                AS "canBeRepliedTo",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
               se.ref_id AS "sentByRefId",
