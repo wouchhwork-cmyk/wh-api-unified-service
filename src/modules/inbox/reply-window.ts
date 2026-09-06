@@ -31,8 +31,13 @@ const REPLY_EVENT_TYPE: Readonly<Record<ConversationKind, OutboundEventType | nu
   /** A story reply arrives in, and is answered in, the message thread. */
   [ConversationKind.StoryReply]: OutboundEventType.DirectMessage,
   [ConversationKind.CommentThread]: OutboundEventType.CommentReply,
-  /** A mention IS a comment — on someone else's post. Answered as one. */
-  [ConversationKind.Mention]: OutboundEventType.CommentReply,
+  /*
+   * A mention is a comment on SOMEONE ELSE'S post, and that is exactly why it
+   * cannot be answered as one: `POST /{comment-id}/replies` only works on media
+   * we own. Meta gives a dedicated mentions edge for this, so the reply is
+   * routed there instead — see docs/platform-limitations.md §1.6.
+   */
+  [ConversationKind.Mention]: OutboundEventType.MentionReply,
   /** Reviews are read-only on the Graph surfaces this service uses. */
   [ConversationKind.Review]: null,
 };

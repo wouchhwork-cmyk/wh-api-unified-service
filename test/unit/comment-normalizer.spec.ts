@@ -327,3 +327,104 @@ describe('normalizeComment', () => {
     });
   });
 });
+
+/**
+ * An Instagram mention, before and after the Mentions API fills it in.
+ *
+ * The webhook is a NOTIFICATION: two ids, no author, no text. Every live mention
+ * was skipped for want of an author, so the whole feature was dead end to end
+ * while looking wired up — subscribed, routed, normalized, never projected.
+ *
+ * The payloads here are the real ones observed on 6 September 2026
+ * (docs/platform-limitations.md §1.2), including the resolved shape the
+ * projector hands back after calling `mentioned_comment`.
+ */
+describe('normalizeMention — instagram', () => {
+  const webhook = (value: Record<string, unknown>) => ({ field: 'mentions', value });
+
+  it('skips the bare webhook, because it names no author', () => {
+    const result = normalizeMention(
+      Platform.Instagram,
+      webhook({ media_id: '18141779110574991', comment_id: '18090191117413844' }),
+    );
+
+    expect('skip' in result).toBe(true);
+    expect('skip' in result && result.skip).toContain('carries no author');
+  });
+
+  it('keys a comment mention on the COMMENT, not the post it sits on', () => {
+    /*
+     * Both ids arrive together. Keying on the media collapsed every mention
+     * under one post onto a single identity, so a second tag on the same photo
+     * was discarded as a duplicate of the first.
+     */
+    const first = normalizeMention(
+      Platform.Instagram,
+      webhook({
+        media_id: 'SAME_POST',
+        comment_id: 'COMMENT_A',
+        username: 'genzrelics',
+        caption: 'first tag',
+      }),
+    );
+    const second = normalizeMention(
+      Platform.Instagram,
+      webhook({
+        media_id: 'SAME_POST',
+        comment_id: 'COMMENT_B',
+        username: 'genzrelics',
+        caption: 'second tag',
+      }),
+    );
+
+    expect('comment' in first && first.comment.commentId).toBe('COMMENT_A');
+    expect('comment' in second && second.comment.commentId).toBe('COMMENT_B');
+    // The post is still recorded — it is just not the identity.
+    expect('comment' in first && first.comment.postId).toBe('SAME_POST');
+  });
+
+  it('projects a resolved mention, and keeps whose post it is on', () => {
+    const result = normalizeMention(
+      Platform.Instagram,
+      webhook({
+        media_id: '18141779110574991',
+        comment_id: '18090191117413844',
+        username: 'genzrelics',
+        caption: '@ai_automation_demo check this out , its good no',
+        timestamp: '2026-09-06T15:06:59+0000',
+        permalink: 'https://www.instagram.com/p/Dc53LpVs_06/',
+        media_owner_username: 'alpha_series369',
+      }),
+    );
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+
+    expect(result.comment.commentId).toBe('18090191117413844');
+    expect(result.comment.text).toBe('@ai_automation_demo check this out , its good no');
+    // WHO TAGGED US, which is not who owns the post.
+    expect(result.comment.authorPlatformId).toBe('genzrelics');
+    expect(result.comment.authorIdentifierKind).toBe(IdentifierKind.InstagramUsername);
+    expect(result.comment.metadata).toEqual({
+      mentionedMediaId: '18141779110574991',
+      mentionedCommentId: '18090191117413844',
+      postPermalink: 'https://www.instagram.com/p/Dc53LpVs_06/',
+      postOwnerUsername: 'alpha_series369',
+    });
+  });
+
+  it('still reads a /tags backfill, which carries no comment id at all', () => {
+    // The backfill keys on the media, and must keep doing so.
+    const result = normalizeMention(
+      Platform.Instagram,
+      webhook({
+        media_id: 'TAGGED_MEDIA',
+        username: 'someone',
+        caption: 'tagged you',
+        permalink: 'https://www.instagram.com/p/AAA/',
+      }),
+    );
+
+    expect('comment' in result && result.comment.commentId).toBe('TAGGED_MEDIA');
+  });
+});

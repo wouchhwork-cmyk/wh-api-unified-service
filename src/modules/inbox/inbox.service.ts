@@ -405,7 +405,19 @@ export class InboxService {
           dedupKey: outboundDedupKey(conversation.platform, eventType, 'messages', message.id),
           correlationId: RequestContext.correlationId() ?? null,
           payload:
-            eventType === OutboundEventType.CommentReply
+            eventType === OutboundEventType.MentionReply
+              ? {
+                  /*
+                   * The media id comes from the CONVERSATION, not the thread
+                   * key: the thread key is the comment that named us, and
+                   * Meta's mentions edge needs the post it sits on as well.
+                   * Resolved when the mention was projected and filed there.
+                   */
+                  mediaId: mentionMediaId(conversation.contextMetadata),
+                  commentId: stripThreadPrefix(conversation.platformThreadId),
+                  message: input.body,
+                }
+              : eventType === OutboundEventType.CommentReply
               ? { commentId: stripThreadPrefix(conversation.platformThreadId), message: input.body }
               : {
                   message: input.body,
@@ -572,6 +584,18 @@ function decodeThreadCursor(cursor: string | null): { sortedAt: Date; id: number
 }
 
 /** `comment:123` -> `123`. The prefix is ours; the platform never sees it. */
+/**
+ * The post a mention lives on.
+ *
+ * Read here rather than trusted blindly at the relay: a mention projected
+ * before the Mentions API was wired in has no post recorded, and discovering
+ * that at send time means the agent's reply dead-letters after they typed it.
+ */
+function mentionMediaId(contextMetadata: Record<string, unknown>): string | null {
+  const mediaId = contextMetadata.mentionedMediaId;
+  return typeof mediaId === 'string' && mediaId.length > 0 ? mediaId : null;
+}
+
 function stripThreadPrefix(platformThreadId: string): string {
   const separator = platformThreadId.indexOf(':');
   return separator === -1 ? platformThreadId : platformThreadId.slice(separator + 1);

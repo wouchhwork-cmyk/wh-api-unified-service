@@ -77,6 +77,15 @@ export enum InboundEventType {
 /** schema.md §24 — selects the sender AND the write-back handler. */
 export enum OutboundEventType {
   CommentReply = 'comment_reply',
+  /**
+   * A reply to a comment that @mentioned us, which is NOT a comment reply.
+   *
+   * A mention lives on somebody else's post, and `POST /{comment-id}/replies`
+   * works only on media we own — it fails there with an error that reads like a
+   * deleted comment. Meta's mentions edge is the only way to answer one, so it
+   * gets its own type rather than being squeezed through the comment path.
+   */
+  MentionReply = 'mention_reply',
   DirectMessage = 'direct_message',
   CommentHide = 'comment_hide',
   CommentDelete = 'comment_delete',

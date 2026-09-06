@@ -35,6 +35,11 @@ describe('own-content filtering', () => {
     explode,
     explode,
     explode,
+    // graph + cipher: an INSTAGRAM mention has to resolve its author before it
+    // can be compared against ours, so only the Facebook paths short-circuit
+    // this early. Every case below is Facebook for exactly that reason.
+    explode,
+    explode,
     explode,
     {
       debug: () => undefined,

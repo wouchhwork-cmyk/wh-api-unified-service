@@ -8,6 +8,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { PostRepository } from '@/database/repositories/post.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { AuditModule } from '@/modules/audit';
+import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
 import { InboxController } from './inbox.controller';
@@ -29,6 +30,12 @@ const PROVIDERS = [
   OutboundEventRepository,
   ChannelRepository,
   SyncJobRepository,
+  /*
+   * Provided here rather than imported from ConnectionsModule, which imports
+   * this module's projectors — the cycle would be real. The client is stateless
+   * (config plus fetch), so a second instance costs nothing.
+   */
+  GraphApiClient,
 ];
 
 /**

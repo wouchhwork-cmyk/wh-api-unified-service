@@ -69,6 +69,11 @@ export interface CanonicalComment {
    * recorded AS a handle rather than passed off as an id.
    */
   readonly authorIdentifierKind?: IdentifierKind;
+  /**
+   * Platform facts with no column of their own — where a mention lives, and
+   * whose post it is on. Empty for an ordinary comment.
+   */
+  readonly metadata?: Record<string, unknown>;
 }
 
 /**
@@ -282,6 +287,21 @@ interface InstagramMentionChange {
     readonly caption?: string;
     readonly permalink?: string;
     readonly timestamp?: string;
+    /**
+     * Whose post it is, when the Mentions API told us.
+     *
+     * Separate from `username` because they are DIFFERENT PEOPLE on a comment
+     * mention: somebody can tag us in a comment on a stranger's post, and an
+     * inbox that conflates the two attributes the post to the wrong account.
+     */
+    readonly media_owner_username?: string;
+    /**
+     * The tagged post and the replies under our mention, as the Mentions API
+     * gave them. Carried whole rather than flattened: they describe the THREAD,
+     * not the mention, and the projector files them on the conversation.
+     */
+    readonly mention_media?: Record<string, unknown>;
+    readonly mention_replies?: readonly Record<string, unknown>[];
   };
 }
 
@@ -296,7 +316,16 @@ interface InstagramMentionChange {
 export function normalizeMention(platform: Platform, payload: unknown): NormalizedComment {
   if (platform === Platform.Instagram) {
     const value = (payload as InstagramMentionChange).value;
-    const target = value?.media_id ?? value?.comment_id;
+    /*
+     * THE COMMENT ID WINS when there is one, and it has to.
+     *
+     * A webhook for a comment mention carries BOTH ids, and keying on the media
+     * meant every mention on the same post collapsed onto one identity: tag us
+     * twice under one photo and the second mention was discarded as a duplicate
+     * of the first. The media id is still the right answer for a CAPTION
+     * mention and for the /tags backfill, neither of which carries a comment id.
+     */
+    const target = value?.comment_id ?? value?.media_id;
     if (!target) return { skip: 'the instagram mention names nothing' };
 
     /*
@@ -317,6 +346,28 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
       };
     }
 
+    /*
+     * WHERE THE MENTION LIVES, kept because the thread cannot show it otherwise.
+     *
+     * A mention is on somebody else's post, so the agent's first question is
+     * "what post, and whose?" — and the permalink is the only way to go and
+     * look. None of it has a column of its own, and all of it is lost once the
+     * ledger row ages out.
+     */
+    const metadata: Record<string, unknown> = {};
+    if (value.media_id) metadata.mentionedMediaId = value.media_id;
+    if (value.comment_id) metadata.mentionedCommentId = value.comment_id;
+    if (value.permalink) metadata.postPermalink = value.permalink;
+    if (value.media_owner_username) metadata.postOwnerUsername = value.media_owner_username;
+    if (value.mention_media) metadata.postDetails = value.mention_media;
+    /*
+     * The replies under our mention. Kept on the MESSAGE as well as the thread
+     * because they are a snapshot: Meta gives no webhook when somebody replies
+     * to a mention, so this is what the thread looked like at the one moment we
+     * were allowed to read it.
+     */
+    if (value.mention_replies?.length) metadata.replyThread = value.mention_replies;
+
     return {
       comment: {
         commentId: target,
@@ -331,6 +382,7 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
         authorName: value.username,
         authorHandle: value.username,
         authorIdentifierKind: IdentifierKind.InstagramUsername,
+        metadata,
       },
     };
   }

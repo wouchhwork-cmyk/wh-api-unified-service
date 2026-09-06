@@ -14,6 +14,14 @@ export interface UpsertConversationInput {
   /** The derived thread key, ALWAYS prefixed by kind. */
   readonly platformThreadId: string;
   readonly subject: string | null;
+  /**
+   * What this thread is ABOUT, when the platform will say.
+   *
+   * A mention needs the post it sits on — its id, permalink, owner and counts —
+   * and none of that belongs on any individual message: it describes the thread,
+   * and the reply path needs the media id to answer at all.
+   */
+  readonly contextMetadata?: Record<string, unknown>;
 }
 
 export interface ConversationRow {
@@ -24,6 +32,8 @@ export interface ConversationRow {
   readonly platform: Platform;
   readonly conversationKind: ConversationKind;
   readonly platformThreadId: string;
+  /** What the thread is about — the tagged post, for a mention. */
+  readonly contextMetadata: Record<string, unknown>;
   readonly status: ConversationStatus;
   readonly unreadCount: number;
   readonly messageCount: number;
@@ -132,8 +142,8 @@ export class ConversationRepository extends BaseRepository {
     const { rows } = await this.mutate<{ id: number; ref_id: string; created: boolean }>(
       `INSERT INTO conversations
          (enterprise_id, channel_id, customer_id, customer_identifier_id, post_id, platform,
-          conversation_kind, platform_thread_id, subject, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          conversation_kind, platform_thread_id, subject, status, context_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
        ON CONFLICT (channel_id, platform_thread_id)
        DO UPDATE SET
          -- Reviving a closed thread reopens it; a new message means it needs
@@ -142,6 +152,13 @@ export class ConversationRepository extends BaseRepository {
                            THEN $10 ELSE conversations.status END,
          subject    = COALESCE(EXCLUDED.subject, conversations.subject),
          post_id    = COALESCE(EXCLUDED.post_id, conversations.post_id),
+         /*
+          * MERGED, not replaced. A later event on the same thread may resolve
+          * less than the first did — a refused count, a permalink we could not
+          * read this time — and overwriting would erase what we already knew.
+          * Newer non-null facts win; everything else survives.
+          */
+         context_metadata = conversations.context_metadata || EXCLUDED.context_metadata,
          is_deleted = false
        /*
         * WHETHER THIS ROW IS NEW, which an upsert otherwise hides. xmax is 0 on
@@ -162,6 +179,7 @@ export class ConversationRepository extends BaseRepository {
         input.platformThreadId,
         input.subject,
         ConversationStatus.Open,
+        JSON.stringify(input.contextMetadata ?? {}),
       ],
     );
     const row = rows[0];
@@ -192,6 +210,7 @@ export class ConversationRepository extends BaseRepository {
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
@@ -275,6 +294,7 @@ export class ConversationRepository extends BaseRepository {
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",

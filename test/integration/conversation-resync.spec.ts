@@ -414,6 +414,58 @@ describe('conversation resync jobs', () => {
     expect(rows[0]?.metadata.replyIsSelfReply).toBe(false);
   });
 
+  it('keeps the story a customer was answering', async () => {
+    /*
+     * A STORY REPLY NAMES NO MESSAGE. Instagram sends reply_to.story — an id
+     * and a CDN link — and no mid, so the threading path above cannot see it
+     * and the message arrives looking like an unprompted line of text.
+     *
+     * The payload here is the real shape observed on the wire, story id and
+     * all: the customer tapped a story and typed, which is most of what the
+     * agent needs to know to answer them.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','story-reply','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788705956820,
+      message: {
+        mid: 'STORY_REPLY_MID',
+        text: 'What man really ???',
+        reply_to: {
+          story: {
+            id: '18101327498358721',
+            url: 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=18101327498358721&signature=Ab2X',
+          },
+        },
+      },
+    });
+
+    const stored: { body: string; metadata: Record<string, unknown> }[] = await db.query(
+      `SELECT body, metadata FROM messages WHERE platform_message_id = 'STORY_REPLY_MID'`,
+    );
+    expect(stored[0]?.body).toBe('What man really ???');
+    expect(stored[0]?.metadata.replyToStoryId).toBe('18101327498358721');
+    expect(stored[0]?.metadata.replyToStoryUrl).toContain('asset_id=18101327498358721');
+    // No mid, so nothing to thread onto — the story is the whole context.
+    expect(stored[0]?.metadata.replyToPlatformMessageId).toBeUndefined();
+  });
+
   it('keeps the reply readable when the parent was never delivered', async () => {
     /*
      * A reply to a message whose webhook Meta dropped. The link cannot be made

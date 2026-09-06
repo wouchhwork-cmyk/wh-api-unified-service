@@ -179,9 +179,18 @@ describe('evaluateReplyWindow', () => {
       [ConversationKind.DirectMessage, OutboundEventType.DirectMessage],
       [ConversationKind.StoryReply, OutboundEventType.DirectMessage],
       [ConversationKind.CommentThread, OutboundEventType.CommentReply],
-      // The bug this map replaced: a mention was sent as a DIRECT MESSAGE
-      // addressed to a comment id, which Meta refuses.
-      [ConversationKind.Mention, OutboundEventType.CommentReply],
+      /*
+       * A MENTION IS NOT A COMMENT REPLY, though it looks like one.
+       *
+       * It was routed as one, and that was still wrong: a mention lives on
+       * SOMEBODY ELSE'S post, and `POST /{comment-id}/replies` only works on
+       * media we own — it fails there with an error that reads like a deleted
+       * comment. Meta's mentions edge is the only way to answer one.
+       *
+       * (The bug before that was worse: a mention was sent as a DIRECT MESSAGE
+       * addressed to a comment id.)
+       */
+      [ConversationKind.Mention, OutboundEventType.MentionReply],
     ])('routes %s to %s', (kind, expected) => {
       expect(replyEventTypeFor(kind)).toBe(expected);
     });

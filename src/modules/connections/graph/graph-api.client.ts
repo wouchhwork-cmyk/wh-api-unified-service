@@ -17,6 +17,12 @@ import type {
   GraphFeedPost,
   GraphInstagramMedia,
   GraphInstagramTag,
+  GraphMentionedComment,
+  GraphMentionedCommentReply,
+  GraphMentionedMedia,
+  ResolvedMention,
+  ResolvedMentionMedia,
+  ResolvedMentionReply,
   GraphMeResponse,
   GraphTokenResponse,
   SendResult,
@@ -500,6 +506,131 @@ export class GraphApiClient {
   }
 
   /**
+   * Resolves a `mentions` webhook into something projectable.
+   *
+   * THE WEBHOOK GIVES TWO IDS AND NOTHING ELSE — no author, no text — so a live
+   * mention cannot be stored without this call. The ids are read back off OUR
+   * OWN user node, which is what makes it work: the mention itself is the grant,
+   * so this returns the caption, permalink and owner of a post belonging to an
+   * account we do not manage and could not otherwise read
+   * (docs/platform-limitations.md §1.2, §3.1).
+   *
+   * WHICH EDGE IS DECIDED BY THE PAYLOAD, not by trying both. A mention in a
+   * comment carries `comment_id`; a mention in a caption does not. Asking
+   * mentioned_media about a comment mention fails with
+   * `(#10) User is not mentioned in the caption.`
+   *
+   * Returns null when the mention resolves to nothing usable — the author is
+   * the one field the projector cannot do without.
+   */
+  async resolveInstagramMention(
+    instagramUserId: string,
+    target: { readonly commentId?: string | null; readonly mediaId?: string | null },
+    accessToken: string,
+  ): Promise<ResolvedMention | null> {
+    /*
+     * WHY THESE FIELDS AND NOT MORE. Every one below was probed individually
+     * against live traffic; the omissions are deliberate, not oversights:
+     *
+     *   share_count / saved / video_view_count — do not exist on the media node
+     *   shortcode / is_shared_to_feed          — not exposed on others' media
+     *   replies{username} / replies{from}      — silently omitted, always
+     *
+     * `timestamp` is in the replies list for a REASON that looks like
+     * superstition and is not: `replies{id,text}` fails with "Please reduce the
+     * amount of data you're asking for" while `replies{id,text,timestamp}`
+     * succeeds. Removing it breaks the call (docs/platform-limitations.md §1.4).
+     */
+    const mediaFields =
+      'id,caption,media_type,media_url,permalink,username,timestamp,like_count,comments_count';
+    const replyFields = 'replies{id,text,timestamp,like_count}';
+
+    if (target.commentId) {
+      const result = await this.request<{ mentioned_comment?: GraphMentionedComment }>(
+        'GET',
+        instagramUserId,
+        {
+          accessToken,
+          params: {
+            fields: `mentioned_comment.comment_id(${target.commentId}){id,text,timestamp,username,like_count,${replyFields},media{${mediaFields}}}`,
+          },
+        },
+      );
+
+      const comment = result.mentioned_comment;
+      if (!comment?.username) return null;
+      return {
+        authorUsername: comment.username,
+        text: comment.text ?? null,
+        timestamp: comment.timestamp ?? null,
+        mediaId: comment.media?.id ?? target.mediaId ?? null,
+        permalink: comment.media?.permalink ?? null,
+        mediaOwnerUsername: comment.media?.username ?? null,
+        media: toResolvedMedia(comment.media, target.mediaId ?? null),
+        replies: toResolvedReplies(comment.replies?.data),
+      };
+    }
+
+    if (!target.mediaId) return null;
+
+    const result = await this.request<{ mentioned_media?: GraphMentionedMedia }>(
+      'GET',
+      instagramUserId,
+      {
+        accessToken,
+        params: { fields: `mentioned_media.media_id(${target.mediaId}){${mediaFields}}` },
+      },
+    );
+
+    const media = result.mentioned_media;
+    /*
+     * For a CAPTION mention the post's author and the person who named us are
+     * the same account, so one username answers both questions.
+     */
+    if (!media?.username) return null;
+    return {
+      authorUsername: media.username,
+      text: media.caption ?? null,
+      timestamp: media.timestamp ?? null,
+      mediaId: media.id ?? target.mediaId,
+      permalink: media.permalink ?? null,
+      mediaOwnerUsername: media.username,
+      media: toResolvedMedia(media, target.mediaId),
+      // A caption mention has no comment, so there is no reply thread to read.
+      replies: [],
+    };
+  }
+
+  /**
+   * Answers a comment that @mentioned us.
+   *
+   * NOT `POST /{comment-id}/replies`, which only works on media we own — a
+   * mention is on somebody else's post and that edge fails there. Meta's
+   * mentions edge exists for exactly this and posts the reply as a sub-thread
+   * comment beneath the mention.
+   *
+   * `comment_id` is what distinguishes the two shapes: with it, this replies to
+   * the comment that named us; without it, it comments on a post that named us
+   * in its caption.
+   */
+  async replyToMention(
+    instagramUserId: string,
+    target: { readonly mediaId: string; readonly commentId?: string | null },
+    message: string,
+    accessToken: string,
+  ): Promise<SendResult> {
+    const result = await this.request<{ id: string }>('POST', `${instagramUserId}/mentions`, {
+      accessToken,
+      body: {
+        media_id: target.mediaId,
+        message,
+        ...(target.commentId ? { comment_id: target.commentId } : {}),
+      },
+    });
+    return { platformId: result.id };
+  }
+
+  /**
    * Which fields this app is actually subscribed to on a Page.
    *
    * The READ side of subscribePageToApp, and it exists because the write side
@@ -674,4 +805,48 @@ function safeJsonParse(text: string): unknown {
   } catch {
     return { error: { message: 'graph returned a non-JSON body' } };
   }
+}
+
+/**
+ * A count that was refused reads as ABSENT, never as zero.
+ *
+ * Meta returns a 200 with the field simply missing when it will not give a
+ * number, and defaulting that to 0 would put "0 likes" on a post with a hundred
+ * thousand of them — a confident lie is worse than an honest blank.
+ */
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
+
+function toResolvedMedia(
+  media: GraphMentionedMedia | undefined,
+  fallbackId: string | null,
+): ResolvedMentionMedia | null {
+  if (!media) return null;
+  return {
+    id: media.id ?? fallbackId,
+    caption: media.caption ?? null,
+    permalink: media.permalink ?? null,
+    ownerUsername: media.username ?? null,
+    mediaType: media.media_type ?? null,
+    mediaUrl: media.media_url ?? null,
+    timestamp: media.timestamp ?? null,
+    likeCount: numberOrNull(media.like_count),
+    commentsCount: numberOrNull(media.comments_count),
+  };
+}
+
+function toResolvedReplies(
+  replies: readonly GraphMentionedCommentReply[] | undefined,
+): ResolvedMentionReply[] {
+  if (!replies?.length) return [];
+  return replies
+    .filter((reply): reply is GraphMentionedCommentReply & { id: string } => Boolean(reply.id))
+    .map((reply) => ({
+      platformId: reply.id,
+      // Absent for a media-only reply, and that is not an error.
+      text: reply.text ?? null,
+      timestamp: reply.timestamp ?? null,
+      likeCount: numberOrNull(reply.like_count),
+    }));
 }

@@ -13,6 +13,9 @@ from one place.
 
 - [`docs/backlog.md`](docs/backlog.md) — everything known to be missing or wrong,
   ordered by risk. Read this before planning work.
+- [`docs/platform-limitations.md`](docs/platform-limitations.md) — what Meta will
+  not tell us, each entry verified against live traffic. Read this before going
+  looking for data the platform does not provide.
 
 ## Running it
 

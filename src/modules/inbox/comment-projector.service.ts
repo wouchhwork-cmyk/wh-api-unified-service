@@ -9,6 +9,8 @@ import { CustomerRepository } from '@/database/repositories/customer.repository'
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { TransactionManager } from '@/database/transaction';
+import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { TokenCipherService } from '@/shared/crypto/token-cipher.service';
 import {
   ConversationKind,
   CustomerFirstSource,
@@ -43,6 +45,8 @@ export class CommentProjectorService {
     private readonly messages: MessageRepository,
     private readonly channels: ChannelRepository,
     private readonly posts: PostRepository,
+    private readonly graph: GraphApiClient,
+    private readonly cipher: TokenCipherService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(CommentProjectorService.name) private readonly logger: PinoLogger,
   ) {}
@@ -105,7 +109,24 @@ export class CommentProjectorService {
     payload: unknown,
     ownPlatformIds: readonly string[] = [],
   ): Promise<ProjectionOutcome> {
-    const normalized = normalizeMention(platform, payload);
+    /*
+     * THE WEBHOOK IS A NOTIFICATION, NOT THE MENTION.
+     *
+     * Instagram's `mentions` change carries a media id and a comment id and
+     * NOTHING ELSE — no author, no text — so every live mention was skipped for
+     * want of an author and the feature was dead end to end: subscribed,
+     * routed, normalized, and never once projected. Only the /tags backfill,
+     * which returns the tagger's handle, ever produced one.
+     *
+     * The content is one call away, so it is fetched before normalizing rather
+     * than teaching the normalizer to invent an author it does not have.
+     */
+    const resolved =
+      platform === Platform.Instagram
+        ? await this.resolveInstagramMention(enterpriseId, channelId, payload)
+        : payload;
+
+    const normalized = normalizeMention(platform, resolved);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
 
     if ('moderation' in normalized) {
@@ -163,6 +184,83 @@ export class CommentProjectorService {
     // No text: an edit's new body is the customer's words.
     this.logger.debug({ enterpriseId, action: moderation.action }, 'comment moderation applied');
     return { projected: true };
+  }
+
+  /**
+   * Fills a `mentions` webhook in from the Mentions API.
+   *
+   * Returns the payload UNCHANGED when there is nothing to do or nothing to be
+   * had, so the normalizer decides what is projectable in one place. A mention
+   * that still has no author is skipped there with the reason it already had —
+   * this never manufactures one.
+   *
+   * A FAILURE HERE MUST NOT FAIL THE PROJECTION. The alternative is a ledger row
+   * that retries against Meta on every pass, spending rate limit on a mention
+   * that may simply be unreadable — a deleted comment, a post gone private. The
+   * event is projected without the enrichment where it can be, and skipped with
+   * a reason where it cannot.
+   */
+  private async resolveInstagramMention(
+    enterpriseId: number,
+    channelId: number,
+    payload: unknown,
+  ): Promise<unknown> {
+    const change = payload as {
+      readonly field?: string;
+      readonly value?: { readonly media_id?: string; readonly comment_id?: string; readonly username?: string };
+    };
+    const value = change?.value;
+    if (!value) return payload;
+
+    // The backfill already supplies an author; only the webhook needs this.
+    if (value.username) return payload;
+    if (!value.comment_id && !value.media_id) return payload;
+
+    const channel = await this.channels.findBackfillContext(enterpriseId, channelId);
+    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return payload;
+    // A channel already known to need re-auth would spend a call to be told so.
+    if (channel.reauthRequired) return payload;
+
+    let token: string;
+    try {
+      token = this.cipher.decrypt(channel.effectiveAccessToken);
+    } catch {
+      // Key loss or tampering. The relay and backfill both alert on this; here
+      // it is enough not to project a mention we cannot read.
+      return payload;
+    }
+
+    try {
+      const resolution = await this.graph.resolveInstagramMention(
+        channel.platformChannelId,
+        { commentId: value.comment_id ?? null, mediaId: value.media_id ?? null },
+        token,
+      );
+      if (!resolution) return payload;
+
+      return {
+        ...change,
+        value: {
+          ...value,
+          username: resolution.authorUsername,
+          // The normalizer reads the mention's words from `caption`, which is
+          // what the /tags backfill calls them.
+          caption: resolution.text ?? undefined,
+          timestamp: resolution.timestamp ?? undefined,
+          permalink: resolution.permalink ?? undefined,
+          media_owner_username: resolution.mediaOwnerUsername ?? undefined,
+          media_id: resolution.mediaId ?? value.media_id,
+          mention_media: resolution.media ?? undefined,
+          mention_replies: resolution.replies.length > 0 ? resolution.replies : undefined,
+        },
+      };
+    } catch (error) {
+      this.logger.warn(
+        { err: error, enterpriseId, channelId },
+        'could not resolve an instagram mention — projecting without it',
+      );
+      return payload;
+    }
   }
 
   private async store(
@@ -238,6 +336,16 @@ export class CommentProjectorService {
         conversationKind,
         platformThreadId: composeThreadKey(conversationKind, comment.rootCommentId),
         subject: normalizeOptionalText(comment.text)?.slice(0, 500) ?? null,
+        /*
+         * WHAT THIS THREAD IS ABOUT, and for a mention it is not optional
+         * decoration: answering a mention needs the media id, and Meta's
+         * mentions edge is the only way to answer one at all. Filing it on the
+         * conversation puts it where the reply path can reach it without
+         * re-reading a message's metadata to find out where to send.
+         */
+        ...(conversationKind === ConversationKind.Mention && comment.metadata
+          ? { contextMetadata: comment.metadata }
+          : {}),
       });
 
       // A reply threads under its parent when we already hold it.
@@ -255,6 +363,10 @@ export class CommentProjectorService {
         body: comment.text,
         platformSentAt: comment.createdAt,
         parentMessageId,
+        // Where the mention lives and whose post it is on. Empty for a comment.
+        ...(comment.metadata && Object.keys(comment.metadata).length > 0
+          ? { metadata: comment.metadata }
+          : {}),
       });
 
       // Null means the unique index rejected it: this comment is already stored,

@@ -285,3 +285,87 @@ export interface GraphInstagramTag {
   like_count?: number;
   comments_count?: number;
 }
+
+/**
+ * A mention resolved through the Mentions API.
+ *
+ * The `mentions` webhook carries two ids and nothing else — no author, no text —
+ * so a live mention is unprojectable until these are read back. See
+ * docs/platform-limitations.md §1.2.
+ */
+export interface GraphMentionedMedia {
+  id?: string;
+  caption?: string;
+  media_type?: string;
+  media_url?: string;
+  permalink?: string;
+  /** The POST OWNER's handle, which may be an account we do not manage. */
+  username?: string;
+  timestamp?: string;
+  like_count?: number;
+  comments_count?: number;
+}
+
+export interface GraphMentionedCommentReply {
+  id?: string;
+  text?: string;
+  timestamp?: string;
+  like_count?: number;
+}
+
+export interface GraphMentionedComment {
+  id?: string;
+  text?: string;
+  timestamp?: string;
+  /** The handle of whoever wrote the comment that named us. */
+  username?: string;
+  like_count?: number;
+  media?: GraphMentionedMedia;
+  replies?: { data?: GraphMentionedCommentReply[] };
+}
+
+/** One reply under the comment that mentioned us. */
+export interface ResolvedMentionReply {
+  readonly platformId: string;
+  /**
+   * Absent for some replies and no field combination recovers it — a media-only
+   * reply has no text to return (docs/platform-limitations.md §1.4).
+   */
+  readonly text: string | null;
+  readonly timestamp: string | null;
+  readonly likeCount: number | null;
+}
+
+/** What the tagged post will tell us. Counts are absent, never zero, when refused. */
+export interface ResolvedMentionMedia {
+  readonly id: string | null;
+  readonly caption: string | null;
+  readonly permalink: string | null;
+  readonly ownerUsername: string | null;
+  readonly mediaType: string | null;
+  readonly mediaUrl: string | null;
+  readonly timestamp: string | null;
+  readonly likeCount: number | null;
+  readonly commentsCount: number | null;
+}
+
+/** Either edge, flattened to what the projector needs. */
+export interface ResolvedMention {
+  /** Whoever named us — the commenter, or the caption's author. */
+  readonly authorUsername: string;
+  /** Their words: the comment text, or the caption they tagged us in. */
+  readonly text: string | null;
+  readonly timestamp: string | null;
+  readonly mediaId: string | null;
+  readonly permalink: string | null;
+  /** Whose post it is. Frequently NOT the person who mentioned us. */
+  readonly mediaOwnerUsername: string | null;
+  /** Everything the tagged post will tell us. */
+  readonly media: ResolvedMentionMedia | null;
+  /**
+   * Replies under our mention. Readable, but ANONYMOUS: Meta omits the author
+   * on every one of them (§1.4), so these carry no username by design rather
+   * than by oversight.
+   */
+  readonly replies: readonly ResolvedMentionReply[];
+}

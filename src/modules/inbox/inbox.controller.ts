@@ -42,6 +42,7 @@ import {
   type ReplyResponse,
 } from '@/shared/contracts/inbox/inbox.contract';
 import { InboxService } from './inbox.service';
+import { isExpiringMediaUrl } from './attachment-normalizer';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
 
@@ -466,6 +467,42 @@ function toMessage(
      * not send the flag — which is every message recovered before the resync
      * started asking for reply_to.
      */
+    /*
+     * THE STORY THIS ANSWERS — deliberately not folded into `replyTo`.
+     *
+     * `replyTo` answers a MESSAGE and quotes it. A story reply answers a STORY,
+     * which no message id names and no excerpt can quote: the customer tapped
+     * a story and typed. Sharing one field would have forced the client to
+     * render a quote for something that has no text, so the two stay apart and
+     * a client can say "replying to your story" and show the story itself.
+     *
+     * The projector has been keeping these facts all along; nothing exposed
+     * them, so an agent saw a bare line of text with no idea what prompted it —
+     * which for a story reply is most of the meaning.
+     *
+     * `url` is Meta's CDN link, passed through rather than proxied, and it dies
+     * with the story it points at — about 24 hours. `expires` says so from the
+     * host rather than assuming it, exactly as attachments do.
+     */
+    repliedToStory:
+      typeof row.metadata.replyToStoryId === 'string' ||
+      typeof row.metadata.replyToStoryUrl === 'string'
+        ? {
+            storyId:
+              typeof row.metadata.replyToStoryId === 'string'
+                ? row.metadata.replyToStoryId
+                : null,
+            url:
+              typeof row.metadata.replyToStoryUrl === 'string'
+                ? row.metadata.replyToStoryUrl
+                : null,
+            expires: isExpiringMediaUrl(
+              typeof row.metadata.replyToStoryUrl === 'string'
+                ? row.metadata.replyToStoryUrl
+                : null,
+            ),
+          }
+        : null,
     replyTo:
       row.parentRefId !== null || typeof row.metadata.replyToPlatformMessageId === 'string'
         ? {
@@ -483,6 +520,61 @@ function toMessage(
   };
 }
 
+/**
+ * The tagged post, and the thread under our mention.
+ *
+ * Shaped here rather than passed through raw, because the stored metadata is
+ * whatever the Mentions API happened to give us on the day — and a client
+ * should not have to know which fields Meta silently omits
+ * (docs/platform-limitations.md §1.3-1.4).
+ */
+function toMentionContext(metadata: Record<string, unknown>): Record<string, unknown> | null {
+  const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
+  const permalink = typeof metadata.postPermalink === 'string' ? metadata.postPermalink : null;
+  if (!mediaId && !permalink) return null;
+
+  const details = (
+    typeof metadata.postDetails === 'object' && metadata.postDetails !== null
+      ? metadata.postDetails
+      : {}
+  ) as Record<string, unknown>;
+  const asNumber = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+  const asText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
+  return {
+    mediaId,
+    permalink,
+    ownerUsername: asText(metadata.postOwnerUsername) ?? asText(details.ownerUsername),
+    caption: asText(details.caption),
+    mediaType: asText(details.mediaType),
+    mediaUrl: asText(details.mediaUrl),
+    postedAt: asText(details.timestamp),
+    likeCount: asNumber(details.likeCount),
+    commentCount: asNumber(details.commentsCount),
+    /*
+     * ALWAYS null, and said explicitly rather than omitted. Instagram gives no
+     * share or save count for a post we do not own — there is no field for it —
+     * so a client that leaves a blank space is showing the truth.
+     */
+    shareCount: null,
+    /*
+     * The replies under our mention, as they looked when we read them. Meta
+     * sends no webhook for a reply to a mention, so this is a SNAPSHOT and not
+     * a live thread — and every entry is anonymous, because the platform omits
+     * the author on all of them.
+     */
+    replies: Array.isArray(metadata.replyThread)
+      ? (metadata.replyThread as Record<string, unknown>[]).map((reply) => ({
+          text: asText(reply.text),
+          postedAt: asText(reply.timestamp),
+          likeCount: asNumber(reply.likeCount),
+          /** Never available. Stated so a client does not go looking. */
+          authorUsername: null,
+        }))
+      : [],
+  };
+}
+
 function toConversationSummary(row: {
   refId: string;
   conversationKind: string;
@@ -496,6 +588,7 @@ function toConversationSummary(row: {
   customerDisplayName: string | null;
   customerAvatarUrl: string | null;
   customerProfile: Record<string, unknown>;
+  contextMetadata?: Record<string, unknown>;
   assignedToRefId: string | null;
   assignedToName: string | null;
 }): Record<string, unknown> {
@@ -520,6 +613,17 @@ function toConversationSummary(row: {
     status: row.status,
     canReply: window.canReply,
     replyBlockedReason: window.reason,
+    /*
+     * THE POST A MENTION IS ON, which is the whole context for the thread.
+     *
+     * Somebody tagged this business in a comment under a stranger's post; an
+     * agent's first question is what post, whose, and how big — and none of it
+     * is derivable from the comment. Null for every other kind.
+     *
+     * Counts are null rather than 0 when the platform refused them, so a client
+     * can say nothing instead of claiming a post has no likes.
+     */
+    mentionContext: toMentionContext(row.contextMetadata ?? {}),
     /*
      * Nested rather than flattened, so a client can tell "we have no name for
      * this person" from "there is no person" — a comment thread always has an

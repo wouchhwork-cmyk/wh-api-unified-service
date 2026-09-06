@@ -23,6 +23,13 @@ interface CommentReplyPayload {
   readonly commentId?: string;
   readonly message?: string;
 }
+interface MentionReplyPayload {
+  /** The post the mention sits on. Required by Meta's mentions edge. */
+  readonly mediaId?: string | null;
+  /** The comment that named us. Absent for a caption mention. */
+  readonly commentId?: string | null;
+  readonly message?: string;
+}
 interface DirectMessagePayload {
   readonly message?: string;
   /** Set when the agent answered one message in particular. */
@@ -313,6 +320,27 @@ export class OutboundRelayWorker extends BasePoller {
           token,
           // Instagram nests a reply under /replies, Facebook under /comments.
           platform,
+        );
+        return result.platformId;
+      }
+      case OutboundEventType.MentionReply: {
+        const payload = event.payload as MentionReplyPayload;
+        if (!payload.message) throw new Error('incomplete mention reply');
+        /*
+         * A mention with no post recorded cannot be answered — the mentions
+         * edge takes the media id, not just the comment. This is a permanent
+         * failure rather than a transient one: retrying will not make the id
+         * appear, so it dead-letters with a reason instead of spinning.
+         */
+        if (!payload.mediaId) {
+          throw new Error('the mention has no post recorded, so it cannot be answered');
+        }
+        const result = await this.graph.replyToMention(
+          // The mentions edge hangs off OUR user node, not the comment.
+          platformChannelId,
+          { mediaId: payload.mediaId, commentId: payload.commentId ?? null },
+          payload.message,
+          token,
         );
         return result.platformId;
       }

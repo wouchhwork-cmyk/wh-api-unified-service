@@ -414,6 +414,9 @@ describe('the shared inbox', () => {
       'platformSentAt',
       'reaction',
       'refId',
+      // Added when story replies started being surfaced: null unless the
+      // customer answered a STORY rather than a message.
+      'repliedToStory',
       // Added when Instagram replies started being threaded: null unless the
       // customer answered one specific message.
       'replyTo',
