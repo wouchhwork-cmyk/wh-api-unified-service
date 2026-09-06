@@ -8,7 +8,7 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
 import { Platform, SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
-import { createTestDataSource, truncateTenantData } from './db.harness';
+import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /** The projector logs; nothing here asserts on it. */
 function silentLogger(): never {
@@ -69,6 +69,26 @@ describe('conversation resync jobs', () => {
     );
     channelId = Number(channel[0]?.id);
   });
+
+  async function seedEnterpriseWithChannel(): Promise<{
+    enterpriseId: number;
+    channelId: number;
+  }> {
+    const other = await seedEnterprise(db, 'Rival', 'rival');
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu2','envelope') RETURNING id`,
+      [other],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+       VALUES ($1,$2,'instagram','instagram_business','IG_2') RETURNING id`,
+      [connection[0]?.id, other],
+    );
+    return { enterpriseId: other, channelId: Number(channel[0]?.id) };
+  }
 
   const resync = (target: string): Promise<boolean> =>
     syncJobs.enqueueIfAbsent({
@@ -441,5 +461,115 @@ describe('conversation resync jobs', () => {
     expect(stored[0]?.parent_message_id).toBeNull();
     expect(stored[0]?.metadata.replyToPlatformMessageId).toBe('NEVER_ARRIVED');
     expect(stored[0]?.metadata.replyIsSelfReply).toBe(true);
+  });
+
+  it('links a reply that was stored before the message it answers', async () => {
+    /*
+     * The order a recovery actually arrives in. Graph returns a thread NEWEST
+     * FIRST, so every reply in it is projected before its parent — resolving
+     * only downwards left each one saying "a message we never received" about a
+     * message sitting two rows below it.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'backfill','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    // The CHILD first, exactly as a newest-first page delivers it.
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('c'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682501255,
+      message: {
+        mid: 'CHILD_FIRST',
+        text: 'Reply',
+        reply_to: { mid: 'PARENT_LATER', is_self_reply: false },
+      },
+    });
+
+    const before: { parent_message_id: number | null }[] = await db.query(
+      `SELECT parent_message_id FROM messages WHERE platform_message_id = 'CHILD_FIRST'`,
+    );
+    expect(before[0]?.parent_message_id).toBeNull();
+
+    // Then the parent, which must claim the reply already waiting on it.
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('p'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682400000,
+      message: { mid: 'PARENT_LATER', text: 'tell me man' },
+    });
+
+    const after: { body: string | null }[] = await db.query(
+      `SELECT p.body FROM messages m JOIN messages p ON p.id = m.parent_message_id
+        WHERE m.platform_message_id = 'CHILD_FIRST'`,
+    );
+    expect(after[0]?.body).toBe('tell me man');
+  });
+
+  it('does not adopt a reply belonging to another business', async () => {
+    // The adoption is a broad UPDATE keyed on a platform id, and platform ids
+    // are not ours to assume unique across tenants.
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const otherEnterprise = await seedEnterpriseWithChannel();
+
+    const stranger: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','x','{}') RETURNING id`,
+      [otherEnterprise.enterpriseId, otherEnterprise.channelId],
+    );
+    await projector.project(
+      otherEnterprise.enterpriseId,
+      otherEnterprise.channelId,
+      Platform.Instagram,
+      Number(stranger[0]?.id),
+      {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_2' },
+        timestamp: 1788682501255,
+        message: { mid: 'SHARED_MID_CHILD', text: 'theirs', reply_to: { mid: 'SHARED_MID' } },
+      },
+    );
+
+    const mine: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','y','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(mine[0]?.id), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682400000,
+      message: { mid: 'SHARED_MID', text: 'mine' },
+    });
+
+    const theirs: { parent_message_id: number | null }[] = await db.query(
+      `SELECT parent_message_id FROM messages WHERE platform_message_id = 'SHARED_MID_CHILD'`,
+    );
+    expect(theirs[0]?.parent_message_id).toBeNull();
   });
 });

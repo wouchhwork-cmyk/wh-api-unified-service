@@ -906,7 +906,14 @@ export class BackfillWorker extends BasePoller {
       }
     }
 
-    const messages = conversation.messages?.data ?? [];
+    /*
+     * OLDEST FIRST. Graph returns a thread newest-first, and projecting in that
+     * order means every reply is stored before the message it answers, and the
+     * row ids of a recovered thread run backwards against time. Reversing costs
+     * nothing on a page of twenty and makes the common case resolve on the way
+     * in rather than by adoption afterwards.
+     */
+    const messages = [...(conversation.messages?.data ?? [])].reverse();
 
     /*
      * NO SILENT CAPS. Graph nests message paging inside conversation paging, and

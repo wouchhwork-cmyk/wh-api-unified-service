@@ -259,6 +259,21 @@ export class DirectMessageProjectorService {
       if (!inserted) return { projected: false, reason: 'the message was already projected' };
 
       /*
+       * Replies that landed before this one now point at it. A recovered thread
+       * arrives newest-first, so every reply in it is stored before its parent
+       * — resolving only downwards would leave all of them saying "a message we
+       * never received" about a message sitting two rows below.
+       */
+      const adopted = await this.messages.adoptOrphanReplies(
+        enterpriseId,
+        inserted.id,
+        platformMessageId,
+      );
+      if (adopted > 0) {
+        this.logger.debug({ enterpriseId, adopted }, 'linked replies waiting on this message');
+      }
+
+      /*
        * Written INSIDE the projection transaction: a message row claiming
        * has_attachments with no attachment rows behind it would be a lie the
        * thread endpoint renders as an empty bubble.

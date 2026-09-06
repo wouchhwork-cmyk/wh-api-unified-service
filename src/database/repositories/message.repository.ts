@@ -127,6 +127,36 @@ export class MessageRepository extends BaseRepository {
   }
 
   /**
+   * Links replies that were stored before the message they answer.
+   *
+   * ORDER IS NOT GUARANTEED and cannot be. Meta returns a thread NEWEST FIRST,
+   * so a bulk recovery projects every reply before its parent — and a reply can
+   * also arrive live, days before the delivery it answers is recovered. Both
+   * leave a message whose parent we do hold, recorded as one we do not.
+   *
+   * So resolution happens from both ends: the child looks for its parent when
+   * it is stored, and a parent claims the children waiting for it. The platform
+   * id kept in metadata is what makes the second direction possible.
+   */
+  async adoptOrphanReplies(
+    enterpriseId: number,
+    parentId: number,
+    parentPlatformMessageId: string,
+  ): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE messages
+          SET parent_message_id = $2, updated_at = now()
+        WHERE enterprise_id = $1
+          AND parent_message_id IS NULL
+          AND is_deleted = false
+          AND metadata->>'replyToPlatformMessageId' = $3
+          AND id <> $2`,
+      [this.requireEnterprise(enterpriseId), parentId, parentPlatformMessageId],
+    );
+    return affected;
+  }
+
+  /**
    * Our id for a message the platform names, if we hold it.
    *
    * Two callers, one query. It tells a harmless `message_edit` — Meta sends one
