@@ -943,4 +943,48 @@ describe('conversation resync jobs', () => {
       expect(theirs[0]?.metadata.seenAt).toBeUndefined();
     });
   });
+
+  it('refuses an echo that names the business on both sides', async () => {
+    /*
+     * The backfill used to stamp the business as the recipient of every
+     * message, its own included — so a recovered reply of ours opened a thread
+     * keyed on our own account id, with a nameless customer that was us. Four
+     * real replies went there before it was noticed.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'backfill','instagram','direct_message','self-addressed','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    const outcome = await projector.project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      Number(rows[0]?.id),
+      {
+        sender: { id: 'IG_1' },
+        recipient: { id: 'IG_1' },
+        recovered: true,
+        timestamp: 1788682400000,
+        message: { mid: 'SELF_ADDRESSED', text: 'ours', is_echo: true },
+      },
+    );
+
+    expect(outcome.projected).toBe(false);
+    const threads: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM conversations WHERE platform_thread_id = 'dm:IG_1'`,
+    );
+    expect(threads[0]?.count).toBe(0);
+  });
 });

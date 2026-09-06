@@ -68,7 +68,7 @@ export class OutboundEvent extends BaseEntity {
    * platformEventId until a send succeeds, and hashing the payload would
    * collide two legitimate identical replies ("Thanks!" twice in one thread).
    */
-  @Column({ type: 'varchar', length: 200 })
+  @Column({ type: 'varchar', length: 500 })
   dedupKey!: string;
 
   /** Ties every row in one logical flow together. */

@@ -59,7 +59,7 @@ export class InboundEvent extends BaseEntity {
    * caller: `{platform}:{eventType}:{platformEventId}`, or a canonical payload
    * hash when the platform gives no id.
    */
-  @Column({ type: 'varchar', length: 200 })
+  @Column({ type: 'varchar', length: 500 })
   dedupKey!: string;
 
   /** Ties every row in one logical flow together. */

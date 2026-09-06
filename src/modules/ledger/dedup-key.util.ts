@@ -12,12 +12,33 @@ import type { InboundEventType, OutboundEventType, Platform } from '@/shared/enu
  * product, because a customer comments while the initial sync is still walking
  * that post.
  */
+/**
+ * The column is finite and platform ids are not.
+ *
+ * An Instagram message id is about 170 characters, so
+ * `instagram:direct_message:<mid>` already sat at 196 of the 200 available —
+ * four to spare, and nothing said so. Adding a verb to distinguish a reaction
+ * from the message it is about pushed every one of those events over, and the
+ * insert failed while the webhook still answered 200: reactions, unsends and
+ * read receipts were accepted from Meta and quietly dropped.
+ *
+ * Past this length the identity is hashed rather than truncated. Truncating
+ * would silently merge two different events whose ids share a prefix, which is
+ * exactly what Instagram's ids do — they differ in the last few characters.
+ */
+const MAX_IDENTITY_CHARS = 400;
+
+function boundIdentity(identity: string): string {
+  if (identity.length <= MAX_IDENTITY_CHARS) return identity;
+  return `h:${createHash('sha256').update(identity).digest('hex')}`;
+}
+
 export function inboundDedupKey(
   platform: Platform,
   eventType: InboundEventType,
   platformEventId: string,
 ): string {
-  return `${platform}:${eventType}:${platformEventId}`;
+  return `${platform}:${eventType}:${boundIdentity(platformEventId)}`;
 }
 
 /**

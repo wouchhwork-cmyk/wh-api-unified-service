@@ -412,6 +412,16 @@ export class DirectMessageProjectorService {
       return { projected: false, reason: 'our own message names no recipient' };
     }
 
+    /*
+     * NOT US. On an echo the recipient is the customer, and an event naming the
+     * business on both sides describes no conversation at all — it opened a
+     * thread keyed on our own account id with a nameless customer that was us.
+     * Refused rather than stored, because there is no thread this belongs to.
+     */
+    if (customerScopedId === event.sender?.id) {
+      return { projected: false, reason: 'our own message names us as its recipient' };
+    }
+
     const identifierKind =
       platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId

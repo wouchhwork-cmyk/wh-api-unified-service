@@ -833,6 +833,19 @@ export class BackfillWorker extends BasePoller {
      * the only place Meta gives one, and a message carries just an id. Built
      * once per thread rather than per message.
      */
+    /*
+     * WHO THE THREAD IS WITH. On our own messages the sender is the business,
+     * so the customer can only be found among the participants — and without
+     * it the synthesized recipient was the business too, which made
+     * projectOwnMessage open a conversation keyed on our own account id, with
+     * a nameless customer that was us. Observed: four recovered replies landed
+     * in a thread called dm:<our own IG id>.
+     */
+    let counterpartId: string | null = null;
+    for (const participant of conversation.participants?.data ?? []) {
+      if (participant.id && participant.id !== selfPlatformId) counterpartId = participant.id;
+    }
+
     const namesById = new Map<string, string>();
     /*
      * Handles are carried on the EVENT for the same reason names are, and it
@@ -978,7 +991,10 @@ export class BackfillWorker extends BasePoller {
           // Instagram only; Facebook's participants edge exposes no handle.
           ...(senderHandle ? { username: senderHandle } : {}),
         },
-        recipient: { id: selfPlatformId },
+        // The OTHER side. On an inbound message that is us; on one of ours it is
+        // the customer, and saying "us" there loses the only clue to whose
+        // thread this is.
+        recipient: { id: isEcho ? (counterpartId ?? selfPlatformId) : selfPlatformId },
         /*
          * Marks this as RECONSTRUCTED rather than delivered. It matters for one
          * decision: a live echo of our own message must be ignored, because the

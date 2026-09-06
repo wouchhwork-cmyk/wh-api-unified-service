@@ -5,6 +5,7 @@ import { ENTITIES } from './entities';
 import { InitialSchema1756000000000 } from './migrations/1756000000000-InitialSchema';
 import { ConversationResync1757000000000 } from './migrations/1757000000000-ConversationResync';
 import { RepairConversationCounts1757100000000 } from './migrations/1757100000000-RepairConversationCounts';
+import { WidenDedupKey1757200000000 } from './migrations/1757200000000-WidenDedupKey';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -55,6 +56,7 @@ export function buildDataSourceOptions(
       InitialSchema1756000000000,
       ConversationResync1757000000000,
       RepairConversationCounts1757100000000,
+      WidenDedupKey1757200000000,
     ],
     migrationsTableName: 'schema_migrations',
 
