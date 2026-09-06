@@ -43,12 +43,29 @@ interface MessagingEvent {
   readonly recipient?: { readonly id?: string };
   /** Set only by the backfill: this event was reconstructed, not delivered. */
   readonly recovered?: boolean;
+  /**
+   * The customer put an emoji on one of our messages, or took it off.
+   * `reaction` is Meta's name for it ("love"), `emoji` the character.
+   */
+  readonly reaction?: {
+    readonly mid?: string;
+    readonly action?: 'react' | 'unreact';
+    readonly reaction?: string;
+    readonly emoji?: string;
+  };
+  /**
+   * The customer has SEEN a message. Instagram names the message; Messenger
+   * sends a watermark instead, which is why only `mid` is read here.
+   */
+  readonly read?: { readonly mid?: string };
   readonly timestamp?: number;
   readonly message?: {
     readonly mid?: string;
     readonly text?: string;
     readonly is_echo?: boolean;
     readonly is_unsupported?: boolean;
+    /** The customer unsent it. The row stays; the marker records what happened. */
+    readonly is_deleted?: boolean;
     readonly attachments?: readonly PlatformAttachment[];
     /**
      * What this message answers. `mid` is another message of ours; `story` is
@@ -103,6 +120,17 @@ export class DirectMessageProjectorService {
 
     if (event.message_edit?.mid) {
       return this.handleMessageEdit(enterpriseId, channelId, event);
+    }
+
+    /*
+     * Three events that are ABOUT a message rather than being one. Each names a
+     * mid, so without these branches they fall through to the projection path
+     * below and an unsend in particular would be stored as a new empty message.
+     */
+    if (event.reaction?.mid) return this.handleReaction(enterpriseId, event);
+    if (event.read?.mid) return this.handleRead(enterpriseId, event);
+    if (message?.mid && message.is_deleted === true) {
+      return this.handleUnsend(enterpriseId, message.mid, event);
     }
 
     if (!message?.mid) return { projected: false, reason: 'the event carries no message id' };
@@ -463,6 +491,91 @@ export class DirectMessageProjectorService {
 
       return { projected: true };
     });
+  }
+
+  /**
+   * An emoji put on one of our messages, or taken off.
+   *
+   * Not projected as a message: it is a property OF one, and a thread that
+   * showed "❤️" as its own line would misrepresent the conversation.
+   */
+  private async handleReaction(
+    enterpriseId: number,
+    event: MessagingEvent,
+  ): Promise<ProjectionOutcome> {
+    const mid = event.reaction?.mid;
+    if (!mid) return { projected: false, reason: 'the reaction names no message' };
+
+    const removing = event.reaction?.action === 'unreact';
+    const applied = await this.messages.applyReaction(
+      enterpriseId,
+      mid,
+      removing
+        ? null
+        : {
+            emoji: event.reaction?.emoji ?? null,
+            name: event.reaction?.reaction ?? null,
+            at: event.timestamp ? new Date(event.timestamp) : new Date(),
+          },
+    );
+
+    /*
+     * Not an error when we do not hold it. Instagram will return only the
+     * twenty most recent messages of a thread, so a reaction to something older
+     * has nothing here to attach to and never will.
+     */
+    if (!applied) {
+      return { projected: false, reason: 'a reaction to a message we do not hold' };
+    }
+    return { projected: false, reason: removing ? 'a reaction removed' : 'a reaction recorded' };
+  }
+
+  /**
+   * The customer has read one of our messages.
+   */
+  private async handleRead(
+    enterpriseId: number,
+    event: MessagingEvent,
+  ): Promise<ProjectionOutcome> {
+    const mid = event.read?.mid;
+    if (!mid) return { projected: false, reason: 'the read receipt names no message' };
+
+    const marked = await this.messages.markSeenByCustomer(
+      enterpriseId,
+      mid,
+      event.timestamp ? new Date(event.timestamp) : new Date(),
+    );
+    return {
+      projected: false,
+      reason: marked > 0 ? `${marked} message(s) marked as seen` : 'a read receipt we cannot place',
+    };
+  }
+
+  /**
+   * The customer unsent a message.
+   *
+   * THE ROW IS KEPT AND STAYS VISIBLE, with the body intact. Erasing it would
+   * change a conversation the business is accountable for underneath whoever
+   * handled it — somebody can unsend an insult or a commitment, and the record
+   * of what was actually said would silently differ from what happened. The
+   * marker says the platform no longer shows it.
+   */
+  private async handleUnsend(
+    enterpriseId: number,
+    mid: string,
+    event: MessagingEvent,
+  ): Promise<ProjectionOutcome> {
+    const marked = await this.messages.markDeletedOnPlatform(
+      enterpriseId,
+      mid,
+      event.timestamp ? new Date(event.timestamp) : new Date(),
+    );
+    return {
+      projected: false,
+      reason: marked
+        ? 'the customer unsent this message; the record is kept'
+        : 'an unsend for a message we do not hold',
+    };
   }
 
   private async handleMessageEdit(

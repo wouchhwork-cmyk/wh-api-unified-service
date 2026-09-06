@@ -355,6 +355,21 @@ function toMessage(
      * offering a control that can only fail is worse than offering none.
      */
     canBeRepliedTo: row.canBeRepliedTo,
+    /*
+     * The customer unsent it on Instagram. The body is still here on purpose —
+     * the business is accountable for the conversation, and a record that
+     * rewrites itself when somebody deletes a message is not a record. The
+     * client shows it with a marker rather than hiding it.
+     */
+    deletedOnPlatform: row.platformDeletedAt !== null,
+    deletedOnPlatformAt: row.platformDeletedAt,
+    /** The customer's emoji on this message, when they put one there. */
+    reaction:
+      typeof row.metadata.reaction === 'object' && row.metadata.reaction !== null
+        ? row.metadata.reaction
+        : null,
+    /** When the customer read it. Outbound only; null until they do. */
+    seenAt: typeof row.metadata.seenAt === 'string' ? row.metadata.seenAt : null,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
     /*

@@ -404,15 +404,19 @@ describe('the shared inbox', () => {
       'body',
       'canBeRepliedTo',
       'createdAt',
+      'deletedOnPlatform',
+      'deletedOnPlatformAt',
       'direction',
       'isInternalNote',
       'isRead',
       'messageKind',
       'platformSentAt',
+      'reaction',
       'refId',
       // Added when Instagram replies started being threaded: null unless the
       // customer answered one specific message.
       'replyTo',
+      'seenAt',
       'sentBy',
       'status',
     ]);

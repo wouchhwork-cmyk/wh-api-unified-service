@@ -8,6 +8,7 @@ import { RequestContext } from '@/shared/context';
 import { InboundEventType, Platform, SourceKind } from '@/shared/enums';
 import { inboundDedupKey, inboundDedupKeyFromPayload } from '@/modules/ledger/dedup-key.util';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { extractId, extractMessageId, extractMessagingVerb, readItem } from './messaging-event';
 import { resolveWebhookVerifyToken } from './webhook-verify-token';
 
 interface WebhookEntry {
@@ -243,12 +244,17 @@ export class MetaWebhookService {
       items.push({
         eventType: InboundEventType.DirectMessage,
         platformEventId,
-        // A message id already identifies one event; there is no verb.
+        /*
+         * The verb matters here. A message id alone identifies the MESSAGE, and
+         * a reaction, a read receipt, an edit and an unsend all name the same
+         * id — so without it every one of them collided with the message it was
+         * about and was dropped as a duplicate.
+         */
         dedupKey: composeDedupKey(
           platform,
           InboundEventType.DirectMessage,
           platformEventId,
-          null,
+          extractMessagingVerb(message),
           message,
         ),
         payload: message,
@@ -303,7 +309,7 @@ function mapChangeField(field: string | undefined, value: unknown): InboundEvent
  * so keying on the id alone made every event after the first collide and be
  * discarded. The verb is therefore part of the key.
  */
-function composeDedupKey(
+export function composeDedupKey(
   platform: Platform,
   eventType: InboundEventType,
   platformEventId: string | null,
@@ -324,30 +330,4 @@ function extractVerb(value: unknown): string | null {
   if (typeof value !== 'object' || value === null) return null;
   const verb = (value as Record<string, unknown>).verb;
   return typeof verb === 'string' && verb ? verb : null;
-}
-
-/** Facebook's feed discriminator: comment, status, photo, video, share, like. */
-function readItem(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const item = (value as { item?: unknown }).item;
-  return typeof item === 'string' ? item : null;
-}
-
-function extractId(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const record = value as Record<string, unknown>;
-  for (const key of ['comment_id', 'post_id', 'media_id', 'id']) {
-    const candidate = record[key];
-    if (typeof candidate === 'string' && candidate) return candidate;
-  }
-  return null;
-}
-
-function extractMessageId(message: Record<string, unknown>): string | null {
-  const inner = message.message;
-  if (typeof inner === 'object' && inner !== null) {
-    const mid = (inner as Record<string, unknown>).mid;
-    if (typeof mid === 'string' && mid) return mid;
-  }
-  return null;
 }

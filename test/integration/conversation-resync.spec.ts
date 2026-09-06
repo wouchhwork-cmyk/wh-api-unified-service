@@ -683,4 +683,178 @@ describe('conversation resync jobs', () => {
     );
     expect(stored[0]?.count).toBe(0);
   });
+
+  describe('events about a message rather than being one', () => {
+    let projector: DirectMessageProjectorService;
+    let messages: MessageRepository;
+
+    beforeEach(async () => {
+      messages = new MessageRepository(db);
+      projector = new DirectMessageProjectorService(
+        new CustomerRepository(db),
+        new ConversationRepository(db),
+        messages,
+        new MessageAttachmentRepository(db),
+        syncJobs,
+        new TransactionManager(db, silentLogger()),
+        silentLogger(),
+      );
+    });
+
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    const seedMessage = async (mid: string, key: string): Promise<void> => {
+      await projector.project(enterpriseId, channelId, Platform.Instagram, await event(key), {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682400000,
+        message: { mid, text: 'the original' },
+      });
+    };
+
+    it('records a reaction on the message, not as a message', async () => {
+      await seedMessage('REACTED_MID', 'a');
+
+      const outcome = await projector.project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await event('b'),
+        {
+          sender: { id: ALICE },
+          recipient: { id: 'IG_1' },
+          timestamp: 1788682500000,
+          reaction: {
+            mid: 'REACTED_MID',
+            action: 'react',
+            reaction: 'love',
+            emoji: '\u2764\ufe0f',
+          },
+        },
+      );
+      // Not projected: a thread showing the emoji as its own line would
+      // misrepresent the conversation.
+      expect(outcome.projected).toBe(false);
+
+      const rows: { metadata: Record<string, unknown>; count: number }[] = await db.query(
+        `SELECT metadata, (SELECT count(*)::int FROM messages) AS count
+           FROM messages WHERE platform_message_id = 'REACTED_MID'`,
+      );
+      expect(rows[0]?.count).toBe(1);
+      expect(rows[0]?.metadata.reaction).toMatchObject({ name: 'love' });
+    });
+
+    it('removes a reaction on unreact', async () => {
+      await seedMessage('UNREACT_MID', 'c');
+      const react = { mid: 'UNREACT_MID', action: 'react' as const, reaction: 'love' };
+      await projector.project(enterpriseId, channelId, Platform.Instagram, await event('d'), {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682500000,
+        reaction: react,
+      });
+      await projector.project(enterpriseId, channelId, Platform.Instagram, await event('e'), {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682600000,
+        reaction: { mid: 'UNREACT_MID', action: 'unreact' },
+      });
+
+      const rows: { metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT metadata FROM messages WHERE platform_message_id = 'UNREACT_MID'`,
+      );
+      expect(rows[0]?.metadata.reaction).toBeUndefined();
+    });
+
+    it('KEEPS an unsent message, and marks what happened', async () => {
+      /*
+       * The point of the whole feature. Erasing it would change a conversation
+       * the business is accountable for underneath whoever handled it — someone
+       * can unsend an insult or a commitment and the record would silently stop
+       * matching what was said.
+       */
+      await seedMessage('UNSENT_MID', 'f');
+
+      await projector.project(enterpriseId, channelId, Platform.Instagram, await event('g'), {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682700000,
+        message: { mid: 'UNSENT_MID', is_deleted: true },
+      });
+
+      const rows: { body: string | null; platform_deleted_at: Date | null; is_deleted: boolean }[] =
+        await db.query(
+          `SELECT body, platform_deleted_at, is_deleted FROM messages
+            WHERE platform_message_id = 'UNSENT_MID'`,
+        );
+      expect(rows[0]?.body).toBe('the original');
+      expect(rows[0]?.platform_deleted_at).not.toBeNull();
+      // Our own soft-delete means "removed from this product" and must not move.
+      expect(rows[0]?.is_deleted).toBe(false);
+    });
+
+    it('does not store an unsend as a new empty message', async () => {
+      // It arrives as a `message` with a mid, so without its own branch it
+      // would fall through and be projected as a blank line.
+      await projector.project(enterpriseId, channelId, Platform.Instagram, await event('h'), {
+        sender: { id: ALICE },
+        recipient: { id: 'IG_1' },
+        timestamp: 1788682700000,
+        message: { mid: 'GHOST_MID', is_deleted: true },
+      });
+
+      const rows: { count: number }[] = await db.query(
+        `SELECT count(*)::int FROM messages WHERE platform_message_id = 'GHOST_MID'`,
+      );
+      expect(rows[0]?.count).toBe(0);
+    });
+
+    it('marks a read receipt against every earlier message we sent', async () => {
+      /*
+       * Instagram names ONE message. A receipt for a later one means the
+       * earlier ones were seen too, and marking only the named message would
+       * show message five read while one to four are not.
+       */
+      const customer: { id: string }[] = await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+         VALUES ($1,'seen tester','instagram_dm',$2) RETURNING id`,
+        [enterpriseId, channelId],
+      );
+      const conversation: { id: string }[] = await db.query(
+        `INSERT INTO conversations
+           (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+            platform_thread_id, status)
+         VALUES ($1,$2,$3,'instagram','direct_message','dm:seen','open') RETURNING id`,
+        [enterpriseId, channelId, customer[0]?.id],
+      );
+
+      await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, platform_message_id, message_kind, body,
+            platform_sent_at, status, is_read)
+         VALUES ($1,$2,'outbound','OUT_1','text','first', now() - interval '2 min','delivered',true),
+                ($1,$2,'outbound','OUT_2','text','second', now() - interval '1 min','delivered',true),
+                ($1,$2,'inbound','IN_1','text','theirs', now() - interval '90 sec','delivered',false)`,
+        [enterpriseId, conversation[0]?.id],
+      );
+
+      const marked = await messages.markSeenByCustomer(enterpriseId, 'OUT_2', new Date());
+      // Both of ours, and NOT the customer's own message — a read receipt is
+      // about what they read, not what they wrote.
+      expect(marked).toBe(2);
+
+      const theirs: { metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT metadata FROM messages WHERE platform_message_id = 'IN_1'`,
+      );
+      expect(theirs[0]?.metadata.seenAt).toBeUndefined();
+    });
+  });
 });

@@ -67,6 +67,11 @@ export interface MessageRow {
    * here and neither has an id Meta would recognise.
    */
   readonly canBeRepliedTo: boolean;
+  /**
+   * When the customer unsent it. The row and its body are KEPT — this says the
+   * platform no longer shows it, not that we have forgotten it.
+   */
+  readonly platformDeletedAt: Date | null;
   readonly parentRefId: string | null;
   readonly parentExcerpt: string | null;
   /** Whether the answered message was ours or theirs. */
@@ -131,6 +136,109 @@ export class MessageRepository extends BaseRepository {
     );
     const row = rows[0];
     return row ? { id: row.id, refId: row.ref_id } : null;
+  }
+
+  /**
+   * Records the customer's reaction to a message, or removes it.
+   *
+   * On the MESSAGE's metadata rather than in a table of its own: Instagram
+   * allows one reaction per participant per message and a business thread has
+   * one participant, so there is exactly one to hold. A table would be a join
+   * on every thread read for a single emoji.
+   *
+   * Returns false when we do not hold the message — a reaction to something
+   * older than the twenty Meta will return, which is not an error.
+   */
+  async applyReaction(
+    enterpriseId: number,
+    platformMessageId: string,
+    reaction: { emoji: string | null; name: string | null; at: Date } | null,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE messages
+          SET metadata = CASE
+                WHEN $3::jsonb IS NULL THEN metadata - 'reaction'
+                ELSE metadata || jsonb_build_object('reaction', $3::jsonb)
+              END,
+              updated_at = now()
+        WHERE enterprise_id = $1 AND platform_message_id = $2 AND is_deleted = false`,
+      [
+        this.requireEnterprise(enterpriseId),
+        platformMessageId,
+        reaction === null
+          ? null
+          : JSON.stringify({
+              emoji: reaction.emoji,
+              name: reaction.name,
+              at: reaction.at.toISOString(),
+            }),
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Marks a message the customer removed on the platform.
+   *
+   * THE ROW IS KEPT AND STAYS VISIBLE. Deleting it would erase a conversation
+   * the business is accountable for — a customer can unsend an insult or a
+   * commitment and the record of the exchange would silently change underneath
+   * whoever handled it. `platform_deleted_at` says what happened; the client
+   * shows it with the body intact and a marker.
+   *
+   * is_deleted, our own soft-delete flag, is deliberately NOT touched: that one
+   * means "removed from this product", and this is not that.
+   */
+  async markDeletedOnPlatform(
+    enterpriseId: number,
+    platformMessageId: string,
+    deletedAt: Date,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE messages
+          SET platform_deleted_at = COALESCE(platform_deleted_at, $3), updated_at = now()
+        WHERE enterprise_id = $1 AND platform_message_id = $2 AND is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), platformMessageId, deletedAt],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Records that the customer has SEEN one of our messages.
+   *
+   * Instagram names the message rather than sending a watermark, so this marks
+   * the one it names and every earlier outbound message in the same thread —
+   * a read receipt for a later message means the ones before it were seen too,
+   * and leaving them unmarked would show a thread where message five is read
+   * and messages one to four are not.
+   */
+  async markSeenByCustomer(
+    enterpriseId: number,
+    platformMessageId: string,
+    seenAt: Date,
+  ): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE messages m
+          SET metadata = m.metadata || jsonb_build_object('seenAt', $3::text),
+              updated_at = now()
+         FROM messages target
+        WHERE target.enterprise_id = $1
+          AND target.platform_message_id = $2
+          AND m.enterprise_id = target.enterprise_id
+          AND m.conversation_id = target.conversation_id
+          AND m.direction = $4
+          AND m.is_deleted = false
+          AND NOT (m.metadata ? 'seenAt')
+          AND COALESCE(m.platform_sent_at, m.created_at)
+              <= COALESCE(target.platform_sent_at, target.created_at)`,
+      [
+        this.requireEnterprise(enterpriseId),
+        platformMessageId,
+        seenAt.toISOString(),
+        MessageDirection.Outbound,
+      ],
+    );
+    return affected;
   }
 
   /**
@@ -428,6 +536,7 @@ export class MessageRepository extends BaseRepository {
               m.has_attachments AS "hasAttachments",
               (m.platform_message_id IS NOT NULL AND m.is_internal_note = false)
                 AS "canBeRepliedTo",
+              m.platform_deleted_at AS "platformDeletedAt",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
               se.ref_id AS "sentByRefId",
