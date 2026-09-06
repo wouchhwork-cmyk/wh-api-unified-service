@@ -127,6 +127,64 @@ export class MessageRepository extends BaseRepository {
   }
 
   /**
+   * Records a message WE sent that this system never saw being sent.
+   *
+   * A reply typed in the Instagram app rather than in the portal exists only on
+   * the platform: no outbound_events row, no message row, nothing. Recovering a
+   * thread and discarding those left the inbox showing one side of a
+   * conversation — sixteen customer messages and none of the answers, which
+   * reads as a monologue and makes every "replying to you" unresolvable.
+   *
+   * sent_by_employee_id is NULL and that is the honest answer: the platform
+   * does not say which colleague typed it, and attributing it to somebody would
+   * be an invention. Delivered and already read, because both are true — the
+   * platform has it and it came from this business.
+   *
+   * ON CONFLICT DO NOTHING against messages_platform_uniq: a reply sent through
+   * the portal already has this row once the relay stamped its platform id, and
+   * a recovery must not produce a second copy of it.
+   */
+  async insertRecoveredOutbound(input: {
+    enterpriseId: number;
+    conversationId: number;
+    customerId: number | null;
+    inboundEventId: number;
+    platformMessageId: string;
+    messageKind: MessageKind;
+    body: string | null;
+    platformSentAt: Date | null;
+    hasAttachments?: boolean;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ id: number; refId: string } | null> {
+    const { rows } = await this.mutate<{ id: number; ref_id: string }>(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, direction, customer_id, inbound_event_id,
+          platform_message_id, message_kind, body, platform_sent_at, status,
+          is_read, has_attachments, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12::jsonb)
+       ON CONFLICT (enterprise_id, platform_message_id) WHERE platform_message_id IS NOT NULL
+       DO NOTHING
+       RETURNING id, ref_id`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.conversationId,
+        MessageDirection.Outbound,
+        input.customerId,
+        input.inboundEventId,
+        input.platformMessageId,
+        input.messageKind,
+        input.body,
+        input.platformSentAt,
+        MessageStatus.Delivered,
+        input.hasAttachments ?? false,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    const row = rows[0];
+    return row ? { id: row.id, refId: row.ref_id } : null;
+  }
+
+  /**
    * Links replies that were stored before the message they answer.
    *
    * ORDER IS NOT GUARANTEED and cannot be. Meta returns a thread NEWEST FIRST,

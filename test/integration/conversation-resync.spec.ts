@@ -572,4 +572,115 @@ describe('conversation resync jobs', () => {
     );
     expect(theirs[0]?.parent_message_id).toBeNull();
   });
+
+  it('stores a reply we sent from the Instagram app, and links what answered it', async () => {
+    /*
+     * The recovery used to discard anything from our own account as "an echo of
+     * our own outbound message". True for a LIVE echo — the reply flow already
+     * wrote that row — but a reply typed in the Instagram app was never
+     * recorded here at all, so discarding it left the inbox showing one side of
+     * the conversation and made every "replying to you" unresolvable.
+     */
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const event = async (key: string): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `INSERT INTO inbound_events
+           (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+         VALUES ($1,$2,'backfill','instagram','direct_message',$3,'{}') RETURNING id`,
+        [enterpriseId, channelId, key],
+      );
+      return Number(rows[0]?.id);
+    };
+
+    // The customer's reply arrives first, answering something we sent.
+    await projector.project(enterpriseId, channelId, Platform.Instagram, await event('r'), {
+      sender: { id: ALICE },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682501255,
+      message: {
+        mid: 'THEIR_REPLY',
+        text: 'Reply',
+        reply_to: { mid: 'OUR_MID', is_self_reply: false },
+      },
+    });
+
+    // Then our own message, recovered from the platform.
+    const outcome = await projector.project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      await event('o'),
+      {
+        sender: { id: 'IG_1' },
+        recipient: { id: ALICE },
+        recovered: true,
+        timestamp: 1788682400000,
+        message: { mid: 'OUR_MID', text: 'tell me man', is_echo: true },
+      },
+    );
+    expect(outcome.projected).toBe(true);
+
+    const ours: { direction: string; sent_by_employee_id: number | null; status: string }[] =
+      await db.query(
+        `SELECT direction, sent_by_employee_id, status FROM messages
+          WHERE platform_message_id = 'OUR_MID'`,
+      );
+    expect(ours[0]?.direction).toBe('outbound');
+    // Nobody typed it HERE, and naming a colleague would be an invention.
+    expect(ours[0]?.sent_by_employee_id).toBeNull();
+
+    // And the reply that was waiting on it now points at it.
+    const linked: { body: string | null }[] = await db.query(
+      `SELECT p.body FROM messages m JOIN messages p ON p.id = m.parent_message_id
+        WHERE m.platform_message_id = 'THEIR_REPLY'`,
+    );
+    expect(linked[0]?.body).toBe('tell me man');
+  });
+
+  it('still ignores a live echo, which the reply flow already recorded', async () => {
+    // Without the `recovered` marker this is Meta handing back a message the
+    // portal just sent; projecting it would duplicate the row.
+    const projector = new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','live-echo','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+
+    const outcome = await projector.project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      Number(rows[0]?.id),
+      {
+        sender: { id: 'IG_1' },
+        recipient: { id: ALICE },
+        timestamp: 1788682400000,
+        message: { mid: 'LIVE_ECHO', text: 'sent from the portal', is_echo: true },
+      },
+    );
+
+    expect(outcome.projected).toBe(false);
+    const stored: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM messages WHERE platform_message_id = 'LIVE_ECHO'`,
+    );
+    expect(stored[0]?.count).toBe(0);
+  });
 });

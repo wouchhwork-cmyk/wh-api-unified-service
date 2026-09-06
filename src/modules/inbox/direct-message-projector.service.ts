@@ -41,6 +41,8 @@ interface MessagingEvent {
     readonly username?: string;
   };
   readonly recipient?: { readonly id?: string };
+  /** Set only by the backfill: this event was reconstructed, not delivered. */
+  readonly recovered?: boolean;
   readonly timestamp?: number;
   readonly message?: {
     readonly mid?: string;
@@ -113,7 +115,20 @@ export class DirectMessageProjectorService {
      * created, and would attribute our own words to the customer.
      */
     if (message.is_echo === true) {
-      return { projected: false, reason: 'an echo of our own outbound message' };
+      /*
+       * A LIVE echo is Meta handing our own send back to us, and the reply flow
+       * already wrote that row — projecting it would duplicate the message and
+       * attribute our words to the customer.
+       *
+       * A RECOVERED one is the opposite: a reply typed in the Instagram app
+       * rather than the portal exists only on the platform, so this is the only
+       * copy there will ever be. Discarding it left the inbox showing one side
+       * of a conversation.
+       */
+      if (event.recovered !== true) {
+        return { projected: false, reason: 'an echo of our own outbound message' };
+      }
+      return this.projectOwnMessage(enterpriseId, channelId, platform, inboundEventId, event);
     }
 
     const senderId = event.sender?.id;
@@ -346,6 +361,110 @@ export class DirectMessageProjectorService {
    * enqueueIfAbsent dedups on (channel, kind, target), so a burst of edits for
    * one person queues one job.
    */
+  /**
+   * Stores a message the BUSINESS sent, recovered from the platform.
+   *
+   * The mirror image of the inbound path: on an echo the sender is us and the
+   * recipient is the customer, so the thread is keyed on `recipient.id`. The
+   * customer is resolved rather than created where possible — a thread we are
+   * recovering almost always has one already.
+   */
+  private async projectOwnMessage(
+    enterpriseId: number,
+    channelId: number,
+    platform: Platform,
+    inboundEventId: number,
+    event: MessagingEvent,
+  ): Promise<ProjectionOutcome> {
+    const message = event.message;
+    const platformMessageId = message?.mid;
+    if (!platformMessageId) return { projected: false, reason: 'the event carries no message id' };
+
+    const customerScopedId = event.recipient?.id;
+    if (!customerScopedId) {
+      return { projected: false, reason: 'our own message names no recipient' };
+    }
+
+    const identifierKind =
+      platform === Platform.Instagram
+        ? IdentifierKind.InstagramUserId
+        : IdentifierKind.FacebookUserId;
+
+    const media = normalizeAttachments(message?.attachments);
+
+    return this.tx.runInTransaction(async () => {
+      const customer = await this.customers.resolveOrCreate({
+        enterpriseId,
+        identifierKind,
+        identifierValue: customerScopedId,
+        identifierValueRaw: customerScopedId,
+        displayName: null,
+        firstSource:
+          platform === Platform.Instagram
+            ? CustomerFirstSource.InstagramDm
+            : CustomerFirstSource.FacebookDm,
+        firstChannelId: channelId,
+        source: IdentifierSource.Platform,
+        verificationStatus: IdentifierVerificationStatus.Verified,
+      });
+
+      const conversation = await this.conversations.upsert({
+        enterpriseId,
+        channelId,
+        customerId: customer.customerId,
+        customerIdentifierId: customer.identifierId,
+        postId: null,
+        platform,
+        conversationKind: ConversationKind.DirectMessage,
+        platformThreadId: composeThreadKey(ConversationKind.DirectMessage, customerScopedId),
+        subject: null,
+      });
+
+      const inserted = await this.messages.insertRecoveredOutbound({
+        enterpriseId,
+        conversationId: conversation.id,
+        customerId: customer.customerId,
+        inboundEventId,
+        platformMessageId,
+        messageKind: media.messageKind,
+        body: message?.text ?? null,
+        platformSentAt: event.timestamp ? new Date(event.timestamp) : null,
+        hasAttachments: media.attachments.length > 0,
+        metadata: { recoveredFromPlatform: true },
+      });
+
+      // Already held, because the portal sent it and the relay stamped its id.
+      if (!inserted) return { projected: false, reason: 'our own message was already recorded' };
+
+      if (media.attachments.length > 0) {
+        await this.attachments.insertMany(
+          media.attachments.map((attachment) => ({
+            enterpriseId,
+            messageId: inserted.id,
+            mediaKind: attachment.mediaKind,
+            sourceUrl: attachment.sourceUrl,
+            sortOrder: attachment.sortOrder,
+            metadata: attachment.metadata,
+          })),
+        );
+      }
+
+      // The customer's replies to this message have been waiting for it.
+      await this.messages.adoptOrphanReplies(enterpriseId, inserted.id, platformMessageId);
+
+      await this.conversations.recordMessage({
+        enterpriseId,
+        conversationId: conversation.id,
+        // NOT inbound: this must not move last_inbound_at, which is what the
+        // 24-hour messaging window is measured from.
+        inbound: false,
+        occurredAt: event.timestamp ? new Date(event.timestamp) : new Date(),
+      });
+
+      return { projected: true };
+    });
+  }
+
   private async handleMessageEdit(
     enterpriseId: number,
     channelId: number,

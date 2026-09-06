@@ -979,6 +979,14 @@ export class BackfillWorker extends BasePoller {
           ...(senderHandle ? { username: senderHandle } : {}),
         },
         recipient: { id: selfPlatformId },
+        /*
+         * Marks this as RECONSTRUCTED rather than delivered. It matters for one
+         * decision: a live echo of our own message must be ignored, because the
+         * reply flow already wrote that row — but a recovered one is the only
+         * copy that will ever exist, since a reply typed in the Instagram app
+         * was never recorded here at all.
+         */
+        recovered: true,
         timestamp: toUnixMilliseconds(message.created_time),
         message: {
           mid: message.id,
