@@ -84,15 +84,23 @@ export class InboxController {
     const result = await this.inbox.listInbox(actor.enterpriseId, {
       status: parsed.status ?? null,
       assignedToEmployeeId: mineOnly ? actor.employeeId : null,
+      conversationKind: parsed.kind ?? null,
       limit: size,
       cursor: parsed.cursor ?? null,
     });
 
-    return paginated(result.items.map(toConversationSummary), {
-      limit: size,
-      nextCursor: result.nextCursor,
-      hasMore: result.hasMore,
-    });
+    /*
+     * Wrapped rather than passed by reference: `.map` hands the INDEX as the
+     * second argument, which would arrive where the known-author map belongs.
+     */
+    return paginated(
+      result.items.map((row) => toConversationSummary(row)),
+      {
+        limit: size,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore,
+      },
+    );
   }
 
   /**
@@ -528,8 +536,29 @@ function toMessage(
  * should not have to know which fields Meta silently omits
  * (docs/platform-limitations.md §1.3-1.4).
  */
-function toMentionContext(metadata: Record<string, unknown>): Record<string, unknown> | null {
+/**
+ * `https://www.instagram.com/p/<code>/c/<comment id>/`, or null.
+ *
+ * The permalink already carries the right prefix — `/p/` for a post, `/reel/`
+ * for a reel — so it is extended rather than rebuilt, which is what keeps this
+ * correct for both without a branch.
+ */
+function commentDeepLink(permalink: string | null, commentId: string | null): string | null {
+  if (!permalink || !commentId) return null;
+  return `${permalink.replace(/\/+$/u, '')}/c/${commentId}/`;
+}
+
+type KnownAuthors = ReadonlyMap<string, { authorName: string | null; direction: MessageDirection }>;
+
+const NO_KNOWN_AUTHORS: KnownAuthors = new Map();
+
+function toMentionContext(
+  metadata: Record<string, unknown>,
+  known: KnownAuthors = NO_KNOWN_AUTHORS,
+): Record<string, unknown> | null {
   const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
+  const thisMentionCommentId =
+    typeof metadata.mentionedCommentId === 'string' ? metadata.mentionedCommentId : null;
   const permalink = typeof metadata.postPermalink === 'string' ? metadata.postPermalink : null;
   if (!mediaId && !permalink) return null;
 
@@ -544,13 +573,48 @@ function toMentionContext(metadata: Record<string, unknown>): Record<string, unk
   return {
     mediaId,
     permalink,
+    /*
+     * A DEEP LINK TO THE COMMENT, built rather than given.
+     *
+     * Instagram offers "copy link" on a comment in the app; the Graph API
+     * offers no equivalent field, so this composes the shape Instagram itself
+     * uses: the post permalink plus `/c/<comment id>/`.
+     *
+     * CONSTRUCTED, NOT VERIFIED — and it cannot be, from here. Logged out,
+     * Instagram answers every one of these with a login wall, and it does so
+     * for a nonsense comment id exactly as for a real one, so fetching it
+     * proves nothing either way. What IS true is that Instagram preserves the
+     * `/c/<id>/` path through its own login redirect, which no invented route
+     * would survive.
+     *
+     * Null unless we hold both halves, rather than half a URL.
+     */
+    commentUrl: commentDeepLink(permalink, thisMentionCommentId),
     ownerUsername: asText(metadata.postOwnerUsername) ?? asText(details.ownerUsername),
     caption: asText(details.caption),
     mediaType: asText(details.mediaType),
+    /*
+     * ONE FIELD FOR "SHOW THIS", because the platform uses two and a client
+     * should not have to learn which. A photo answers with media_url and no
+     * thumbnail; a REEL answers with a thumbnail and NO media_url at all — so
+     * reading only media_url left every reel mention with no preview.
+     */
+    previewUrl: asText(details.mediaUrl) ?? asText(details.thumbnailUrl),
     mediaUrl: asText(details.mediaUrl),
+    thumbnailUrl: asText(details.thumbnailUrl),
+    /** `FEED`, `REELS`, `STORY` — lets a client say "Reel" rather than "post". */
+    productType: asText(details.productType),
     postedAt: asText(details.timestamp),
     likeCount: asNumber(details.likeCount),
     commentCount: asNumber(details.commentsCount),
+    /*
+     * Likes on THE MENTION ITSELF, deliberately named apart from `likeCount`
+     * above — one is a post with a million likes, the other a comment with two,
+     * and a client that mixed them up would be wrong by six orders of
+     * magnitude. Null means Meta did not tell us, which is not the same as
+     * nobody having liked it.
+     */
+    mentionLikeCount: asNumber(metadata.mentionLikeCount),
     /*
      * ALWAYS null, and said explicitly rather than omitted. Instagram gives no
      * share or save count for a post we do not own — there is no field for it —
@@ -564,13 +628,106 @@ function toMentionContext(metadata: Record<string, unknown>): Record<string, unk
      * the author on all of them.
      */
     replies: Array.isArray(metadata.replyThread)
-      ? (metadata.replyThread as Record<string, unknown>[]).map((reply) => ({
-          text: asText(reply.text),
-          postedAt: asText(reply.timestamp),
-          likeCount: asNumber(reply.likeCount),
-          /** Never available. Stated so a client does not go looking. */
-          authorUsername: null,
-        }))
+      ? (metadata.replyThread as Record<string, unknown>[]).map((reply) =>
+          toThreadReply(reply, known, thisMentionCommentId),
+        )
+      : [],
+    /*
+     * WHAT THE MENTION WAS ANSWERING, when the tag was inside a reply.
+     *
+     * "tell this guy" is not a message an agent can act on; the comment above
+     * it is most of the meaning. Null when the mention is top-level, and also
+     * when the parent did not mention us — Meta refuses to describe any other
+     * comment, so that is a boundary rather than something we failed to fetch.
+     *
+     * Unlike the replies, the parent DOES carry an author: it mentioned us, and
+     * a comment that mentions us is the one comment Meta will name.
+     */
+    parentComment: toParentComment(
+      metadata.mentionParent,
+      metadata.mentionParentId,
+      known,
+      thisMentionCommentId,
+    ),
+  };
+}
+
+/**
+ * One comment in a mention's surrounding thread.
+ *
+ * Meta omits the author on every one of these (§1.4) — but that is only Meta's
+ * silence, not ours. Several of the comments in a thread are OUR OWN: replies
+ * this business sent, and earlier mentions already stored here with a name
+ * against them. `known` puts those names back, and the rest stay honestly
+ * anonymous.
+ */
+function toThreadReply(
+  reply: Record<string, unknown>,
+  known: KnownAuthors,
+  thisMentionCommentId: string | null,
+): Record<string, unknown> {
+  const platformId = typeof reply.platformId === 'string' ? reply.platformId : null;
+  const match = platformId ? known.get(platformId) : undefined;
+
+  return {
+    text: typeof reply.text === 'string' ? reply.text : null,
+    postedAt: typeof reply.timestamp === 'string' ? reply.timestamp : null,
+    likeCount: typeof reply.likeCount === 'number' ? reply.likeCount : null,
+    /*
+     * Null only when we genuinely do not know. Our own sends are marked as ours
+     * rather than named, because "you" is what an agent needs to see.
+     */
+    authorUsername: match?.authorName ?? null,
+    isOurs: match?.direction === MessageDirection.Outbound,
+    /*
+     * THE MENTION ITSELF APPEARS IN ITS OWN THREAD, because it is a sibling
+     * reply like any other. Rendering it twice — once anonymously here, once as
+     * the message below — read as two different people saying the same thing.
+     */
+    isThisMention: platformId !== null && platformId === thisMentionCommentId,
+  };
+}
+
+/**
+ * THREE STATES, not two — and the third is the one that was being lost.
+ *
+ * A mention is either top-level (no parent at all), a reply to a comment we can
+ * read, or a reply to a comment Meta will not show us. The last happens
+ * whenever somebody tags us under a STRANGER's comment: the mentions edge
+ * refuses it with `(#10) User is not mentioned in the comment`, and the post's
+ * own comment list does not contain it either.
+ *
+ * Returning null for that case made a fragment read as a whole thought — "soo
+ * funny man 😂" presented as if it opened the conversation. So an unreadable
+ * parent is reported AS unreadable, and the client says so.
+ */
+function toParentComment(
+  value: unknown,
+  parentCommentId: unknown,
+  known: KnownAuthors,
+  thisMentionCommentId: string | null,
+): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null) {
+    return typeof parentCommentId === 'string'
+      ? { available: false, text: null, authorUsername: null, postedAt: null, replies: [] }
+      : null;
+  }
+  const parent = value as Record<string, unknown>;
+
+  return {
+    available: true,
+    text: typeof parent.text === 'string' ? parent.text : null,
+    authorUsername: typeof parent.authorUsername === 'string' ? parent.authorUsername : null,
+    postedAt: typeof parent.timestamp === 'string' ? parent.timestamp : null,
+    likeCount: typeof parent.likeCount === 'number' ? parent.likeCount : null,
+    /*
+     * The rest of the thread — the sibling replies our mention sits among.
+     * Anonymous, exactly like the replies under the mention itself.
+     */
+    replies: Array.isArray(parent.replies)
+      ? (parent.replies as Record<string, unknown>[]).map((reply) =>
+          toThreadReply(reply, known, thisMentionCommentId),
+        )
       : [],
   };
 }
@@ -578,6 +735,7 @@ function toMentionContext(metadata: Record<string, unknown>): Record<string, unk
 function toConversationSummary(row: {
   refId: string;
   conversationKind: string;
+  subject: string | null;
   status: string;
   unreadCount: number;
   messageCount: number;
@@ -591,7 +749,9 @@ function toConversationSummary(row: {
   contextMetadata?: Record<string, unknown>;
   assignedToRefId: string | null;
   assignedToName: string | null;
-}): Record<string, unknown> {
+  },
+  known: KnownAuthors = NO_KNOWN_AUTHORS,
+): Record<string, unknown> {
   /*
    * Told to the client, not just enforced on it. A reply box that accepts text
    * and then answers 409 is worse than one that explains up front why it is
@@ -623,7 +783,13 @@ function toConversationSummary(row: {
      * Counts are null rather than 0 when the platform refused them, so a client
      * can say nothing instead of claiming a post has no likes.
      */
-    mentionContext: toMentionContext(row.contextMetadata ?? {}),
+    /*
+     * WHAT THE THREAD IS ABOUT, in the customer's words. For a mention this is
+     * the comment they tagged us in, which is the one thing a list of mentions
+     * has to show — without it every row reads only as a name and a date.
+     */
+    subject: row.subject,
+    mentionContext: toMentionContext(row.contextMetadata ?? {}, known),
     /*
      * Nested rather than flattened, so a client can tell "we have no name for
      * this person" from "there is no person" — a comment thread always has an

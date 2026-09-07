@@ -67,5 +67,12 @@
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**"]
     }
+  ],
+  "compounds": [
+    {
+      "name": "API + Workers · dev",
+      "configurations": ["API · dev", "Workers · dev"],
+      "stopAll": true
+    }
   ]
 }

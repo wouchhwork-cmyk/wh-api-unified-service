@@ -27,6 +27,12 @@ export interface UpsertConversationInput {
 export interface ConversationRow {
   readonly id: number;
   readonly refId: string;
+  /**
+   * A short label for the thread — for a mention or a comment, the customer's
+   * own words, trimmed by the projector. Stored since the beginning and never
+   * selected, so nothing could show what a thread was actually about.
+   */
+  readonly subject: string | null;
   readonly channelId: number;
   readonly customerId: number;
   readonly platform: Platform;
@@ -209,7 +215,7 @@ export class ConversationRepository extends BaseRepository {
       `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
-              cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
@@ -247,6 +253,8 @@ export class ConversationRepository extends BaseRepository {
     enterpriseId: number;
     status: ConversationStatus | null;
     assignedToEmployeeId: number | null;
+    /** Narrow to one kind of thread — mentions, comments, DMs. Null means all. */
+    conversationKind: ConversationKind | null;
     limit: number;
     cursor: { lastMessageAt: Date | null; id: number } | null;
   }): Promise<ConversationRow[]> {
@@ -265,6 +273,15 @@ export class ConversationRepository extends BaseRepository {
     if (input.assignedToEmployeeId !== null) {
       params.push(input.assignedToEmployeeId);
       filters.push(`AND cv.assigned_to_employee_id = $${params.length}`);
+    }
+    /*
+     * Parameterised like every other filter — the value is a validated enum at
+     * the edge, and interpolating it anyway would be the one place in this file
+     * where a query is built from a string.
+     */
+    if (input.conversationKind !== null) {
+      params.push(input.conversationKind);
+      filters.push(`AND cv.conversation_kind = $${params.length}`);
     }
     if (input.cursor) {
       params.push(input.cursor.lastMessageAt, input.cursor.id);
@@ -293,7 +310,7 @@ export class ConversationRepository extends BaseRepository {
       `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
-              cv.platform_thread_id AS "platformThreadId", cv.status,
+              cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",

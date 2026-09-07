@@ -302,6 +302,17 @@ interface InstagramMentionChange {
      */
     readonly mention_media?: Record<string, unknown>;
     readonly mention_replies?: readonly Record<string, unknown>[];
+    /**
+     * The comment our mention was answering, when it was itself a reply.
+     *
+     * A tag inside a reply is a fragment — "tell this guy" means nothing
+     * without the comment above it — so the thread it belongs to is kept.
+     */
+    readonly mention_parent?: Record<string, unknown>;
+    /** That the mention was a reply, even when the parent is unreadable. */
+    readonly mention_parent_id?: string;
+    /** Likes on the mention itself, distinct from likes on the post. */
+    readonly mention_like_count?: number;
   };
 }
 
@@ -367,6 +378,27 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
      * were allowed to read it.
      */
     if (value.mention_replies?.length) metadata.replyThread = value.mention_replies;
+    /*
+     * The thread this mention sits in. Present only when the mention was a
+     * reply AND the comment above it also mentioned us — Meta refuses any other
+     * comment outright (docs/platform-limitations.md §1.7), so its absence is a
+     * boundary rather than a gap in what we asked for.
+     */
+    if (value.mention_parent) metadata.mentionParent = value.mention_parent;
+    /*
+     * Recorded even when `mentionParent` is absent. A tag inside a reply whose
+     * parent we cannot read is still a reply, and the inbox has to be able to
+     * say so instead of showing the fragment as if it opened the conversation.
+     */
+    if (value.mention_parent_id) metadata.mentionParentId = value.mention_parent_id;
+    /*
+     * Zero is a real answer here and must survive: `if (count)` would drop it
+     * and make an unliked mention indistinguishable from one Meta refused to
+     * count for us.
+     */
+    if (typeof value.mention_like_count === 'number') {
+      metadata.mentionLikeCount = value.mention_like_count;
+    }
 
     return {
       comment: {

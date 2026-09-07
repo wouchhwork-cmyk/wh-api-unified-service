@@ -22,6 +22,7 @@ import type {
   GraphMentionedMedia,
   ResolvedMention,
   ResolvedMentionMedia,
+  ResolvedMentionParent,
   ResolvedMentionReply,
   GraphMeResponse,
   GraphTokenResponse,
@@ -529,45 +530,55 @@ export class GraphApiClient {
     accessToken: string,
   ): Promise<ResolvedMention | null> {
     /*
-     * WHY THESE FIELDS AND NOT MORE. Every one below was probed individually
-     * against live traffic; the omissions are deliberate, not oversights:
+     * WHY THESE FIELDS AND NOT MORE. Every one was probed individually against
+     * live traffic; the omissions are deliberate, not oversights:
      *
      *   share_count / saved / video_view_count — do not exist on the media node
      *   shortcode / is_shared_to_feed          — not exposed on others' media
-     *   replies{username} / replies{from}      — silently omitted, always
      *
-     * `timestamp` is in the replies list for a REASON that looks like
-     * superstition and is not: `replies{id,text}` fails with "Please reduce the
-     * amount of data you're asking for" while `replies{id,text,timestamp}`
-     * succeeds. Removing it breaks the call (docs/platform-limitations.md §1.4).
+     * The COMMENT branch builds its own field list in fetchMentionedComment,
+     * which is where the reply thread is asked for and where the rules about it
+     * belong. This list serves the caption branch, which has no comment at all.
      */
     const mediaFields =
-      'id,caption,media_type,media_url,permalink,username,timestamp,like_count,comments_count';
-    const replyFields = 'replies{id,text,timestamp,like_count}';
+      'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
+      'permalink,username,timestamp,like_count,comments_count';
 
     if (target.commentId) {
-      const result = await this.request<{ mentioned_comment?: GraphMentionedComment }>(
-        'GET',
-        instagramUserId,
-        {
-          accessToken,
-          params: {
-            fields: `mentioned_comment.comment_id(${target.commentId}){id,text,timestamp,username,like_count,${replyFields},media{${mediaFields}}}`,
-          },
-        },
-      );
+      /*
+       * A MENTION CAN ITSELF BE A REPLY, and then it has no replies of its own.
+       *
+       * Somebody can tag us in a reply to a comment rather than in a top-level
+       * comment, and asking a reply for `replies` fails the WHOLE query with
+       * `(#100) Field is only available for top-level comments` — so a fat
+       * query that always asked for them lost the entire mention, author and
+       * all, over a field that could never have applied. Observed live: event
+       * 1523, skipped as "carries no author" when Meta was perfectly willing to
+       * describe it.
+       *
+       * So the thread is asked for once and dropped on exactly that error. One
+       * call for a top-level mention, two only for a nested one — rather than
+       * paying for a `parent_id` probe on every mention to learn which it is.
+       */
+      const comment =
+        (await this.fetchMentionedComment(instagramUserId, target.commentId, accessToken, true)) ??
+        (await this.fetchMentionedComment(instagramUserId, target.commentId, accessToken, false));
 
-      const comment = result.mentioned_comment;
       if (!comment?.username) return null;
       return {
         authorUsername: comment.username,
         text: comment.text ?? null,
+        likeCount: numberOrNull(comment.like_count),
         timestamp: comment.timestamp ?? null,
         mediaId: comment.media?.id ?? target.mediaId ?? null,
         permalink: comment.media?.permalink ?? null,
         mediaOwnerUsername: comment.media?.username ?? null,
         media: toResolvedMedia(comment.media, target.mediaId ?? null),
         replies: toResolvedReplies(comment.replies?.data),
+        parentCommentId: comment.parent_id ?? null,
+        parent: comment.parent_id
+          ? await this.fetchMentionThreadParent(instagramUserId, comment.parent_id, accessToken)
+          : null,
       };
     }
 
@@ -591,14 +602,108 @@ export class GraphApiClient {
     return {
       authorUsername: media.username,
       text: media.caption ?? null,
+      // A caption mention has no comment, so nothing can have liked it.
+      likeCount: null,
       timestamp: media.timestamp ?? null,
       mediaId: media.id ?? target.mediaId,
       permalink: media.permalink ?? null,
       mediaOwnerUsername: media.username,
       media: toResolvedMedia(media, target.mediaId),
-      // A caption mention has no comment, so there is no reply thread to read.
+      // A caption mention has no comment, so there is neither a reply thread
+      // nor a parent — it IS the top of everything.
       replies: [],
+      parentCommentId: null,
+      parent: null,
     };
+  }
+
+  /**
+   * One attempt at reading a mention, with or without its reply thread.
+   *
+   * Returns null ONLY for the nested-comment case, so the caller can retry
+   * without the thread. Every other Graph failure is rethrown: a token problem
+   * or a rate limit must not be silently downgraded into "this mention has no
+   * author", which would skip the event and never look at it again.
+   */
+  private async fetchMentionedComment(
+    instagramUserId: string,
+    commentId: string,
+    accessToken: string,
+    withReplies: boolean,
+  ): Promise<GraphMentionedComment | null> {
+    const mediaFields =
+      'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
+      'permalink,username,timestamp,like_count,comments_count';
+    /*
+     * `timestamp` in the replies list looks superstitious and is not:
+     * `replies{id,text}` fails with "Please reduce the amount of data you're
+     * asking for" while `replies{id,text,timestamp}` succeeds
+     * (docs/platform-limitations.md §1.4). Removing it breaks the call.
+     */
+    const replies = withReplies ? 'replies{id,text,timestamp,like_count},' : '';
+
+    try {
+      const result = await this.request<{ mentioned_comment?: GraphMentionedComment }>(
+        'GET',
+        instagramUserId,
+        {
+          accessToken,
+          params: {
+            fields: `mentioned_comment.comment_id(${commentId}){id,text,timestamp,username,like_count,parent_id,${replies}media{${mediaFields}}}`,
+          },
+        },
+      );
+      return result.mentioned_comment ?? null;
+    } catch (error) {
+      const isNestedComment =
+        withReplies &&
+        error instanceof GraphApiError &&
+        error.code === 100 &&
+        error.message.includes('only available for top-level comments');
+
+      if (isNestedComment) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * The comment our mention was replying to, and the rest of that thread.
+   *
+   * A tag inside a reply is close to meaningless on its own — "tell this guy"
+   * needs the comment above it to mean anything — so the parent is fetched to
+   * give the agent the conversation rather than a fragment of it.
+   *
+   * ONLY WORKS WHEN THE PARENT ALSO MENTIONED US. Meta refuses any other
+   * comment with `(#10) User is not mentioned in the comment`, which is a
+   * boundary rather than a fault: that is treated as "no context available" and
+   * the mention is still projected. Every other failure is swallowed too — the
+   * parent is enrichment, and losing it must never cost us the mention itself.
+   */
+  private async fetchMentionThreadParent(
+    instagramUserId: string,
+    parentCommentId: string,
+    accessToken: string,
+  ): Promise<ResolvedMentionParent | null> {
+    try {
+      const parent = await this.fetchMentionedComment(
+        instagramUserId,
+        parentCommentId,
+        accessToken,
+        // A parent is by definition top-level, so its thread is always askable.
+        true,
+      );
+      if (!parent) return null;
+      return {
+        commentId: parent.id ?? parentCommentId,
+        text: parent.text ?? null,
+        authorUsername: parent.username ?? null,
+        timestamp: parent.timestamp ?? null,
+        likeCount: numberOrNull(parent.like_count),
+        replies: toResolvedReplies(parent.replies?.data),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -830,6 +935,13 @@ function toResolvedMedia(
     ownerUsername: media.username ?? null,
     mediaType: media.media_type ?? null,
     mediaUrl: media.media_url ?? null,
+    /*
+     * A REEL RETURNS NO media_url AT ALL — only a thumbnail. Asking for the one
+     * and not the other left every reel mention with no preview whatsoever,
+     * while the field that would have shown it sat one word away.
+     */
+    thumbnailUrl: media.thumbnail_url ?? null,
+    productType: media.media_product_type ?? null,
     timestamp: media.timestamp ?? null,
     likeCount: numberOrNull(media.like_count),
     commentsCount: numberOrNull(media.comments_count),

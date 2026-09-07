@@ -8,6 +8,7 @@ import { RequestContext } from '@/shared/context';
 import { InboundEventType, Platform, SourceKind } from '@/shared/enums';
 import { inboundDedupKey, inboundDedupKeyFromPayload } from '@/modules/ledger/dedup-key.util';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { normalizeEntryTime } from './entry-time';
 import { extractId, extractMessageId, extractMessagingVerb, readItem } from './messaging-event';
 import { resolveWebhookVerifyToken } from './webhook-verify-token';
 
@@ -145,6 +146,16 @@ export class MetaWebhookService {
 
       const items = this.flatten(entry, platform);
 
+      /*
+       * NOT `entry.time * 1000`. Meta sends seconds on a `changes` entry and
+       * milliseconds on a `messaging` one, and multiplying both put 72 DM rows
+       * in the year 58649 and later (docs/platform-limitations.md §8.1). The
+       * helper decides by magnitude, so it stays right for an entry type that
+       * does not exist yet. Once per entry: every item under it shares the
+       * entry's time.
+       */
+      const receivedAt = normalizeEntryTime(entry.time);
+
       // One ledger row per item PER CHANNEL. Two enterprises connected to the
       // same Page each get their own copy, and the dedup key is scoped by
       // enterprise, so the copies do not collide with each other.
@@ -178,7 +189,7 @@ export class MetaWebhookService {
               dedupKey: item.dedupKey,
               correlationId,
               payload: item.payload,
-              receivedAt: entry.time ? new Date(entry.time * 1000) : null,
+              receivedAt,
             });
 
             if (result.duplicate) duplicates += 1;

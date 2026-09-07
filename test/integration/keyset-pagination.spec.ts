@@ -94,6 +94,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
+      conversationKind: null,
         limit: 2,
         cursor: null,
       });
@@ -104,6 +105,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
+      conversationKind: null,
         limit: 2,
         cursor: { lastMessageAt: anchor?.lastMessageAt ?? null, id: anchor?.id ?? 0 },
       });
@@ -122,6 +124,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
+      conversationKind: null,
         limit: 1,
         cursor: null,
       });
@@ -132,6 +135,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
+      conversationKind: null,
         limit: 5,
         cursor: { lastMessageAt: null, id: third },
       });

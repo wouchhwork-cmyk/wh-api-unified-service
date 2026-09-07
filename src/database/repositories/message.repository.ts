@@ -417,6 +417,46 @@ export class MessageRepository extends BaseRepository {
    * a threaded exchange can be drawn the way the customer sees it rather than
    * as a flat list.
    */
+  /**
+   * Who wrote each of these comments, for the ones we already hold.
+   *
+   * A mention's thread comes back from Meta ANONYMOUS — the author is omitted on
+   * every reply (docs/platform-limitations.md §1.4). But some of those replies
+   * are not strangers at all: they are our own sends, and our own mentions,
+   * already stored here with a name against them. Rendering those as "someone"
+   * told an agent we did not know who said something we said ourselves.
+   *
+   * Meta's silence is not a reason to forget what we know.
+   */
+  async findKnownAuthors(
+    enterpriseId: number,
+    platformMessageIds: readonly string[],
+  ): Promise<Map<string, { authorName: string | null; direction: MessageDirection }>> {
+    const known = new Map<string, { authorName: string | null; direction: MessageDirection }>();
+    if (platformMessageIds.length === 0) return known;
+
+    const rows = await this.query<{
+      platformMessageId: string;
+      authorName: string | null;
+      direction: MessageDirection;
+    }>(
+      `SELECT m.platform_message_id AS "platformMessageId",
+              m.direction,
+              CASE WHEN m.direction = 'outbound' THEN NULL ELSE cu.display_name END AS "authorName"
+         FROM messages m
+         LEFT JOIN customers cu ON cu.id = m.customer_id
+        WHERE m.enterprise_id = $1
+          AND m.platform_message_id = ANY($2::text[])
+          AND m.is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), platformMessageIds],
+    );
+
+    for (const row of rows) {
+      known.set(row.platformMessageId, { authorName: row.authorName, direction: row.direction });
+    }
+    return known;
+  }
+
   async findIdByPlatformMessageId(
     enterpriseId: number,
     platformMessageId: string,

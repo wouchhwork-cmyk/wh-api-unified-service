@@ -181,6 +181,34 @@ We do not know the rule. Treat a reply's text as **optional**: render what came
 back and say nothing about the rest, rather than showing an empty bubble.
 Observed on events 1516 and 1517, 6 Sep 2026.
 
+**A comment's own image is NOT retrievable — confirmed on a comment that had
+one.** A mention carrying both text and an uploaded image returned the text and
+nothing else; every candidate field is refused at comment level, where a bad
+field name errors rather than being silently swallowed:
+
+```
+media_url, thumbnail_url, attachment(s), image, photo, media_type,
+sticker, gif, file, asset, preview
+  → (#100) Tried accessing nonexisting field
+```
+
+`(#100) nonexisting field` is **[META]**: no scope and no App Review adds a
+field that does not exist on the object. So a comment that is a photo, a GIF or
+a sticker reaches us as text-or-nothing, and a media-only one as an id and a
+timestamp. This is also why some replies come back with no `text` — there was
+never any text, and the media is unreachable.
+
+### 1.5b A reel answers with a thumbnail and NO media_url
+
+Verified 6–7 Sep 2026. A photo post returns `media_url` and omits
+`thumbnail_url`; a **REEL returns `thumbnail_url` and omits `media_url`
+entirely**. Reading only `media_url` therefore left every reel mention with no
+preview at all, while the field that would have shown one sat one word away.
+
+`media_product_type` distinguishes them (`FEED` vs `REELS`), and both are now
+requested. The API exposes a single `previewUrl` so a client does not have to
+know the rule.
+
 **A misleading error worth knowing:** `comments{id,text}` fails with
 `500 Please reduce the amount of data you're asking for`, while
 `comments{id,text,timestamp}` succeeds. It is a field-combination quirk, **not**
@@ -234,6 +262,33 @@ Documented limits: **mentions on Stories cannot be replied to**, and
 **commenting on a photo you were tagged in is not supported**. Also, no webhook
 is delivered at all when the media belongs to a **private account** — so a
 mention from a private account is invisible from the start. **[META]**
+
+### 1.8 A reply to a mention can never be deleted, or even read back
+
+**Expected:** having authored a comment, we could delete it.
+
+**Actual:** both refused. Verified 8 Sep 2026 against a reply we had just posted
+ourselves (`17967234453157331`, "@_omlokhande"):
+
+```
+GET    /{comment-id}  → 400 Unsupported get request
+DELETE /{comment-id}  → 400 Unsupported delete request
+```
+
+The comment survived; all five replies were still on the thread afterwards.
+
+Meta's rule, quoted: *"A comment can only be deleted by the owner of the object
+upon which the comment was made, even if the user attempting to delete the
+comment is the comment's author."* A mention lives on somebody else's post, so
+only THAT account can remove our reply. **[META]** — `deleteComment` already
+works on comments on our own media, so this is not a missing scope.
+
+**Consequence, and it is worth telling an agent:** a reply to a mention is
+PERMANENT from our side. There is no unsend.
+
+Note the `GET` failing too: our own reply, seconds old, is not addressable by id.
+It is visible only through the mentions edge, inside the parent's `replies` list.
+The mention is the only door, in both directions.
 
 ---
 
@@ -427,18 +482,44 @@ no channel here, all correctly dropped.
 
 ---
 
-## 8. Known-wrong, not yet fixed
+## 8. Known-wrong
 
-- **`entry.time` is milliseconds on a `messaging` entry**, and
-  `meta-webhook.service.ts` multiplies it by 1000 regardless. Seven ledger rows
-  carry a `received_at` in the year **58651**. Since `received_at` orders
-  recovered history against live events, this is not cosmetic.
+### 8.1 `entry.time` has no consistent unit — **[META]**, fixed 8 Sep 2026
 
-  The unit is **not consistent across entry types**: a `changes` entry (mentions,
-  comments) carries `entry.time` in **seconds** and stores correctly — event 1514
-  landed at a sane `2026-09-06 20:37:03`. So the fix has to normalise by
-  magnitude rather than assume one unit, or it will break the entries that
-  currently work.
+**Expected:** one unit for `entry.time`, as the webhook reference implies.
+
+**Actually:** the unit depends on the entry. A `changes` entry (mentions,
+comments) carries **seconds**; a `messaging` entry (Instagram DMs) carries
+**milliseconds**. Meta documents neither, and nothing in the payload labels it.
+
+**Verified:** a DM delivery on 6 Sep 2026 carried `1788705985749`, which is
+`2026-09-06T14:46:25Z` read as milliseconds. Mention event 1514 carried a
+second-epoch and stored correctly as `2026-09-06 20:37:03`.
+
+**What went wrong:** `meta-webhook.service.ts` multiplied every `entry.time` by
+1000. That is right for a `changes` entry, so mentions and comments were fine —
+which is what hid it — and wrong by a factor of a thousand for a `messaging`
+one. **72** ledger rows were left with a `received_at` in the year **58649**
+or later — an earlier note here said seven, which was the count of one
+afternoon's DMs rather than of the table. `received_at` orders recovered history
+against live events, so this was not cosmetic.
+
+**What we do about it:** `normalizeEntryTime` in
+`src/modules/connections/entry-time.ts` decides the unit **by magnitude, not by
+entry type** — a value past the year 2100 read as seconds must be milliseconds,
+and nothing a webhook can deliver falls in the band between the two readings. So
+a third entry type, or a unit Meta changes without saying, needs no new case.
+The same bound rejects the implausible: non-finite, zero, negative and
+absurdly-large values become `null` rather than a Date nobody can order by.
+
+Migration `1757300000000-RepairInboundReceivedAt` repairs the rows already
+stored, dividing the epoch back down and scoped to `received_at > now() +
+interval '1 year'` so it cannot reach a good row. All 72 divide back to an
+instant on 5-6 Sep 2026, so every corrupted row is wrong by exactly this factor
+and none is left behind.
+
+### 8.2 Still not fixed
+
 - **A video `story_mention` is stored as `mediaKind: image`.** The CDN serves it
   as `video/mp4`; it only renders because the client retries a failed image as
   `<video>`.

@@ -167,6 +167,7 @@ describe('conversation assignment and status', () => {
       enterpriseId,
       status: null,
       assignedToEmployeeId: employeeId,
+      conversationKind: null,
       limit: 10,
       cursor: null,
     });

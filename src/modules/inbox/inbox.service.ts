@@ -20,6 +20,7 @@ import {
   AuditAction,
   AuditEntityType,
   ConversationKind,
+  MessageDirection,
   ConversationStatus,
   DestinationKind,
   MessageKind,
@@ -82,6 +83,7 @@ export class InboxService {
     options: {
       status: ConversationStatus | null;
       assignedToEmployeeId: number | null;
+      conversationKind: ConversationKind | null;
       limit: number;
       cursor: string | null;
     },
@@ -91,6 +93,7 @@ export class InboxService {
       enterpriseId,
       status: options.status,
       assignedToEmployeeId: options.assignedToEmployeeId,
+      conversationKind: options.conversationKind,
       // One extra row is the cheapest way to know whether another page exists,
       // without a second COUNT query over the same predicate.
       limit: limit + 1,
@@ -176,6 +179,12 @@ export class InboxService {
     conversation: ConversationRow;
     messages: MessageRow[];
     attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
+    /**
+     * Who wrote the comments in a mention's surrounding thread, for the ones we
+     * already hold. Meta returns that thread anonymous; this is what we can
+     * recover from our own records.
+     */
+    knownAuthors: ReadonlyMap<string, { authorName: string | null; direction: MessageDirection }>;
     nextCursor: string | null;
     hasMore: boolean;
   }> {
@@ -216,10 +225,27 @@ export class InboxService {
       else attachmentsByMessageId.set(row.messageId, [row]);
     }
 
+    /*
+     * PUT THE NAMES BACK ON A MENTION'S THREAD.
+     *
+     * Meta returns the comments around a mention with the author omitted on
+     * every one (docs/platform-limitations.md §1.4) — but several of them are
+     * OURS: replies this business sent, and earlier mentions already stored
+     * here. Rendering those as "someone" told an agent we did not know who said
+     * something we said ourselves.
+     *
+     * One query for the whole thread, and only when there is a thread to name.
+     */
+    const knownAuthors = await this.messages.findKnownAuthors(
+      enterpriseId,
+      threadCommentIds(conversation.contextMetadata ?? {}),
+    );
+
     return {
       conversation,
       messages,
       attachmentsByMessageId,
+      knownAuthors,
       nextCursor:
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,
@@ -599,4 +625,27 @@ function mentionMediaId(contextMetadata: Record<string, unknown>): string | null
 function stripThreadPrefix(platformThreadId: string): string {
   const separator = platformThreadId.indexOf(':');
   return separator === -1 ? platformThreadId : platformThreadId.slice(separator + 1);
+}
+
+/**
+ * Every platform comment id in a mention's stored thread.
+ *
+ * Reads defensively because this is stored JSON shaped by whatever the Mentions
+ * API gave us on the day: a thread that is absent, or an entry with no id, is
+ * ordinary rather than exceptional.
+ */
+function threadCommentIds(contextMetadata: Record<string, unknown>): string[] {
+  const parent = contextMetadata.mentionParent;
+  if (typeof parent !== 'object' || parent === null) return [];
+
+  const replies = (parent as Record<string, unknown>).replies;
+  if (!Array.isArray(replies)) return [];
+
+  return replies
+    .map((reply) =>
+      typeof reply === 'object' && reply !== null
+        ? (reply as Record<string, unknown>).platformId
+        : null,
+    )
+    .filter((id): id is string => typeof id === 'string');
 }

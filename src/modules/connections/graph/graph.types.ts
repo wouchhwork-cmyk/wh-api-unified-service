@@ -298,6 +298,9 @@ export interface GraphMentionedMedia {
   caption?: string;
   media_type?: string;
   media_url?: string;
+  /** A VIDEO or REEL carries this and NO media_url. */
+  thumbnail_url?: string;
+  media_product_type?: string;
   permalink?: string;
   /** The POST OWNER's handle, which may be an account we do not manage. */
   username?: string;
@@ -315,6 +318,8 @@ export interface GraphMentionedCommentReply {
 
 export interface GraphMentionedComment {
   id?: string;
+  /** Set when this comment is itself a REPLY — the thread it belongs to. */
+  parent_id?: string;
   text?: string;
   timestamp?: string;
   /** The handle of whoever wrote the comment that named us. */
@@ -344,9 +349,29 @@ export interface ResolvedMentionMedia {
   readonly ownerUsername: string | null;
   readonly mediaType: string | null;
   readonly mediaUrl: string | null;
+  /** Set for video and reels, which carry no mediaUrl at all. */
+  readonly thumbnailUrl: string | null;
+  /** `FEED`, `REELS`, `STORY` — what KIND of post this is. */
+  readonly productType: string | null;
   readonly timestamp: string | null;
   readonly likeCount: number | null;
   readonly commentsCount: number | null;
+}
+
+/**
+ * The comment our mention was a reply TO, and the rest of that thread.
+ *
+ * Only obtainable when the parent ALSO mentioned us: `mentioned_comment` on a
+ * stranger's comment is refused with `(#10) User is not mentioned in the
+ * comment` (docs/platform-limitations.md §1.7).
+ */
+export interface ResolvedMentionParent {
+  readonly commentId: string;
+  readonly text: string | null;
+  readonly authorUsername: string | null;
+  readonly timestamp: string | null;
+  readonly likeCount: number | null;
+  readonly replies: readonly ResolvedMentionReply[];
 }
 
 /** Either edge, flattened to what the projector needs. */
@@ -355,6 +380,14 @@ export interface ResolvedMention {
   readonly authorUsername: string;
   /** Their words: the comment text, or the caption they tagged us in. */
   readonly text: string | null;
+  /**
+   * Likes on THE MENTION ITSELF — not on the post it sits under.
+   *
+   * Requested from the first version and thrown away before anything could read
+   * it, so a mention with two hundred likes looked exactly like one with none.
+   * It is the cheapest signal of how much attention a tag is getting.
+   */
+  readonly likeCount: number | null;
   readonly timestamp: string | null;
   readonly mediaId: string | null;
   readonly permalink: string | null;
@@ -368,4 +401,23 @@ export interface ResolvedMention {
    * than by oversight.
    */
   readonly replies: readonly ResolvedMentionReply[];
+  /**
+   * THAT the mention was a reply, whether or not we can see what it answered.
+   *
+   * Kept separately from `parent` because the two answer different questions,
+   * and conflating them made an agent read a fragment as a whole thought: a tag
+   * inside a reply that we cannot resolve still needs to say "this was replying
+   * to something", rather than presenting "soo funny man" as an opening line.
+   */
+  readonly parentCommentId: string | null;
+  /**
+   * WHAT THE MENTION WAS ANSWERING, when it was itself a reply.
+   *
+   * Null when the mention is top-level, and ALSO when the parent did not
+   * mention us — Meta refuses any other comment with `(#10) User is not
+   * mentioned in the comment`, and the post's own comment list does not contain
+   * it either (docs/platform-limitations.md §1.7). So null here does not mean
+   * "no parent"; `parentCommentId` is what says that.
+   */
+  readonly parent: ResolvedMentionParent | null;
 }

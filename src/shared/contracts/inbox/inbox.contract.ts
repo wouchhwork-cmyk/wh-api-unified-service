@@ -12,6 +12,11 @@ export const InboxQuerySchema = z
   .object({
     status: z.enum(ConversationStatus).optional(),
     assignedToMe: z.enum(['true', 'false']).optional(),
+    /**
+     * One kind of thread only. Validated against the enum rather than passed
+     * through, so an unknown value is a 400 and never reaches a query.
+     */
+    kind: z.enum(ConversationKind).optional(),
     limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
     cursor: z.string().max(512).optional(),
   })

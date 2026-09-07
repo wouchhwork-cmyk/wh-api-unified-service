@@ -252,6 +252,10 @@ export class CommentProjectorService {
           media_id: resolution.mediaId ?? value.media_id,
           mention_media: resolution.media ?? undefined,
           mention_replies: resolution.replies.length > 0 ? resolution.replies : undefined,
+          mention_parent: resolution.parent ?? undefined,
+          mention_parent_id: resolution.parentCommentId ?? undefined,
+          mention_like_count:
+            resolution.likeCount === null ? undefined : resolution.likeCount,
         },
       };
     } catch (error) {
