@@ -420,4 +420,12 @@ export interface ResolvedMention {
    * "no parent"; `parentCommentId` is what says that.
    */
   readonly parent: ResolvedMentionParent | null;
+  /**
+   * The tagged post's own comment section — the ROOM around the mention.
+   *
+   * Anonymous and unanswerable, and capped: it is stored per mention and a
+   * viral post is unbounded. Empty when the extra call was refused, which never
+   * costs us the mention itself.
+   */
+  readonly postComments: readonly ResolvedMentionReply[];
 }

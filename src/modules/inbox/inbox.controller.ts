@@ -220,7 +220,11 @@ export class InboxController {
       parsed.beforeId ?? null,
     );
     return {
-      conversation: toConversationSummary(result.conversation),
+      /*
+       * The thread view is the only place that can name a mention's
+       * neighbours: the list has no reason to pay for the lookup.
+       */
+      conversation: toConversationSummary(result.conversation, result.knownAuthors),
       messages: result.messages.map((row) =>
         toMessage(row, result.attachmentsByMessageId.get(row.id) ?? []),
       ),
@@ -537,15 +541,34 @@ function toMessage(
  * (docs/platform-limitations.md §1.3-1.4).
  */
 /**
- * `https://www.instagram.com/p/<code>/c/<comment id>/`, or null.
+ * The two ways Instagram links to one comment. BOTH CONFIRMED against links the
+ * Instagram mobile app produced for real comments on this reel:
+ *
+ *   deep   .../reel/<code>/c/<comment id>/
+ *   share  .../reel/<code>?comment_id=<id>&open_comments=true
+ *
+ * The Graph API offers no comment-permalink field, so these are composed — but
+ * they are not guesses: the app's own share sheet gave the second form
+ * verbatim, and the first was checked in a browser and opens the comment more
+ * reliably, which is why it is the one an agent is offered first.
  *
  * The permalink already carries the right prefix — `/p/` for a post, `/reel/`
- * for a reel — so it is extended rather than rebuilt, which is what keeps this
- * correct for both without a branch.
+ * for a reel — so it is extended rather than rebuilt, which keeps both correct
+ * for either kind without a branch. The trailing slash is stripped first
+ * because the share form appends a QUERY, and `/?comment_id=` is not the shape
+ * the app produces.
  */
-function commentDeepLink(permalink: string | null, commentId: string | null): string | null {
-  if (!permalink || !commentId) return null;
-  return `${permalink.replace(/\/+$/u, '')}/c/${commentId}/`;
+function commentLinks(
+  permalink: string | null,
+  commentId: string | null,
+): { deepUrl: string | null; shareUrl: string | null } {
+  if (!permalink || !commentId) return { deepUrl: null, shareUrl: null };
+
+  const base = permalink.replace(/\/+$/u, '');
+  return {
+    deepUrl: `${base}/c/${commentId}/`,
+    shareUrl: `${base}?comment_id=${commentId}&open_comments=true`,
+  };
 }
 
 type KnownAuthors = ReadonlyMap<string, { authorName: string | null; direction: MessageDirection }>;
@@ -567,6 +590,7 @@ function toMentionContext(
       ? metadata.postDetails
       : {}
   ) as Record<string, unknown>;
+  const links = commentLinks(permalink, thisMentionCommentId);
   const asNumber = (value: unknown): number | null => (typeof value === 'number' ? value : null);
   const asText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
@@ -574,22 +598,18 @@ function toMentionContext(
     mediaId,
     permalink,
     /*
-     * A DEEP LINK TO THE COMMENT, built rather than given.
+     * TWO LINKS TO THE MENTION ITSELF, so an agent lands on the comment rather
+     * than the top of a post with two thousand of them.
      *
-     * Instagram offers "copy link" on a comment in the app; the Graph API
-     * offers no equivalent field, so this composes the shape Instagram itself
-     * uses: the post permalink plus `/c/<comment id>/`.
+     * `commentUrl` is the deep link and the one to prefer — it opens the
+     * comment most reliably in a browser. `commentShareUrl` is the exact form
+     * Instagram's own mobile share sheet produces, kept because it is what
+     * somebody pasting a link from the app will recognise.
      *
-     * CONSTRUCTED, NOT VERIFIED — and it cannot be, from here. Logged out,
-     * Instagram answers every one of these with a login wall, and it does so
-     * for a nonsense comment id exactly as for a real one, so fetching it
-     * proves nothing either way. What IS true is that Instagram preserves the
-     * `/c/<id>/` path through its own login redirect, which no invented route
-     * would survive.
-     *
-     * Null unless we hold both halves, rather than half a URL.
+     * Both null unless we hold post AND comment, rather than half a URL.
      */
-    commentUrl: commentDeepLink(permalink, thisMentionCommentId),
+    commentUrl: links.deepUrl,
+    commentShareUrl: links.shareUrl,
     ownerUsername: asText(metadata.postOwnerUsername) ?? asText(details.ownerUsername),
     caption: asText(details.caption),
     mediaType: asText(details.mediaType),
@@ -643,6 +663,20 @@ function toMentionContext(
      * Unlike the replies, the parent DOES carry an author: it mentioned us, and
      * a comment that mentions us is the one comment Meta will name.
      */
+    /*
+     * THE ROOM, not the conversation. Every entry is anonymous — Instagram omits
+     * the author on all of them — and unanswerable, since a comment on someone
+     * else's post can only be replied to if it tagged us. Kept behind its own
+     * key so a client can put it behind a disclosure rather than mixing it into
+     * the thread that actually concerns us.
+     */
+    postComments: Array.isArray(metadata.postComments)
+      ? (metadata.postComments as Record<string, unknown>[]).map((comment) =>
+          toThreadReply(comment, known, thisMentionCommentId),
+        )
+      : [],
+    /** When that snapshot was taken. There is no webhook to keep it current. */
+    postCommentsReadAt: asText(metadata.postCommentsReadAt),
     parentComment: toParentComment(
       metadata.mentionParent,
       metadata.mentionParentId,

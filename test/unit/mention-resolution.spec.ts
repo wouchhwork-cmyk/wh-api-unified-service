@@ -40,8 +40,13 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
     vi.stubGlobal('fetch', (url: string | URL) => {
       const href = String(url);
       calls.push(href);
-      // The first attempt asks for replies; only the retry omits them.
+      /*
+       * The first attempt asks for replies; only the retry omits them. The
+       * post's comment section is a separate call and must not be mistaken for
+       * either — it asks for `comments`, never `replies`.
+       */
       if (href.includes('replies')) return Promise.resolve(json(400, NESTED_ERROR));
+      if (href.includes('comments.limit')) return Promise.resolve(json(200, { mentioned_comment: {} }));
       return Promise.resolve(
         json(200, {
           mentioned_comment: {
@@ -66,13 +71,22 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
     expect(resolved?.permalink).toBe('https://instagram.com/p/X/');
     // A reply has no thread of its own, and that is not a failure.
     expect(resolved?.replies).toEqual([]);
-    expect(calls).toHaveLength(2);
+    /*
+     * Counted by INTENT rather than in total, so adding another call elsewhere
+     * cannot silently break this: what matters is that the thread was asked for
+     * once, refused, and asked again without it.
+     */
+    expect(calls.filter((href) => href.includes('replies'))).toHaveLength(1);
+    expect(calls.filter((href) => !href.includes('replies') && !href.includes('comments.limit'))).toHaveLength(1);
   });
 
   it('asks only once when the mention IS top-level', async () => {
     const calls: string[] = [];
     vi.stubGlobal('fetch', (url: string | URL) => {
-      calls.push(String(url));
+      const href = String(url);
+      calls.push(href);
+      // The post's comment section is a separate call with its own shape.
+      if (href.includes('comments.limit')) return Promise.resolve(json(200, { mentioned_comment: {} }));
       return Promise.resolve(
         json(200, {
           mentioned_comment: {
@@ -95,7 +109,7 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
     expect(resolved?.replies).toHaveLength(1);
     expect(resolved?.replies[0]?.text).toBe('what happned ?');
     // The thread came back on the first ask, so nothing is retried.
-    expect(calls).toHaveLength(1);
+    expect(calls.filter((href) => href.includes('replies'))).toHaveLength(1);
   });
 
   it('rethrows a real failure rather than reporting no author', async () => {

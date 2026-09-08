@@ -313,6 +313,8 @@ interface InstagramMentionChange {
     readonly mention_parent_id?: string;
     /** Likes on the mention itself, distinct from likes on the post. */
     readonly mention_like_count?: number;
+    /** The tagged post's own comment section — the room around the mention. */
+    readonly mention_post_comments?: readonly Record<string, unknown>[];
   };
 }
 
@@ -398,6 +400,16 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
      */
     if (typeof value.mention_like_count === 'number') {
       metadata.mentionLikeCount = value.mention_like_count;
+    }
+    /*
+     * The wider comment section, kept as a SNAPSHOT with the time we read it.
+     * Nothing tells us when a stranger comments on somebody else's post, so
+     * without the timestamp there is no way to know how stale this is — and a
+     * stale count presented as current is worse than none.
+     */
+    if (value.mention_post_comments?.length) {
+      metadata.postComments = value.mention_post_comments;
+      metadata.postCommentsReadAt = new Date().toISOString();
     }
 
     return {

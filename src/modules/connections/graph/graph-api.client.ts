@@ -5,6 +5,7 @@ import {
   PLATFORM_REQUEST_TIMEOUT_MS,
   SYNC_COMMENTS_PER_POST,
   SYNC_MESSAGES_PER_CONVERSATION,
+  MENTION_POST_COMMENTS_KEPT,
   SYNC_PAGE_SIZE,
 } from '@/shared/constants';
 import { Platform } from '@/shared/enums';
@@ -576,6 +577,11 @@ export class GraphApiClient {
         media: toResolvedMedia(comment.media, target.mediaId ?? null),
         replies: toResolvedReplies(comment.replies?.data),
         parentCommentId: comment.parent_id ?? null,
+        postComments: await this.listMentionedPostComments(
+          instagramUserId,
+          target.commentId,
+          accessToken,
+        ),
         parent: comment.parent_id
           ? await this.fetchMentionThreadParent(instagramUserId, comment.parent_id, accessToken)
           : null,
@@ -614,6 +620,9 @@ export class GraphApiClient {
       replies: [],
       parentCommentId: null,
       parent: null,
+      // A caption mention has no comment id, which is the only key into the
+      // post's comment section.
+      postComments: [],
     };
   }
 
@@ -703,6 +712,44 @@ export class GraphApiClient {
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * The tagged post's comment section, read through the mention that grants it.
+   *
+   * A SEPARATE CALL ON PURPOSE. Nesting this inside the mention query risks the
+   * whole thing: Graph answers a too-large field expansion with
+   * `500 Please reduce the amount of data you're asking for`, and losing the
+   * mention to fetch its surroundings would be a bad trade. Here a failure
+   * costs only the surroundings.
+   *
+   * `timestamp` is not optional decoration — `comments{id,text}` alone fails
+   * with that same 500 while `{id,text,timestamp}` succeeds
+   * (docs/platform-limitations.md §1.4).
+   */
+  async listMentionedPostComments(
+    instagramUserId: string,
+    commentId: string,
+    accessToken: string,
+  ): Promise<ResolvedMentionReply[]> {
+    try {
+      const result = await this.request<{
+        mentioned_comment?: { media?: { comments?: { data?: GraphMentionedCommentReply[] } } };
+      }>('GET', instagramUserId, {
+        accessToken,
+        params: {
+          fields: `mentioned_comment.comment_id(${commentId}){media{comments.limit(${MENTION_POST_COMMENTS_KEPT}){id,text,timestamp,like_count}}}`,
+        },
+      });
+      return toResolvedReplies(result.mentioned_comment?.media?.comments?.data);
+    } catch {
+      /*
+       * Deliberately swallowed. This is context, not the mention: a refusal
+       * here must not fail a projection or send it back for another attempt
+       * against Meta.
+       */
+      return [];
     }
   }
 

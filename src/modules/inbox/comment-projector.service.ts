@@ -10,6 +10,8 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { TransactionManager } from '@/database/transaction';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
+import { mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { TokenCipherService } from '@/shared/crypto/token-cipher.service';
 import {
   ConversationKind,
@@ -124,9 +126,29 @@ export class CommentProjectorService {
     const resolved =
       platform === Platform.Instagram
         ? await this.resolveInstagramMention(enterpriseId, channelId, payload)
-        : payload;
+        : // Facebook needs no resolution, so it takes the same shape unchanged
+          // rather than making every reader below handle two.
+          { payload };
 
-    const normalized = normalizeMention(platform, resolved);
+    /*
+     * Null means the Mentions API could not be reached, NOT that the mention is
+     * unprojectable. Thrown rather than skipped so the ledger retries it with
+     * backoff — a rate limit clears, and a mention written off as "no author"
+     * never comes back.
+     */
+    /*
+     * Null means the Mentions API failed in a way worth asking about again —
+     * a throttle, a transport error, a 5xx. Thrown rather than skipped so the
+     * ledger retries with backoff: a rate limit clears, and a mention written
+     * off as "carries no author" never comes back. A PERMANENT refusal does
+     * not arrive here; it comes back as the unenriched payload and is skipped
+     * normally.
+     */
+    if (resolved === null) {
+      throw new Error('the mentions api could not be reached; this mention will be retried');
+    }
+
+    const normalized = normalizeMention(platform, resolved.payload);
     if ('skip' in normalized) return { projected: false, reason: normalized.skip };
 
     if ('moderation' in normalized) {
@@ -204,22 +226,26 @@ export class CommentProjectorService {
     enterpriseId: number,
     channelId: number,
     payload: unknown,
-  ): Promise<unknown> {
+  ): Promise<{ readonly payload: unknown } | null> {
     const change = payload as {
       readonly field?: string;
-      readonly value?: { readonly media_id?: string; readonly comment_id?: string; readonly username?: string };
+      readonly value?: {
+        readonly media_id?: string;
+        readonly comment_id?: string;
+        readonly username?: string;
+      };
     };
     const value = change?.value;
-    if (!value) return payload;
+    if (!value) return { payload };
 
     // The backfill already supplies an author; only the webhook needs this.
-    if (value.username) return payload;
-    if (!value.comment_id && !value.media_id) return payload;
+    if (value.username) return { payload };
+    if (!value.comment_id && !value.media_id) return { payload };
 
     const channel = await this.channels.findBackfillContext(enterpriseId, channelId);
-    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return payload;
+    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return { payload };
     // A channel already known to need re-auth would spend a call to be told so.
-    if (channel.reauthRequired) return payload;
+    if (channel.reauthRequired) return { payload };
 
     let token: string;
     try {
@@ -227,7 +253,7 @@ export class CommentProjectorService {
     } catch {
       // Key loss or tampering. The relay and backfill both alert on this; here
       // it is enough not to project a mention we cannot read.
-      return payload;
+      return { payload };
     }
 
     try {
@@ -236,34 +262,61 @@ export class CommentProjectorService {
         { commentId: value.comment_id ?? null, mediaId: value.media_id ?? null },
         token,
       );
-      if (!resolution) return payload;
+      if (!resolution) return { payload };
 
       return {
-        ...change,
-        value: {
-          ...value,
-          username: resolution.authorUsername,
-          // The normalizer reads the mention's words from `caption`, which is
-          // what the /tags backfill calls them.
-          caption: resolution.text ?? undefined,
-          timestamp: resolution.timestamp ?? undefined,
-          permalink: resolution.permalink ?? undefined,
-          media_owner_username: resolution.mediaOwnerUsername ?? undefined,
-          media_id: resolution.mediaId ?? value.media_id,
-          mention_media: resolution.media ?? undefined,
-          mention_replies: resolution.replies.length > 0 ? resolution.replies : undefined,
-          mention_parent: resolution.parent ?? undefined,
-          mention_parent_id: resolution.parentCommentId ?? undefined,
-          mention_like_count:
-            resolution.likeCount === null ? undefined : resolution.likeCount,
+        payload: {
+          ...change,
+          value: {
+            ...value,
+            username: resolution.authorUsername,
+            // The normalizer reads the mention's words from `caption`, which is
+            // what the /tags backfill calls them.
+            caption: resolution.text ?? undefined,
+            timestamp: resolution.timestamp ?? undefined,
+            permalink: resolution.permalink ?? undefined,
+            media_owner_username: resolution.mediaOwnerUsername ?? undefined,
+            media_id: resolution.mediaId ?? value.media_id,
+            mention_media: resolution.media ?? undefined,
+            mention_replies: resolution.replies?.length ? resolution.replies : undefined,
+            mention_parent: resolution.parent ?? undefined,
+            mention_parent_id: resolution.parentCommentId ?? undefined,
+            mention_like_count: resolution.likeCount === null ? undefined : resolution.likeCount,
+            /*
+             * Read defensively. Every field here is enrichment, and the catch
+             * below turns a throw into "project without it" — so an assumption
+             * about the resolver's shape would degrade a whole mention into a
+             * skip rather than failing loudly. Optional chaining keeps the
+             * mention.
+             */
+            mention_post_comments: resolution.postComments?.length
+              ? resolution.postComments
+              : undefined,
+          },
         },
       };
     } catch (error) {
       this.logger.warn(
         { err: error, enterpriseId, channelId },
-        'could not resolve an instagram mention — projecting without it',
+        'could not resolve an instagram mention — it will be retried',
       );
-      return payload;
+      /*
+       * FAILED IS NOT THE SAME AS EMPTY — but nor is every failure worth
+       * retrying, and the first version of this got both wrong in turn.
+       *
+       * Returning the bare payload sent a throttled mention to the normalizer,
+       * which skipped it as "carries no author": a TERMINAL state, with a
+       * message describing the webhook rather than what happened. Twelve
+       * replays in a burst reproduced it exactly, and one real mention was
+       * written off. Retrying everything is the opposite mistake — a comment
+       * that has been deleted is unreadable forever and would burn attempts
+       * and rate limit on every pass.
+       *
+       * So the platform's own classification decides: transient failures ask
+       * again with backoff, permanent refusals project without the enrichment.
+       */
+      const retryable = error instanceof GraphApiError && mapGraphError(error).retryable;
+      return retryable ? null : { payload };
     }
   }
 

@@ -104,6 +104,21 @@ export const SYNC_MAX_ATTEMPTS = 5;
  * than pretending it copied everything.
  */
 export const SYNC_COMMENTS_PER_POST = 50;
+
+/**
+ * How much of a tagged post's comment section we keep alongside a mention.
+ *
+ * The room around a mention, not the conversation: these comments are
+ * ANONYMOUS — Instagram omits the author on every one of them
+ * (docs/platform-limitations.md §1.4) — and unanswerable, since a comment on
+ * somebody else's post can only be replied to if it tagged us.
+ *
+ * Capped because it is stored per mention, and a viral post is not a bounded
+ * thing: `@urudaymotivation`'s had 5,738 comments against three mentions of
+ * ours. Fifty is also all Instagram returned in one page, so this matches what
+ * the platform actually gives rather than inventing a target.
+ */
+export const MENTION_POST_COMMENTS_KEPT = 50;
 /*
  * TWENTY, because that is Meta's ceiling, not ours: "You can only get details
  * about the 20 most recent messages in the conversation. If you query a message

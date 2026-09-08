@@ -6,6 +6,7 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { TransactionManager } from '@/database/transaction';
+import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
 import { ConversationKind, Platform } from '@/shared/enums';
 import { createTestDataSource, truncateTenantData } from './db.harness';
@@ -64,6 +65,10 @@ describe('instagram mention projection', () => {
       { platformId: 'R1', text: '@genzrelics are you there', timestamp: '2026-09-06T15:08:10+0000', likeCount: 0 },
       // A media-only reply: Meta returns no text and no field recovers it.
       { platformId: 'R2', text: null, timestamp: '2026-09-06T15:09:00+0000', likeCount: 0 },
+    ],
+    // The tagged post's own comment section — anonymous, and none of it ours.
+    postComments: [
+      { platformId: 'P1', text: 'Reality 😅', timestamp: '2026-09-06T14:50:03+0000', likeCount: 0 },
     ],
   };
 
@@ -183,11 +188,11 @@ describe('instagram mention projection', () => {
     expect(count[0]?.count).toBe(0);
   });
 
-  it('projects anyway when the Mentions API throws', async () => {
+  it('skips a PERMANENT Mentions API failure for the honest reason', async () => {
     /*
-     * A failure to enrich must not fail the projection, but with nothing to
-     * enrich FROM there is still no author — so this skips for the honest
-     * reason rather than exploding.
+     * A refusal that will never succeed — a deleted comment, a post gone
+     * private — must not fail the projection or be retried forever. There is
+     * still no author to project, so it skips and says so.
      */
     const outcome = await projector(async () => {
       throw new Error('graph is down');
@@ -197,5 +202,33 @@ describe('instagram mention projection', () => {
 
     expect(outcome.projected).toBe(false);
     expect(outcome.reason).toContain('carries no author');
+  });
+
+  it('RETRIES a throttled mention instead of writing it off', async () => {
+    /*
+     * This is the case that cost us a real mention. Twelve replays in a burst
+     * hit a rate limit; the resolver swallowed it, the normalizer saw a payload
+     * with no author, and the event went TERMINAL as "carries no author" —
+     * describing the webhook rather than what happened.
+     *
+     * A retryable Graph failure must throw, so the ledger asks again with
+     * backoff once the limit clears.
+     */
+    const throttled = new GraphApiError(
+      429,
+      4,
+      null,
+      'OAuthException',
+      'trace',
+      'Application request limit reached',
+    );
+
+    await expect(
+      projector(async () => {
+        throw throttled;
+      }).projectMention(enterpriseId, channelId, Platform.Instagram, await event('m4'), WEBHOOK, [
+        'IG_1',
+      ]),
+    ).rejects.toThrow(/will be retried/u);
   });
 });
