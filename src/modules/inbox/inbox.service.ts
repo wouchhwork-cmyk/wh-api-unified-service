@@ -635,16 +635,32 @@ function stripThreadPrefix(platformThreadId: string): string {
  * ordinary rather than exceptional.
  */
 function threadCommentIds(contextMetadata: Record<string, unknown>): string[] {
-  const parent = contextMetadata.mentionParent;
-  if (typeof parent !== 'object' || parent === null) return [];
+  const parent =
+    typeof contextMetadata.mentionParent === 'object' && contextMetadata.mentionParent !== null
+      ? (contextMetadata.mentionParent as Record<string, unknown>)
+      : null;
 
-  const replies = (parent as Record<string, unknown>).replies;
-  if (!Array.isArray(replies)) return [];
+  /*
+   * BOTH LISTS, because a comment we know about can appear in either.
+   *
+   * The parent thread was the only one collected, so the wider comment section
+   * went out entirely unnamed — including the mention itself, which is a real
+   * comment on that post and comes back in the list like any other. An agent
+   * saw their own tag attributed to "someone".
+   *
+   * One query either way: the ids simply go in together.
+   */
+  return [...platformIds(parent?.replies), ...platformIds(contextMetadata.postComments)];
+}
 
-  return replies
-    .map((reply) =>
-      typeof reply === 'object' && reply !== null
-        ? (reply as Record<string, unknown>).platformId
+/** The platform comment ids in a stored, loosely-shaped comment list. */
+function platformIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) =>
+      typeof entry === 'object' && entry !== null
+        ? (entry as Record<string, unknown>).platformId
         : null,
     )
     .filter((id): id is string => typeof id === 'string');

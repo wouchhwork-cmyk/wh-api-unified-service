@@ -615,11 +615,21 @@ function toMentionContext(
     mediaType: asText(details.mediaType),
     /*
      * ONE FIELD FOR "SHOW THIS", because the platform uses two and a client
-     * should not have to learn which. A photo answers with media_url and no
-     * thumbnail; a REEL answers with a thumbnail and NO media_url at all — so
-     * reading only media_url left every reel mention with no preview.
+     * should not have to learn which.
+     *
+     * THE THUMBNAIL WINS, and the order is the whole point. `media_url` is not
+     * always an image: on a reel it can be the .mp4 itself, and preferring it
+     * put a video file into an <img> tag — which fails, and then reports "the
+     * image is no longer available" about a post that is perfectly fine.
+     *
+     * A thumbnail is always a still. When there is none, the post is a photo
+     * and media_url IS the image. So thumbnail-then-media is displayable in
+     * both cases, where media-then-thumbnail is displayable in only one.
+     *
+     * The raw fields stay exposed below for a client that wants to play the
+     * video rather than preview it.
      */
-    previewUrl: asText(details.mediaUrl) ?? asText(details.thumbnailUrl),
+    previewUrl: asText(details.thumbnailUrl) ?? asText(details.mediaUrl),
     mediaUrl: asText(details.mediaUrl),
     thumbnailUrl: asText(details.thumbnailUrl),
     /** `FEED`, `REELS`, `STORY` — lets a client say "Reel" rather than "post". */

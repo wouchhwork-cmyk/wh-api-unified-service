@@ -198,16 +198,34 @@ a sticker reaches us as text-or-nothing, and a media-only one as an id and a
 timestamp. This is also why some replies come back with no `text` — there was
 never any text, and the media is unreachable.
 
-### 1.5b A reel answers with a thumbnail and NO media_url
+### 1.5b `media_url` is NOT reliably an image, and a reel may omit it
 
-Verified 6–7 Sep 2026. A photo post returns `media_url` and omits
-`thumbnail_url`; a **REEL returns `thumbnail_url` and omits `media_url`
-entirely**. Reading only `media_url` therefore left every reel mention with no
-preview at all, while the field that would have shown one sat one word away.
+**Corrected 9 Sep 2026.** An earlier version of this entry said a reel always
+omits `media_url`. That was over-stated from one sample. What is actually true,
+across three reels:
 
-`media_product_type` distinguishes them (`FEED` vs `REELS`), and both are now
-requested. The API exposes a single `previewUrl` so a client does not have to
-know the rule.
+| Post | `media_url` | `thumbnail_url` |
+|---|---|---|
+| Photo (`FEED`) | the image | absent |
+| Reel `DZmmE4xA-8o` | **absent** | the still |
+| Reel `DZPvwwGPubk` | **an `.mp4`** | the still |
+
+So a reel may answer with neither, or with the video file — and `media_url` is
+only an image when the post is a photo. Both failure modes are real and both
+were hit: reading only `media_url` left the first reel with no preview, and
+preferring it on the second put an **.mp4 into an `<img>` tag**, which fails and
+then reports "the image is no longer available" about a post that is perfectly
+fine.
+
+**The rule that holds:** `thumbnail_url` is always a still when present, and
+when it is absent the post is a photo whose `media_url` IS the image. So
+**thumbnail first, media second** is displayable in every case; the reverse is
+displayable in only one.
+
+`media_product_type` distinguishes the kinds (`FEED` vs `REELS`). The API
+exposes `previewUrl` in that order so no client has to know this, and keeps
+`mediaUrl` and `thumbnailUrl` separately for one that wants to play the video
+rather than preview it.
 
 **A misleading error worth knowing:** `comments{id,text}` fails with
 `500 Please reduce the amount of data you're asking for`, while
@@ -289,6 +307,34 @@ PERMANENT from our side. There is no unsend.
 Note the `GET` failing too: our own reply, seconds old, is not addressable by id.
 It is visible only through the mentions edge, inside the parent's `replies` list.
 The mention is the only door, in both directions.
+
+### 1.9 A tag under a STRANGER's comment loses its context, and the link is the answer
+
+**The case:** somebody tags us in a reply to a comment that did not mention us.
+`"absolutely"` arrives with no indication of what it is agreeing with.
+
+**Both read routes are closed.** Verified 9 Sep 2026 on comment
+`18095113511414770`, whose parent is `18089045318435608`:
+
+```
+mentioned_comment.comment_id(<parent>)  → (#10) User is not mentioned in the comment
+media{comments}, paged                  → 47 of 19,599 returned, one page,
+                                          parent NOT among them
+```
+
+The mention grants access to OUR comment, not to the one above it. And the
+post's comment edge caps at a single page on media we do not own, so the parent
+cannot be found by walking either.
+
+**[META]**, and not worth further effort — but the agent is not stuck. The
+comment deep link (§1.6 / the link builder) opens our own reply IN PLACE on
+Instagram, with the comment it answers directly above it. So the interface
+offers the route rather than reporting a dead end: *"Instagram will not tell us
+what that comment said — open the mention on Instagram to read it in place."*
+
+The distinction matters. When the parent DID mention us it is fully readable,
+author and sibling thread included (§1.7), so this only bites on tags placed
+under strangers' comments.
 
 ---
 
