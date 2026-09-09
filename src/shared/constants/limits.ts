@@ -64,6 +64,27 @@ export const MAX_FAILED_LOGINS = 5;
 export const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000;
 
 /**
+ * How many live sessions one person may hold at once.
+ *
+ * Every login and every enterprise selection INSERTs a `sessions` row and
+ * revokes nothing, and refresh deliberately does not rotate — so the only thing
+ * that ever removed a row was the 30-day retention sweep, and the number of live
+ * refresh tokens per identity was bounded by nothing but how often somebody
+ * signs in. Each one of them is a credential that mints access tokens for seven
+ * days.
+ *
+ * TEN rather than the three or four devices a person actually uses, because a
+ * session is per device AND per enterprise selection: somebody who works in
+ * several businesses mints a row for each business they pick, on each device. The
+ * cap has to sit above devices × businesses or it would sign people out of work
+ * they are still doing. Past it the OLDEST live session goes first, so the worst
+ * case for a legitimate person is that their least recently created session asks
+ * them to sign in again — never the one they are using, which is by definition
+ * the newest.
+ */
+export const MAX_SESSIONS_PER_IDENTITY = 10;
+
+/**
  * Per-route throttle for the unauthenticated credential endpoints.
  *
  * The global limit is 120/min, which is right for a logged-in client rendering
@@ -182,6 +203,33 @@ export const NOTIFY_DEBOUNCE_MS = 50;
 
 /** How often the queue gauge is sampled and logged. */
 export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
+
+/**
+ * How often a Page's webhook subscription is read back and compared against
+ * SUBSCRIBED_FIELDS.
+ *
+ * SIX-HOURLY, and the cost is what sets it: one Graph read per active Page per
+ * run, plus a write only when something is actually missing. Four reads per Page
+ * per day is nothing against the ordinary traffic of this service, and the
+ * failure it detects is the worst one this product has — a subscription removed
+ * on the Facebook side, or disabled by Meta after a run of non-2xx deliveries
+ * (docs/platform-limitations.md §7.2), makes the inbox go quiet with no error
+ * anywhere. Daily would leave a business silently unreachable for most of a
+ * working day; hourly would spend six times the calls to shorten a window that
+ * is already shorter than anyone's reaction time.
+ *
+ * Minute 17 deliberately: the expiry sweep runs at minute 0 of every hour and
+ * the nightly jobs at 3, 4 and 5 AM, so this lands on an hour it shares with
+ * nothing else rather than adding to a burst.
+ */
+export const WEBHOOK_RECONCILE_CRON = '17 */6 * * *';
+
+/**
+ * A ceiling per reconciliation run, so one run costs a bounded number of Graph
+ * calls however many channels exist. Channels beyond the cap are picked up by a
+ * later run.
+ */
+export const WEBHOOK_RECONCILE_CHANNELS_PER_RUN = 200;
 
 /**
  * Meta's messaging window: a business may reply to a direct message only within

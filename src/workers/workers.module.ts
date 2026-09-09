@@ -15,6 +15,7 @@ import { ProviderConnectionRepository } from '@/database/repositories/provider-c
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { WebhookSubscriptionService } from '@/modules/connections/webhook-subscription.service';
 import { InboxModule } from '@/modules/inbox/inbox.module';
 import { CryptoModule } from '@/shared/crypto';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
@@ -26,6 +27,7 @@ import { QueueGaugeWorker } from './queue-gauge.worker';
 import { QueueListenerService } from './queue-listener.service';
 import { RefreshSchedulerWorker } from './refresh-scheduler.worker';
 import { SweeperWorker } from './sweeper.worker';
+import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reconciler.worker';
 
 /**
  * The worker process.
@@ -74,6 +76,14 @@ import { SweeperWorker } from './sweeper.worker';
     QueueListenerService,
     RefreshSchedulerWorker,
     SweeperWorker,
+    /*
+     * Provided here rather than imported from ConnectionsModule, the way
+     * GraphApiClient already is: this process needs the service, not the
+     * module's controllers. No API route drives a reconciliation, so the API
+     * process does not register it.
+     */
+    WebhookSubscriptionService,
+    WebhookSubscriptionReconcilerWorker,
   ],
 })
 export class WorkersModule {}

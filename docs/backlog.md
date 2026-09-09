@@ -71,7 +71,7 @@ none of it is quietly dropped.
 | **The correlation id is still client-supplied** | S | See §1.6. It anchors audit and ledger rows, so a caller chooses the id their actions are filed under. Fine as a trace hint, wrong as an audit key. |
 | **`LISTEN` clients have no TCP keepalive** | S | A socket reaped by a NAT gateway without FIN leaves a zombie listener. Cost is latency only — every worker still polls on its own timer — and it is deployment-dependent. |
 | **Graph responses are not validated** | M | Every response is cast to `T` with no runtime check. Most of the remaining Meta-integration findings collapse into one zod schema at that boundary. |
-| **The webhook subscription is never reconciled** | S | Attempted once at connect. `listSubscribedFields` exists to read it back; nothing calls it on a schedule, so a subscription removed on the Facebook side is invisible until somebody notices the inbox has gone quiet. |
+| ~~**The webhook subscription is never reconciled**~~ | — | **DONE 9 Sep 2026.** `WebhookSubscriptionService.reconcileAll()` diffs `listSubscribedFields` against `SUBSCRIBED_FIELDS` every six hours and re-subscribes what is missing; a dead token is flagged through the existing `markReauthRequired` convention and then costs nothing, because the population query already excludes flagged channels. Instagram channels are skipped without a call — `{ig-id}/subscribed_apps` is `(#100) nonexisting field`, verified live; the subscription lives on the linked Page. Found a real gap on the first look: the dev Page was missing `mentions`, `comments` and `messaging_optins`, because it was subscribed twelve hours BEFORE those fields were added to the constant. |
 | **Backfill holds one lease for a serial batch** | M | Claim leases the whole batch, then the work is done row by row, so the tail of a large batch is guaranteed to overrun. Truncation is at least reported now, for both comments and messages. |
 | **A partially-walked sync job sits in `running`** | S | No worker can claim that status; it resumes only via the reaper. |
 | **The daily metrics refresh has no retention** | S | One `inbound_events` row per post per day, kept forever. |
@@ -122,22 +122,42 @@ below is still the recipe.
 The projectors are now the largest untested surface in the service, and the
 recipe above is exactly the test.
 
-### 1.2 Removing somebody does not end their sessions — **S**
+### ~~1.2 Removing somebody does not end their sessions~~ — DONE 9 Sep 2026
 
-`AuthService.refresh` only re-checks employment when the caller passes
-`?enterpriseRefId=`. Without it no employment lookup happens at all, so a
-suspended or removed person keeps refreshing indefinitely. `revokeAllForIdentity`
-exists on the session repository and has **no callers** — nothing revokes sessions
-when an employment, identity or business is suspended.
+**Was already half-fixed when re-read, and the entry was stale:**
+`revokeAllForIdentity` did have callers — suspension in `employees.service.ts`
+and password-set in `auth.service.ts`. What was genuinely missing was the
+refresh path.
 
-Permission resolution now requires an active employment, so their access token
-resolves to nothing on the next request. But they can still mint fresh tokens.
+`AuthService.refresh` now refuses when an identity's standing has been
+**revoked** — it has employment rows on record and none is active — and it is
+not platform staff. The distinction matters: an identity with NO employment at
+all is legitimate (staff, and anyone who has not joined a business yet), so
+"require an active employment" would have 403'd both. The check runs only when
+nothing else already proved standing, so passing `?enterpriseRefId=` costs no
+extra query and staff short-circuit it entirely. A refusal also revokes that
+identity's sessions, so the cookie is dead rather than re-evaluated every
+fifteen minutes for a week.
 
-### 1.3 Sessions are unbounded — **S**
+Caveat recorded in the repository: `enterprise_employees_identity_idx` is
+partial on `is_deleted = false`, so a SOFT-DELETED employment reads as "never
+had one". Nothing writes `is_deleted` today; a future removal path that does
+must revoke sessions in the same transaction.
 
-Every login and every enterprise selection inserts a `sessions` row, with no cap
-and no revocation of prior sessions. Rows are removed only by the 30-day retention
-sweep. No "sign out everywhere".
+### ~~1.3 Sessions are unbounded~~ — DONE 9 Sep 2026
+
+Capped at `MAX_SESSIONS_PER_IDENTITY = 10`, applied AFTER the insert so the
+session just created is never the one evicted; the oldest live session goes
+first. The cap sits above devices × businesses on purpose, because a session is
+per device *and* per enterprise selection. `revokeBeyondNewest(identityId, keep)`
+is idempotent, so racing logins, rows already over the cap, and a lowered cap
+all settle at N.
+
+`POST /api/v1/auth/logout-all` is the "sign out everywhere": authenticated,
+identity read from the access token, no body and no identifier a caller could
+use to sign somebody else out. It includes the caller's own session and clears
+the refresh cookie. Access tokens already minted are stateless and live out
+their remaining fifteen minutes — what this ends is the ability to mint more.
 
 ### ~~1.4 The OAuth `state` token is not single-use~~ — WAS ALREADY DONE
 
@@ -271,16 +291,61 @@ The schema supports all of these; nothing exposes them.
 
 ## 4. Meta integration
 
-- **It has never run against real Meta credentials from this codebase.** Every
-  Graph call mirrors a proven implementation, and the local tests use fake but
-  well-formed credentials. Until it runs once for real, treat the whole flow as
-  unproven. **M**
-- **`comments` is not subscribed.** Pages are subscribed to
-  `messages,messaging_postbacks,feed,mention`. The `case 'comments'` branch of the
-  field mapper is therefore dead — comment events arrive as `feed` changes, which
-  is what the projector handles, so this is latent rather than broken. **S**
-- **Instagram** is discovered and stored, and its send path inherits the parent
-  Page's token, but none of it has been exercised against a real account. **M**
+**Rewritten 9 September 2026 — the three entries here were all stale.** This has
+now run against real Meta credentials extensively: live DMs, comments, story
+mentions, shared posts and reels, mentions on strangers' posts, and outbound
+replies through both the messaging and mentions edges. See
+`docs/platform-limitations.md` for what the platform will and will not give us,
+each entry tagged **[APP]** (a scope or App Review would fix it) or **[META]**
+(nothing will).
+
+Corrections to what used to be here:
+
+- ~~"It has never run against real Meta credentials"~~ — it has, repeatedly.
+- ~~"`comments` is not subscribed"~~ — `comments` and `mentions` ARE in
+  `SUBSCRIBED_FIELDS`. The dev Page was found missing them on 9 Sep because it
+  was subscribed twelve hours before the constant gained them; the new
+  reconciliation sweep (§0.1) repairs exactly that drift.
+- ~~"Instagram … none of it has been exercised"~~ — Instagram is the surface
+  that has had the most real traffic.
+
+### Still open
+
+- **A tagged post's metrics and a mention's like count are snapshots.** Both are
+  read once at projection and Meta sends no webhook when a like or comment lands
+  on somebody else's post, so they age from the moment they are written.
+  Measured drift on 9 Sep: one post moved 1,884,654 → 2,098,079 likes between
+  projection and viewing, and a mention's own like count went 0 → 1 (replaying
+  the event corrected it to 1, which proves the capture is right and only the
+  freshness is wrong).
+
+  **DEFERRED to a future version, deliberately.** The fix is a refresh on thread
+  open — one Graph call per view, which is a human action rather than a poll —
+  with a short staleness guard so rapid clicking does not multiply calls, or the
+  same behind an explicit refresh button for zero idle cost. Do NOT poll these
+  on a timer: on a viral post the numbers change constantly and the calls would
+  be endless. The cheap interim, if the wrong number ever bothers somebody, is
+  to label the counts with their age the way `postComments` already is. **S**
+
+- **A tag EDITED into an existing comment is lost.** Instagram sends no webhook
+  when somebody adds `@ourhandle` to a comment they already posted — the
+  `mentions` field fires on comment CREATION only, and there is no
+  comment-edited event. Confirmed 9 Sep 2026: the mention was real and fully
+  readable through `mentioned_comment`, so only the notification was missing
+  (docs/platform-limitations.md §1.2b).
+
+  This one matters more than the stale counts above: a stale number is cosmetic,
+  a silently lost customer tag is the product failing at its job, and somebody
+  editing a comment to tag you is deliberately trying to reach you.
+
+  **DEFERRED to a future version.** The recovery costs **zero Graph calls** —
+  the tagged post's comment section is already stored per mention WITH each
+  comment's platform id, so detection is a SQL scan for our own handle excluding
+  known mention ids; one call is spent only on a mention actually recovered.
+  It recovers SOME of these, not all: it reaches only posts where we already
+  hold a mention, and only the 50 comments Instagram returns in its single page.
+  There is no edge that lists our mentions, so full coverage is impossible —
+  do not go looking for it. **S**
 
 ---
 

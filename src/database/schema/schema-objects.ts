@@ -247,6 +247,24 @@ export async function applyPostTableObjects(
       ON conversations (channel_id, platform_thread_id)
     `);
 
+  /*
+   * FINDING A MENTION BY THE COMMENT IT IS ABOUT.
+   *
+   * A mention stores the comment it replies to as `mentionParentId`, and when
+   * that parent ALSO tagged us we already hold it as a conversation of its own.
+   * Resolving one to the other is a thread-read, which is a hot path — and the
+   * key lives inside jsonb, so without an expression index this is a sequential
+   * scan of every conversation the business has.
+   *
+   * Partial on the kind: only a mention carries this key, so the index stays
+   * the size of the mention population rather than the whole table.
+   */
+  await run(`
+      CREATE INDEX conversations_mention_comment_idx
+      ON conversations ((context_metadata->>'mentionedCommentId'))
+      WHERE conversation_kind = 'mention' AND is_deleted = false
+    `);
+
   // --- customer identity resolution --------------------------------------
   // Partial on status = 'active' because identifiers get RECYCLED: a released
   // number becomes assignable to a new customer while history stays intact.

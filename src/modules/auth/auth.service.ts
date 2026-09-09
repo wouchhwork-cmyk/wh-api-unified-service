@@ -22,7 +22,11 @@ import {
   VerificationSubjectKind,
 } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
-import { LOGIN_LOCK_DURATION_MS, MAX_FAILED_LOGINS } from '@/shared/constants';
+import {
+  LOGIN_LOCK_DURATION_MS,
+  MAX_FAILED_LOGINS,
+  MAX_SESSIONS_PER_IDENTITY,
+} from '@/shared/constants';
 import { normalizeEmail, normalizeMobile, isValidEmail } from '@/shared/utils/normalize';
 import type { Identity } from '@/database/entities/identity.entity';
 import type {
@@ -337,9 +341,9 @@ export class AuthService {
   }
 
   /**
-   * Refresh. EVERY refresh re-checks that the employment is still active, so
-   * removing someone takes effect within the access-token lifetime rather than
-   * whenever their session happens to end.
+   * Refresh. EVERY refresh re-checks standing, so removing someone takes effect
+   * within the access-token lifetime rather than whenever their session happens
+   * to end — with or without `?enterpriseRefId=`.
    *
    * No rotation, by decision (schema.md §11): replay of a stolen refresh token is
    * therefore undetectable, and revocation is the only defence.
@@ -368,6 +372,19 @@ export class AuthService {
       if (!employment && !staffRecord?.hasAllEnterpriseAccess) {
         throw new AppException(ErrorCode.AuthNoActiveEmployment);
       }
+    }
+
+    /*
+     * Only when nothing above already proved it. A request that named a business
+     * either resolved an ACTIVE employment in it — which is standing, of the
+     * strongest kind this endpoint can check — or was refused; so the extra
+     * query runs on exactly the path that had no check at all.
+     */
+    if (!employment) {
+      await this.assertStandingNotRevoked(
+        identity.id,
+        staffRecord?.hasAllEnterpriseAccess === true,
+      );
     }
 
     const accessToken = await this.tokens.issueAccessToken({
@@ -472,6 +489,50 @@ export class AuthService {
     if (session) await this.sessions.revoke(session.id);
   }
 
+  /**
+   * "Sign out everywhere" — every session this person holds, on every device,
+   * INCLUDING the one making the request.
+   *
+   * Including it is the point rather than an oversight: somebody reaches for this
+   * because they think a device or a token is in the wrong hands, and a version
+   * that spared the current session would leave the caller unable to say whether
+   * the session that survived is theirs.
+   *
+   * The identity is the caller's own, taken from the access token by the
+   * controller. There is deliberately no request body and no identifier to pass,
+   * so there is nothing to aim at somebody else's account — the endpoint cannot
+   * express the request "sign THEM out" at all.
+   *
+   * Idempotent: a second call revokes nothing and still succeeds, which is what a
+   * retried request needs.
+   *
+   * One bound worth stating: an access token is stateless and stays valid until
+   * it expires, so this ends the ability to MINT tokens up to fifteen minutes
+   * before the last one already minted stops working. That is the same window
+   * suspension has, and closing it needs a token deny-list rather than a session
+   * table.
+   */
+  async signOutEverywhere(identityId: number): Promise<{ sessionsRevoked: number }> {
+    const sessionsRevoked = await this.sessions.revokeAllForIdentity(identityId);
+
+    await this.audit.record({
+      action: AuditAction.Logout,
+      entityType: AuditEntityType.Identity,
+      entityId: identityId,
+      // A session belongs to a person, not to a business, so this action has no
+      // enterprise — see AuditEvent.enterpriseId.
+      enterpriseId: null,
+      metadata: { scope: 'all_devices', sessionsRevoked },
+    });
+
+    this.logger.info(
+      { identityId, sessionsRevoked },
+      'sign out everywhere — every session for this identity was revoked',
+    );
+
+    return { sessionsRevoked };
+  }
+
   private async issueSession(
     identity: Identity,
     employment: EmploymentSummary | null,
@@ -488,6 +549,29 @@ export class AuthService {
       ipAddress: meta.ipAddress,
       expiresAt,
     });
+
+    /*
+     * THE CAP, applied AFTER the new row exists.
+     *
+     * That ordering is what makes the eviction safe: the repository keeps the
+     * newest N live sessions, and the row just inserted is the newest, so the
+     * person signing in is never the one signed out. Applying it first would
+     * have kept a stale session and evicted a colleague's live one on the very
+     * next login.
+     *
+     * Not wrapped in a transaction with the insert. Holding one open would buy
+     * an invariant nothing reads — being one row over the cap for a few
+     * milliseconds costs nothing, and the next login settles it — whereas a
+     * transaction here would put a write lock across the token issue on the
+     * hottest path in the service.
+     */
+    const evicted = await this.sessions.revokeBeyondNewest(identity.id, MAX_SESSIONS_PER_IDENTITY);
+    if (evicted > 0) {
+      this.logger.info(
+        { identityId: identity.id, evicted, cap: MAX_SESSIONS_PER_IDENTITY },
+        'session cap reached — the oldest sessions for this identity were revoked',
+      );
+    }
 
     const accessToken = await this.tokens.issueAccessToken({
       identityId: identity.id,
@@ -547,6 +631,63 @@ export class AuthService {
     return credential.kind === 'email'
       ? this.identities.findByEmail(credential.value)
       : this.identities.findByMobile(credential.value);
+  }
+
+  /**
+   * Refuses a refresh once this identity's standing has been REVOKED — as
+   * opposed to never having existed.
+   *
+   * THE GAP THIS CLOSES. Refresh only looked up an employment when the caller
+   * passed `?enterpriseRefId=`, so a suspended or removed person who simply
+   * omitted the parameter kept minting access tokens for the seven days their
+   * refresh cookie lasts. Suspending somebody revokes their sessions
+   * (employees.service.ts), which covers the ordinary case — but only the
+   * sessions that exist AT THAT MOMENT, and only on the one path that remembers
+   * to call it. A session minted in the window before revocation commits, a
+   * future removal path that does not revoke, a business that goes away: each
+   * leaves a live cookie, and this is the last check between it and a fresh
+   * token.
+   *
+   * WHY NOT SIMPLY "REQUIRE AN ACTIVE EMPLOYMENT". Having none is legitimate.
+   * Staff with platform-wide reach have no employment by design and
+   * completeLogin issues them a session on purpose; an identity that has not
+   * joined a business yet has none either, and a flow that lets somebody finish
+   * joining needs a token in hand to do it. Requiring an employment here would
+   * lock both out at their first refresh, fifteen minutes after signing in.
+   *
+   * SO THE RULE IS THE DIFFERENCE BETWEEN THE TWO. Employments on the record but
+   * none of them active is standing that was taken away; no employment at all is
+   * standing that was never granted. Only the first is a revocation, and only the
+   * first is refused. An invitation never accepted counts as "on the record" and
+   * is therefore refused too, which costs nothing: accept-invite activates the
+   * employment inside the same transaction that sets the password, so an
+   * invited-only identity has no session to refresh in the first place.
+   *
+   * Staff reach short-circuits it, so this costs a platform admin no query at
+   * all — and their standing is the staff row, which findActiveByIdentity has
+   * already checked is active.
+   */
+  private async assertStandingNotRevoked(
+    identityId: number,
+    hasPlatformReach: boolean,
+  ): Promise<void> {
+    if (hasPlatformReach) return;
+
+    const standing = await this.employees.countStandingForIdentity(identityId);
+    if (standing.employments > 0 && standing.active === 0) {
+      /*
+       * A dead session, not a dead account: revoke it, so the next request stops
+       * at findLiveByTokenHash instead of paying for this check again — and so
+       * "removed" ends up recorded on the row rather than re-derived on every
+       * refresh for a week.
+       */
+      const revoked = await this.sessions.revokeAllForIdentity(identityId);
+      this.logger.info(
+        { identityId, revoked, employments: standing.employments },
+        'refresh refused — every employment for this identity is inactive; sessions revoked',
+      );
+      throw new AppException(ErrorCode.AuthNoActiveEmployment);
+    }
   }
 
   private assertLoginable(identity: Identity): void {

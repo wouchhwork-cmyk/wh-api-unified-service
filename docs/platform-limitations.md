@@ -13,8 +13,21 @@ why a removed reaction never disappears, read the relevant section first.
 and what we do about it.** Where a workaround exists it is named; where none
 exists that is stated plainly rather than left open.
 
-Last verified: **6 September 2026**, against `@ai_automation_demo`
-(IG `17841472020051826`) on Graph `v23.0`.
+Last verified: **9 September 2026**, against `@ai_automation_demo`
+(IG `17841472020051826`).
+
+**THE VERSION MATTERS, and mind which one you measure on.** This app runs the
+version in `GRAPH_API_VERSION`, currently **`v25.0`**. Much of the early probing
+here was done with a scratch script pinned to `v23.0` — the app was never on
+v23, but the findings were gathered there, and **one of them turned out to be a
+v23 artefact** (§1.4). Everything else was re-checked on v25 on 9 Sep 2026 and
+holds.
+
+`v26.0` exists and answers; `v27.0` does not. Upgrading to v26 gains nothing
+listed here — comment media, share counts, reply authorship and both `(#10)`
+permission walls are identical — and **loses** one thing: `replies{id,username}`
+returns 500 on v26 where v25 answers. So v25 is the deliberate choice, not
+inertia.
 
 ---
 
@@ -102,6 +115,56 @@ owner's username**.
 
 Using the wrong one fails loudly and usefully: asking `mentioned_media` for a
 comment mention returns `(#10) User is not mentioned in the caption.`
+
+### 1.2b A tag EDITED into an existing comment sends no webhook — but is readable
+
+**Reported by the user and confirmed 9 Sep 2026.** Somebody comments on an
+external post without tagging us, then edits the comment to add `@ourhandle`.
+**No `mentions` webhook is ever delivered.** The `mentions` field fires when a
+comment is CREATED containing a mention; there is no comment-edited event for
+mentions at all — unlike DMs, which do get `message_edit` (§7.1).
+
+**The mention is nonetheless real.** The Mentions API accepts the comment id and
+answers in full:
+
+```
+mentioned_comment.comment_id(18223508260329375) → 200
+  text     : "what are you planning @ai_automation_demo"
+  username : testrestaurant_sd
+  timestamp: 2026-09-09T18:10:26+0000
+```
+
+So this is **[META]** for the notification and NOT a limitation for the data: the
+tag is invisible only because nothing tells us to go and look.
+
+**These are recoverable, partially, at zero API cost.** We already store the
+tagged post's comment section per mention (§1.3), and that snapshot is how this
+one was found — it appeared in another mention's `postComments` on the same post.
+Scanning stored `postComments` for our own handle and projecting any comment that
+is not already a known mention would recover it, with no extra Graph call.
+
+**The limits of that approach, stated plainly — it recovers SOME of these, not
+all.** Two windows have to line up:
+
+1. **The post.** Only posts where we already hold at least one mention have a
+   stored comment section at all.
+2. **The 50 comments.** Instagram returns one page and no more (§1.4), so the
+   edited comment must fall inside it. This one did, because it landed on a post
+   we had been tagged on minutes earlier; on a post with 19,599 comments a tag
+   outside the returned 50 is invisible to us.
+
+And there is **no edge that LISTS our mentions** — `mentioned_media` and
+`mentioned_comment` both require an id you must already possess — so a tag
+edited into a comment on a post we have never been mentioned on is
+undiscoverable by any route. Do not go looking for one.
+
+**Where the id comes from, since it is the whole trick:** the comment list is
+requested as `comments{id,text,timestamp,like_count}` and we persist that `id`
+as `platformId`. So detection is a SQL query over data already banked, not a
+platform call; the only call is resolving a mention actually recovered — one per
+genuine find, which is the cheapest possible ratio.
+
+**Status: not built.** See docs/backlog.md §4.
 
 ### 1.3 What a tagged post will and will not tell us
 
@@ -227,11 +290,19 @@ exposes `previewUrl` in that order so no client has to know this, and keeps
 `mediaUrl` and `thumbnailUrl` separately for one that wants to play the video
 rather than preview it.
 
-**A misleading error worth knowing:** `comments{id,text}` fails with
-`500 Please reduce the amount of data you're asking for`, while
-`comments{id,text,timestamp}` succeeds. It is a field-combination quirk, **not**
-a volume problem — adding a field fixes it. Do not treat that 500 as a signal to
-back off and page smaller; it will not help.
+**A misleading error worth knowing, and it is EDGE-SPECIFIC.** On the post's
+comment list, `comments{id,text}` fails with `500 Please reduce the amount of
+data you're asking for` while `comments{id,text,timestamp}` succeeds. A
+field-combination quirk, **not** a volume problem — adding a field fixes it, so
+do not read that 500 as "page smaller".
+
+**Corrected 9 Sep 2026:** an earlier version of this entry generalised that to
+the `replies` edge as well. It does not hold there — `replies{id,text}` answers
+**200** on v25. The 500 was measured on v23 and wrongly assumed to be universal.
+
+These expansion limits also MOVE between versions: `replies{id,username}` is
+fine on v25 and 500s on v26. Treat any field list as measured-on-a-version, not
+as a permanent fact.
 
 ### 1.5 Who tagged us: a handle, and never an id
 
@@ -447,11 +518,31 @@ story was live — the edge and the permission both work.)
 expiring CDN link from `reply_to.story.url`; resolving the real story object
 would survive the 24-hour expiry.
 
-### 4.3 A story mention's media link can be refreshed — uniquely
+### 4.3 A story mention's link can be re-issued, but ONLY while the story lives
 
-`GET /{mid}?fields=story` re-issues a **fresh signed CDN link** for a
-`story_mention`. This works for story mentions and **nothing else** — `ig_post`
-and `ig_story` return nothing from the same call. Not yet used.
+`GET /{mid}?fields=story` returns `story.mention.link` for a `story_mention` —
+and for nothing else; `ig_post` and `ig_story` return nothing from the same call.
+
+**An earlier version of this entry called that a way to outlive the 24-hour
+expiry. It is not, and the difference matters enough that it was nearly built.**
+Tested 9 Sep 2026 against a story mention **89.9 hours old**:
+
+```
+the link we stored     → 404
+GET /{mid}?fields=story → 200   { "story": { "mention": { "link": "" } } }
+                                                          ^^ empty string
+```
+
+So the call keeps answering `200` after the story is gone, and hands back an
+**empty link**. It re-issues a signature for live media; it does not resurrect
+expired media. Within the 24-hour window the link we already hold still works,
+so refreshing buys essentially nothing.
+
+**[META]**, and there is nothing to build. **Do not build a refresh path** — the
+only thing worth taking from this is that `link: ""` is a definite "the story is
+gone", which is a cleaner signal than waiting for an image to fail to load. We
+do not use it, because the client already treats a failed story image as
+expected.
 
 ---
 

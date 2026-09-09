@@ -41,6 +41,19 @@ export interface EmployeeListRow {
   readonly roles: string[];
 }
 
+/**
+ * Whether an identity still stands anywhere — two counts rather than a boolean,
+ * because "has no active employment" and "never had one" are different answers
+ * and only the first is a revocation. AuthService.refresh() is the caller, and
+ * the comment there is the rule.
+ */
+export interface EmploymentStanding {
+  /** Employment rows on this person's record, in any status. */
+  readonly employments: number;
+  /** Of those, the ones login accepts: active, in a business that still exists. */
+  readonly active: number;
+}
+
 export interface EmployeeRecord {
   readonly employeeId: number;
   readonly identityId: number;
@@ -100,6 +113,39 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
       [identityId, enterpriseId, EmployeeStatus.Active],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * The two counts refresh needs, in one round trip rather than two.
+   *
+   * `active` matches listActiveByIdentity exactly — status active, in an
+   * undeleted enterprise — so refresh and login cannot disagree about what
+   * standing is. The LEFT JOIN is deliberate: the foreign key means an employment
+   * always has its enterprise, and joining INNER would silently drop the row
+   * from `employments` too if that ever stopped being true, turning "removed"
+   * into "never existed".
+   *
+   * Both halves stay on enterprise_employees_identity_idx, which is partial on
+   * `is_deleted = false` — so an employment soft-deleted rather than suspended is
+   * invisible here and reads as "never had one". Nothing in the service writes
+   * is_deleted today; a removal path that starts to MUST revoke that identity's
+   * sessions in the same transaction, because this query cannot see it.
+   */
+  async countStandingForIdentity(identityId: number): Promise<EmploymentStanding> {
+    const rows = await this.query<EmploymentStanding>(
+      `SELECT count(*)::int AS "employments",
+              (count(*) FILTER (
+                 WHERE m.status = $2::varchar AND e.is_deleted = false
+               ))::int AS "active"
+         FROM enterprise_employees m
+         LEFT JOIN enterprises e ON e.id = m.enterprise_id
+        WHERE m.identity_id = $1
+          AND m.is_deleted = false`,
+      [identityId, EmployeeStatus.Active],
+    );
+    // An aggregate always returns a row; the fallback is so a shape that
+    // somehow did not cannot read as standing.
+    return rows[0] ?? { employments: 0, active: 0 };
   }
 
   async create(input: {

@@ -23,6 +23,7 @@ import {
   type VerifyRequest,
   type AcceptInviteRequest,
   type ResendRequest,
+  type SignOutEverywhereResponse,
 } from '@/shared/contracts/auth/login.contract';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
@@ -290,6 +291,29 @@ export class AuthController {
     const token = request.cookies?.[REFRESH_COOKIE];
     if (typeof token === 'string' && token) await this.auth.logout(token);
     response.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+  }
+
+  @Post('logout-all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign out everywhere — revoke every session this person holds',
+    description:
+      'Authenticated, and identity-scoped: the identity is read from the access token, so there ' +
+      'is no body and no identifier a caller could use to sign somebody else out. It includes ' +
+      'the session making the request, because anybody reaching for this believes a device or a ' +
+      'token is in the wrong hands. Access tokens already issued are stateless and live out ' +
+      'their remaining fifteen minutes; what this ends is the ability to mint new ones.',
+  })
+  async logoutAll(
+    @CurrentActor() actor: ActorContext,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<SignOutEverywhereResponse> {
+    const result = await this.auth.signOutEverywhere(actor.identityId);
+    // The caller's own session is among the revoked, so the cookie it holds is
+    // now dead: clearing it stops the browser presenting a credential that can
+    // only fail.
+    response.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+    return result;
   }
 
   @Get('me')

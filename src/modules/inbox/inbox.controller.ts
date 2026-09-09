@@ -224,7 +224,11 @@ export class InboxController {
        * The thread view is the only place that can name a mention's
        * neighbours: the list has no reason to pay for the lookup.
        */
-      conversation: toConversationSummary(result.conversation, result.knownAuthors),
+      conversation: toConversationSummary(
+        result.conversation,
+        result.knownAuthors,
+        result.parentMention,
+      ),
       messages: result.messages.map((row) =>
         toMessage(row, result.attachmentsByMessageId.get(row.id) ?? []),
       ),
@@ -575,9 +579,12 @@ type KnownAuthors = ReadonlyMap<string, { authorName: string | null; direction: 
 
 const NO_KNOWN_AUTHORS: KnownAuthors = new Map();
 
+type ParentMention = { refId: string; subject: string | null } | null;
+
 function toMentionContext(
   metadata: Record<string, unknown>,
   known: KnownAuthors = NO_KNOWN_AUTHORS,
+  parentMention: ParentMention = null,
 ): Record<string, unknown> | null {
   const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
   const thisMentionCommentId =
@@ -693,6 +700,20 @@ function toMentionContext(
       known,
       thisMentionCommentId,
     ),
+    /*
+     * THE PARENT AS A CONVERSATION, not just as quoted text.
+     *
+     * When the comment this mention answered also tagged us, it is a mention of
+     * ours in its own right — the same exchange filed twice. Giving the client
+     * the ref lets it link the two instead of showing the parent's words with
+     * no way to reach the thread they belong to.
+     *
+     * Null whenever the parent is somebody else's comment, which is the common
+     * case and is not a failure.
+     */
+    parentMention: parentMention
+      ? { refId: parentMention.refId, subject: parentMention.subject }
+      : null,
   };
 }
 
@@ -795,6 +816,7 @@ function toConversationSummary(row: {
   assignedToName: string | null;
   },
   known: KnownAuthors = NO_KNOWN_AUTHORS,
+  parentMention: ParentMention = null,
 ): Record<string, unknown> {
   /*
    * Told to the client, not just enforced on it. A reply box that accepts text
@@ -833,7 +855,7 @@ function toConversationSummary(row: {
      * has to show — without it every row reads only as a name and a date.
      */
     subject: row.subject,
-    mentionContext: toMentionContext(row.contextMetadata ?? {}, known),
+    mentionContext: toMentionContext(row.contextMetadata ?? {}, known, parentMention),
     /*
      * Nested rather than flattened, so a client can tell "we have no name for
      * this person" from "there is no person" — a comment thread always has an

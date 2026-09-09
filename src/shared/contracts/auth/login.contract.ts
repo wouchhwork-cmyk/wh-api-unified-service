@@ -119,6 +119,18 @@ export const SwitchEnterpriseRequestSchema = z.object({ enterpriseRefId: z.uuid(
 /** Refresh may name an enterprise; a malformed value must be a 422, not a 500. */
 export const RefreshQuerySchema = z.object({ enterpriseRefId: z.uuid().optional() }).strict();
 
+/**
+ * "Sign out everywhere". There is no request schema on purpose: the identity
+ * comes from the caller's own access token, so a client sends nothing — and
+ * therefore has nothing to send that could name another person's account.
+ *
+ * The count is the caller's own and is worth returning: "signed out of 4 places"
+ * is how somebody confirms the thing they were worried about actually happened.
+ */
+export const SignOutEverywhereResponseSchema = z.object({
+  sessionsRevoked: z.number().int().nonnegative(),
+});
+
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export type VerifyRequest = z.infer<typeof VerifyRequestSchema>;
@@ -126,4 +138,5 @@ export type AcceptInviteRequest = z.infer<typeof AcceptInviteRequestSchema>;
 export type ResendRequest = z.infer<typeof ResendRequestSchema>;
 export type SelectEnterpriseRequest = z.infer<typeof SelectEnterpriseRequestSchema>;
 export type SwitchEnterpriseRequest = z.infer<typeof SwitchEnterpriseRequestSchema>;
+export type SignOutEverywhereResponse = z.infer<typeof SignOutEverywhereResponseSchema>;
 export type Employment = z.infer<typeof EmploymentSchema>;

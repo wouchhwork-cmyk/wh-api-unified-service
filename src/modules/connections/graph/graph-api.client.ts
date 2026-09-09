@@ -644,10 +644,18 @@ export class GraphApiClient {
       'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
       'permalink,username,timestamp,like_count,comments_count';
     /*
-     * `timestamp` in the replies list looks superstitious and is not:
-     * `replies{id,text}` fails with "Please reduce the amount of data you're
-     * asking for" while `replies{id,text,timestamp}` succeeds
-     * (docs/platform-limitations.md §1.4). Removing it breaks the call.
+     * `timestamp` and `like_count` are here because we WANT them, not to
+     * appease the field expander.
+     *
+     * An earlier comment here claimed `replies{id,text}` alone fails with
+     * "Please reduce the amount of data you're asking for". That was measured
+     * on v23 and is NOT true on v25, which this app actually runs — it answers
+     * 200. The 500 is real on the `comments` edge (see
+     * listMentionedPostComments) and was wrongly generalised to this one.
+     *
+     * Worth knowing that these expansion limits MOVE between versions: on v26
+     * `replies{id,username}` 500s where v25 answers. So do not treat any field
+     * list here as load-bearing without re-measuring on the configured version.
      */
     const replies = withReplies ? 'replies{id,text,timestamp,like_count},' : '';
 
@@ -724,9 +732,11 @@ export class GraphApiClient {
    * mention to fetch its surroundings would be a bad trade. Here a failure
    * costs only the surroundings.
    *
-   * `timestamp` is not optional decoration — `comments{id,text}` alone fails
-   * with that same 500 while `{id,text,timestamp}` succeeds
-   * (docs/platform-limitations.md §1.4).
+   * `timestamp` is not optional decoration ON THIS EDGE — `comments{id,text}`
+   * alone really does fail with that same 500 while `{id,text,timestamp}`
+   * succeeds, re-confirmed on v25 (docs/platform-limitations.md §1.4). The
+   * `replies` edge does NOT share this quirk on v25, so the two are commented
+   * separately rather than as one rule.
    */
   async listMentionedPostComments(
     instagramUserId: string,

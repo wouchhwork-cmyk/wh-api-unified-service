@@ -249,6 +249,38 @@ export class ConversationRepository extends BaseRepository {
    * The inbox list. Keyset pagination on exactly the columns
    * conversations_inbox_idx is built on, with id as the stable tiebreaker.
    */
+  /**
+   * The mention conversation that IS a given comment, when we hold it.
+   *
+   * A mention placed in a reply keeps the id of the comment it answered. When
+   * that comment also tagged us, it is already a conversation here — so the two
+   * are the same exchange filed twice, and this is what turns a duplicated
+   * excerpt into a link an agent can follow.
+   *
+   * Returns null for the ordinary case: the parent belonged to somebody else,
+   * and Meta will not describe a stranger's comment at all
+   * (docs/platform-limitations.md §1.9).
+   *
+   * Served by `conversations_mention_comment_idx`, an expression index over the
+   * jsonb key — without it this is a sequential scan on a thread read.
+   */
+  async findMentionByCommentId(
+    enterpriseId: number,
+    commentId: string,
+  ): Promise<{ refId: string; subject: string | null } | null> {
+    const rows = await this.query<{ refId: string; subject: string | null }>(
+      `SELECT ref_id AS "refId", subject
+         FROM conversations
+        WHERE enterprise_id = $1
+          AND conversation_kind = $2
+          AND context_metadata->>'mentionedCommentId' = $3
+          AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), ConversationKind.Mention, commentId],
+    );
+    return rows[0] ?? null;
+  }
+
   async listInbox(input: {
     enterpriseId: number;
     status: ConversationStatus | null;

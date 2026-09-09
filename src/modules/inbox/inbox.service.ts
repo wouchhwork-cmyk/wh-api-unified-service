@@ -185,6 +185,11 @@ export class InboxService {
      * recover from our own records.
      */
     knownAuthors: ReadonlyMap<string, { authorName: string | null; direction: MessageDirection }>;
+    /**
+     * The mention this one was replying to, when that comment tagged us too and
+     * is therefore already a conversation of ours. Null in the ordinary case.
+     */
+    parentMention: { refId: string; subject: string | null } | null;
     nextCursor: string | null;
     hasMore: boolean;
   }> {
@@ -241,11 +246,29 @@ export class InboxService {
       threadCommentIds(conversation.contextMetadata ?? {}),
     );
 
+    /*
+     * THE SAME EXCHANGE, FILED TWICE. A tag inside a reply to another tag gives
+     * us two conversations for one thread, and we already stored both halves of
+     * the link — the child's `mentionParentId` and the parent's
+     * `mentionedCommentId` are the same comment id. Nothing derived it, so an
+     * agent saw the parent's text duplicated into the child with no way to
+     * reach the conversation it belongs to.
+     *
+     * Only asked when the mention actually has a parent, so an ordinary
+     * top-level mention costs no query.
+     */
+    const parentCommentId = conversation.contextMetadata?.mentionParentId;
+    const parentMention =
+      typeof parentCommentId === 'string'
+        ? await this.conversations.findMentionByCommentId(enterpriseId, parentCommentId)
+        : null;
+
     return {
       conversation,
       messages,
       attachmentsByMessageId,
       knownAuthors,
+      parentMention,
       nextCursor:
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,

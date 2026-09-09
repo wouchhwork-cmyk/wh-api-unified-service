@@ -43,13 +43,57 @@ export class SessionRepository extends BaseRepository {
     );
   }
 
-  /** Used on password change and on account lock — every device signs out. */
+  /**
+   * Every device signs out. Called on a password change, on suspension, and by
+   * "sign out everywhere" — the one the signed-in person triggers themselves.
+   *
+   * Scoped to one identity by the WHERE clause and nothing else, which is what
+   * makes it safe to expose: the identity comes from the caller's own access
+   * token, so there is no parameter through which another person's sessions
+   * could be named.
+   */
   async revokeAllForIdentity(identityId: number): Promise<number> {
     const { affected } = await this.mutate(
       `UPDATE sessions SET revoked_at = now()
         WHERE identity_id = $1 AND revoked_at IS NULL
         RETURNING id`,
       [identityId],
+    );
+    return affected;
+  }
+
+  /**
+   * Enforces a cap on concurrent sessions: keeps the newest `keep` live sessions
+   * for one identity and revokes every live one behind them.
+   *
+   * Written as "keep the newest N" rather than "revoke the oldest one" so it is
+   * idempotent and self-healing. Two logins racing, a row that predates the cap,
+   * a cap that is lowered later — all of them settle at N, where "revoke one per
+   * login" would settle at whatever the table happened to hold.
+   *
+   * LIVE sessions only: an expired or already-revoked row is not something a
+   * client can present, so counting it would evict a working session in favour
+   * of a dead one.
+   *
+   * ORDER BY carries `id` as a tiebreaker because created_at is not unique —
+   * two sessions minted in the same millisecond would otherwise have no
+   * deterministic oldest, and OFFSET over a non-deterministic order can skip and
+   * duplicate rows.
+   */
+  async revokeBeyondNewest(identityId: number, keep: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE sessions SET revoked_at = now()
+        WHERE id IN (
+          SELECT id FROM sessions
+           WHERE identity_id = $1
+             AND revoked_at IS NULL
+             AND expires_at > now()
+             AND is_deleted = false
+           ORDER BY created_at DESC, id DESC
+           OFFSET $2::int
+        )
+        RETURNING id`,
+      [identityId, keep],
     );
     return affected;
   }

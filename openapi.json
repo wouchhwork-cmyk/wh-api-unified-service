@@ -164,6 +164,22 @@
         ]
       }
     },
+    "/api/v1/auth/logout-all": {
+      "post": {
+        "description": "Authenticated, and identity-scoped: the identity is read from the access token, so there is no body and no identifier a caller could use to sign somebody else out. It includes the session making the request, because anybody reaching for this believes a device or a token is in the wrong hands. Access tokens already issued are stateless and live out their remaining fifteen minutes; what this ends is the ability to mint new ones.",
+        "operationId": "AuthController_logoutAll_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Sign out everywhere — revoke every session this person holds",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/v1/auth/me": {
       "get": {
         "description": "What a client needs to decide what to render after a page reload, when all it holds is a token: whether this is an internal admin, which business the session is scoped to, that business's status, and the permission codes. No internal ids are returned — a sequential id would tell a caller how many businesses exist and let them probe for neighbours.",
