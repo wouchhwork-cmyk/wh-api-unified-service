@@ -528,6 +528,39 @@
         ]
       }
     },
+    "/api/v1/conversations/{refId}/messages/{messageRefId}/moderate": {
+      "post": {
+        "description": "Instagram allows moderation only to the owner of the media a comment sits on — explicitly even when the caller wrote the comment. So this is refused here for anything but a comment thread on one of your own posts, rather than spending a platform call to be told no. Accepted, not applied: the call goes through the outbox and the relay performs it.",
+        "operationId": "InboxController_moderateComment_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageRefId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "summary": "Hide, unhide or delete a comment on a post you own",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
     "/api/v1/conversations/{refId}/reply": {
       "post": {
         "description": "Returns 202 with status \"pending\": the message and its outbound ledger row are written in one transaction and the platform call happens afterwards, in the relay. Send the same idempotencyKey to retry safely — a repeat returns the original message rather than a second one.",

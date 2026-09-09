@@ -77,6 +77,17 @@ export const ReplyResponseSchema = z.object({
   status: z.enum(MessageStatus),
 });
 
+/**
+ * Moderating one comment on a post we own.
+ *
+ * An enum rather than three endpoints: the three actions share every guard —
+ * the same ownership proof, the same target lookup, the same outbox write — and
+ * splitting them would have triplicated all of it.
+ */
+export const ModerateCommentRequestSchema = z
+  .object({ action: z.enum(['hide', 'unhide', 'delete']) })
+  .strict();
+
 export const AssignRequestSchema = z
   .object({
     /** null unassigns. */
@@ -110,5 +121,6 @@ export type InboxQuery = z.infer<typeof InboxQuerySchema>;
 export type ThreadQuery = z.infer<typeof ThreadQuerySchema>;
 export type ReplyRequest = z.infer<typeof ReplyRequestSchema>;
 export type ReplyResponse = z.infer<typeof ReplyResponseSchema>;
+export type ModerateCommentRequest = z.infer<typeof ModerateCommentRequestSchema>;
 export type AssignRequest = z.infer<typeof AssignRequestSchema>;
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;

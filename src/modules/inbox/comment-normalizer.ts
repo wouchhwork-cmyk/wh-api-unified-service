@@ -223,8 +223,31 @@ function normalizeInstagram(change: InstagramCommentChange): NormalizedComment {
     return { skip: 'the instagram comment names no author id' };
   }
 
+  /*
+   * A COMMENT THAT IS MEDIA CARRIES NO `text` KEY AT ALL.
+   *
+   * Instagram omits `text` rather than sending it empty when a comment is a
+   * GIF, a sticker or a photo — and exposes NO field for the media itself, on
+   * anybody's post including our own, on every API version
+   * (docs/platform-limitations.md §1.4). So this absence is the ONLY signal
+   * that a comment had content we cannot show.
+   *
+   * Recorded because without it the two cases are indistinguishable downstream,
+   * and the inbox rendered a blank line. That is worse than it sounds: a reply
+   * to such a comment reads as a non-sequitur, which is exactly how it appeared
+   * on live traffic — "@genzrelics is it man ???" answering nothing.
+   *
+   * `in` rather than a falsy check: an empty string is a comment somebody
+   * really did leave empty, which is a different thing from one Meta declined
+   * to describe.
+   */
+  // Spread only when there is something to say, so an ordinary comment carries
+  // no empty bag — the same shape the mention path and `store` already expect.
+  const noText = !('text' in value);
+
   return {
     comment: {
+      ...(noText ? { metadata: { platformSentNoText: true } } : {}),
       commentId: value.id,
       rootCommentId: value.parent_id ?? value.id,
       parentId: value.parent_id ?? null,

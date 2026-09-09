@@ -33,6 +33,12 @@ export interface ConversationRow {
    * selected, so nothing could show what a thread was actually about.
    */
   readonly subject: string | null;
+  /**
+   * OUR post, when the comment's media is one of ours. Null for a mention on
+   * somebody else's post — and that null is the proof that moderating it would
+   * be refused by the platform (docs/platform-limitations.md §1.10).
+   */
+  readonly postId: number | null;
   readonly channelId: number;
   readonly customerId: number;
   readonly platform: Platform;
@@ -216,6 +222,7 @@ export class ConversationRepository extends BaseRepository {
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
+              cv.post_id AS "postId",
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
@@ -343,6 +350,7 @@ export class ConversationRepository extends BaseRepository {
               cv.customer_id AS "customerId", cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
+              cv.post_id AS "postId",
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",

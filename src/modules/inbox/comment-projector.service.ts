@@ -160,13 +160,36 @@ export class CommentProjectorService {
       return { projected: false, reason: OWN_CONTENT_REASON };
     }
 
+    /*
+     * A TAG ON OUR OWN POST IS A COMMENT, NOT A MENTION.
+     *
+     * The mentions surface exists for tags on media we CANNOT otherwise see —
+     * somebody else's post, where the mention is the only thing granting us
+     * sight of it. Our own post is already ours: we hold the row, the caption,
+     * the permalink and every other comment on it. Filing a tag there as a
+     * separate "mention" split one post's conversation across two places and
+     * showed an agent a snapshot of a post we own outright.
+     *
+     * It also fixes the reply: a comment thread is answered with
+     * `POST /{comment-id}/replies`, which is the correct edge for media we own,
+     * where a mention reply goes through the mentions edge instead.
+     *
+     * Ownership is decided by whether the tagged media is in our own posts —
+     * the same question `store` asks to fill `post_id`, so the answer costs one
+     * indexed lookup on a background projection rather than a request path.
+     */
+    const ownPostId = normalized.comment.postId
+      ? await this.posts.findIdByPlatformPostId(enterpriseId, channelId, normalized.comment.postId)
+      : null;
+    const isOurPost = ownPostId !== null;
+
     return this.store(
       enterpriseId,
       channelId,
       platform,
       inboundEventId,
       normalized.comment,
-      ConversationKind.Mention,
+      isOurPost ? ConversationKind.CommentThread : ConversationKind.Mention,
       platform === Platform.Instagram
         ? CustomerFirstSource.InstagramComment
         : CustomerFirstSource.FacebookComment,

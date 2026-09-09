@@ -401,6 +401,10 @@ describe('the shared inbox', () => {
       // Added when attachments started being stored: a message whose entire
       // content is its media used to arrive here as an empty body.
       'attachments',
+      // Added when a comment thread turned out to carry SEVERAL customers: the
+      // thread named none of them, so two people's comments were both drawn as
+      // an unnamed "inbound".
+      'author',
       'body',
       'canBeRepliedTo',
       'contentUnavailable',
@@ -408,10 +412,16 @@ describe('the shared inbox', () => {
       'deletedOnPlatform',
       'deletedOnPlatformAt',
       'direction',
+      // Hidden by US on the platform — Instagram never announces it, so this
+      // flag is ours to keep.
+      'hiddenOnPlatform',
       'isInternalNote',
       'isRead',
       'messageKind',
       'platformSentAt',
+      // Added when a GIF comment turned up as a blank line: Instagram omits
+      // `text` rather than sending it empty, and exposes no media field at all.
+      'platformSentNoText',
       'reaction',
       'refId',
       // Added when story replies started being surfaced: null unless the

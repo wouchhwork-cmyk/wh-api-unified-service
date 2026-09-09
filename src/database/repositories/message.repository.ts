@@ -67,6 +67,8 @@ export interface MessageRow {
    * here and neither has an id Meta would recognise.
    */
   readonly canBeRepliedTo: boolean;
+  /** Hidden by us on the platform. Instagram never announces it, so this is ours. */
+  readonly isHiddenOnPlatform: boolean;
   /**
    * When the customer unsent it. The row and its body are KEPT — this says the
    * platform no longer shows it, not that we have forgotten it.
@@ -76,6 +78,10 @@ export interface MessageRow {
   readonly parentExcerpt: string | null;
   /** Whether the answered message was ours or theirs. */
   readonly parentDirection: MessageDirection | null;
+  /** Who wrote this message, when a customer did. A thread can have several. */
+  readonly authorName: string | null;
+  /** The parent's author, for deciding whether a reply answers the same person. */
+  readonly parentCustomerId: number | null;
   /** Carries replyToPlatformMessageId and replyIsSelfReply. */
   readonly metadata: Record<string, unknown>;
   readonly platformSentAt: Date | null;
@@ -249,6 +255,67 @@ export class MessageRepository extends BaseRepository {
    * thread, which Meta would refuse anyway and which would leak that a given
    * ref_id exists.
    */
+  /**
+   * A message we are about to moderate on the platform.
+   *
+   * Separate from findReplyTarget because the questions differ: a reply needs
+   * to know the target still EXISTS on the platform, while moderation needs its
+   * current hidden state so an already-hidden comment is not hidden again.
+   */
+  async findModerationTarget(
+    enterpriseId: number,
+    conversationId: number,
+    refId: string,
+  ): Promise<{
+    id: number;
+    platformMessageId: string | null;
+    isHiddenOnPlatform: boolean;
+  } | null> {
+    const rows = await this.query<{
+      id: number;
+      platformMessageId: string | null;
+      isHiddenOnPlatform: boolean;
+    }>(
+      `SELECT id, platform_message_id AS "platformMessageId",
+              is_hidden_on_platform AS "isHiddenOnPlatform"
+         FROM messages
+        WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
+          AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Records moderation WE performed, rather than moderation the platform told
+   * us about.
+   *
+   * Optimistic, and deliberately so: Instagram sends no webhook when a comment
+   * is hidden or deleted (docs/platform-limitations.md §1.2c), so waiting to be
+   * told would mean never updating at all. The relay dead-letters a failed
+   * call, which is where a disagreement between us and Instagram would show.
+   */
+  async applyOwnModeration(input: {
+    enterpriseId: number;
+    messageId: number;
+    action: 'hide' | 'unhide' | 'delete';
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE messages
+          SET is_hidden_on_platform = CASE
+                WHEN $3::varchar = 'hide' THEN true
+                WHEN $3::varchar = 'unhide' THEN false
+                ELSE is_hidden_on_platform END,
+              is_deleted = CASE WHEN $3::varchar = 'delete' THEN true ELSE is_deleted END,
+              updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        RETURNING id`,
+      [this.requireEnterprise(input.enterpriseId), input.messageId, input.action],
+    );
+    return affected > 0;
+  }
+
   async findReplyTarget(
     enterpriseId: number,
     conversationId: number,
@@ -636,6 +703,7 @@ export class MessageRepository extends BaseRepository {
                  -- the row and show it; the platform will not thread onto it.
                  AND m.platform_deleted_at IS NULL)
                 AS "canBeRepliedTo",
+              m.is_hidden_on_platform AS "isHiddenOnPlatform",
               m.platform_deleted_at AS "platformDeletedAt",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",
@@ -646,8 +714,27 @@ export class MessageRepository extends BaseRepository {
               -- carry a second full copy of a message it may already be showing.
               LEFT(NULLIF(pm.body, ''), 120) AS "parentExcerpt",
               pm.direction AS "parentDirection",
+              /*
+               * WHO WROTE IT, per message.
+               *
+               * A conversation belongs to one customer, and a COMMENT THREAD
+               * does not: several different people comment under one post. The
+               * thread named nobody, so two customers' comments were both drawn
+               * as "inbound" and could not be told apart.
+               */
+              mcu.display_name AS "authorName",
+              /*
+               * And the parent's author, which is what actually decides whether
+               * a reply answers the SAME person. Deriving that from direction
+               * alone said "replying to their own message" whenever one
+               * customer answered another — true of every comment thread.
+               */
+              pm.customer_id AS "parentCustomerId",
               m.metadata
          FROM messages m
+         LEFT JOIN customers mcu ON mcu.id = m.customer_id
+                                AND mcu.enterprise_id = m.enterprise_id
+                                AND mcu.is_deleted = false
          LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
                                           AND se.enterprise_id = m.enterprise_id
                                           AND se.is_deleted = false

@@ -193,6 +193,75 @@ describe('instagram mention projection', () => {
     expect(count[0]?.count).toBe(0);
   });
 
+  it('files a tag on OUR OWN post as a comment, not a mention', async () => {
+    /*
+     * The mentions surface is for tags on media we cannot otherwise see. Our
+     * own post is already ours — we hold the row, the caption, the permalink
+     * and every other comment on it — so filing a tag there as a separate
+     * "mention" split one post's conversation across two places.
+     *
+     * It also decides the reply edge: a comment thread is answered with
+     * POST /{comment-id}/replies, correct for media we own, where a mention
+     * goes through the mentions edge.
+     *
+     * Observed live on 10 Sep 2026: a tagged comment on our own post arrived as
+     * a `mentions` webhook (an untagged one arrives as `comments`) and became a
+     * mention conversation carrying a snapshot of a post we own outright.
+     */
+    await db.query(
+      `INSERT INTO posts
+         (enterprise_id, channel_id, platform, post_kind, platform_post_id, caption, permalink_url)
+       VALUES ($1,$2,'instagram','image',$3,'ours','https://www.instagram.com/p/OURS/')`,
+      [enterpriseId, channelId, WEBHOOK.value.media_id],
+    );
+
+    const outcome = await projector(async () => RESOLUTION).projectMention(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      await event('own-post'),
+      WEBHOOK,
+      ['IG_1'],
+    );
+
+    expect(outcome.projected).toBe(true);
+
+    const rows: { conversation_kind: string; post_id: string | null }[] = await db.query(
+      `SELECT cv.conversation_kind, cv.post_id
+         FROM conversations cv
+         JOIN messages m ON m.conversation_id = cv.id
+        WHERE m.platform_message_id = $1`,
+      [WEBHOOK.value.comment_id],
+    );
+
+    expect(rows[0]?.conversation_kind).toBe(ConversationKind.CommentThread);
+    // And it is LINKED to the post, which a mention on a stranger's post cannot be.
+    expect(rows[0]?.post_id).not.toBeNull();
+  });
+
+  it('still files a tag on somebody else\'s post as a mention', async () => {
+    // The control: no posts row for that media, so it is not ours.
+    const outcome = await projector(async () => RESOLUTION).projectMention(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      await event('their-post'),
+      WEBHOOK,
+      ['IG_1'],
+    );
+
+    expect(outcome.projected).toBe(true);
+
+    const rows: { conversation_kind: string }[] = await db.query(
+      `SELECT cv.conversation_kind
+         FROM conversations cv
+         JOIN messages m ON m.conversation_id = cv.id
+        WHERE m.platform_message_id = $1`,
+      [WEBHOOK.value.comment_id],
+    );
+    expect(rows[0]?.conversation_kind).toBe(ConversationKind.Mention);
+  });
+
   it('skips a PERMANENT Mentions API failure for the honest reason', async () => {
     /*
      * A refusal that will never succeed — a deleted comment, a post gone

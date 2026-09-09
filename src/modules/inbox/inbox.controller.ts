@@ -36,6 +36,7 @@ import {
   AssignRequestSchema,
   InboxQuerySchema,
   MarkReadRequestSchema,
+  ModerateCommentRequestSchema,
   ReplyRequestSchema,
   StatusRequestSchema,
   ThreadQuerySchema,
@@ -247,6 +248,32 @@ export class InboxController {
     };
   }
 
+  @Post(':refId/messages/:messageRefId/moderate')
+  @RequirePermission(Permission.ConversationsManage)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Hide, unhide or delete a comment on a post you own',
+    description:
+      'Instagram allows moderation only to the owner of the media a comment sits on — explicitly ' +
+      'even when the caller wrote the comment. So this is refused here for anything but a comment ' +
+      'thread on one of your own posts, rather than spending a platform call to be told no. ' +
+      'Accepted, not applied: the call goes through the outbox and the relay performs it.',
+  })
+  async moderateComment(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+    @Param('messageRefId') messageRefId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const parsed = ModerateCommentRequestSchema.parse(body ?? {});
+    return this.inbox.moderateComment(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      RefIdParamSchema.parse(messageRefId),
+      parsed.action,
+    );
+  }
+
   @Post(':refId/reply')
   @RequirePermission(Permission.ConversationsReply)
   @HttpCode(HttpStatus.ACCEPTED)
@@ -411,6 +438,18 @@ function toMessage(
      */
     canBeRepliedTo: row.canBeRepliedTo,
     /*
+     * THE PLATFORM SENT NO TEXT, which is not the same as an empty message.
+     * Instagram omits `text` when a comment is a GIF, a sticker or a photo, and
+     * exposes no field for the media itself — so this absence is the only thing
+     * that distinguishes "content we cannot show" from "somebody sent nothing".
+     *
+     * Observed doing real damage: a blank line with a reply underneath asking
+     * about it reads as a non-sequitur.
+     */
+    platformSentNoText: row.metadata.platformSentNoText === true,
+    /** Hidden by us on the platform. Ours to set; Instagram never tells us. */
+    hiddenOnPlatform: row.isHiddenOnPlatform === true,
+    /*
      * The customer unsent it on Instagram. The body is still here on purpose —
      * the business is accountable for the conversation, and a record that
      * rewrites itself when somebody deletes a message is not a record. The
@@ -469,6 +508,15 @@ function toMessage(
     // webhook rather than typed by somebody here.
     sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
     /*
+     * WHO WROTE IT, when a customer did. A comment thread carries several
+     * different people, and without this the client drew every one of them as
+     * an unnamed "inbound" — so an agent could not tell who said what, or that
+     * a reply came from somebody else entirely.
+     *
+     * Null on our own messages: `sentBy` above names the colleague instead.
+     */
+    author: row.authorName ?? null,
+    /*
      * WHAT THIS ANSWERS, and what kind of reply it is.
      *
      * Present whenever the message IS a reply, even when we do not hold the
@@ -525,12 +573,26 @@ function toMessage(
             refId: row.parentRefId,
             excerpt: row.parentExcerpt,
             direction: row.parentDirection,
+            /*
+             * THE SAME PERSON, not merely the same direction.
+             *
+             * This was derived from `parentDirection === inbound`, which is
+             * right for a DM — one customer, so inbound means them — and WRONG
+             * for a comment thread, where several different people comment
+             * under one post. It reported "replying to their own message"
+             * every time one customer answered another, which was observed
+             * live: testrestaurant_sd answering genzrelics.
+             *
+             * Instagram's own flag wins where it exists; otherwise the authors
+             * are compared, which is the actual question. Null when there is no
+             * parent to compare against — an answer to a delivery Meta dropped.
+             */
             isSelfReply:
               typeof row.metadata.replyIsSelfReply === 'boolean'
                 ? row.metadata.replyIsSelfReply
-                : row.parentDirection === null
+                : row.parentCustomerId === null || row.customerId === null
                   ? null
-                  : row.parentDirection === MessageDirection.Inbound,
+                  : row.parentCustomerId === row.customerId,
           }
         : null,
   };
@@ -801,6 +863,7 @@ function toConversationSummary(row: {
   refId: string;
   conversationKind: string;
   subject: string | null;
+  postId: number | null;
   status: string;
   unreadCount: number;
   messageCount: number;
@@ -838,6 +901,23 @@ function toConversationSummary(row: {
     platform: row.platform,
     status: row.status,
     canReply: window.canReply,
+    /*
+     * WHETHER HIDE AND DELETE ARE EVEN POSSIBLE HERE, decided once on the
+     * server rather than re-derived by each client.
+     *
+     * Instagram allows moderation only to the owner of the media a comment sits
+     * on — explicitly even when the caller wrote the comment — so a mention on
+     * somebody else's post can never be moderated. `postId` is the proof: the
+     * projector fills it only when the comment's media is one of our own posts.
+     *
+     * A client that guessed this from the conversation kind alone would offer
+     * controls that can only fail, which is worse than offering none.
+     */
+    canModerateComments:
+      // Cast for the same reason the reply-window call above does: the row type
+      // carries the kind as a string, while the value is the enum.
+      (row.conversationKind as ConversationKind) === ConversationKind.CommentThread &&
+      row.postId !== null,
     replyBlockedReason: window.reason,
     /*
      * THE POST A MENTION IS ON, which is the whole context for the thread.

@@ -587,6 +587,112 @@ export class InboxService {
     });
   }
 
+  /**
+   * Hides, unhides or deletes one comment on a post we own.
+   *
+   * OWNERSHIP OF THE POST IS THE WHOLE PERMISSION, and it is checked here
+   * rather than left to Meta. Instagram allows moderation only to the owner of
+   * the media a comment sits on — explicitly "even if the user attempting to
+   * delete the comment is the comment's author" — so a comment on somebody
+   * else's post can never be moderated by us, and sending it anyway would
+   * spend a rate-limited call to be refused and then dead-letter, with the
+   * agent told nothing useful (docs/platform-limitations.md §1.8, §1.10).
+   *
+   * `post_id` is that proof: the projector fills it only when the comment's
+   * media matches a row in our own posts.
+   *
+   * The platform call goes through the OUTBOX, like every other outbound write
+   * — the row and the event commit together and the relay does the talking.
+   */
+  async moderateComment(
+    enterpriseId: number,
+    conversationRefId: string,
+    messageRefId: string,
+    action: 'hide' | 'unhide' | 'delete',
+  ): Promise<{ messageRefId: string; action: string }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+
+    /*
+     * Not a comment thread, or a comment thread on a post that is not ours:
+     * refused before anything is written or sent.
+     */
+    if (conversation.conversationKind !== ConversationKind.CommentThread) {
+      throw new AppException(ErrorCode.ReplyNotSupported, {
+        details: [{ field: 'action', issue: 'only a comment can be moderated' }],
+      });
+    }
+    if (conversation.postId === null) {
+      throw new AppException(ErrorCode.ReplyNotSupported, {
+        details: [
+          { field: 'action', issue: 'Instagram allows this only on a post you own' },
+        ],
+      });
+    }
+
+    const target = await this.messages.findModerationTarget(
+      enterpriseId,
+      conversation.id,
+      messageRefId,
+    );
+    if (!target) throw new AppException(ErrorCode.MessageNotFound);
+
+    // A comment the platform never gave an id — an internal note — has nothing
+    // to moderate there.
+    if (!target.platformMessageId) {
+      throw new AppException(ErrorCode.ReplyNotSupported, {
+        details: [{ field: 'action', issue: 'this message does not exist on the platform' }],
+      });
+    }
+
+    // Already in the asked-for state: a conflict rather than a wasted call.
+    if (
+      (action === 'hide' && target.isHiddenOnPlatform) ||
+      (action === 'unhide' && !target.isHiddenOnPlatform)
+    ) {
+      throw new AppException(ErrorCode.InvalidStateTransition, {
+        details: [{ field: 'action', issue: `already ${action === 'hide' ? 'hidden' : 'visible'}` }],
+      });
+    }
+
+    const eventType =
+      action === 'delete' ? OutboundEventType.CommentDelete : OutboundEventType.CommentHide;
+
+    return this.tx.runInTransaction(async () => {
+      await this.outbound.enqueue({
+        enterpriseId,
+        channelId: conversation.channelId,
+        destinationKind: DestinationKind.Channel,
+        destinationId: String(conversation.channelId),
+        platform: conversation.platform,
+        eventType,
+        inReplyToEventId: null,
+        recipientPlatformId: target.platformMessageId,
+        /*
+         * Keyed on the ACTION as well as the message, so hiding and later
+         * unhiding the same comment are two events rather than the second
+         * colliding with the first and being dropped.
+         */
+        dedupKey: outboundDedupKey(conversation.platform, eventType, `messages:${action}`, target.id),
+        correlationId: RequestContext.correlationId() ?? null,
+        payload: {
+          commentId: target.platformMessageId,
+          ...(action === 'delete' ? {} : { hidden: action === 'hide' }),
+        },
+        scheduledAt: null,
+      });
+
+      /*
+       * Applied locally in the same transaction, OPTIMISTICALLY. Instagram
+       * sends no webhook when a comment is hidden or deleted, so waiting to be
+       * told would mean the inbox never updated. A failed call dead-letters in
+       * the ledger, which is where the disagreement surfaces.
+       */
+      await this.messages.applyOwnModeration({ enterpriseId, messageId: target.id, action });
+
+      return { messageRefId, action };
+    });
+  }
+
   async markRead(enterpriseId: number, conversationRefId: string): Promise<void> {
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
     await this.conversations.markRead(enterpriseId, conversation.id);

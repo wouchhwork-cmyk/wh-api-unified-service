@@ -428,3 +428,60 @@ describe('normalizeMention — instagram', () => {
     expect('comment' in result && result.comment.commentId).toBe('TAGGED_MEDIA');
   });
 });
+
+/**
+ * A comment that is media, not text.
+ *
+ * Instagram OMITS `text` when a comment is a GIF, a sticker or a photo — it
+ * does not send it empty — and exposes no field for the media itself on any
+ * post, our own included, on every API version. So that absence is the only
+ * signal we get, and without recording it the inbox drew a blank line.
+ *
+ * The damage was not cosmetic: on live traffic a reply sat underneath asking
+ * "@genzrelics is it man ???" about a comment that rendered as nothing.
+ */
+describe('normalizeComment — a media comment', () => {
+  const base = {
+    id: 'IG_CM_GIF',
+    from: { id: 'IG_USER', username: 'genzrelics' },
+    media: { id: 'MEDIA_1', media_product_type: 'FEED' },
+  };
+
+  it('marks a comment whose text key is absent', () => {
+    // The real webhook shape for a GIF comment: no `text` at all.
+    const result = normalizeComment(Platform.Instagram, { field: 'comments', value: base });
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+    expect(result.comment.text).toBeNull();
+    expect(result.comment.metadata).toEqual({ platformSentNoText: true });
+  });
+
+  it('does NOT mark a comment somebody genuinely left empty', () => {
+    /*
+     * An empty string is a comment that exists and says nothing, which is a
+     * different fact from one Meta declined to describe. Conflating them would
+     * put "a photo or GIF" against a comment that had neither.
+     */
+    const result = normalizeComment(Platform.Instagram, {
+      field: 'comments',
+      value: { ...base, text: '' },
+    });
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+    expect(result.comment.metadata).toBeUndefined();
+  });
+
+  it('does not mark an ordinary comment', () => {
+    const result = normalizeComment(Platform.Instagram, {
+      field: 'comments',
+      value: { ...base, text: 'nice one' },
+    });
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+    expect(result.comment.text).toBe('nice one');
+    expect(result.comment.metadata).toBeUndefined();
+  });
+});

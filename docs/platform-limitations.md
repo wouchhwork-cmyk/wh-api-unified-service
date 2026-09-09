@@ -166,6 +166,35 @@ genuine find, which is the cheapest possible ratio.
 
 **Status: not built.** See docs/backlog.md §4.
 
+### 1.2c EDITING A COMMENT SENDS NOTHING, on our own posts too
+
+**Generalised from §1.2b, and it is broader than mentions.** There is **no
+webhook for a comment being edited, at all**. The `comments` field fires on
+creation; `mentions` fires on creation. Neither fires again when the text
+changes, and there is no `comment_edit` counterpart to the DM's `message_edit`
+(§7.1).
+
+So every one of these is invisible to us:
+
+- a tag added to an existing comment (§1.2b — confirmed, the mention was real
+  and readable, only the notification was missing)
+- a tag REMOVED from a comment we already stored, which leaves us showing a
+  mention that no longer names us
+- any wording change, on a stranger's post or **on our own**
+
+**[META]**, and the consequence is that stored comment text is only ever
+accurate as of the moment it arrived. We have no way to learn it changed, so we
+cannot correct it and cannot know we are wrong.
+
+**What partially covers it:** the tagged post's comment section is re-read on
+every projection (§1.3), so a comment whose text changed will show its NEW text
+in that snapshot while the stored message keeps the old — the two disagreeing is
+itself a signal, though nothing acts on it. There is no equivalent for comments
+on our own posts, which are stored once from the webhook and never re-read.
+
+**Deletion, by contrast, we CAN act on** — see §1.10 — just not detect: no
+webhook announces it either.
+
 ### 1.3 What a tagged post will and will not tell us
 
 A mention is read access to the post it sits on (§3.1), so a surprising amount
@@ -243,6 +272,35 @@ directly is refused (`400`) — the mention edge is the only route to it.
 We do not know the rule. Treat a reply's text as **optional**: render what came
 back and say nothing about the rest, rather than showing an empty bubble.
 Observed on events 1516 and 1517, 6 Sep 2026.
+
+**Confirmed again 10 Sep 2026 on OUR OWN post, which settles it.** A GIF comment
+on media we own is DIRECTLY readable — `GET /{comment-id}` answers 200, unlike an
+external comment, which is reachable only through the mentions edge — and every
+media field is still refused:
+
+```
+GET /18124808758891144 → 200 { id, timestamp, username, like_count, hidden }
+                                ^^ no `text` key at all
+media_url, attachment(s), image, sticker, gif, media_type, thumbnail_url
+                       → (#100) Tried accessing nonexisting field
+```
+
+The control on the same post returns `text: "😍"` fine, so `text` is simply
+**omitted when a comment has none** — that absence is the only signal that a
+comment was media. Full ownership changes nothing, so this is the object model,
+not a permission or version boundary.
+
+**The documentation is SILENT, checked 10 Sep 2026 — do not go looking again.**
+The IG Comment reference lists twelve fields and none is media (`media` there is
+the POST, not an attachment). The webhooks reference does not enumerate the
+`comments` payload at all and refers you back to that list. Nothing acknowledges
+that a media comment arrives with neither text nor media.
+
+That makes this **undocumented behaviour rather than documented impossibility**,
+which matters for how we write about it: Meta never promised comment media and
+never ruled it out. Treat a missing `text` as normal, and do not write code
+comments claiming it can never exist — "as of September 2026 there is no such
+field" is the honest form.
 
 **A comment's own image is NOT retrievable — confirmed on a comment that had
 one.** A mention carrying both text and an uploaded image returned the text and
@@ -406,6 +464,39 @@ what that comment said — open the mention on Instagram to read it in place."*
 The distinction matters. When the parent DID mention us it is fully readable,
 author and sibling thread included (§1.7), so this only bites on tags placed
 under strangers' comments.
+
+### 1.10 We CAN moderate comments on our own posts — hide, unhide and delete
+
+**Verified 10 Sep 2026** against a real comment on our own post
+(`18183484054414151`), which this test genuinely deleted:
+
+```
+GET    /{comment-id}          → 200 { text, hidden: false }
+POST   /{comment-id}?hide=true  → 200 { success: true }   → hidden: true
+POST   /{comment-id}?hide=false → 200 { success: true }   → restored
+DELETE /{comment-id}          → 200 { success: true }
+GET    /{comment-id}          → 400 Object does not exist
+```
+
+**Ownership of the POST is what grants this, not authorship of the comment** —
+the exact inverse of the intuition, and Meta says so: *"A comment can only be
+deleted by the owner of the object upon which the comment was made, even if the
+user attempting to delete the comment is the comment's author."* Hence §1.8: our
+own reply to a mention on somebody else's post can never be removed by us.
+
+| | our post | somebody else's |
+|---|---|---|
+| read the comment directly | ✅ | ❌ (mentions edge only) |
+| hide / unhide | ✅ | ❌ |
+| delete | ✅ | ❌ |
+
+`GraphApiClient.deleteComment` and the hide path already exist, with
+`OutboundEventType.CommentHide` and `CommentDelete` wired through the relay. The
+capability is built; nothing in the portal exposes it yet.
+
+Note there is **no webhook when a comment is deleted** either (§1.2c), so a
+comment removed on Instagram stays in our inbox exactly as a removed reaction
+stays visible (§2.1).
 
 ---
 
