@@ -683,8 +683,16 @@ orphan edit as evidence of a dropped webhook, so it fired a resync that recovere
 `synced_item_count: 0`.
 
 Harmless — one wasted Graph call per occurrence, no data harm — but it is a false
-positive, not a real loss. A short grace before acting on an orphan edit would
-remove nearly all of them.
+positive, not a real loss.
+
+**Fixed 14 Sep 2026.** An orphan edit now waits one projection pass before being
+treated as evidence, using the ledger's own retry backoff rather than a
+scheduler of its own. It is THROWN rather than skipped, because skipping is
+terminal — a message landing a second later would never be reconsidered — and on
+the next pass the ordinary guard finds it and the event ends as "already hold"
+with no platform call at all. A delivery that really was lost still queues its
+resync one backoff cycle later, which is fine: that is recovery, not real-time
+work. The grace is `ORPHAN_EDIT_GRACE_ATTEMPTS`.
 
 ### 7.2 Meta never resends a delivery we answered 200
 
@@ -746,11 +754,35 @@ interval '1 year'` so it cannot reach a good row. All 72 divide back to an
 instant on 5-6 Sep 2026, so every corrupted row is wrong by exactly this factor
 and none is left behind.
 
-### 8.2 Still not fixed
+### 8.2 Both closed, 14 Sep 2026 — and neither the way the entry assumed
 
-- **A video `story_mention` is stored as `mediaKind: image`.** The CDN serves it
-  as `video/mp4`; it only renders because the client retries a failed image as
-  `<video>`.
-- **`ConversationKind.StoryReply` is never assigned.** The projector files every
-  DM as `DirectMessage`. Harmless today — both kinds have identical reply
-  semantics — but the enum value and its reply-window entry are dead.
+- **A video `story_mention` stored as `mediaKind: image`.** Still stored as an
+  image, and now it SAYS SO: the attachment carries `kindIsGuessed` and the API
+  exposes it.
+
+  The payload genuinely cannot be improved on. A `story_mention` arrives with a
+  `type` and a `url` and **nothing else** — no media type, no extension, nothing
+  separating a photo from a video — so any label is a default, not a fact. A
+  HEAD request against the CDN to read the content-type was considered and
+  rejected: it buys a correct label at the cost of a network call on a path that
+  already renders correctly, and the signed link expires within a day, so the
+  label would outlive its own evidence.
+
+  What actually changed is that the client's image→video fallback is now
+  DELIBERATE rather than accidental. A first failure is expected and declared,
+  instead of looking like a broken attachment.
+
+- **`ConversationKind.StoryReply` was never assigned — so it is gone.** The
+  entry implied the fix was to start assigning it. It was not.
+
+  `THREAD_KEY_PREFIX` already mapped it to the same `'dm'` prefix as
+  `DirectMessage`, with a comment saying story replies land in the DM thread. So
+  the value was unreachable by construction. And it was the wrong shape anyway:
+  a DM thread carries story replies AND ordinary messages over its life, so
+  naming the whole thread after one message says something false about the rest.
+
+  The concept lives one level down and is live there: `MessageKind.StoryReply`
+  marks the individual message, with real rows behind it. The enum member, its
+  prefix entry, its reply-window mappings and its resyncable-kind entry are
+  removed; the reply-window tests that covered it now read through
+  `DirectMessage`, which is what actually governs those threads.

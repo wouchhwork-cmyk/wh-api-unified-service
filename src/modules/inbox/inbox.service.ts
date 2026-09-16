@@ -44,7 +44,6 @@ import { CLOSED_TO_REPLIES, evaluateReplyWindow, replyEventTypeFor } from './rep
  */
 const RESYNCABLE_KINDS: ReadonlySet<ConversationKind> = new Set([
   ConversationKind.DirectMessage,
-  ConversationKind.StoryReply,
 ]);
 
 export interface ReplyInput {

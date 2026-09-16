@@ -9,6 +9,7 @@ import { MessageAttachmentRepository } from '@/database/repositories/message-att
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
+import { ORPHAN_EDIT_GRACE_ATTEMPTS } from '@/shared/constants';
 import {
   ConversationKind,
   CustomerFirstSource,
@@ -114,12 +115,18 @@ export class DirectMessageProjectorService {
     platform: Platform,
     inboundEventId: number,
     payload: unknown,
+    /**
+     * Which attempt this is. Only the orphan-edit path reads it, and it defaults
+     * so every existing caller and test keeps working — a default of 1 means
+     * "first sight", which is the conservative reading.
+     */
+    attemptCount = 1,
   ): Promise<ProjectionOutcome> {
     const event = payload as MessagingEvent;
     const message = event.message;
 
     if (event.message_edit?.mid) {
-      return this.handleMessageEdit(enterpriseId, channelId, event);
+      return this.handleMessageEdit(enterpriseId, channelId, event, attemptCount);
     }
 
     /*
@@ -638,6 +645,7 @@ export class DirectMessageProjectorService {
     enterpriseId: number,
     channelId: number,
     event: MessagingEvent,
+    attemptCount: number,
   ): Promise<ProjectionOutcome> {
     const mid = event.message_edit?.mid;
     if (!mid) return { projected: false, reason: 'the event carries no message id' };
@@ -649,6 +657,28 @@ export class DirectMessageProjectorService {
     const senderId = event.sender?.id;
     if (!senderId) {
       return { projected: false, reason: 'a message_edit for an unknown message, with no sender' };
+    }
+
+    /*
+     * AN ORPHAN EDIT IS NOT YET PROOF OF A LOST DELIVERY.
+     *
+     * Meta can send the edit BEFORE the message it edits — observed 0.7 seconds
+     * apart on live traffic — so acting on first sight fired a resync that
+     * recovered nothing and spent a Graph call to learn what arrived a moment
+     * later anyway.
+     *
+     * Thrown rather than skipped, so the ledger's own retry does the waiting:
+     * skipping is TERMINAL, and the message landing a second later would never
+     * be reconsidered. On the next pass the guard above finds it and this ends
+     * as "already hold" with no platform call at all.
+     *
+     * This is a deliberate wait, not a failure — the message says so, because
+     * it is what an operator reading `last_error` will see.
+     */
+    if (attemptCount <= ORPHAN_EDIT_GRACE_ATTEMPTS) {
+      throw new Error(
+        'a message_edit arrived before the message it names; waiting one pass before assuming the delivery was lost',
+      );
     }
 
     const queued = await this.syncJobs.enqueueIfAbsent({

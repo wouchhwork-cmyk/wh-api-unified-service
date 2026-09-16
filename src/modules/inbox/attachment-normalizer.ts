@@ -241,6 +241,27 @@ export function normalizeAttachments(
     // Whether this link outlives the message. The UI needs it to decide between
     // "this image is gone" and "this image failed to load".
     if (sourceUrl) metadata.stableUrl = isStableMediaUrl(sourceUrl);
+    /*
+     * THE MEDIA KIND HERE IS A GUESS, and saying so is the honest part.
+     *
+     * A story_mention arrives with a `type` and a `url` and NOTHING else — no
+     * media type, no extension, nothing in the payload that distinguishes a
+     * photo from a video. We default to Image because most story mentions are,
+     * and because the CDN serves both from the same signed link, but a video
+     * story mention is stored as an image and that is simply wrong.
+     *
+     * It renders anyway, because the client retries a failed image as a video —
+     * and that retry was working by ACCIDENT. Flagging the uncertainty makes it
+     * deliberate: a client can expect the first attempt to fail rather than
+     * treating it as a broken attachment, and nothing downstream should trust
+     * this kind for a story mention.
+     *
+     * The alternative — a HEAD request per story mention to read the
+     * content-type — was considered and rejected: it buys a correct label at
+     * the cost of a network call on a path that already renders correctly, and
+     * the link expires in a day so the label would outlive its own evidence.
+     */
+    if (type === STORY_MENTION_TYPE) metadata.kindIsGuessed = true;
     if (attachment.payload?.reel_video_id) metadata.reelVideoId = attachment.payload.reel_video_id;
     /*
      * The post's own id, which outlives the CDN link exactly as a story's asset

@@ -503,6 +503,15 @@ function toMessage(
       title: attachment.metadata.title ?? null,
       /** Show it, play it, or link to it — see renderAsFor. */
       renderAs: renderAsFor(attachment),
+      /*
+       * WE ARE NOT SURE WHAT THIS IS. A story mention carries no type at all,
+       * so `renderAs` above is a default rather than a fact: a video story
+       * mention is labelled an image and only renders because the client falls
+       * back to a video element. Told to the client so that fallback is
+       * deliberate rather than accidental, and so a first failure is expected
+       * rather than reported as a broken attachment.
+       */
+      kindIsGuessed: attachment.metadata.kindIsGuessed === true,
     })),
     // Null for anything the customer sent, and for a message projected from a
     // webhook rather than typed by somebody here.

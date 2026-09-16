@@ -87,23 +87,19 @@ describe('evaluateReplyWindow', () => {
     },
   );
 
-  it('applies the window to a story reply, because it is delivered as a message', () => {
-    // A story reply arrives in the message thread and is answered there, so
-    // Meta's messaging window governs it exactly as it governs a DM. Exempting
-    // it let the reply box stay enabled on a thread Meta would refuse.
-    const result = evaluateReplyWindow({
-      conversationKind: ConversationKind.StoryReply,
-      lastInboundAt: hoursAgo(25),
-      now: NOW,
-    });
+  /*
+   * STORY REPLIES USED TO HAVE THEIR OWN CASES HERE, against a
+   * ConversationKind.StoryReply that nothing ever assigned. A story reply lands
+   * in the DM thread with that person — the thread-key prefix said so by
+   * mapping it to 'dm' — so it is governed by the DirectMessage cases above and
+   * below, which is why those two tests are gone rather than rewritten. What is
+   * really a story reply is the MESSAGE, and `MessageKind.StoryReply` carries
+   * that (docs/platform-limitations.md §8.2).
+   */
 
-    expect(result.canReply).toBe(false);
-    expect(result.reason).toContain('24 hours');
-  });
-
-  it('allows a story reply inside the window', () => {
+  it('allows a direct message inside the window', () => {
     const result = evaluateReplyWindow({
-      conversationKind: ConversationKind.StoryReply,
+      conversationKind: ConversationKind.DirectMessage,
       lastInboundAt: hoursAgo(2),
       now: NOW,
     });
@@ -177,7 +173,6 @@ describe('evaluateReplyWindow', () => {
   describe('replyEventTypeFor', () => {
     it.each([
       [ConversationKind.DirectMessage, OutboundEventType.DirectMessage],
-      [ConversationKind.StoryReply, OutboundEventType.DirectMessage],
       [ConversationKind.CommentThread, OutboundEventType.CommentReply],
       /*
        * A MENTION IS NOT A COMMENT REPLY, though it looks like one.

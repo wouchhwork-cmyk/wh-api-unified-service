@@ -28,8 +28,6 @@ export const CLOSED_TO_REPLIES: ReadonlySet<ConversationStatus> = new Set([
  */
 const REPLY_EVENT_TYPE: Readonly<Record<ConversationKind, OutboundEventType | null>> = {
   [ConversationKind.DirectMessage]: OutboundEventType.DirectMessage,
-  /** A story reply arrives in, and is answered in, the message thread. */
-  [ConversationKind.StoryReply]: OutboundEventType.DirectMessage,
   [ConversationKind.CommentThread]: OutboundEventType.CommentReply,
   /*
    * A mention is a comment on SOMEONE ELSE'S post, and that is exactly why it
@@ -49,7 +47,6 @@ const REPLY_EVENT_TYPE: Readonly<Record<ConversationKind, OutboundEventType | nu
  */
 const WINDOWED_KINDS: ReadonlySet<ConversationKind> = new Set([
   ConversationKind.DirectMessage,
-  ConversationKind.StoryReply,
 ]);
 
 /** What sending a reply to this conversation would enqueue, or null if nothing can. */

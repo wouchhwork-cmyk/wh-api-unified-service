@@ -293,3 +293,38 @@ describe('normalizing a message attachment', () => {
     expect(media.attachments[0]?.metadata.platformType).toBe('ig_story');
   });
 });
+
+/**
+ * A story mention's media kind is a GUESS, and the contract says so.
+ *
+ * The attachment arrives with a `type` and a `url` and nothing else — no media
+ * type, no extension, nothing separating a photo from a video. We default to
+ * Image, so a video story mention is stored as an image and renders only
+ * because the client retries a failed image as a video. That retry was working
+ * by accident; the flag makes it deliberate.
+ */
+describe('a story mention does not claim to know what it is', () => {
+  const storyMention = [
+    {
+      type: 'story_mention',
+      payload: { url: 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1&signature=x' },
+    },
+  ];
+
+  it('marks the kind as guessed', () => {
+    const result = normalizeAttachments(storyMention);
+    expect(result.attachments[0]?.metadata.kindIsGuessed).toBe(true);
+  });
+
+  it('still defaults to image, because most story mentions are', () => {
+    const result = normalizeAttachments(storyMention);
+    expect(result.attachments[0]?.mediaKind).toBe(MediaKind.Image);
+  });
+
+  it('does NOT mark an ordinary image, where the platform did tell us', () => {
+    const result = normalizeAttachments([
+      { type: 'image', payload: { url: 'https://example.test/a.jpg' } },
+    ]);
+    expect(result.attachments[0]?.metadata.kindIsGuessed).toBeUndefined();
+  });
+});

@@ -3,7 +3,16 @@ export enum ConversationKind {
   DirectMessage = 'direct_message',
   CommentThread = 'comment_thread',
   Mention = 'mention',
-  StoryReply = 'story_reply',
+  /*
+   * NO StoryReply. A story reply lands in the DM thread with that person —
+   * `THREAD_KEY_PREFIX` said so by mapping it to the same 'dm' prefix — so a
+   * conversation kind for it was never reachable, and the projector never
+   * assigned it. The concept belongs one level down, where it is live:
+   * `MessageKind.StoryReply` marks the individual message, which is the thing
+   * that really is a story reply. A thread carries both those and ordinary DMs
+   * over its life, so naming the whole thread after one message was the wrong
+   * shape. Removed rather than left dead (docs/platform-limitations.md §8.2).
+   */
   Review = 'review',
 }
 
@@ -69,8 +78,6 @@ export enum PostStatus {
 export const THREAD_KEY_PREFIX: Readonly<Record<ConversationKind, string>> = {
   [ConversationKind.DirectMessage]: 'dm',
   [ConversationKind.CommentThread]: 'comment',
-  /** Story replies land in the DM thread, so they share its prefix. */
-  [ConversationKind.StoryReply]: 'dm',
   [ConversationKind.Mention]: 'mention',
   [ConversationKind.Review]: 'review',
 } as const;

@@ -8,6 +8,7 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
 import { Platform, SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
+import { ORPHAN_EDIT_GRACE_ATTEMPTS } from '@/shared/constants';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /** The projector logs; nothing here asserts on it. */
@@ -1159,5 +1160,145 @@ describe('conversation resync jobs', () => {
       `SELECT metadata FROM messages WHERE platform_message_id = 'LIVE_WITH_MEDIA'`,
     );
     expect(stored[0]?.metadata.contentUnavailable).toBeUndefined();
+  });
+});
+
+/**
+ * A `message_edit` that names a message we have never seen.
+ *
+ * It looks like proof of a dropped delivery and usually is not: Meta can send
+ * the edit BEFORE the message it edits — observed 0.7 seconds apart on live
+ * traffic — so acting on first sight fired a resync that recovered nothing,
+ * spending a Graph call to learn what arrived a moment later anyway.
+ */
+describe('an orphan message_edit', () => {
+  let db: DataSource;
+  let syncJobs: SyncJobRepository;
+  let enterpriseId: number;
+  let channelId: number;
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+    syncJobs = new SyncJobRepository(db);
+  });
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  function projector(): DirectMessageProjectorService {
+    return new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+  }
+
+  async function event(key: string): Promise<number> {
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+      [enterpriseId, channelId, key],
+    );
+    return Number(rows[0]?.id);
+  }
+
+  const EDIT = {
+    sender: { id: 'ALICE' },
+    recipient: { id: 'IG_1' },
+    timestamp: 1788682400000,
+    message_edit: { mid: 'UNSEEN_MID', num_edit: 0 },
+  };
+
+  const resyncCount = async (): Promise<number> => {
+    const rows: { count: number }[] = await db.query(
+      `SELECT count(*)::int FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    return rows[0]?.count ?? 0;
+  };
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    const enterprise: { id: string }[] = await db.query(
+      `INSERT INTO enterprises (name, slug, email) VALUES ('Acme','acme','a@acme.test') RETURNING id`,
+    );
+    enterpriseId = Number(enterprise[0]?.id);
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    channelId = Number(channel[0]?.id);
+  });
+
+  it('waits one pass rather than queueing a resync on first sight', async () => {
+    /*
+     * Thrown, not skipped: skipping is TERMINAL, so a message landing a second
+     * later would never be reconsidered. The throw sends it back through the
+     * ledger's own backoff.
+     */
+    await expect(
+      projector().project(enterpriseId, channelId, Platform.Instagram, await event('e1'), EDIT, 1),
+    ).rejects.toThrow(/arrived before the message it names/u);
+
+    expect(await resyncCount()).toBe(0);
+  });
+
+  it('costs no platform call at all when the message then arrives', async () => {
+    // The real case: the message lands between the two attempts.
+    await projector().project(enterpriseId, channelId, Platform.Instagram, await event('m1'), {
+      sender: { id: 'ALICE' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682401000,
+      message: { mid: 'UNSEEN_MID', text: 'the message itself' },
+    });
+
+    /*
+     * Measured as a DELTA around the edit, because first contact from an unknown
+     * customer queues a resync of its own — that is the history backfill doing
+     * its job, and counting absolutely would blame the edit for it.
+     */
+    const before = await resyncCount();
+
+    const outcome = await projector().project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      await event('e2'),
+      EDIT,
+      2,
+    );
+
+    expect(outcome.projected).toBe(false);
+    expect(outcome.reason).toContain('already hold');
+    expect(await resyncCount()).toBe(before);
+  });
+
+  it('still recovers a delivery that really was lost', async () => {
+    // Second attempt, message still absent: now it is evidence rather than a
+    // race, and the resync is worth the call.
+    const outcome = await projector().project(
+      enterpriseId,
+      channelId,
+      Platform.Instagram,
+      await event('e3'),
+      EDIT,
+      ORPHAN_EDIT_GRACE_ATTEMPTS + 1,
+    );
+
+    expect(outcome.projected).toBe(false);
+    expect(outcome.reason).toContain('resync queued');
+    expect(await resyncCount()).toBe(1);
   });
 });

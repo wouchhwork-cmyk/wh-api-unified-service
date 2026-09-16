@@ -140,6 +140,23 @@ export const SYNC_COMMENTS_PER_POST = 50;
  * the platform actually gives rather than inventing a target.
  */
 export const MENTION_POST_COMMENTS_KEPT = 50;
+
+/**
+ * How many projection attempts a `message_edit` naming an unknown message waits
+ * before we treat the delivery as genuinely lost.
+ *
+ * Meta can deliver the edit BEFORE the message it edits — observed 0.7 seconds
+ * apart on live traffic — so an orphan edit is not proof of a dropped webhook.
+ * Acting on the first sight of one fired a resync that recovered nothing:
+ * `synced_item_count: 0`, one Graph call spent to be told what we already knew a
+ * moment later.
+ *
+ * One attempt is enough. The ledger's retry backoff is seconds, which is orders
+ * of magnitude longer than the gap Meta actually produces, and a genuinely lost
+ * delivery is recovery rather than real-time work — so paying one backoff cycle
+ * to avoid a pointless platform call is the right trade.
+ */
+export const ORPHAN_EDIT_GRACE_ATTEMPTS = 1;
 /*
  * TWENTY, because that is Meta's ceiling, not ours: "You can only get details
  * about the 20 most recent messages in the conversation. If you query a message

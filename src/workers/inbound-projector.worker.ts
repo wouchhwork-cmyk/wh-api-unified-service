@@ -36,6 +36,12 @@ interface ProjectionContext {
    * record for the business itself.
    */
   readonly ownPlatformIds: readonly string[];
+  /**
+   * Which attempt this is, so a projector can tell "not here YET" from "not
+   * coming". Meta delivers some events out of order, and the difference decides
+   * whether to wait for the ledger's next pass or act on what is missing.
+   */
+  readonly attemptCount: number;
 }
 
 type Projector = (
@@ -79,6 +85,7 @@ export class InboundProjectorWorker extends BasePoller {
         context.platform,
         context.inboundEventId,
         payload,
+        context.attemptCount,
       ),
     );
     this.projectors.set(InboundEventType.Mention, (context, payload) =>
@@ -143,6 +150,8 @@ export class InboundProjectorWorker extends BasePoller {
             ownPlatformIds: [context.platformChannelId, context.parentPlatformChannelId].filter(
               (id): id is string => id !== null,
             ),
+            // Already incremented by the claim, so the first pass reads 1.
+            attemptCount: event.attemptCount,
           },
           event.payload,
         );
