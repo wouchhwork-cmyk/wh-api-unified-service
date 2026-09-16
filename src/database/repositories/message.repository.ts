@@ -362,7 +362,32 @@ export class MessageRepository extends BaseRepository {
   ): Promise<number | null> {
     const { rows } = await this.mutate<{ id: number }>(
       `UPDATE messages
-          SET platform_message_id = $4, updated_at = now()
+          SET platform_message_id = $4,
+              /*
+               * THE ECHO IS PROOF OF DELIVERY, so the status is corrected too.
+               *
+               * This stamped the id and left the status alone, which was wrong
+               * for the one case that matters. An AMBIGUOUS send — where the
+               * call failed in a way that does not say whether Meta accepted
+               * it — is deliberately settled as failed rather than retried,
+               * because a duplicate reply to a customer is worse than a missing
+               * one an agent can resend. When Meta HAD accepted it, the echo
+               * comes back carrying the platform's own id: that is the
+               * read-back the ambiguous path says is required.
+               *
+               * Stamping the id and leaving failed in place meant we received
+               * that proof and used half of it — the thread showed a delivered
+               * reply marked failed, permanently.
+               *
+               * Only ever upgrades. A row already sent or delivered keeps what
+               * it has, so a read receipt is never walked backwards.
+               */
+              status = CASE
+                WHEN status IN ($6, $7) THEN status
+                ELSE $8
+              END,
+              platform_sent_at = COALESCE(platform_sent_at, now()),
+              updated_at = now()
         WHERE id = (
           SELECT id FROM messages
            WHERE enterprise_id = $1
@@ -382,6 +407,9 @@ export class MessageRepository extends BaseRepository {
         body,
         platformMessageId,
         MessageDirection.Outbound,
+        MessageStatus.Sent,
+        MessageStatus.Delivered,
+        MessageStatus.Sent,
       ],
     );
     return rows[0]?.id ?? null;

@@ -228,24 +228,45 @@ parser that returns a number — so the comparison was always true and it always
 reported "already there". It looked correct only because every database it had
 been pointed at already existed.
 
-### 1.9 Smaller, but real — **S each**
+### 1.9 Smaller, but real — **audited 16 Sep 2026, and mostly stale**
 
-- **Resend cooldown is configured and unenforced.** `resendCooldownMs` is read by
-  nothing; only the hourly per-destination cap of 5 applies, and it counts every
-  verification kind to that destination. There is also no resend endpoint.
+**Four of the six below were already done or were never real.** Each was checked
+against the code before being struck through, and the note says what was found —
+an entry that sends somebody looking for a bug that does not exist costs as much
+as a missing entry.
+
+- ~~**Resend cooldown is configured and unenforced.**~~ DONE.
+  `VerificationService.resend` enforces `resendCooldownMs` and answers an
+  unknown destination, one with no live challenge, and one inside its cooldown
+  identically, so it reveals nothing. `POST /auth/resend` exists, on the
+  credential throttle budget.
 - ~~**`recordDelivery` has no tenant predicate.**~~ DONE — it takes the
   enterprise and scopes on it, and the relay threads its own claimed row's
   tenant through. The one caller with no tenant (an event naming no enterprise)
   now says out loud that the message cannot be settled.
-- **Only `archived` blocks a reply,** despite a `CONVERSATION_CLOSED` code
-  existing; resolved and closed threads are still repliable.
-- **A role's scope is not enforced at assignment.** Only the composite foreign
-  keys stand between a staff-scoped role and a business employee.
-- **Ambiguous sends are cancelled, never reconciled.** Where we cannot tell
-  whether a message left, we drop it — the safe choice, but no read-back is
-  attempted afterwards.
-- **`POST /conversations/:refId/read` parses nothing.** The one mutation with no
-  schema; any body is accepted and ignored.
+- ~~**Only `archived` blocks a reply.**~~ DONE. `CLOSED_TO_REPLIES` holds
+  Resolved, Closed and Archived.
+- ~~**A role's scope is not enforced at assignment.**~~ NOT REAL. The only
+  granting path resolves the role through `findByRefId(enterpriseId, …)`, which
+  filters on `enterprise_id` — and every staff-scoped role has a NULL
+  enterprise, so none can ever be returned there. Verified against the seeded
+  roles: `staff` rows are `enterprise_id IS NULL`, `enterprise` rows are not.
+  The composite foreign keys are the second line, not the only one.
+- ~~**Ambiguous sends are cancelled, never reconciled.**~~ DONE 16 Sep 2026 —
+  and the reconciliation was already arriving; we were using half of it.
+
+  Where a send fails without saying whether Meta accepted it, the relay settles
+  it as failed rather than retrying, because a duplicate reply to a customer is
+  worse than a missing one an agent can resend. But if Meta HAD accepted it, the
+  echo comes back carrying the platform's id — that IS the read-back the branch
+  says is required. `claimPendingOutbound` matches on `platform_message_id IS
+  NULL` rather than on status, so it claimed the row and stamped the id while
+  leaving the status at `failed`: a delivered reply read as failed in the thread
+  permanently. It now corrects the status too, and only ever upwards, so a read
+  receipt is never walked backwards.
+- ~~**`POST /conversations/:refId/read` parses nothing.**~~ DONE. It parses
+  `MarkReadRequestSchema`, so a body it does not understand is refused rather
+  than silently ignored.
 
 ---
 

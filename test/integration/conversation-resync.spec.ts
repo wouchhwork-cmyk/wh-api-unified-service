@@ -1302,3 +1302,121 @@ describe('an orphan message_edit', () => {
     expect(await resyncCount()).toBe(1);
   });
 });
+
+/**
+ * An ambiguous send that Meta actually delivered.
+ *
+ * Where a send fails in a way that does not say whether the platform accepted
+ * it, the relay settles it as FAILED rather than retrying — a duplicate reply
+ * to a customer is worse than a missing one an agent can resend. The backlog
+ * called that "cancelled, never reconciled", but the reconciliation does
+ * arrive: Meta echoes our own message back carrying its id.
+ *
+ * The bug was using half of it. The echo stamped the platform id and left the
+ * status alone, so a reply that HAD been delivered read as failed in the thread
+ * for ever.
+ */
+describe('an echo reconciling an ambiguous send', () => {
+  let db: DataSource;
+  let messages: MessageRepository;
+  let enterpriseId: number;
+  let channelId: number;
+  let conversationId: number;
+  let customerId: number;
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+    messages = new MessageRepository(db);
+  });
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    const enterprise: { id: string }[] = await db.query(
+      `INSERT INTO enterprises (name, slug, email) VALUES ('Acme','acme','a@acme.test') RETURNING id`,
+    );
+    enterpriseId = Number(enterprise[0]?.id);
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    channelId = Number(channel[0]?.id);
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source)
+       VALUES ($1,'someone','instagram_dm') RETURNING id`,
+      [enterpriseId],
+    );
+    customerId = Number(customer[0]?.id);
+    const conversation: { id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, platform, conversation_kind, platform_thread_id)
+       VALUES ($1,$2,$3,'instagram','direct_message','dm:1') RETURNING id`,
+      [enterpriseId, channelId, customerId],
+    );
+    conversationId = Number(conversation[0]?.id);
+  });
+
+  /** A reply the relay gave up on: no platform id, marked failed. */
+  async function abandonedReply(): Promise<number> {
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, customer_id, direction, message_kind, body, status)
+       VALUES ($1,$2,$3,'outbound','text','are you still there?','failed') RETURNING id`,
+      [enterpriseId, conversationId, customerId],
+    );
+    return Number(rows[0]?.id);
+  }
+
+  const read = async (id: number): Promise<{ status: string; platform_message_id: string | null }> =>
+    (
+      await db.query<{ status: string; platform_message_id: string | null }[]>(
+        `SELECT status, platform_message_id FROM messages WHERE id = $1`,
+        [id],
+      )
+    )[0];
+
+  it('corrects a failed reply the platform had actually accepted', async () => {
+    const id = await abandonedReply();
+
+    const claimed = await messages.claimPendingOutbound(
+      enterpriseId,
+      conversationId,
+      'are you still there?',
+      'MID_FROM_THE_ECHO',
+    );
+
+    expect(claimed).toBe(id);
+    const row = await read(id);
+    expect(row.platform_message_id).toBe('MID_FROM_THE_ECHO');
+    // The whole point: it no longer reads as failed to the agent who sent it.
+    expect(row.status).toBe('sent');
+  });
+
+  it('never walks a read receipt backwards', async () => {
+    /*
+     * A message already marked delivered has had a read receipt applied. An
+     * echo arriving afterwards must not downgrade that to merely sent.
+     */
+    const id = await abandonedReply();
+    await db.query(`UPDATE messages SET status = 'delivered' WHERE id = $1`, [id]);
+
+    await messages.claimPendingOutbound(
+      enterpriseId,
+      conversationId,
+      'are you still there?',
+      'MID_FROM_THE_ECHO',
+    );
+
+    expect((await read(id)).status).toBe('delivered');
+  });
+});
