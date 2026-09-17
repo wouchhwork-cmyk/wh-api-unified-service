@@ -553,6 +553,11 @@ export async function applyPostTableObjects(
   // --- sessions cleanup --------------------------------------------------
   await run(`CREATE INDEX sessions_identity_idx ON sessions (identity_id)`);
   await run(`CREATE INDEX sessions_expiry_idx ON sessions (expires_at) WHERE revoked_at IS NULL`);
+  // The other half of the retention sweep. Partial, so it stays the size of the
+  // revoked population rather than the table.
+  await run(
+    `CREATE INDEX sessions_revoked_idx ON sessions (revoked_at) WHERE revoked_at IS NOT NULL`,
+  );
 
   /*
    * The nonce is the single-use key, so its uniqueness is the guarantee rather
@@ -568,9 +573,18 @@ export async function applyPostTableObjects(
   await run(
     `CREATE INDEX verifications_destination_idx ON verifications (destination, created_at DESC)`,
   );
+  /*
+   * NOT narrowed by is_deleted: the retention sweep must reach soft-deleted
+   * rows, and a partial index only serves a query that repeats its predicate.
+   * The live-verification lookup still uses this, with a recheck.
+   */
   await run(`
-      CREATE INDEX verifications_expiry_idx ON verifications (expires_at)
-      WHERE consumed_at IS NULL AND is_deleted = false
+      CREATE INDEX verifications_unconsumed_expiry_idx ON verifications (expires_at)
+      WHERE consumed_at IS NULL
+    `);
+  await run(`
+      CREATE INDEX verifications_consumed_idx ON verifications (consumed_at)
+      WHERE consumed_at IS NOT NULL
     `);
   await run(`CREATE INDEX verifications_identity_idx ON verifications (identity_id)`);
   await run(

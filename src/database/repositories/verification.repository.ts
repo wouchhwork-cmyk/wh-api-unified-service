@@ -167,19 +167,40 @@ export class VerificationRepository extends BaseRepository {
     ]);
   }
 
-  /** Retention sweep: consumed and expired rows go after a short window. */
+  /**
+   * Retention sweep: consumed and expired rows go after a short window.
+   *
+   * TWO STATEMENTS RATHER THAN ONE OR, for the reason the session sweep gives
+   * at length: the OR could use neither partial index, so this scanned the
+   * whole table on every run. Split, the consumed half uses
+   * `verifications_consumed_idx` and the unconsumed half
+   * `verifications_unconsumed_expiry_idx`.
+   *
+   * Disjoint on `consumed_at`, so between them they cover every row. One that
+   * was consumed after it expired is kept until the CONSUMPTION ages out —
+   * retention from the later event, matching sessions.
+   */
   async deleteSettledBefore(cutoff: Date, limit: number): Promise<number> {
-    const { affected } = await this.mutate(
+    const consumed = await this.mutate(
       `DELETE FROM verifications
         WHERE id IN (
           SELECT id FROM verifications
-           WHERE (consumed_at IS NOT NULL AND consumed_at < $1)
-              OR (expires_at < $1)
+           WHERE consumed_at IS NOT NULL AND consumed_at < $1
            LIMIT $2
         )
         RETURNING id`,
       [cutoff, limit],
     );
-    return affected;
+    const expired = await this.mutate(
+      `DELETE FROM verifications
+        WHERE id IN (
+          SELECT id FROM verifications
+           WHERE consumed_at IS NULL AND expires_at < $1
+           LIMIT $2
+        )
+        RETURNING id`,
+      [cutoff, limit],
+    );
+    return consumed.affected + expired.affected;
   }
 }

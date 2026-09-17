@@ -98,20 +98,29 @@ export class SessionRepository extends BaseRepository {
     return affected;
   }
 
-  /** The cleanup sweep. Hard-deletes rows no one can present any more. */
   /**
-   * Two statements rather than one OR.
+   * The cleanup sweep. Hard-deletes rows no one can present any more.
    *
-   * `(expires_at < $1) OR (revoked_at < $1)` cannot use
-   * sessions_expiry_idx — the OR defeats the partial predicate — so it was a
-   * sequential scan of the whole table on every run. Split, each half uses an
-   * index.
+   * TWO STATEMENTS RATHER THAN ONE OR, and each half now names the predicate
+   * its index is partial on — which the first half did not, so it never used
+   * one. `EXPLAIN` with `enable_seqscan = off` refused to use
+   * `sessions_expiry_idx` for a bare `expires_at < $1`: a partial index serves
+   * only a query that repeats its predicate, so the split bought nothing until
+   * `revoked_at IS NULL` was added here.
+   *
+   * The halves are disjoint, and together they cover every row: unrevoked ones
+   * age out on `expires_at`, revoked ones on `revoked_at`. A row that is both
+   * expired and revoked is therefore kept until the REVOCATION ages out, which
+   * is the later of the two events — "delete N days after the last thing that
+   * happened to this row" being what retention is usually taken to mean.
    */
   async deleteExpiredBefore(cutoff: Date, limit: number): Promise<number> {
     const expired = await this.mutate(
       `DELETE FROM sessions
         WHERE id IN (
-          SELECT id FROM sessions WHERE expires_at < $1 LIMIT $2
+          SELECT id FROM sessions
+           WHERE expires_at < $1 AND revoked_at IS NULL
+           LIMIT $2
         )
         RETURNING id`,
       [cutoff, limit],

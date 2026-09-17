@@ -73,10 +73,10 @@ none of it is quietly dropped.
 | **Graph responses are not validated** | M | Every response is cast to `T` with no runtime check. Most of the remaining Meta-integration findings collapse into one zod schema at that boundary. |
 | ~~**The webhook subscription is never reconciled**~~ | — | **DONE 9 Sep 2026.** `WebhookSubscriptionService.reconcileAll()` diffs `listSubscribedFields` against `SUBSCRIBED_FIELDS` every six hours and re-subscribes what is missing; a dead token is flagged through the existing `markReauthRequired` convention and then costs nothing, because the population query already excludes flagged channels. Instagram channels are skipped without a call — `{ig-id}/subscribed_apps` is `(#100) nonexisting field`, verified live; the subscription lives on the linked Page. Found a real gap on the first look: the dev Page was missing `mentions`, `comments` and `messaging_optins`, because it was subscribed twelve hours BEFORE those fields were added to the constant. |
 | **Backfill holds one lease for a serial batch** | M | Claim leases the whole batch, then the work is done row by row, so the tail of a large batch is guaranteed to overrun. Truncation is at least reported now, for both comments and messages. |
-| **A partially-walked sync job sits in `running`** | S | No worker can claim that status; it resumes only via the reaper. |
+| ~~**A partially-walked sync job sits in `running`**~~ | — | **NOT A DEFECT — checked 17 Sep 2026.** The entry describes the design, not a gap. `LeaseReaperWorker` calls `syncJobs.reclaimExpiredLeases()` alongside the inbound and outbound ledgers, and `claimBatch` always stamps `lease_expires_at` when it sets `running`, so no row can reach that status without a lease to expire. |
 | **The daily metrics refresh has no retention** | S | One `inbound_events` row per post per day, kept forever. |
 | **`provider_connections` uniqueness** | S | Keyed on `provider_user_id`, so one tenant can hold two channel rows for the same Page. |
-| **Retention sweeps are unindexed** | S | Both the session and verification sweeps use predicates no index can serve. |
+| ~~**Retention sweeps are unindexed**~~ | — | **DONE 17 Sep 2026.** Confirmed with `EXPLAIN` under `enable_seqscan = off` — the planner refused an index on all four predicates, so these were sequential scans of `sessions` and `verifications` on every run. Migration `1757600000000`. See §1.12. |
 | **Queue gauges scan three ledgers** | S | Three unfiltered aggregate scans per sample and per `/health/detail`. At least `/health/detail` is platform-staff-only now, so an ordinary role cannot trigger them. |
 | ~~**Three copies of `clampLimit`**~~ | — | **DONE 17 Sep 2026.** One `shared/utils/page-limit.ts` beside the cursor codec. The three had already drifted: catalogue's returned NaN for a non-finite input and never floored, so a fractional limit would have reached SQL as `LIMIT 7.9`. Unreachable through any controller — every schema parses `limit` first — which is exactly why nobody noticed. |
 | **Keyset cursors lose sub-millisecond precision** | S | Found 17 Sep while paginating employees, fixed THERE only; platform, inbox and catalogue still have it. See §1.11. |
@@ -284,6 +284,45 @@ as a missing entry.
 - ~~**`POST /conversations/:refId/read` parses nothing.**~~ DONE. It parses
   `MarkReadRequestSchema`, so a body it does not understand is refused rather
   than silently ignored.
+
+### ~~1.12 Neither retention sweep could use an index~~ — DONE (17 Sep)
+
+Both sweeps sequentially scanned their table on every run: `sessions`, which
+grows with every login, and `verifications`, which grows with every code ever
+sent.
+
+The session sweep had ALREADY been split into two statements to escape an `OR`,
+with a comment saying each half then used an index. It did not. A partial index
+only serves a query that repeats its predicate, and the first half asked for a
+bare `expires_at < $1` while `sessions_expiry_idx` is partial on
+`revoked_at IS NULL`. Proved rather than assumed, with `enable_seqscan = off`:
+
+| predicate | before | after |
+| --- | --- | --- |
+| `expires_at < $1` | seq scan even with seqscan off | — |
+| `expires_at < $1 AND revoked_at IS NULL` | — | `sessions_expiry_idx` |
+| `revoked_at IS NOT NULL AND revoked_at < $1` | nothing indexed `revoked_at` | `sessions_revoked_idx` |
+| verifications, the whole `OR` | seq scan | — |
+| `consumed_at IS NOT NULL AND consumed_at < $1` | — | `verifications_consumed_idx` |
+| `consumed_at IS NULL AND expires_at < $1` | — | `verifications_unconsumed_expiry_idx` |
+
+`verifications_expiry_idx` was **widened** rather than duplicated — its
+`is_deleted = false` predicate meant it could never serve a sweep, and a sweep
+that cannot reach soft-deleted rows keeps destinations and secret hashes
+forever. The wider index still serves the live-verification lookup, so this
+replaced an index instead of adding one. Net: two new partial indexes, both
+narrow.
+
+**One behavioural change, deliberate.** Each sweep is now two disjoint halves
+split on `revoked_at IS NULL` / `consumed_at IS NULL`, so a row that is both
+expired and settled ages out on the LATER of the two events rather than the
+earlier. "Delete N days after the last thing that happened to this row" is what
+retention is normally taken to mean, and the old rule could remove a session
+revoked minutes ago because it had expired months before.
+
+Pinned by `test/integration/retention-sweeps.spec.ts`, which covers both halves,
+the later-event rule, the soft-deleted row, and — the failure a split invites —
+that no row falls into the gap between the two predicates.
 
 ### 1.11 Keyset cursors lose sub-millisecond precision — **S, three listings left**
 
