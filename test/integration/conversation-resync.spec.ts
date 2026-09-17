@@ -1377,13 +1377,19 @@ describe('an echo reconciling an ambiguous send', () => {
     return Number(rows[0]?.id);
   }
 
-  const read = async (id: number): Promise<{ status: string; platform_message_id: string | null }> =>
-    (
-      await db.query<{ status: string; platform_message_id: string | null }[]>(
-        `SELECT status, platform_message_id FROM messages WHERE id = $1`,
-        [id],
-      )
-    )[0];
+  async function read(
+    id: number,
+  ): Promise<{ status: string; platform_message_id: string | null }> {
+    const rows: { status: string; platform_message_id: string | null }[] = await db.query(
+      `SELECT status, platform_message_id FROM messages WHERE id = $1`,
+      [id],
+    );
+    const row = rows[0];
+    // A missing row here means the fixture never inserted; failing loudly beats
+    // an assertion against undefined.
+    if (!row) throw new Error(`no message ${id}`);
+    return row;
+  }
 
   it('corrects a failed reply the platform had actually accepted', async () => {
     const id = await abandonedReply();

@@ -20,6 +20,12 @@ export interface RequestContextStore {
    */
   ipAddress?: string | undefined;
   userAgent?: string | undefined;
+  /**
+   * The label the CALLER put on this request, if it sent one. A trace hint for
+   * logs only — deliberately separate from `correlationId`, which is ours and
+   * is what the audit trail and the event ledgers are keyed by.
+   */
+  clientTraceId?: string | undefined;
 }
 
 const storage = new AsyncLocalStorage<RequestContextStore>();
@@ -53,6 +59,10 @@ export const RequestContext = {
 
   userAgent(): string | undefined {
     return storage.getStore()?.userAgent;
+  },
+
+  clientTraceId(): string | undefined {
+    return storage.getStore()?.clientTraceId;
   },
 
   /**

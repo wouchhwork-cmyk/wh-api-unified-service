@@ -176,12 +176,28 @@ class of defect turned up twice more and is fixed with it: a client-supplied
 `X-Forwarded-For` that is not an address was written into an `inet` column, and
 an opaque cursor carrying `{"t":"nope"}` bound an Invalid Date into a query.
 
-### 1.6 The correlation id is client-supplied — **S**
+### ~~1.6 The correlation id is client-supplied~~ — DONE (17 Sep)
 
-`RequestContextMiddleware` accepts an inbound `x-correlation-id` or
-`x-request-id`. It is echoed in every response, written to `outbound_events`, and
-used as the audit anchor — so a caller can choose the id their actions are filed
-under. Fine as a trace hint, wrong as an audit key.
+The id is now always ours, and the caller's value survives only as a logged
+`clientTraceId` — a trace hint, which is all it was ever fit to be.
+
+**The entry pointed at the wrong file.** The fix does not belong in
+`RequestContextMiddleware`: `LoggerModule` is an *imported* module, so pino's
+middleware runs before anything in `configure()`, and `genReqId` had already
+adopted the client's header by the time the context middleware read
+`request.id`. Hardening only the middleware — the obvious reading of this entry
+— compiles, tests clean, and changes nothing. The trust boundary is
+`src/shared/logging/logger.config.ts`.
+
+Bounding and stripping now live in one place, `shared/logging/client-trace.ts`,
+shared by both readers so they cannot drift: the hint is truncated to 100
+characters (the width of `correlation_id` in both ledgers) and control
+characters are removed, because a newline in a logged value is how one log line
+becomes two and the forged one reads exactly like the real one.
+
+Pinned by `test/unit/correlation-id.spec.ts`, including the case that motivates
+all of it: two callers sending the same value now get two different ids instead
+of collapsing into one apparent request.
 
 ### 1.7 Audit coverage — **S remaining**
 

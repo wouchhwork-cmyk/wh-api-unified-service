@@ -2,8 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Params } from 'nestjs-pino';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AppConfigService } from '@/config';
-
-const CORRELATION_HEADERS = ['x-correlation-id', 'x-request-id'] as const;
+import { readClientTraceId } from './client-trace';
 
 /**
  * Field names that must never appear in a log line, whatever wrote them.
@@ -61,22 +60,40 @@ export function buildLoggerConfig(config: AppConfigService): Params {
           }
         : {}),
 
+      /*
+       * OURS, ALWAYS. The caller does not get to choose it.
+       *
+       * This used to return an inbound `x-correlation-id` / `x-request-id`
+       * verbatim, and that id is not a cosmetic log tag: RequestContextMiddleware
+       * adopts whatever lands on `request.id`, and the correlation id it opens
+       * the store with is written onto audit_logs, inbound_events and
+       * outbound_events. A caller supplying it is a caller choosing the key
+       * their own actions are filed under, which is the one thing an audit trail
+       * exists to prevent — and two callers sending the same value collapse into
+       * one apparent request.
+       *
+       * This module is where the trust boundary actually sits: pino's middleware
+       * comes from an imported module, so it runs BEFORE the context middleware
+       * and assigns the id first. Fixing only the middleware would have changed
+       * nothing.
+       *
+       * The caller's own value is still logged, as `clientTraceId` below.
+       */
       genReqId: (request: IncomingMessage): string => {
         // The context middleware may already have assigned one; reuse it so the
         // requestId a client is handed is the same string the logs carry.
         const existing = (request as IncomingMessage & { id?: string }).id;
         if (typeof existing === 'string' && existing.length > 0) return existing;
-
-        for (const header of CORRELATION_HEADERS) {
-          const value = request.headers[header];
-          if (typeof value === 'string' && value.length > 0 && value.length <= 128) return value;
-        }
         return randomUUID();
       },
 
-      customProps: (request: IncomingMessage) => ({
-        correlationId: (request as IncomingMessage & { id?: string }).id,
-      }),
+      customProps: (request: IncomingMessage) => {
+        const clientTraceId = readClientTraceId(request.headers);
+        return {
+          correlationId: (request as IncomingMessage & { id?: string }).id,
+          ...(clientTraceId ? { clientTraceId } : {}),
+        };
+      },
 
       // Only these fields, only ever these fields.
       serializers: {
