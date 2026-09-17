@@ -5,7 +5,7 @@ import {
   type CustomerDirectoryRow,
 } from '@/database/repositories/customer.repository';
 import { PostRepository, type PostFeedRow } from '@/database/repositories/post.repository';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
+import { clampLimit } from '@/shared/utils/page-limit';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 
@@ -87,11 +87,6 @@ function page<T>(rows: T[], limit: number, cursorOf: (row: T) => string): Page<T
     nextCursor: hasMore && last ? cursorOf(last) : null,
     hasMore,
   };
-}
-
-function clampLimit(limit: number | null): number {
-  if (limit === null) return DEFAULT_PAGE_SIZE;
-  return Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
 }
 
 function decodePostCursor(cursor: string | null): { publishedAt: Date | null; id: number } | null {

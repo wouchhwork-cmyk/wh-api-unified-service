@@ -513,6 +513,128 @@ describe('a business builds its team', () => {
     ).toBe(true);
   });
 
+  describe('the team listing is a page, not the whole table', () => {
+    /**
+     * It used to be unbounded: one screen read every employee a business had.
+     * The cap matters most on the surface that is least likely to be tested at
+     * size — a business with hundreds of staff is exactly the customer this is
+     * sold to, and the endpoint had no way to say "there is more".
+     */
+    async function businessOfThree(): Promise<string> {
+      const { ownerToken } = await onboardedBusiness();
+      const agentRole = await roleRefId(ownerToken, 'agent');
+
+      // Sequential, not parallel: the listing is ordered by (created_at, id)
+      // and the assertions below are about a stable order.
+      for (const person of ['rahul', 'anita']) {
+        await http()
+          .post('/api/v1/employees')
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({
+            firstName: person,
+            email: `${person}@bluebottle.test`,
+            roleRefId: agentRole,
+          })
+          .expect(201);
+      }
+      return ownerToken;
+    }
+
+    const list = (token: string, query: string) =>
+      http()
+        .get(`/api/v1/employees${query}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+    it('stops at the requested limit and says there is more', async () => {
+      const token = await businessOfThree();
+
+      const page = await list(token, '?limit=2');
+
+      expect(page.body.data).toHaveLength(2);
+      expect(page.body.meta.pagination.hasMore).toBe(true);
+      expect(page.body.meta.pagination.nextCursor).toEqual(expect.any(String));
+      // The meta describes the page actually returned, not what was asked for.
+      expect(page.body.meta.pagination.limit).toBe(2);
+    });
+
+    it('returns each person exactly once across the pages', async () => {
+      const token = await businessOfThree();
+
+      const first = await list(token, '?limit=2');
+      const second = await list(
+        token,
+        `?limit=2&cursor=${encodeURIComponent(first.body.meta.pagination.nextCursor as string)}`,
+      );
+
+      const refIds = [...first.body.data, ...second.body.data].map(
+        (person: { refId: string }) => person.refId,
+      );
+      // The tiebreaker earns its place here: without a total order a row can
+      // repeat on one page and never appear on any.
+      expect(refIds).toHaveLength(3);
+      expect(new Set(refIds).size).toBe(3);
+      expect(second.body.meta.pagination.hasMore).toBe(false);
+      expect(second.body.meta.pagination.nextCursor).toBeNull();
+    });
+
+    it('loses nobody when two people share a timestamp to the microsecond', async () => {
+      const token = await businessOfThree();
+
+      /*
+       * THE CASE THE TIEBREAKER EXISTS FOR, forced rather than waited for.
+       *
+       * Two people invited in the same transaction genuinely do share
+       * created_at, because now() is the transaction's start. With only the
+       * timestamp to compare, one of them is skipped and never appears on any
+       * page — somebody who works here, invisible to the person managing
+       * access.
+       */
+      await db.query(
+        `UPDATE enterprise_employees
+            SET created_at = (SELECT min(created_at) FROM enterprise_employees)`,
+      );
+
+      const collected: string[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const query: string = cursor
+          ? `?limit=1&cursor=${encodeURIComponent(cursor)}`
+          : '?limit=1';
+        const response = await list(token, query);
+        collected.push(...response.body.data.map((person: { refId: string }) => person.refId));
+        if (!response.body.meta.pagination.hasMore) break;
+        cursor = response.body.meta.pagination.nextCursor as string;
+      }
+
+      expect(collected).toHaveLength(3);
+      expect(new Set(collected).size).toBe(3);
+    });
+
+    it('starts from the top when the cursor is nonsense, rather than erroring', async () => {
+      const token = await businessOfThree();
+
+      // The cursor is ours and opaque; a client that invents one has not made a
+      // request we can meaningfully refuse.
+      const page = await list(token, '?cursor=not-a-real-cursor');
+
+      expect(page.body.data).toHaveLength(3);
+    });
+
+    it('refuses a limit outside the allowed range', async () => {
+      const token = await businessOfThree();
+
+      await http()
+        .get('/api/v1/employees?limit=100000')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(422);
+      await http()
+        .get('/api/v1/employees?limit=0')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(422);
+    });
+  });
+
   it('records team changes in the audit trail', async () => {
     const { ownerToken } = await onboardedBusiness();
     const agentRole = await roleRefId(ownerToken, 'agent');

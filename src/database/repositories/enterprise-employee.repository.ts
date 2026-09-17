@@ -25,6 +25,9 @@ export interface EmploymentSummary {
  * which can say which of pending_activation or suspended applies.
  */
 export interface EmployeeListRow {
+  /** Cursor material, never mapped into a DTO. */
+  readonly internalId: number;
+  readonly createdAt: Date;
   readonly refId: string;
   readonly firstName: string;
   readonly lastName: string | null;
@@ -60,6 +63,25 @@ export interface EmployeeRecord {
   readonly status: EmployeeStatus;
   readonly employeeKind: EmployeeKind;
 }
+
+/**
+ * TRUNCATED TO MILLISECONDS, in the projection, the ordering and the cursor
+ * predicate alike — all three, or none.
+ *
+ * Postgres keeps timestamptz to the microsecond; a JS Date cannot hold one, so
+ * a cursor built from a row that was stored at .993456 says .993000. Compared
+ * against the untruncated column, `created_at > '.993000'` is still true of the
+ * cursor row itself, and the page repeats the row it was supposed to resume
+ * after. Descending listings have the mirror image of the same fault and SKIP
+ * every row sharing that millisecond, which is worse for being invisible.
+ *
+ * Truncating the column to the precision the cursor can actually carry makes
+ * the comparison exact, and the (truncated timestamp, id) order stays total.
+ * The cost is that the expression cannot use a plain index on created_at —
+ * affordable here, where the table holds one business's staff and the query
+ * already sorts behind an aggregate.
+ */
+const CURSOR_TIMESTAMP = "date_trunc('milliseconds', e.created_at)";
 
 @Injectable()
 export class EnterpriseEmployeeRepository extends BaseRepository {
@@ -208,20 +230,43 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
    *
    * One query with an aggregate rather than a query per employee: a business with
    * forty people would otherwise be forty-one round trips to render one screen.
+   *
+   * Keyset-paginated on (created_at, id), OLDEST FIRST — the order a business
+   * expects of its own people, with the owner at the top.
+   *
+   * The id is the tiebreaker that makes the order total. Two colleagues invited
+   * in the same millisecond could otherwise swap places between pages, and one
+   * of them would never be shown at all — which on this listing means somebody
+   * who works here being invisible to the person managing access.
    */
   async listForEnterprise(
     enterpriseId: number,
-    options: { includeSupport: boolean },
+    options: {
+      includeSupport: boolean;
+      limit: number;
+      cursor: { createdAt: Date; id: number } | null;
+    },
   ): Promise<EmployeeListRow[]> {
-    const params: unknown[] = [this.requireEnterprise(enterpriseId)];
+    const params: unknown[] = [this.requireEnterprise(enterpriseId), options.limit];
     let kindPredicate = '';
     if (!options.includeSupport) {
       params.push(EmployeeKind.Business);
       kindPredicate = `AND e.employee_kind = $${params.length}::varchar`;
     }
 
+    let cursorPredicate = '';
+    if (options.cursor) {
+      params.push(options.cursor.createdAt, options.cursor.id);
+      // Ascending order, so the next page resumes AFTER the cursor row.
+      cursorPredicate =
+        `AND (${CURSOR_TIMESTAMP}, e.id) > ` +
+        `($${params.length - 1}::timestamptz, $${params.length}::bigint)`;
+    }
+
     return this.query<EmployeeListRow>(
-      `SELECT e.ref_id        AS "refId",
+      `SELECT e.id            AS "internalId",
+              ${CURSOR_TIMESTAMP} AS "createdAt",
+              e.ref_id        AS "refId",
               i.first_name    AS "firstName",
               i.last_name     AS "lastName",
               i.email         AS "email",
@@ -244,9 +289,10 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
                 ON er.employee_id = e.id AND er.enterprise_id = e.enterprise_id
                AND er.is_deleted = false
          LEFT JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
-        WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate}
+        WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate} ${cursorPredicate}
         GROUP BY e.id, i.id
-        ORDER BY e.created_at ASC, e.id ASC`,
+        ORDER BY ${CURSOR_TIMESTAMP} ASC, e.id ASC
+        LIMIT $2`,
       params,
     );
   }

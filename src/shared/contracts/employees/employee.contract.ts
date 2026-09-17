@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_PAGE_SIZE } from '@/shared/constants';
 import { EmployeeKind, EmployeeStatus } from '@/shared/enums';
 import { EmailSchema, MobileInputSchema } from '../auth/credential.contract';
 
@@ -48,6 +49,9 @@ export const EmployeeQuerySchema = z
      * staff.
      */
     includeSupport: z.enum(['true', 'false']).optional(),
+    /** Bounded and opaque, exactly as on every other listing. */
+    limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
+    cursor: z.string().max(512).optional(),
   })
   .strict();
 

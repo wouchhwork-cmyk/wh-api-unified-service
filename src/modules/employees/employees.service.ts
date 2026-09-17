@@ -24,6 +24,8 @@ import { AppException, ErrorCode } from '@/shared/errors';
 import type { CreateEmployeeRequest } from '@/shared/contracts/employees/employee.contract';
 import type { EmployeeDto } from '@/shared/contracts/employees/employee.contract';
 import { maskEmail, maskMobile, normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
+import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
+import { clampLimit } from '@/shared/utils/page-limit';
 
 export interface CreatedEmployee {
   readonly employee: EmployeeDto;
@@ -54,9 +56,44 @@ export class EmployeesService {
     @InjectPinoLogger(EmployeesService.name) private readonly logger: PinoLogger,
   ) {}
 
-  async list(enterpriseId: number, includeSupport: boolean): Promise<EmployeeDto[]> {
-    const rows = await this.employees.listForEnterprise(enterpriseId, { includeSupport });
-    return rows.map(toDto);
+  /**
+   * One page of the people who work here.
+   *
+   * It used to be every one of them, unbounded. A business with a few hundred
+   * staff — which is the kind of business this product is sold to — turned one
+   * screen into an unbounded read, and the endpoint had no way to say "there is
+   * more".
+   */
+  async list(
+    enterpriseId: number,
+    includeSupport: boolean,
+    query: { limit: number | null; cursor: string | null },
+  ): Promise<{
+    items: EmployeeDto[];
+    limit: number;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
+    const limit = clampLimit(query.limit);
+
+    const rows = await this.employees.listForEnterprise(enterpriseId, {
+      includeSupport,
+      // One extra row answers "is there another page" without a second COUNT
+      // over the same predicate.
+      limit: limit + 1,
+      cursor: decodeEmployeeCursor(query.cursor),
+    });
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      items: page.map(toDto),
+      limit,
+      nextCursor: hasMore && last ? encodeKeysetCursor(last.createdAt, last.internalId) : null,
+      hasMore,
+    };
   }
 
   /**
@@ -294,6 +331,16 @@ export class EmployeesService {
 
     return { refId, from: employee.status, to: status };
   }
+}
+
+/**
+ * created_at is NOT NULL on enterprise_employees, so a cursor without a
+ * timestamp cannot have come from this listing and is treated as absent rather
+ * than trusted — the caller gets the first page, not an error.
+ */
+function decodeEmployeeCursor(cursor: string | null): { createdAt: Date; id: number } | null {
+  const parsed = decodeKeysetCursor(cursor);
+  return parsed?.at ? { createdAt: parsed.at, id: parsed.id } : null;
 }
 
 function toDto(row: EmployeeListRow): EmployeeDto {

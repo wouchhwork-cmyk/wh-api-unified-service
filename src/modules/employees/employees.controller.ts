@@ -7,6 +7,7 @@ import { Permission } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import {
   CreateEmployeeRequestSchema,
   EmployeeQuerySchema,
@@ -61,15 +62,28 @@ export class EmployeesController {
     summary: 'Everybody who works here',
     description:
       "The business's own people, with their roles and whether they have accepted their " +
-      'invitation. Contact details are masked. Pass includeSupport=true to also see the Wouchh ' +
-      'people assigned to this business — who are not its employees.',
+      'invitation. Oldest first, keyset-paginated on (createdAt, id). Contact details are masked. ' +
+      'Pass includeSupport=true to also see the Wouchh people assigned to this business — who ' +
+      'are not its employees.',
   })
   async list(
     @CurrentScopedActor() actor: ScopedActor,
     @Query() query: unknown,
-  ): Promise<EmployeeDto[]> {
+  ): Promise<Paginated<EmployeeDto>> {
     const parsed = EmployeeQuerySchema.parse(query);
-    return this.employees.list(actor.enterpriseId, parsed.includeSupport === 'true');
+
+    const result = await this.employees.list(actor.enterpriseId, parsed.includeSupport === 'true', {
+      limit: parsed.limit ?? null,
+      cursor: parsed.cursor ?? null,
+    });
+
+    return paginated(result.items, {
+      // The clamped limit, not the requested one: the meta has to describe the
+      // page that was actually returned.
+      limit: result.limit,
+      nextCursor: result.nextCursor,
+      hasMore: result.hasMore,
+    });
   }
 
   @Get('roles')

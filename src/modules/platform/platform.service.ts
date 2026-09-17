@@ -8,7 +8,7 @@ import {
   type PlatformOverview,
 } from '@/database/repositories/platform-admin.repository';
 import { AuditService } from '@/modules/audit';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
+import { clampLimit } from '@/shared/utils/page-limit';
 import { RequestContext } from '@/shared/context';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import {
@@ -346,11 +346,6 @@ function toOwner(owner: PlatformEnterpriseOwner): EnterpriseDetail['owner'] {
     mobileVerified: owner.mobileVerifiedAt !== null,
     lastLoginAt: owner.lastLoginAt,
   };
-}
-
-function clampLimit(limit: number | null): number {
-  if (limit === null || !Number.isFinite(limit) || limit <= 0) return DEFAULT_PAGE_SIZE;
-  return Math.min(Math.floor(limit), MAX_PAGE_SIZE);
 }
 
 /**

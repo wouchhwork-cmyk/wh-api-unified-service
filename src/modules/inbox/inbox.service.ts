@@ -15,7 +15,7 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
-import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
+import { clampLimit } from '@/shared/utils/page-limit';
 import {
   AuditAction,
   AuditEntityType,
@@ -713,11 +713,6 @@ export class InboxService {
     if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
     return conversation;
   }
-}
-
-function clampLimit(limit: number): number {
-  if (!Number.isFinite(limit) || limit <= 0) return DEFAULT_PAGE_SIZE;
-  return Math.min(Math.floor(limit), MAX_PAGE_SIZE);
 }
 
 function decodeInboxCursor(

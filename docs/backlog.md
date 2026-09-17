@@ -67,8 +67,8 @@ none of it is quietly dropped.
 | --- | --- | --- |
 | **Throttler keys grow without bound** | M | The in-memory store never evicts, so the key space is (throttled handlers × every client address ever seen) and a deploy resets every counter. Per-process limits also multiply by replica count. Needs Redis, or a sweep and a cap. The credential routes at least have their own much tighter budget now. |
 | **Staff roles are a fiction** | M | `support` and `ops` are seeded as `RoleScope.Staff` templates and can never be granted: `employee_roles.enterprise_id` is NOT NULL behind a composite foreign key, and a staff template has no enterprise. Staff authority is the `has_all_enterprise_access` flag and nothing else. The permission query is fail-CLOSED now — it re-reads the staff row rather than trusting the token — so the exposure is gone; what remains is that the two templates mean nothing. |
-| **`GET /employees` is unpaginated** | S | Every employee of a business, no limit and no cursor, unlike every other list. |
-| **The correlation id is still client-supplied** | S | See §1.6. It anchors audit and ledger rows, so a caller chooses the id their actions are filed under. Fine as a trace hint, wrong as an audit key. |
+| ~~**`GET /employees` is unpaginated**~~ | — | **DONE 17 Sep 2026.** Keyset-paginated on (createdAt, id) like every other list, oldest first. `data` is unchanged — the envelope already lifts `items` and puts pagination in `meta` — so the only behavioural change is the cap, which the portal now follows with `api.requestAll()`. Uncovered a real defect on the way in; see §1.11. |
+| ~~**The correlation id is still client-supplied**~~ | — | **DONE 17 Sep 2026.** See §1.6. The fix is in `logger.config.ts`, not the middleware the entry named. |
 | **`LISTEN` clients have no TCP keepalive** | S | A socket reaped by a NAT gateway without FIN leaves a zombie listener. Cost is latency only — every worker still polls on its own timer — and it is deployment-dependent. |
 | **Graph responses are not validated** | M | Every response is cast to `T` with no runtime check. Most of the remaining Meta-integration findings collapse into one zod schema at that boundary. |
 | ~~**The webhook subscription is never reconciled**~~ | — | **DONE 9 Sep 2026.** `WebhookSubscriptionService.reconcileAll()` diffs `listSubscribedFields` against `SUBSCRIBED_FIELDS` every six hours and re-subscribes what is missing; a dead token is flagged through the existing `markReauthRequired` convention and then costs nothing, because the population query already excludes flagged channels. Instagram channels are skipped without a call — `{ig-id}/subscribed_apps` is `(#100) nonexisting field`, verified live; the subscription lives on the linked Page. Found a real gap on the first look: the dev Page was missing `mentions`, `comments` and `messaging_optins`, because it was subscribed twelve hours BEFORE those fields were added to the constant. |
@@ -78,7 +78,8 @@ none of it is quietly dropped.
 | **`provider_connections` uniqueness** | S | Keyed on `provider_user_id`, so one tenant can hold two channel rows for the same Page. |
 | **Retention sweeps are unindexed** | S | Both the session and verification sweeps use predicates no index can serve. |
 | **Queue gauges scan three ledgers** | S | Three unfiltered aggregate scans per sample and per `/health/detail`. At least `/health/detail` is platform-staff-only now, so an ordinary role cannot trigger them. |
-| **Three copies of `clampLimit`** | S | The cursor codec was consolidated; the limit clamp was not. |
+| ~~**Three copies of `clampLimit`**~~ | — | **DONE 17 Sep 2026.** One `shared/utils/page-limit.ts` beside the cursor codec. The three had already drifted: catalogue's returned NaN for a non-finite input and never floored, so a fractional limit would have reached SQL as `LIMIT 7.9`. Unreachable through any controller — every schema parses `limit` first — which is exactly why nobody noticed. |
+| **Keyset cursors lose sub-millisecond precision** | S | Found 17 Sep while paginating employees, fixed THERE only; platform, inbox and catalogue still have it. See §1.11. |
 | **`handleCallback` is a god method** | M | ~150 lines over eight concerns. |
 | **Some controllers read repositories directly** | S | Auth, Enterprises and Employees each do. |
 | **System roles are never reconciled** | M | Copied once at signup, so a permission added in a later release never reaches an existing tenant. |
@@ -283,6 +284,45 @@ as a missing entry.
 - ~~**`POST /conversations/:refId/read` parses nothing.**~~ DONE. It parses
   `MarkReadRequestSchema`, so a body it does not understand is refused rather
   than silently ignored.
+
+### 1.11 Keyset cursors lose sub-millisecond precision — **S, three listings left**
+
+Found on 17 Sep while paginating `GET /employees`, where it failed immediately
+and visibly. **Fixed in the employees query only.** `platform-admin`, `inbox`
+and `catalogue` still carry it.
+
+Postgres keeps `timestamptz` to the microsecond. A cursor cannot: it round-trips
+through a JS `Date`, which holds milliseconds, so a row stored at `.993456`
+produces a cursor saying `.993000`. Compared against the untruncated column the
+two disagree, and the direction decides how:
+
+- **Ascending** (employees): `created_at > '.993000'` is still true of the
+  cursor row itself, so every page repeats the row it was meant to resume after.
+  With several rows in one millisecond the listing cannot advance at all.
+- **Descending** (the other three): the mirror image, and worse for being
+  silent. `created_at < '.993000'` is false for every row in that millisecond,
+  including ones that should have come next — they are **skipped and appear on
+  no page**. This is precisely the failure the `(created_at, id)` tiebreaker was
+  added to prevent, and the tiebreaker cannot help, because the comparison never
+  reaches it.
+
+Rows must share a millisecond for the descending case to lose data — which
+sounds rare until you notice that rows written in one transaction all take the
+transaction's `now()`, so a batch insert produces exactly that.
+
+The employees fix truncates the column to milliseconds in the projection, the
+`ORDER BY` and the cursor predicate — all three or none — so the comparison is
+exact and the order stays total. Its cost is that the expression cannot use a
+plain index on `created_at`. That is affordable on one business's staff and
+**would not be** on `conversations`, so the other three need either an
+expression index or a cursor that carries the microseconds as text
+(`to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.US')`) and compares as `::timestamptz`.
+The second is the better answer for the hot tables and is the reason this was
+not simply applied to all four.
+
+Pinned by `test/e2e/employees.e2e.spec.ts` — "loses nobody when two people share
+a timestamp to the microsecond", which forces the shared timestamp rather than
+waiting for one.
 
 ---
 
