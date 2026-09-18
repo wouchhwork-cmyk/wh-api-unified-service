@@ -9,8 +9,11 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **9 done, 14 open, 1 parked** (one of the 19 was
-found, not inherited — see A1).
+Status at 18 Sep 2026: **9 done, 7 open, 7 parked.**
+
+A2 is the only open item I cannot decide alone. The seven parked ones are not
+started without being asked — six of them pre-launch work that never existed,
+one a monitoring piece recorded on request.
 
 ---
 
@@ -47,7 +50,19 @@ found, not inherited — see A1).
 
 - [ ] **D1. `handleCallback` is a god method** — M — ~150 lines over eight concerns.
 
-## E. Not built yet — pre-launch, not regressions
+---
+
+## Parked — recorded, do not start
+
+Work that is understood and deliberately not scheduled. **Do not pick these up
+without being asked**, however well they fit whatever else is being done.
+
+### Pre-launch work — on hold 18 Sep 2026
+
+Never started, and not regressions: none of this ever existed. **Do not start
+any of it without being asked.** E1 and E2 are not mine to finish alone anyway
+— one needs a provider account and credentials, the other needs a decision
+about where secrets live.
 
 - [ ] **E1. A real email/SMS provider** — M — every code is still `666666`.
 - [ ] **E2. Secret manager** — M — secrets come from the environment, no rotation path.
@@ -59,12 +74,7 @@ found, not inherited — see A1).
       Development uses `pnpm db:sync`, so the migration is deliberately behind.
       This is the gate that makes it authoritative again.
 
----
-
-## Parked — recorded, do not start
-
-Work that is understood and deliberately not scheduled. **Do not pick these up
-without being asked**, however well they fit whatever else is being done.
+### Other parked work
 
 - [ ] **P1. Monitor Meta's rate-limit headers** — asked for 18 Sep 2026, on hold
       until explicitly requested.
