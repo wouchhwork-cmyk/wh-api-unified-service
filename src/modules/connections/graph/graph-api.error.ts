@@ -28,6 +28,30 @@ export class GraphApiError extends Error {
     this.name = 'GraphApiError';
   }
 
+  /**
+   * The response arrived, was valid JSON, and was not the shape we asked for.
+   *
+   * `type: 'schema'` so the error mapper can treat it as PERMANENT: a retry
+   * fetches the same unexpected shape and fails identically, so retrying only
+   * spends quota on the way to the same dead letter. HTTP status is the real
+   * one — the call itself succeeded — and the code is null, because Meta did
+   * not report an error; we did.
+   *
+   * `detail` names the FIELD PATHS that disagreed and nothing else. Never the
+   * values: this message reaches logs and a ledger row, and a Graph payload is
+   * full of customer message text, handles and profile links.
+   */
+  static fromSchema(httpStatus: number, path: string, detail: string): GraphApiError {
+    return new GraphApiError(
+      httpStatus,
+      null,
+      null,
+      'schema',
+      null,
+      `graph ${path} returned an unexpected shape: ${detail}`,
+    );
+  }
+
   /** A network failure or timeout: we never learned the outcome. */
   static fromTransport(cause: unknown, detail: string): GraphApiError {
     const error = new GraphApiError(0, null, null, 'transport', null, detail);

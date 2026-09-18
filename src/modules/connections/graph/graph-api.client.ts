@@ -9,7 +9,28 @@ import {
   SYNC_PAGE_SIZE,
 } from '@/shared/constants';
 import { Platform } from '@/shared/enums';
+import { z, type ZodType } from 'zod';
 import { GraphApiError } from './graph-api.error';
+import {
+  GraphAccountsResponseSchema,
+  GraphAckSchema,
+  GraphChannelProfileSchema,
+  GraphCreatedIdSchema,
+  GraphDebugTokenResponseSchema,
+  GraphEdgeOfConversationSchema,
+  GraphEdgeOfFeedPostSchema,
+  GraphEdgeOfInstagramMediaSchema,
+  GraphEdgeOfInstagramTagSchema,
+  GraphInstagramUserProfileSchema,
+  GraphMeResponseSchema,
+  GraphMentionedCommentEnvelopeSchema,
+  GraphMentionedCommentRepliesEnvelopeSchema,
+  GraphMentionedMediaEnvelopeSchema,
+  GraphPageDetailSchema,
+  GraphSendResponseSchema,
+  GraphSubscribedAppsSchema,
+  GraphTokenResponseSchema,
+} from './graph.schemas';
 import type {
   GraphAccountsResponse,
   GraphConversation,
@@ -69,6 +90,13 @@ const DIALOG_HOST = 'https://www.facebook.com';
  *   - NOTHING logs a URL, a token, or a proof. socialLift logged all three in
  *     cleartext; on a hosted platform those go straight to the log drain.
  */
+/**
+ * How many schema issues are named in one error. A shape change usually breaks
+ * every row of an edge, and a message listing four hundred paths helps nobody
+ * and fills the ledger row it is written to.
+ */
+const SCHEMA_ISSUES_REPORTED = 5;
+
 @Injectable()
 export class GraphApiClient {
   constructor(private readonly config: AppConfigService) {}
@@ -98,7 +126,8 @@ export class GraphApiClient {
   /** Step 1: the authorization code becomes a short-lived user token. */
   async exchangeCodeForToken(code: string): Promise<GraphTokenResponse> {
     // No access token yet, so this one call cannot carry appsecret_proof.
-    return this.request<GraphTokenResponse>('GET', 'oauth/access_token', {
+    return this.request('GET', 'oauth/access_token', {
+      schema: GraphTokenResponseSchema,
       params: {
         client_id: this.config.meta.appId,
         client_secret: this.config.meta.appSecret,
@@ -116,7 +145,8 @@ export class GraphApiClient {
    * away, which left no way to know a token was dying until a call failed.
    */
   async exchangeForLongLivedToken(shortLivedToken: string): Promise<GraphTokenResponse> {
-    return this.request<GraphTokenResponse>('GET', 'oauth/access_token', {
+    return this.request('GET', 'oauth/access_token', {
+      schema: GraphTokenResponseSchema,
       params: {
         grant_type: 'fb_exchange_token',
         client_id: this.config.meta.appId,
@@ -128,7 +158,8 @@ export class GraphApiClient {
   }
 
   async getMe(accessToken: string): Promise<GraphMeResponse> {
-    return this.request<GraphMeResponse>('GET', 'me', {
+    return this.request('GET', 'me', {
+      schema: GraphMeResponseSchema,
       accessToken,
       params: { fields: 'id,name' },
     });
@@ -147,7 +178,8 @@ export class GraphApiClient {
     userAccessToken: string,
     after?: string,
   ): Promise<GraphAccountsResponse> {
-    return this.request<GraphAccountsResponse>('GET', 'me/accounts', {
+    return this.request('GET', 'me/accounts', {
+      schema: GraphAccountsResponseSchema,
       accessToken: userAccessToken,
       params: {
         fields: 'id,name,access_token,category,instagram_business_account{id,username}',
@@ -163,7 +195,8 @@ export class GraphApiClient {
    * (`{appId}|{appSecret}`), which is what debug_token requires.
    */
   async debugToken(inputToken: string): Promise<GraphDebugTokenResponse> {
-    return this.request<GraphDebugTokenResponse>('GET', 'debug_token', {
+    return this.request('GET', 'debug_token', {
+      schema: GraphDebugTokenResponseSchema,
       params: {
         input_token: inputToken,
         access_token: `${this.config.meta.appId}|${this.config.meta.appSecret}`,
@@ -176,14 +209,9 @@ export class GraphApiClient {
   async getPageWithInstagram(
     pageId: string,
     userAccessToken: string,
-  ): Promise<{
-    id: string;
-    name?: string;
-    access_token?: string;
-    category?: string;
-    instagram_business_account?: { id: string; username?: string };
-  }> {
+  ): Promise<z.infer<typeof GraphPageDetailSchema>> {
     return this.request('GET', pageId, {
+      schema: GraphPageDetailSchema,
       accessToken: userAccessToken,
       params: { fields: 'id,name,access_token,category,instagram_business_account{id,username}' },
     });
@@ -195,6 +223,7 @@ export class GraphApiClient {
    */
   async subscribePageToApp(pageId: string, pageAccessToken: string): Promise<void> {
     await this.request('POST', `${pageId}/subscribed_apps`, {
+      schema: GraphAckSchema,
       accessToken: pageAccessToken,
       // Body, not query string: socialLift put these in the URL, which works but
       // logs message content and is not what Meta documents.
@@ -221,7 +250,8 @@ export class GraphApiClient {
     platform: Platform = Platform.Facebook,
   ): Promise<SendResult> {
     const edge = platform === Platform.Instagram ? 'replies' : 'comments';
-    const result = await this.request<{ id: string }>('POST', `${commentId}/${edge}`, {
+    const result = await this.request('POST', `${commentId}/${edge}`, {
+      schema: GraphCreatedIdSchema,
       accessToken: pageAccessToken,
       body: { message },
     });
@@ -248,11 +278,18 @@ export class GraphApiClient {
     const body =
       platform === Platform.Instagram ? { hide: String(hidden) } : { is_hidden: String(hidden) };
 
-    await this.request('POST', commentId, { accessToken: pageAccessToken, body });
+    await this.request('POST', commentId, {
+      schema: GraphAckSchema,
+      accessToken: pageAccessToken,
+      body,
+    });
   }
 
   async deleteComment(commentId: string, pageAccessToken: string): Promise<void> {
-    await this.request('DELETE', commentId, { accessToken: pageAccessToken });
+    await this.request('DELETE', commentId, {
+      schema: GraphAckSchema,
+      accessToken: pageAccessToken,
+    });
   }
 
   /**
@@ -274,10 +311,11 @@ export class GraphApiClient {
      */
     replyToPlatformMessageId?: string,
   ): Promise<SendResult> {
-    const result = await this.request<{ message_id?: string; id?: string }>(
+    const result = await this.request(
       'POST',
       `${pageId}/messages`,
       {
+        schema: GraphSendResponseSchema,
         accessToken: pageAccessToken,
         body: {
           recipient: JSON.stringify({ id: recipientPlatformId }),
@@ -356,7 +394,8 @@ export class GraphApiClient {
         : []),
     ].join(',');
 
-    return this.request<GraphEdge<GraphFeedPost>>('GET', `${pageId}/published_posts`, {
+    return this.request('GET', `${pageId}/published_posts`, {
+      schema: GraphEdgeOfFeedPostSchema,
       accessToken: pageAccessToken,
       params: {
         fields,
@@ -388,7 +427,8 @@ export class GraphApiClient {
   ): Promise<GraphEdge<GraphConversation>> {
     const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name},to{data{id,name}},attachments{id,name,mime_type,image_data,video_data,file_url},reply_to,shares}`;
 
-    return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
+    return this.request('GET', `${pageId}/conversations`, {
+      schema: GraphEdgeOfConversationSchema,
       accessToken: pageAccessToken,
       params: {
         fields: `id,updated_time,participants{id,name,username},${messageFields}`,
@@ -411,7 +451,8 @@ export class GraphApiClient {
     instagramScopedId: string,
     accessToken: string,
   ): Promise<GraphInstagramUserProfile> {
-    return this.request<GraphInstagramUserProfile>('GET', instagramScopedId, {
+    return this.request('GET', instagramScopedId, {
+      schema: GraphInstagramUserProfileSchema,
       accessToken,
       params: {
         fields:
@@ -441,7 +482,8 @@ export class GraphApiClient {
   ): Promise<GraphEdge<GraphInstagramMedia>> {
     const commentFields = `comments.limit(${SYNC_COMMENTS_PER_POST}){id,text,timestamp,username,like_count,hidden,from{id,username},parent_id}`;
 
-    return this.request<GraphEdge<GraphInstagramMedia>>('GET', `${instagramUserId}/media`, {
+    return this.request('GET', `${instagramUserId}/media`, {
+      schema: GraphEdgeOfInstagramMediaSchema,
       accessToken,
       params: {
         // like_count is requested explicitly for the same reason the Facebook
@@ -471,7 +513,8 @@ export class GraphApiClient {
   ): Promise<GraphEdge<GraphConversation>> {
     const messageFields = `messages.limit(${SYNC_MESSAGES_PER_CONVERSATION}){id,message,created_time,from{id,name,username},to{data{id,name,username}},attachments{id,name,mime_type,image_data,video_data,file_url},reply_to,shares}`;
 
-    return this.request<GraphEdge<GraphConversation>>('GET', `${pageId}/conversations`, {
+    return this.request('GET', `${pageId}/conversations`, {
+      schema: GraphEdgeOfConversationSchema,
       accessToken,
       params: {
         platform: 'instagram',
@@ -496,7 +539,8 @@ export class GraphApiClient {
     accessToken: string,
     after?: string,
   ): Promise<GraphEdge<GraphInstagramTag>> {
-    return this.request<GraphEdge<GraphInstagramTag>>('GET', `${instagramUserId}/tags`, {
+    return this.request('GET', `${instagramUserId}/tags`, {
+      schema: GraphEdgeOfInstagramTagSchema,
       accessToken,
       params: {
         fields:
@@ -590,10 +634,11 @@ export class GraphApiClient {
 
     if (!target.mediaId) return null;
 
-    const result = await this.request<{ mentioned_media?: GraphMentionedMedia }>(
+    const result = await this.request(
       'GET',
       instagramUserId,
       {
+        schema: GraphMentionedMediaEnvelopeSchema,
         accessToken,
         params: { fields: `mentioned_media.media_id(${target.mediaId}){${mediaFields}}` },
       },
@@ -660,10 +705,11 @@ export class GraphApiClient {
     const replies = withReplies ? 'replies{id,text,timestamp,like_count},' : '';
 
     try {
-      const result = await this.request<{ mentioned_comment?: GraphMentionedComment }>(
+      const result = await this.request(
         'GET',
         instagramUserId,
         {
+          schema: GraphMentionedCommentEnvelopeSchema,
           accessToken,
           params: {
             fields: `mentioned_comment.comment_id(${commentId}){id,text,timestamp,username,like_count,parent_id,${replies}media{${mediaFields}}}`,
@@ -744,9 +790,8 @@ export class GraphApiClient {
     accessToken: string,
   ): Promise<ResolvedMentionReply[]> {
     try {
-      const result = await this.request<{
-        mentioned_comment?: { media?: { comments?: { data?: GraphMentionedCommentReply[] } } };
-      }>('GET', instagramUserId, {
+      const result = await this.request('GET', instagramUserId, {
+        schema: GraphMentionedCommentRepliesEnvelopeSchema,
         accessToken,
         params: {
           fields: `mentioned_comment.comment_id(${commentId}){media{comments.limit(${MENTION_POST_COMMENTS_KEPT}){id,text,timestamp,like_count}}}`,
@@ -781,7 +826,8 @@ export class GraphApiClient {
     message: string,
     accessToken: string,
   ): Promise<SendResult> {
-    const result = await this.request<{ id: string }>('POST', `${instagramUserId}/mentions`, {
+    const result = await this.request('POST', `${instagramUserId}/mentions`, {
+      schema: GraphCreatedIdSchema,
       accessToken,
       body: {
         media_id: target.mediaId,
@@ -801,9 +847,10 @@ export class GraphApiClient {
    * turns "nothing has arrived for a week" into a question with an answer.
    */
   async listSubscribedFields(pageId: string, pageAccessToken: string): Promise<string[]> {
-    const result = await this.request<{
-      data?: { subscribed_fields?: string[] }[];
-    }>('GET', `${pageId}/subscribed_apps`, { accessToken: pageAccessToken });
+    const result = await this.request('GET', `${pageId}/subscribed_apps`, {
+      schema: GraphSubscribedAppsSchema,
+      accessToken: pageAccessToken,
+    });
 
     return result.data?.[0]?.subscribed_fields ?? [];
   }
@@ -821,31 +868,40 @@ export class GraphApiClient {
     platformChannelId: string,
     accessToken: string,
     platform: Platform,
-  ): Promise<{
-    name?: string;
-    username?: string;
-    followers_count?: number;
-    fan_count?: number;
-    profile_picture_url?: string;
-  }> {
+  ): Promise<z.infer<typeof GraphChannelProfileSchema>> {
     const fields =
       platform === Platform.Instagram
         ? 'username,followers_count,profile_picture_url'
         : 'name,username,followers_count,fan_count';
 
-    return this.request('GET', platformChannelId, { accessToken, params: { fields } });
+    return this.request('GET', platformChannelId, {
+      schema: GraphChannelProfileSchema,
+      accessToken,
+      params: { fields },
+    });
   }
 
-  private async request<T>(
+  /**
+   * One call, one schema.
+   *
+   * THE SCHEMA IS REQUIRED, and that is the point. This used to end in
+   * `return parsed as T`, which asserted a contract with a system we do not
+   * control, cannot version-pin, and which ships changes on its own schedule.
+   * The first thing to notice a shape change was whatever consumed the value,
+   * three layers down, as a null column or a missing function — a failure with
+   * no path back to the call that caused it.
+   */
+  private async request<S extends ZodType>(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     options: {
+      schema: S;
       accessToken?: string;
       params?: Record<string, string>;
       body?: Record<string, string>;
       skipProof?: boolean;
-    } = {},
-  ): Promise<T> {
+    },
+  ): Promise<z.infer<S>> {
     const url = new URL(`${GRAPH_HOST}/${this.version}/${path}`);
     for (const [key, value] of Object.entries(options.params ?? {})) {
       url.searchParams.set(key, value);
@@ -909,7 +965,22 @@ export class GraphApiClient {
       );
     }
 
-    return parsed as T;
+    const validated = options.schema.safeParse(parsed);
+    if (!validated.success) {
+      /*
+       * PATHS ONLY, NEVER VALUES. This message is logged and lands on a ledger
+       * row, and a Graph payload carries customer message text, handles and
+       * profile links. `issue.message` is left out for the same reason: some
+       * Zod issue types quote what they received.
+       */
+      const detail = validated.error.issues
+        .slice(0, SCHEMA_ISSUES_REPORTED)
+        .map((issue) => `${issue.path.join('.') || '<root>'} (${issue.code})`)
+        .join(', ');
+      throw GraphApiError.fromSchema(response.status, `${method} ${path}`, detail);
+    }
+
+    return validated.data;
   }
 }
 

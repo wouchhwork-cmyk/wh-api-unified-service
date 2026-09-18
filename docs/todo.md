@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **9 done, 7 open, 7 parked.**
+Status at 18 Sep 2026: **10 done, 6 open, 7 parked.**
 
 A2 is the only open item I cannot decide alone. The seven parked ones are not
 started without being asked — six of them pre-launch work that never existed,
@@ -27,9 +27,6 @@ one a monitoring piece recorded on request.
 
 ## B. Safety and correctness of the integration
 
-- [ ] **B1. Graph responses are not runtime-validated** — M
-  Every response is cast to `T` with no check. Most remaining Meta findings
-  collapse into one zod schema at that boundary.
 - [ ] **B2. System roles are never reconciled** — M
   Copied once at signup, so a permission added in a later release never reaches
   an existing tenant.
@@ -104,6 +101,12 @@ about where secrets live.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **B1. Graph responses were not runtime-validated** — 18 Sep. All 23 call
+      sites carry a schema; `request<T>` cannot be called without one. The
+      response types are now INFERRED from the schemas rather than declared
+      twice. A mismatch fails at the boundary as
+      `UPSTREAM_CONTRACT_CHANGED`, permanent, naming field paths and never
+      values.
 - [x] **D2. Controllers read repositories directly** — 18 Sep. **Five, not the
       three the entry named** — Auth, Enterprises, Employees, Connections and
       Inbox. The inbox one mattered: it held the tenant-scoping check that made

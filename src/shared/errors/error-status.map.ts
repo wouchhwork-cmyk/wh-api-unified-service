@@ -88,6 +88,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.MetaNotConfigured]: HttpStatus.SERVICE_UNAVAILABLE,
   [ErrorCode.OauthExchangeFailed]: HttpStatus.BAD_GATEWAY,
   [ErrorCode.UpstreamUnavailable]: HttpStatus.BAD_GATEWAY,
+  [ErrorCode.UpstreamContractChanged]: HttpStatus.BAD_GATEWAY,
   [ErrorCode.InternalError]: HttpStatus.INTERNAL_SERVER_ERROR,
 };
 
@@ -176,6 +177,8 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.RateLimited]: 'Too many requests. Slow down.',
   [ErrorCode.UpstreamUnavailable]: 'The provider is unavailable. Try again shortly.',
   [ErrorCode.UpstreamRateLimited]: 'The provider is rate limiting us. Try again shortly.',
+  [ErrorCode.UpstreamContractChanged]:
+    'The provider returned something we could not read. This needs our attention, not yours.',
   [ErrorCode.RequestTimeout]: 'The request took too long.',
   [ErrorCode.PayloadTooLarge]: 'That request is too large.',
   // Never leaks the cause; the stack goes to the log under the same requestId.

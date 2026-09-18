@@ -1,65 +1,64 @@
+import { z } from 'zod';
+import type {
+  GraphAccountSchema,
+  GraphAccountsResponseSchema,
+  GraphActorSchema,
+  GraphCommentSchema,
+  GraphConversationMessageSchema,
+  GraphConversationSchema,
+  GraphDebugTokenResponseSchema,
+  GraphFeedPostSchema,
+  GraphGranularScopeSchema,
+  GraphInstagramAccountSchema,
+  GraphInstagramCommentSchema,
+  GraphInstagramMediaSchema,
+  GraphInstagramTagSchema,
+  GraphInstagramUserProfileSchema,
+  GraphMentionedCommentReplySchema,
+  GraphMentionedCommentSchema,
+  GraphMentionedMediaSchema,
+  GraphMeResponseSchema,
+  GraphMessageAttachmentSchema,
+  GraphPagingSchema,
+  GraphTokenResponseSchema,
+} from './graph.schemas';
+
 /**
  * The Graph API shapes this integration actually consumes.
+ *
+ * THE RESPONSE SHAPES ARE INFERRED FROM THE SCHEMAS IN graph.schemas.ts, not
+ * declared here. They were declared twice — once as an interface and once as
+ * the runtime check — which is two places to disagree about the same wire
+ * format, and the disagreement would show up as a cast that compiled and a
+ * parse that failed. The schema is the definition; these are its shadow.
+ *
+ * What remains hand-written below is the DOMAIN shapes — what this codebase
+ * makes of a response once it has one. Those are ours, and nothing external
+ * can change them.
  *
  * Ported from the socialLift implementation, which runs these calls against the
  * real API in production. Field lists are deliberately minimal: every extra
  * field is one more thing Meta can change under us.
  */
 
-export interface GraphTokenResponse {
-  readonly access_token: string;
-  readonly token_type?: string;
-  /**
-   * Seconds. socialLift discarded this; we capture it into
-   * provider_connections.token_expires_at so the expiry sweep has something to
-   * work with instead of waiting for a 401.
-   */
-  readonly expires_in?: number;
-}
+export type GraphTokenResponse = z.infer<typeof GraphTokenResponseSchema>;
 
-export interface GraphMeResponse {
-  readonly id: string;
-  readonly name?: string;
-}
+export type GraphMeResponse = z.infer<typeof GraphMeResponseSchema>;
 
 /** The linked Instagram professional account, via field expansion. */
-export interface GraphInstagramAccount {
-  readonly id: string;
-  readonly username?: string;
-}
+export type GraphInstagramAccount = z.infer<typeof GraphInstagramAccountSchema>;
 
-export interface GraphAccount {
-  readonly id: string;
-  readonly name?: string;
-  /** The PAGE token. Every downstream call for this Page authorises with it. */
-  readonly access_token?: string;
-  readonly category?: string;
-  readonly instagram_business_account?: GraphInstagramAccount;
-}
+export type GraphAccount = z.infer<typeof GraphAccountSchema>;
 
-export interface GraphAccountsResponse {
-  readonly data?: readonly GraphAccount[];
-  readonly paging?: { readonly next?: string; readonly cursors?: { readonly after?: string } };
-}
+export type GraphAccountsResponse = z.infer<typeof GraphAccountsResponseSchema>;
 
 /**
  * debug_token, used only for the New-Page-Experience fallback where
  * /me/accounts comes back empty but the token still carries page grants.
  */
-export interface GraphGranularScope {
-  readonly scope: string;
-  readonly target_ids?: readonly string[];
-}
+export type GraphGranularScope = z.infer<typeof GraphGranularScopeSchema>;
 
-export interface GraphDebugTokenResponse {
-  readonly data?: {
-    readonly app_id?: string;
-    readonly is_valid?: boolean;
-    readonly expires_at?: number;
-    readonly scopes?: readonly string[];
-    readonly granular_scopes?: readonly GraphGranularScope[];
-  };
-}
+export type GraphDebugTokenResponse = z.infer<typeof GraphDebugTokenResponseSchema>;
 
 /** What a normalised Page looks like once discovery is done. */
 export interface DiscoveredPage {
@@ -94,60 +93,19 @@ export interface SendResult {
  * a walk over a photo post.
  * ------------------------------------------------------------------ */
 
-export interface GraphPaging {
-  cursors?: { before?: string; after?: string };
-  next?: string;
-}
+export type GraphPaging = NonNullable<z.infer<typeof GraphPagingSchema>>;
 
 /** Any Graph edge: a page of `data` plus the cursor to continue it. */
 export interface GraphEdge<T> {
-  data?: T[];
-  paging?: GraphPaging;
+  data?: T[] | undefined;
+  paging?: GraphPaging | undefined;
 }
 
-export interface GraphActor {
-  id: string;
-  name?: string;
-  /** Instagram identifies people by handle; Facebook by name. */
-  username?: string;
-}
+export type GraphActor = z.infer<typeof GraphActorSchema>;
 
-export interface GraphComment {
-  id: string;
-  message?: string;
-  created_time?: string;
-  from?: GraphActor;
-  parent?: { id?: string };
-}
+export type GraphComment = z.infer<typeof GraphCommentSchema>;
 
-export interface GraphFeedPost {
-  id: string;
-  message?: string;
-  story?: string;
-  created_time?: string;
-  permalink_url?: string;
-  /** added_photos / added_video / shared_story / mobile_status_update / ... */
-  status_type?: string;
-  /** A ready-made preview image, when the post has one. */
-  full_picture?: string;
-  attachments?: { data?: { type?: string; media?: { image?: { src?: string } } }[] };
-  comments?: GraphEdge<GraphComment>;
-  /*
-   * ENGAGEMENT COUNTS, and each has to be asked for by name.
-   *
-   * A Page post carries none of them by default, so posts.like_count and
-   * posts.share_count sat at their column default of 0 for every Facebook post
-   * ever synced — a "top posts" sort over a column nothing writes.
-   *
-   * `reactions.summary(total_count)` is the count of ALL reaction types, which is
-   * what a business means by likes; the individual breakdown would need a
-   * request per type. `comments.summary(total_count)` is the platform's own
-   * count, deliberately separate from the comments we have actually stored.
-   */
-  reactions?: { summary?: { total_count?: number } };
-  comment_summary?: { summary?: { total_count?: number } };
-  shares?: { count?: number };
-}
+export type GraphFeedPost = z.infer<typeof GraphFeedPostSchema>;
 
 /**
  * Media on a backfilled message.
@@ -166,67 +124,13 @@ export interface GraphFeedPost {
  * real display name, only their handle. Everything here was reachable with the
  * token we already hold and was simply never asked for.
  */
-export interface GraphInstagramUserProfile {
-  id?: string;
-  /** The DISPLAY name, which differs from the handle: "genZrelics" vs "genzrelics". */
-  name?: string;
-  username?: string;
-  /** Expires after a few days, so it is a link to refresh, not one to keep. */
-  profile_pic?: string;
-  follower_count?: number;
-  is_verified_user?: boolean;
-  /** Whether the customer follows the business — triage signal for an inbox. */
-  is_user_follow_business?: boolean;
-  is_business_follow_user?: boolean;
-}
+export type GraphInstagramUserProfile = z.infer<typeof GraphInstagramUserProfileSchema>;
 
-export interface GraphMessageAttachment {
-  id?: string;
-  name?: string;
-  mime_type?: string;
-  image_data?: { url?: string; width?: number; height?: number };
-  video_data?: { url?: string; width?: number; height?: number };
-  file_url?: string;
-}
+export type GraphMessageAttachment = z.infer<typeof GraphMessageAttachmentSchema>;
 
-export interface GraphConversationMessage {
-  id: string;
-  message?: string;
-  created_time?: string;
-  from?: GraphActor;
-  to?: { data?: GraphActor[] };
-  attachments?: GraphEdge<GraphMessageAttachment>;
-  /**
-   * Present when this message answered one in particular — the same shape the
-   * webhook sends. A recovered thread that omitted it came back as a flat list
-   * of unrelated lines, which is not what the customer saw when they wrote it.
-   */
-  reply_to?: { mid?: string; is_self_reply?: boolean };
-  /**
-   * A reel, post or profile the customer SHARED into the chat.
-   *
-   * A separate edge from `attachments`, which returns nothing for a share — so
-   * a shared reel arrived as a message with empty text and no media, indistinct
-   * from a blank line. What it gives is a public instagram.com permalink, which
-   * unlike the CDN links does not expire.
-   */
-  shares?: GraphEdge<{ link?: string; name?: string; description?: string }>;
-}
+export type GraphConversationMessage = z.infer<typeof GraphConversationMessageSchema>;
 
-export interface GraphConversation {
-  id: string;
-  updated_time?: string;
-  messages?: GraphEdge<GraphConversationMessage>;
-  /**
-   * Both sides of the thread, and the ONLY place a name appears.
-   *
-   * Meta's messaging webhook carries a sender id and nothing else, so a customer
-   * first seen through a direct message has no name at all. This edge is how a
-   * backfill can know one: Facebook returns `name`, Instagram returns
-   * `username`.
-   */
-  participants?: { data?: GraphActor[] };
-}
+export type GraphConversation = z.infer<typeof GraphConversationSchema>;
 
 /* ------------------------------------------------------------------ *
  * Instagram read edges. A different vocabulary from Facebook's for the
@@ -234,37 +138,9 @@ export interface GraphConversation {
  * `username` rather than `name`, `timestamp` rather than `created_time`.
  * ------------------------------------------------------------------ */
 
-export interface GraphInstagramComment {
-  id: string;
-  text?: string;
-  timestamp?: string;
-  username?: string;
-  like_count?: number;
-  hidden?: boolean;
-  /** Only returned when explicitly requested, and required to identify a person. */
-  from?: { id?: string; username?: string };
-  parent_id?: string;
-}
+export type GraphInstagramComment = z.infer<typeof GraphInstagramCommentSchema>;
 
-export interface GraphInstagramMedia {
-  id: string;
-  caption?: string;
-  media_type?: string;
-  permalink?: string;
-  /**
-   * A SIGNED CDN url that EXPIRES. Stored for display, never treated as
-   * permanent: a thumbnail that 404s months later is expected, which is why the
-   * permalink is kept alongside it as the durable way back to the post.
-   */
-  media_url?: string;
-  /** Videos only — media_url is the video itself, which is not a thumbnail. */
-  thumbnail_url?: string;
-  timestamp?: string;
-  comments_count?: number;
-  /** Requested explicitly; without it posts.like_count stays at zero. */
-  like_count?: number;
-  comments?: GraphEdge<GraphInstagramComment>;
-}
+export type GraphInstagramMedia = z.infer<typeof GraphInstagramMediaSchema>;
 
 /**
  * A post by SOMEONE ELSE that tagged this Instagram account — the `tags` edge.
@@ -273,18 +149,7 @@ export interface GraphInstagramMedia {
  * field: this is the account being tagged in another person's media, and there
  * is no webhook for the ones that happened before the app was connected.
  */
-export interface GraphInstagramTag {
-  id: string;
-  caption?: string;
-  media_type?: string;
-  media_url?: string;
-  permalink?: string;
-  timestamp?: string;
-  /** The handle of the person whose post this is. */
-  username?: string;
-  like_count?: number;
-  comments_count?: number;
-}
+export type GraphInstagramTag = z.infer<typeof GraphInstagramTagSchema>;
 
 /**
  * A mention resolved through the Mentions API.
@@ -293,41 +158,11 @@ export interface GraphInstagramTag {
  * so a live mention is unprojectable until these are read back. See
  * docs/platform-limitations.md §1.2.
  */
-export interface GraphMentionedMedia {
-  id?: string;
-  caption?: string;
-  media_type?: string;
-  media_url?: string;
-  /** A VIDEO or REEL carries this and NO media_url. */
-  thumbnail_url?: string;
-  media_product_type?: string;
-  permalink?: string;
-  /** The POST OWNER's handle, which may be an account we do not manage. */
-  username?: string;
-  timestamp?: string;
-  like_count?: number;
-  comments_count?: number;
-}
+export type GraphMentionedMedia = z.infer<typeof GraphMentionedMediaSchema>;
 
-export interface GraphMentionedCommentReply {
-  id?: string;
-  text?: string;
-  timestamp?: string;
-  like_count?: number;
-}
+export type GraphMentionedCommentReply = z.infer<typeof GraphMentionedCommentReplySchema>;
 
-export interface GraphMentionedComment {
-  id?: string;
-  /** Set when this comment is itself a REPLY — the thread it belongs to. */
-  parent_id?: string;
-  text?: string;
-  timestamp?: string;
-  /** The handle of whoever wrote the comment that named us. */
-  username?: string;
-  like_count?: number;
-  media?: GraphMentionedMedia;
-  replies?: { data?: GraphMentionedCommentReply[] };
-}
+export type GraphMentionedComment = z.infer<typeof GraphMentionedCommentSchema>;
 
 /** One reply under the comment that mentioned us. */
 export interface ResolvedMentionReply {

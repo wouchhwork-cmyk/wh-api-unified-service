@@ -106,6 +106,20 @@ export function mapGraphError(error: GraphApiError): MappedGraphError {
     return { code: ErrorCode.PermissionDenied, requiresReauth: false, retryable: false };
   }
 
+  /*
+   * A response we could not read. NOT retryable: a retry fetches the same
+   * unexpected shape and fails identically, so it only spends quota on the way
+   * to the same dead letter.
+   *
+   * Mapped explicitly for the reason code 3 is, a few lines up. The fallback
+   * would call this UPSTREAM_UNAVAILABLE — "the platform is unavailable" —
+   * which sends whoever reads the log hunting a Meta outage when what actually
+   * happened is that Meta changed a shape and our schema caught it.
+   */
+  if (error.type === 'schema') {
+    return { code: ErrorCode.UpstreamContractChanged, requiresReauth: false, retryable: false };
+  }
+
   return { code: ErrorCode.UpstreamUnavailable, requiresReauth: false, retryable: false };
 }
 

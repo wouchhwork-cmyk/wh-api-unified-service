@@ -53,7 +53,7 @@ import { splitPersonName } from '@/shared/utils/person-name';
  */
 function toWebhookAttachments(
   attachments: readonly GraphMessageAttachment[],
-  shares: readonly { link?: string }[] = [],
+  shares: readonly { link?: string | undefined }[] = [],
 ): { type: string; payload: { url: string } }[] {
   const translated: { type: string; payload: { url: string } }[] = [];
 

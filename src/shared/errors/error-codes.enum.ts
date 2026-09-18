@@ -102,6 +102,15 @@ export enum ErrorCode {
   RateLimited = 'RATE_LIMITED',
   UpstreamUnavailable = 'UPSTREAM_UNAVAILABLE',
   UpstreamRateLimited = 'UPSTREAM_RATE_LIMITED',
+  /**
+   * The provider answered successfully in a shape we do not recognise.
+   *
+   * Distinct from UpstreamUnavailable on purpose. "The provider is unavailable"
+   * sends whoever reads the log looking for a Meta outage, when the cause is a
+   * contract change on their side and a schema on ours — the same honesty the
+   * CapabilityMissing mapping exists for.
+   */
+  UpstreamContractChanged = 'UPSTREAM_CONTRACT_CHANGED',
   RequestTimeout = 'REQUEST_TIMEOUT',
   PayloadTooLarge = 'PAYLOAD_TOO_LARGE',
   InternalError = 'INTERNAL_ERROR',
