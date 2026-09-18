@@ -5,6 +5,7 @@ import {
   OutboundEventStatus,
   OutboundEventType,
   Platform,
+  SETTLED_OUTBOUND_STATUSES,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 import {
@@ -355,4 +356,32 @@ export class OutboundEventRepository extends BaseRepository {
     );
     return affected;
   }
+
+  /**
+   * Retention sweep. Removes rows that are SETTLED and old.
+   *
+   * THE DEDUP LEDGER IS THE REASON THIS CANNOT BE AGGRESSIVE.
+   * `outbound_events_dedup_uniq` is what makes a redelivered send collide
+   * instead of being handled twice; deleting a settled row gives that
+   * protection up for the row. So the window must comfortably exceed any
+   * redelivery Meta might attempt — see LEDGER_RETENTION_DAYS, which is set
+   * against that, not against disk.
+   *
+   * Dead letters are never swept: a terminal failure is a human's problem and
+   * the gauge alarms on it. Neither are claimable rows, which are still work.
+   */
+  async deleteSettledBefore(cutoff: Date, limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `DELETE FROM outbound_events
+        WHERE id IN (
+          SELECT id FROM outbound_events
+           WHERE status = ANY($1) AND created_at < $2
+           ORDER BY created_at
+           LIMIT $3
+        )`,
+      [[...SETTLED_OUTBOUND_STATUSES], cutoff, limit],
+    );
+    return affected;
+  }
+
 }

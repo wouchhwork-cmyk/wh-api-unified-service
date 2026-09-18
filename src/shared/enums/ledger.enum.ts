@@ -105,3 +105,21 @@ export enum EventPriority {
   Normal = 30,
   Low = 40,
 }
+
+/**
+ * Settled INBOUND rows — the ones retention may remove.
+ *
+ * Deliberately excludes `dead_letter`: a terminal failure is a human's problem
+ * and the gauge counts it, so sweeping it away would erase the evidence and the
+ * alarm at once. `failed` is excluded because it is still claimable.
+ */
+export const SETTLED_INBOUND_STATUSES: readonly InboundEventStatus[] = [
+  InboundEventStatus.Processed,
+  InboundEventStatus.Skipped,
+] as const;
+
+/** Settled OUTBOUND rows, on the same principle. */
+export const SETTLED_OUTBOUND_STATUSES: readonly OutboundEventStatus[] = [
+  OutboundEventStatus.Sent,
+  OutboundEventStatus.Cancelled,
+] as const;

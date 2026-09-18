@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **7 done, 16 open, 1 parked** (one of the 19 was
+Status at 18 Sep 2026: **8 done, 15 open, 1 parked** (one of the 19 was
 found, not inherited — see A1).
 
 ---
@@ -42,8 +42,6 @@ found, not inherited — see A1).
   count. Needs Redis, or a sweep and a cap.
 - [ ] **C2. Backfill holds one lease for a serial batch** — M
   The tail of a large batch is guaranteed to overrun its lease.
-- [ ] **C3. The daily metrics refresh has no retention** — S
-  One `inbound_events` row per post per day, kept forever.
 
 ## D. Structure
 
@@ -97,6 +95,12 @@ without being asked**, however well they fit whatever else is being done.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **C3. The ledgers had no retention** — 18 Sep — migration
+      `1757900000000`. **Wider than the entry said**: it named the metrics
+      refresh, but `inbound_events`, `outbound_events` and `sync_jobs` had no
+      retention *at all* and grew forever. The metrics refresh was only the
+      guaranteed daily floor under that growth. 30-day window, set against
+      Meta's redelivery rather than disk — see the note below.
 - [x] **C5. `LISTEN` clients had no TCP keepalive** — 18 Sep. **Two** clients,
       not one: the queue listener and the inbox SSE stream. Both now pass
       `keepAlive`, so a reclaimed socket becomes an error both already handle
@@ -117,6 +121,25 @@ without being asked**, however well they fit whatever else is being done.
   the design. `LeaseReaperWorker` reclaims it alongside the two ledgers, and
   `claimBatch` always stamps `lease_expires_at`, so no row reaches that status
   without a lease to expire.
+
+---
+
+## Why ledger retention is 30 days and not less (C3)
+
+`inbound_events_dedup_uniq` is the only thing standing between a webhook Meta
+sends twice and a duplicate message in a customer's thread — and that guarantee
+lives in the row. Sweeping a settled row gives it up for that event.
+
+So the window is a correctness floor, not a disk preference. Meta retries a
+failed delivery for hours, and a subscription disabled and re-enabled can
+replay further back. Thirty days is comfortably past all of it. Shortening it
+trades somebody seeing the same message twice for storage, which is not a trade
+worth making — if disk ever becomes the pressure, partition the ledgers rather
+than shorten this.
+
+Dead letters are never swept at any age: a terminal failure is a human's
+problem and the queue gauge alarms on it, so sweeping one would erase the
+evidence and the alarm together.
 
 ---
 

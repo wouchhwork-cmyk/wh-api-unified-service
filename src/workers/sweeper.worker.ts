@@ -5,6 +5,9 @@ import { AppConfigService } from '@/config';
 import { OauthStateRepository } from '@/database/repositories/oauth-state.repository';
 import { SessionRepository } from '@/database/repositories/session.repository';
 import { VerificationRepository } from '@/database/repositories/verification.repository';
+import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
+import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 
 const SWEEP_BATCH = 500;
 /** Caps one nightly run at 100k rows per table, so it cannot run unbounded. */
@@ -12,6 +15,22 @@ const MAX_SWEEP_PASSES = 200;
 /** Long enough to answer a support question, short enough not to be an archive. */
 const VERIFICATION_RETENTION_DAYS = 7;
 const SESSION_RETENTION_DAYS = 30;
+/**
+ * How long a SETTLED ledger row is kept.
+ *
+ * SET AGAINST REDELIVERY, NOT AGAINST DISK. `inbound_events_dedup_uniq` is what
+ * makes a webhook Meta sends twice collide instead of being handled twice, and
+ * that protection lives in the row — delete it and a redelivery arriving later
+ * is indistinguishable from a new event, so a customer's message is duplicated
+ * into the thread. Meta retries a failed delivery for hours, and a subscription
+ * that is disabled and re-enabled can replay further back than that.
+ *
+ * Thirty days is far past any of it, and it is the floor rather than a
+ * preference: shortening this trades a duplicate message in somebody's inbox
+ * for disk, which is not a trade worth making. The ledgers were previously kept
+ * FOREVER, so this is the first bound they have had at all.
+ */
+const LEDGER_RETENTION_DAYS = 30;
 /**
  * Short, because an OAuth state is worthless the moment it is spent or expires
  * and nothing ever reads one again. Kept for a day only so a support question
@@ -32,6 +51,9 @@ export class SweeperWorker {
     private readonly verifications: VerificationRepository,
     private readonly sessions: SessionRepository,
     private readonly oauthStates: OauthStateRepository,
+    private readonly inboundEvents: InboundEventRepository,
+    private readonly outboundEvents: OutboundEventRepository,
+    private readonly syncJobs: SyncJobRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,
   ) {}
@@ -57,7 +79,30 @@ export class SweeperWorker {
         this.oauthStates.deleteSettledBefore(daysAgo(OAUTH_STATE_RETENTION_DAYS), limit),
       );
 
-      this.logger.info({ verifications, sessions, oauthStates }, 'retention sweep complete');
+      /*
+       * The three ledgers, which until now had no retention at all and grew
+       * forever — the largest tables in the schema, and the only ones with a
+       * guaranteed daily floor under their growth: the post-metrics refresh
+       * enqueues a job per channel every day whether anything changed or not.
+       *
+       * Swept last, and each drains independently, so a large ledger backlog
+       * cannot starve the small tables above it of their sweep.
+       */
+      const ledgerCutoff = daysAgo(LEDGER_RETENTION_DAYS);
+      const inboundEvents = await drain((limit) =>
+        this.inboundEvents.deleteSettledBefore(ledgerCutoff, limit),
+      );
+      const outboundEvents = await drain((limit) =>
+        this.outboundEvents.deleteSettledBefore(ledgerCutoff, limit),
+      );
+      const syncJobs = await drain((limit) =>
+        this.syncJobs.deleteSettledBefore(ledgerCutoff, limit),
+      );
+
+      this.logger.info(
+        { verifications, sessions, oauthStates, inboundEvents, outboundEvents, syncJobs },
+        'retention sweep complete',
+      );
     } catch (error) {
       this.logger.error({ err: error }, 'retention sweep failed');
     }

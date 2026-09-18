@@ -288,4 +288,32 @@ export class SyncJobRepository extends BaseRepository {
     );
     return affected;
   }
+
+  /**
+   * Retention sweep. Removes sync jobs that are SETTLED and old.
+   *
+   * `dead_letter` and `failed` are left alone for the same reasons as the two
+   * event ledgers: one is a human's problem the gauge alarms on, the other is
+   * still claimable work.
+   *
+   * `is_deleted = false` is named because a partial index only serves a query
+   * repeating its predicate, and this is the one ledger of the three that is
+   * soft-deletable. A soft-deleted job is swept by the same pass only if it is
+   * also settled — which is deliberate: `is_deleted` here means cancelled by a
+   * disconnect, and those rows are exactly what should age out.
+   */
+  async deleteSettledBefore(cutoff: Date, limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `DELETE FROM sync_jobs
+        WHERE id IN (
+          SELECT id FROM sync_jobs
+           WHERE is_deleted = false AND status = ANY($1) AND created_at < $2
+           ORDER BY created_at
+           LIMIT $3
+        )`,
+      [[SyncJobStatus.Completed, SyncJobStatus.Cancelled], cutoff, limit],
+    );
+    return affected;
+  }
+
 }

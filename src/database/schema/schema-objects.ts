@@ -773,6 +773,32 @@ export async function applyPostTableObjects(
       WHERE status = 'dead_letter'
     `);
   /*
+   * RETENTION, one per ledger.
+   *
+   * Without these the nightly sweep is three sequential scans of the three
+   * largest tables — the same trap migration 1757600000000 fixed for sessions
+   * and verifications, and the one 1757800000000 fixed for the gauge. A partial
+   * index serves only a query repeating its predicate, so each of these spells
+   * out exactly the statuses the sweep asks for.
+   *
+   * Partial on the SETTLED statuses, so the index holds only rows that are
+   * candidates for removal and shrinks as they are removed. Write cost is one
+   * index entry per row, paid once when it reaches its terminal state.
+   */
+  await run(`
+      CREATE INDEX inbound_events_settled_idx ON inbound_events (created_at)
+      WHERE status IN ('processed','skipped')
+    `);
+  await run(`
+      CREATE INDEX outbound_events_settled_idx ON outbound_events (created_at)
+      WHERE status IN ('sent','cancelled')
+    `);
+  await run(`
+      CREATE INDEX sync_jobs_settled_idx ON sync_jobs (created_at)
+      WHERE is_deleted = false AND status IN ('completed','cancelled')
+    `);
+
+  /*
    * The third ledger's dead letters. The other two had this and sync_jobs did
    * not, so the queue gauge — which counts all three the same way — fell back
    * to a sequential scan for that one column, every minute.
