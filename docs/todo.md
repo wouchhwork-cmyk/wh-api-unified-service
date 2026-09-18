@@ -9,8 +9,8 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **4 done, 19 open** (one of the 19 was found, not
-inherited — see C1).
+Status at 18 Sep 2026: **4 done, 19 open, 1 parked** (one of the 19 was
+found, not inherited — see A1).
 
 ---
 
@@ -74,6 +74,30 @@ inherited — see C1).
       This is the gate that makes it authoritative again.
 
 ---
+
+## Parked — recorded, do not start
+
+Work that is understood and deliberately not scheduled. **Do not pick these up
+without being asked**, however well they fit whatever else is being done.
+
+- [ ] **P1. Monitor Meta's rate-limit headers** — asked for 18 Sep 2026, on hold
+      until explicitly requested.
+      Every Graph response carries the budget we have already spent, and we
+      currently read none of it — so the first sign of trouble is a `(#4)` or
+      `(#17)` error, which is the point at which a business's inbox has already
+      stopped updating.
+      The headers to read: `X-App-Usage` (call volume, CPU and total time, each
+      a percentage of the app's hourly budget),
+      `X-Business-Use-Case-Usage` (the same per business, keyed by business id,
+      and the one that matters for a multi-tenant product — it also carries
+      `estimated_time_to_regain_access` once throttled), and
+      `X-Ad-Account-Usage` where it appears.
+      What it needs: parse them where responses are already handled
+      (`graph-api.client.ts`), record them per channel, expose them as gauges,
+      and let the pollers and the backfill back off on the percentage BEFORE
+      Meta refuses — the point being to never reach the error, rather than to
+      recover from it politely. A throttled tenant should also be visible in
+      `/health/detail` rather than inferred from logs.
 
 ## Done
 
