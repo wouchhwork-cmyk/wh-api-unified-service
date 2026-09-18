@@ -21,5 +21,13 @@
  *
  * Milliseconds are ample: the sub-millisecond ordering of two rows is settled
  * by the id tiebreaker, which is total and does not round.
+ *
+ * ONE THING THIS COSTS, recorded honestly. `updated_at <> created_at` is used
+ * as a cheap tripwire for rows written outside the service layer (see
+ * schema-guarantees.spec.ts). A modification landing in the same millisecond as
+ * the insert is now invisible to it, where microseconds would usually have
+ * separated them. The tripwire was always a heuristic rather than a guarantee —
+ * the audit trail is the real record — and a listing that silently drops rows
+ * is the worse of the two problems by a wide margin.
  */
 export const TIMESTAMP_PRECISION = 3;

@@ -25,8 +25,6 @@ import {
   type ResendRequest,
   type SignOutEverywhereResponse,
 } from '@/shared/contracts/auth/login.contract';
-import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
-import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
 import { AuthService, type SessionIssue } from './auth.service';
 import { VerificationService } from './verification.service';
@@ -63,8 +61,6 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly verifications: VerificationService,
     private readonly delivery: VerificationDeliveryService,
-    private readonly enterprises: EnterpriseRepository,
-    private readonly employees: EnterpriseEmployeeRepository,
     private readonly config: AppConfigService,
   ) {}
 
@@ -340,29 +336,16 @@ export class AuthController {
     employeeRefId: string | null;
     permissions: string[];
   }> {
-    // Read rather than trusted from the token: the business may have been
-    // activated or suspended since this token was issued, and a client that
-    // renders "pending activation" forever would look broken.
-    const enterprise =
-      actor.enterpriseId === null ? null : await this.enterprises.findById(actor.enterpriseId);
-
-    const employeeRefId =
-      actor.enterpriseId !== null && actor.employeeId !== null
-        ? await this.employees.refIdOf(actor.enterpriseId, actor.employeeId)
-        : null;
+    const { enterprise, employeeRefId } = await this.auth.describeSession(
+      actor.enterpriseId,
+      actor.employeeId,
+    );
 
     return {
       actorKind: actor.actorKind,
       isPlatformAdmin: actor.staffId !== null,
       isImpersonated: actor.isImpersonated,
-      enterprise: enterprise
-        ? {
-            refId: enterprise.refId,
-            name: enterprise.name,
-            slug: enterprise.slug,
-            status: enterprise.status,
-          }
-        : null,
+      enterprise,
       employeeRefId,
       permissions: [...actor.permissions].sort(),
     };

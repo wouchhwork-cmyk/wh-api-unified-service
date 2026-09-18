@@ -12,7 +12,6 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
@@ -28,7 +27,6 @@ import {
   MessageDirection,
   Permission,
 } from '@/shared/enums';
-import { AppException, ErrorCode } from '@/shared/errors';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import { evaluateReplyWindow } from './reply-window';
 import type { ActorContext } from '@/shared/context';
@@ -52,7 +50,6 @@ type ScopedActor = ActorContext & { enterpriseId: number };
 export class InboxController {
   constructor(
     private readonly inbox: InboxService,
-    private readonly employees: EnterpriseEmployeeRepository,
     private readonly events: InboxEventsService,
   ) {}
 
@@ -310,16 +307,11 @@ export class InboxController {
   ): Promise<void> {
     const parsed = AssignRequestSchema.parse(body);
 
-    let employeeId: number | null = null;
-    if (parsed.employeeRefId !== null) {
-      // Resolved within THIS enterprise, so a refId from another tenant cannot
-      // be assigned work here.
-      const employee = await this.employees.findByRefId(actor.enterpriseId, parsed.employeeRefId);
-      if (!employee) throw new AppException(ErrorCode.EmployeeNotFound);
-      employeeId = employee.employeeId;
-    }
-
-    await this.inbox.assign(actor.enterpriseId, RefIdParamSchema.parse(refId), employeeId);
+    await this.inbox.assign(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      parsed.employeeRefId,
+    );
   }
 
   @Post(':refId/status')

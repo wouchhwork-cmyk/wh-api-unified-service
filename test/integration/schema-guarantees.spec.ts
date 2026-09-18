@@ -259,6 +259,19 @@ describe('schema guarantees', () => {
   describe('the updated_at trigger', () => {
     it('advances updated_at on a normal update', async () => {
       const enterprise = await seedEnterprise(db, 'Acme', 'acme');
+      /*
+       * created_at is pushed into the past rather than racing the clock.
+       *
+       * Timestamps are millisecond-precision, so a row inserted and updated
+       * inside the same millisecond genuinely has updated_at = created_at and
+       * `>` would be a coin toss. The trigger is what is under test, not how
+       * long the test took to reach its second statement.
+       */
+      await db.query(`UPDATE enterprises SET created_at = $2 WHERE id = $1`, [
+        enterprise,
+        '2026-01-01T00:00:00Z',
+      ]);
+
       await db.query(`UPDATE enterprises SET city = 'Pune' WHERE id = $1`, [enterprise]);
       const rows: { advanced: boolean }[] = await db.query(
         `SELECT (updated_at > created_at) AS advanced FROM enterprises WHERE id = $1`,

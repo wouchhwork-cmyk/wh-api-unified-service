@@ -726,6 +726,46 @@ export class AuthService {
       ? identity.emailVerifiedAt === null
       : identity.mobileVerifiedAt === null;
   }
+  /**
+   * The parts of /auth/me that have to be READ rather than trusted.
+   *
+   * The token says which business and which employee; it cannot say whether
+   * that business has since been activated or suspended, and a client that
+   * renders "pending activation" forever looks broken. So both are re-read.
+   *
+   * Lives here rather than in the controller, which held the two repositories
+   * for this alone.
+   */
+  async describeSession(
+    enterpriseId: number | null,
+    employeeId: number | null,
+  ): Promise<{
+    enterprise: { refId: string; name: string; slug: string; status: string } | null;
+    employeeRefId: string | null;
+  }> {
+    const enterprise = enterpriseId === null ? null : await this.enterprises.findById(enterpriseId);
+
+    return {
+      enterprise: enterprise
+        ? {
+            refId: enterprise.refId,
+            name: enterprise.name,
+            slug: enterprise.slug,
+            status: enterprise.status,
+          }
+        : null,
+      /*
+       * The client needs this to offer "assign this to me" and to render
+       * "assigned to you": the assign endpoint speaks in refIds, and nothing
+       * else tells a client what its own is.
+       */
+      employeeRefId:
+        enterpriseId !== null && employeeId !== null
+          ? await this.employees.refIdOf(enterpriseId, employeeId)
+          : null,
+    };
+  }
+
 }
 
 function toEmploymentDto(employment: EmploymentSummary): Employment {

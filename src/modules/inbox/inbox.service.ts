@@ -6,6 +6,7 @@ import {
   type ConversationRow,
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
+import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import {
   MessageAttachmentRepository,
   type AttachmentRow,
@@ -72,6 +73,7 @@ export class InboxService {
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
     private readonly customers: CustomerRepository,
+    private readonly employees: EnterpriseEmployeeRepository,
     private readonly audit: AuditService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(InboxService.name) private readonly logger: PinoLogger,
@@ -535,8 +537,22 @@ export class InboxService {
   async assign(
     enterpriseId: number,
     conversationRefId: string,
-    employeeId: number | null,
+    employeeRefId: string | null,
   ): Promise<void> {
+    /*
+     * RESOLVED HERE, NOT IN THE CONTROLLER, and scoped to this enterprise — so
+     * a refId belonging to another tenant does not resolve and cannot be handed
+     * work. It read the repository from the controller before, which put the
+     * one rule that makes assignment tenant-safe in the layer least likely to
+     * be looked at when assignment changes.
+     */
+    let employeeId: number | null = null;
+    if (employeeRefId !== null) {
+      const employee = await this.employees.findByRefId(enterpriseId, employeeRefId);
+      if (!employee) throw new AppException(ErrorCode.EmployeeNotFound);
+      employeeId = employee.employeeId;
+    }
+
     const conversation = await this.requireConversation(enterpriseId, conversationRefId);
     if (conversation.assignedToEmployeeId === employeeId) return;
 

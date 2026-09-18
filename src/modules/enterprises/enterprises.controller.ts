@@ -3,14 +3,13 @@ import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { CurrentScopedActor, Public, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
-import { AppException, ErrorCode } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
 import {
   SignupRequestSchema,
   type SignupRequest,
   type SignupResponse,
 } from '@/shared/contracts/enterprises/signup.contract';
-import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import { EnterprisesService, type EnterpriseSummary } from './enterprises.service';
 import { VerificationDeliveryService } from '../auth/verification-delivery.service';
 import { EnterpriseOnboardingService } from './enterprise-onboarding.service';
 
@@ -55,7 +54,7 @@ export class EnterprisesController {
   constructor(
     private readonly onboarding: EnterpriseOnboardingService,
     private readonly delivery: VerificationDeliveryService,
-    private readonly enterprises: EnterpriseRepository,
+    private readonly enterprisesService: EnterprisesService,
   ) {}
 
   @Post('signup')
@@ -82,21 +81,9 @@ export class EnterprisesController {
   @Get('current')
   @RequirePermission(Permission.EnterpriseView)
   @ApiOperation({ summary: 'The business the current session is scoped to' })
-  async current(@CurrentScopedActor() actor: ActorContext & { enterpriseId: number }): Promise<{
-    refId: string;
-    name: string;
-    slug: string;
-    timezone: string;
-    status: string;
-  }> {
-    const enterprise = await this.enterprises.findById(actor.enterpriseId);
-    if (!enterprise) throw new AppException(ErrorCode.EnterpriseNotFound);
-    return {
-      refId: enterprise.refId,
-      name: enterprise.name,
-      slug: enterprise.slug,
-      timezone: enterprise.timezone,
-      status: enterprise.status,
-    };
+  async current(
+    @CurrentScopedActor() actor: ActorContext & { enterpriseId: number },
+  ): Promise<EnterpriseSummary> {
+    return this.enterprisesService.current(actor.enterpriseId);
   }
 }

@@ -1,6 +1,5 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { RoleRepository } from '@/database/repositories/role.repository';
 import { VerificationDeliveryService } from '@/modules/auth/verification-delivery.service';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
@@ -52,7 +51,6 @@ const CREATE_EXAMPLES = {
 export class EmployeesController {
   constructor(
     private readonly employees: EmployeesService,
-    private readonly roles: RoleRepository,
     private readonly delivery: VerificationDeliveryService,
   ) {}
 
@@ -97,8 +95,7 @@ export class EmployeesController {
   async roleOptions(
     @CurrentScopedActor() actor: ScopedActor,
   ): Promise<{ refId: string; name: string }[]> {
-    const roles = await this.roles.listForEnterprise(actor.enterpriseId);
-    return roles.map((role) => ({ refId: role.refId, name: role.name }));
+    return this.employees.listRoleOptions(actor.enterpriseId);
   }
 
   @Post()

@@ -97,6 +97,17 @@ export class EmployeesService {
   }
 
   /**
+   * The roles this business can assign.
+   *
+   * Its OWN copies of the templates, made at signup — which is why this is
+   * scoped rather than a catalogue read.
+   */
+  async listRoleOptions(enterpriseId: number): Promise<{ refId: string; name: string }[]> {
+    const roles = await this.roles.listForEnterprise(enterpriseId);
+    return roles.map((role) => ({ refId: role.refId, name: role.name }));
+  }
+
+  /**
    * Creates a colleague and the invitation that lets them set a password.
    *
    * The identity is created with a RANDOM password nobody is ever told. It exists

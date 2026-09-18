@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { EnterprisesService } from './enterprises.service';
 import { EnterpriseOnboardingService } from './enterprise-onboarding.service';
 import { EnterprisesController } from './enterprises.controller';
 
@@ -7,7 +8,7 @@ import { EnterprisesController } from './enterprises.controller';
   // AuthModule provides VerificationService; the delivery seam comes with it.
   imports: [AuthModule],
   controllers: [EnterprisesController],
-  providers: [EnterpriseOnboardingService],
+  providers: [EnterprisesService, EnterpriseOnboardingService],
   exports: [EnterpriseOnboardingService],
 })
 export class EnterprisesModule {}

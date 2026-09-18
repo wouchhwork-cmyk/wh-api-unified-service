@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **8 done, 15 open, 1 parked** (one of the 19 was
+Status at 18 Sep 2026: **9 done, 14 open, 1 parked** (one of the 19 was
 found, not inherited — see A1).
 
 ---
@@ -46,7 +46,6 @@ found, not inherited — see A1).
 ## D. Structure
 
 - [ ] **D1. `handleCallback` is a god method** — M — ~150 lines over eight concerns.
-- [ ] **D2. Some controllers read repositories directly** — S — Auth, Enterprises, Employees.
 
 ## E. Not built yet — pre-launch, not regressions
 
@@ -95,6 +94,12 @@ without being asked**, however well they fit whatever else is being done.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **D2. Controllers read repositories directly** — 18 Sep. **Five, not the
+      three the entry named** — Auth, Enterprises, Employees, Connections and
+      Inbox. The inbox one mattered: it held the tenant-scoping check that made
+      assignment safe, in the layer least likely to be re-read when assignment
+      changes. New `EnterprisesService`; the rest moved to existing services.
+      Guarded by `test/unit/controller-layering.spec.ts`.
 - [x] **C3. The ledgers had no retention** — 18 Sep — migration
       `1757900000000`. **Wider than the entry said**: it named the metrics
       refresh, but `inbound_events`, `outbound_events` and `sync_jobs` had no

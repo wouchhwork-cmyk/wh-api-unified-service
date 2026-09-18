@@ -4,8 +4,6 @@ import { ApiBody, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swag
 import type { Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
-import { ChannelRepository } from '@/database/repositories/channel.repository';
-import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { CurrentScopedActor, Public, RequirePermission, SkipTimeout } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
 import { AppException } from '@/shared/errors';
@@ -14,20 +12,15 @@ import {
   StartConnectionRequestSchema,
   type StartConnectionRequest,
 } from '@/shared/contracts/connections/connect.contract';
-import { ConnectionsService, type StartedConnection } from './connections.service';
+import {
+  ConnectionsService,
+  type ChannelDto,
+  type ConnectionDto,
+  type StartedConnection,
+} from './connections.service';
 import { MetaConnectionService } from './meta-connection.service';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
-
-/** What a client sees of a provider connection. No internal ids, no tokens. */
-interface ConnectionDto {
-  readonly refId: string;
-  readonly provider: string;
-  readonly providerUserName: string | null;
-  readonly status: string;
-  readonly reauthRequired: boolean;
-  readonly tokenExpiresAt: Date | null;
-}
 
 const START_EXAMPLES = {
   meta: {
@@ -46,8 +39,6 @@ export class ConnectionsController {
   constructor(
     private readonly meta: MetaConnectionService,
     private readonly connectionsService: ConnectionsService,
-    private readonly connections: ProviderConnectionRepository,
-    private readonly channels: ChannelRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(ConnectionsController.name) private readonly logger: PinoLogger,
   ) {}
@@ -188,18 +179,7 @@ export class ConnectionsController {
   @RequirePermission(Permission.ChannelsView)
   @ApiOperation({ summary: 'The provider connections this business holds' })
   async list(@CurrentScopedActor() actor: ScopedActor): Promise<ConnectionDto[]> {
-    const connections = await this.connections.listForEnterprise(actor.enterpriseId);
-    // Mapped with a declared return type, like /channels. Returning the
-    // repository row verbatim made every change to that SELECT a silent change
-    // to the API — including one that would leak a column added later.
-    return connections.map((connection) => ({
-      refId: connection.refId,
-      provider: connection.provider,
-      providerUserName: connection.providerUserName,
-      status: connection.status,
-      reauthRequired: connection.reauthRequired,
-      tokenExpiresAt: connection.tokenExpiresAt,
-    }));
+    return this.connectionsService.listConnections(actor.enterpriseId);
   }
 
   @Get('channels')
@@ -210,25 +190,7 @@ export class ConnectionsController {
       'Facebook Pages and the Instagram profiles linked to them. An Instagram channel names its ' +
       'parent Page, because the Page token is what authorises Instagram calls.',
   })
-  async listChannels(@CurrentScopedActor() actor: ScopedActor): Promise<unknown> {
-    const channels = await this.channels.listForEnterprise(actor.enterpriseId);
-    // Mapped, never returned raw: the row carries internal numeric ids, and the
-    // numeric id is never sent to a client. parentChannelId becomes the parent's
-    // refId so the Page/Instagram relationship is still expressible.
-    const refById = new Map(channels.map((channel) => [channel.id, channel.refId]));
-    return channels.map((channel) => ({
-      refId: channel.refId,
-      platform: channel.platform,
-      channelKind: channel.channelKind,
-      name: channel.name,
-      username: channel.username,
-      status: channel.status,
-      reauthRequired: channel.reauthRequired,
-      isManaged: channel.isManaged,
-      // null means events will not arrive for this Page yet.
-      webhookSubscribedAt: channel.webhookSubscribedAt,
-      parentChannelRefId:
-        channel.parentChannelId === null ? null : (refById.get(channel.parentChannelId) ?? null),
-    }));
+  async listChannels(@CurrentScopedActor() actor: ScopedActor): Promise<ChannelDto[]> {
+    return this.connectionsService.listChannels(actor.enterpriseId);
   }
 }

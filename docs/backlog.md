@@ -81,7 +81,7 @@ none of it is quietly dropped.
 | ~~**Three copies of `clampLimit`**~~ | — | **DONE 17 Sep 2026.** One `shared/utils/page-limit.ts` beside the cursor codec. The three had already drifted: catalogue's returned NaN for a non-finite input and never floored, so a fractional limit would have reached SQL as `LIMIT 7.9`. Unreachable through any controller — every schema parses `limit` first — which is exactly why nobody noticed. |
 | **Keyset cursors lose sub-millisecond precision** | S | Found 17 Sep while paginating employees, fixed THERE only; platform, inbox and catalogue still have it. See §1.11. |
 | **`handleCallback` is a god method** | M | ~150 lines over eight concerns. |
-| **Some controllers read repositories directly** | S | Auth, Enterprises and Employees each do. |
+| ~~**Some controllers read repositories directly**~~ | — | **DONE 18 Sep 2026. Five, not three:** Connections and Inbox as well as Auth, Enterprises and Employees. The Inbox one was not cosmetic — it held the enterprise-scoped assignee lookup, which is the single rule stopping a refId from another tenant being handed work, sitting in the layer least likely to be re-read when assignment changes. Enterprises had no service at all, so one exists now, separate from `EnterpriseOnboardingService` (creating a business and reading the one you are in have no steps in common). `test/unit/controller-layering.spec.ts` keeps it that way, allowing `import type` of a row shape — a type cannot be injected and cannot reach the database. |
 | **System roles are never reconciled** | M | Copied once at signup, so a permission added in a later release never reaches an existing tenant. |
 | **No metrics** | M | Counters, latencies and retry gauges still do not exist; logs are the only telemetry. |
 
