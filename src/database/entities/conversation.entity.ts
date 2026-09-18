@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { ConversationKind, ConversationStatus, Platform } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §20 — a thread. A DM conversation, or the comment thread under one
@@ -76,7 +77,7 @@ export class Conversation extends PublicEntity {
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
   assignedToEmployeeId!: number | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   assignedAt!: Date | null;
 
   /** Denormalized for the list view. */
@@ -88,18 +89,18 @@ export class Conversation extends PublicEntity {
   unreadCount!: number;
 
   /** The inbox's sort key. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastMessageAt!: Date | null;
 
   /** Drives the "waiting on us" views. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastInboundAt!: Date | null;
 
   /** First outbound reply — response-time reporting. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   firstRespondedAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   resolvedAt!: Date | null;
 
   @Column({ type: 'varchar', length: 30, default: ConversationStatus.Open })

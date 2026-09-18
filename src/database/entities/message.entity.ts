@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { MessageDirection, MessageKind, MessageStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §21 — every DM, comment, reply and internal note. One table for
@@ -96,11 +97,11 @@ export class Message extends PublicEntity {
   isHiddenOnPlatform!: boolean;
 
   /** When the platform says it was sent. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   platformSentAt!: Date | null;
 
   /** Detected as removed at the platform. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   platformDeletedAt!: Date | null;
 
   @Column({ type: 'varchar', length: 30, default: MessageStatus.Delivered })

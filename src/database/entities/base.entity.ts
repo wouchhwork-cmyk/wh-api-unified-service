@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Generated, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 import { bigintTransformer } from '../bigint.transformer';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * What schema.md says EVERY table has: id, created_at, updated_at, is_deleted.
@@ -26,10 +27,10 @@ export abstract class BaseEntity {
   @Column({ type: 'boolean', default: false })
   isDeleted!: boolean;
 
-  @CreateDateColumn({ type: 'timestamptz' })
+  @CreateDateColumn({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   createdAt!: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz' })
+  @UpdateDateColumn({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   updatedAt!: Date;
 }
 

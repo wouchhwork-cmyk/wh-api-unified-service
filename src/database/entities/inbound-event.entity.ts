@@ -8,6 +8,7 @@ import {
 } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §23 — the inbound half of the transport ledger: one row for every
@@ -122,7 +123,7 @@ export class InboundEvent extends BaseEntity {
   leaseOwner!: string | null;
 
   /** Lapse makes the row claimable again — leases are always bounded. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   leaseExpiresAt!: Date | null;
 
   @Column({ type: 'int', default: 0 })
@@ -132,27 +133,27 @@ export class InboundEvent extends BaseEntity {
   maxAttempts!: number;
 
   /** Backoff with jitter, so a platform outage does not stampede on recovery. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   nextAttemptAt!: Date | null;
 
   @Column({ type: 'text', nullable: true })
   lastError!: string | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastErrorAt!: Date | null;
 
   /** Terminal: an exhausted row stops retrying and waits for an operator. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   deadLetteredAt!: Date | null;
 
   /** With `processedAt`, the processing-latency metric. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   processingStartedAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   processedAt!: Date | null;
 
   /** When the PLATFORM says it happened; with `processedAt` it gives lag. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   receivedAt!: Date | null;
 }

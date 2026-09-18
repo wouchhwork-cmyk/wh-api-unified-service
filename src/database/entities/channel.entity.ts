@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { ChannelKind, ChannelStatus, Platform, TokenStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §14 — the individual surfaces under a connection: a Facebook Page,
@@ -69,7 +70,7 @@ export class Channel extends PublicEntity {
   @Column({ type: 'text', nullable: true })
   accessToken!: string | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   tokenExpiresAt!: Date | null;
 
   /**
@@ -95,7 +96,7 @@ export class Channel extends PublicEntity {
   status!: ChannelStatus;
 
   /** Last profile/stats refresh — named for the one thing it covers, since §15 syncs more. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   profileSyncedAt!: Date | null;
 
   /**
@@ -106,6 +107,6 @@ export class Channel extends PublicEntity {
    * and collapsing both into one status made an unsubscribed Page look broken —
    * which it is not.
    */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   webhookSubscribedAt!: Date | null;
 }

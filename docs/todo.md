@@ -9,19 +9,13 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **4 done, 19 open, 1 parked** (one of the 19 was
+Status at 18 Sep 2026: **5 done, 18 open, 1 parked** (one of the 19 was
 found, not inherited — see A1).
 
 ---
 
 ## A. Correctness — wrong answers today
 
-- [ ] **A1. Keyset cursors lose sub-millisecond precision** — S — *in progress*
-  Postgres stores microseconds; a cursor round-trips through a JS `Date`, which
-  does not. Ascending repeats the cursor row forever; descending **silently
-  skips** rows sharing that millisecond. Fixed in `employees` only (17 Sep).
-  Left: `platform-admin`, `conversation` (inbox), `customer`/`post`
-  (catalogue). backlog §1.11.
 - [ ] **A2. `provider_connections` uniqueness** — S — **needs your decision**
   One tenant can hold two channel rows for the same Page, because
   `channels_platform_uniq` includes `provider_connection_id`. The index is the
@@ -108,6 +102,11 @@ without being asked**, however well they fit whatever else is being done.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **A1. Keyset cursors lost sub-millisecond precision** — 18 Sep —
+      migration `1757700000000`. Fixed at the root instead of per query: every
+      timestamptz column is millisecond now, so no listing can reintroduce it
+      and plain b-tree indexes still work. The `date_trunc` workaround added to
+      employees on 17 Sep is reverted. backlog §1.11.
 
 ## Checked, not a defect
 

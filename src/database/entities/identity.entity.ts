@@ -1,6 +1,7 @@
 import { Column, Entity } from 'typeorm';
 import { IdentityStatus } from '@/shared/enums';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §2 — the login credential. One row per human, never tenant-scoped.
@@ -49,11 +50,11 @@ export class Identity extends PublicEntity {
   passwordHash!: string;
 
   /** NULL = unverified. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   emailVerifiedAt!: Date | null;
 
   /** NULL = unverified. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   mobileVerifiedAt!: Date | null;
 
   /** A person has one name, not one per business. */
@@ -79,9 +80,9 @@ export class Identity extends PublicEntity {
   failedLoginCount!: number;
 
   /** Set by throttling; NULL = not locked. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lockedUntil!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastLoginAt!: Date | null;
 }

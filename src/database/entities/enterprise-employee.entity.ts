@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { EmployeeKind, EmployeeStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §3 — one row per person per business. The tenant-scoped identity
@@ -36,14 +37,14 @@ export class EnterpriseEmployee extends PublicEntity {
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   invitedByEmployeeId!: number | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   invitedAt!: Date | null;
 
   /** When the employment became active. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   joinedAt!: Date | null;
 
   /** Last activity **in this business** — not account-wide. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastActiveAt!: Date | null;
 }

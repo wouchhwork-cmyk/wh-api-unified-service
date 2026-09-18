@@ -1,6 +1,7 @@
 import { Column, Entity } from 'typeorm';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §11 — one row per signed-in device, so a session can be revoked
@@ -39,10 +40,10 @@ export class Session extends BaseEntity {
   @Column({ type: 'inet', nullable: true })
   ipAddress!: string | null;
 
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   expiresAt!: Date;
 
   /** NULL = valid; set on logout. Revocation is the only defence against a replayed refresh token. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   revokedAt!: Date | null;
 }

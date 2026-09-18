@@ -8,6 +8,7 @@ import {
 } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §17 — every way a customer can be recognized or reached, within one
@@ -75,7 +76,7 @@ export class CustomerIdentifier extends BaseEntity {
   verificationStatus!: IdentifierVerificationStatus;
 
   /** Verification is PER ENTERPRISE — verified for one is not verified for another. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   verifiedAt!: Date | null;
 
   @Column({ type: 'varchar', length: 30, nullable: true })
@@ -85,11 +86,11 @@ export class CustomerIdentifier extends BaseEntity {
   @Column({ type: 'varchar', length: 30 })
   source!: IdentifierSource;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   firstSeenAt!: Date | null;
 
   /** Last time this identifier was actually used. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastSeenAt!: Date | null;
 
   /**
@@ -103,6 +104,6 @@ export class CustomerIdentifier extends BaseEntity {
   status!: IdentifierStatus;
 
   /** When it stopped belonging to this customer. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   releasedAt!: Date | null;
 }

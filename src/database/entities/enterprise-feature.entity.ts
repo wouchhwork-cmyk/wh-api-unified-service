@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { EnterpriseFeatureStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §10 — which features a business has, and where each one is in its
@@ -41,14 +42,14 @@ export class EnterpriseFeature extends PublicEntity {
    * entity_type = 'enterprise_feature'.
    */
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   requestedAt!: Date | null;
 
   /** Which Wouchh staff employee approved or declined. */
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   decidedByStaffId!: number | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   decidedAt!: Date | null;
 
   /** Shown to the business. */
@@ -56,17 +57,17 @@ export class EnterpriseFeature extends PublicEntity {
   declineReason!: string | null;
 
   /** When it last became usable. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   enabledAt!: Date | null;
 
   /** When it last stopped being usable. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   disabledAt!: Date | null;
 
   /**
    * Trial / contract end; NULL = no expiry. Drives the sweep that moves
    * `active` → `expired`. Warning window and cadence are configuration.
    */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   expiresAt!: Date | null;
 }

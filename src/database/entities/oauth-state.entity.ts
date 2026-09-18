@@ -1,6 +1,7 @@
 import { Column, Entity } from 'typeorm';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * One outstanding OAuth authorization attempt.
@@ -35,10 +36,10 @@ export class OauthState extends BaseEntity {
   @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
   employeeId!: number | null;
 
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   expiresAt!: Date;
 
   /** Set by the consuming UPDATE. Its presence is what makes a replay fail. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   consumedAt!: Date | null;
 }

@@ -207,6 +207,55 @@ describe('schema guarantees', () => {
     });
   });
 
+  describe('every timestamp is millisecond-precision', () => {
+    /**
+     * The invariant behind `src/database/timestamp-precision.ts`, asserted over
+     * the whole catalogue rather than a column at a time.
+     *
+     * A microsecond column is not visibly wrong: nothing in the application can
+     * read the extra digits, so it looks identical in every response and every
+     * log. It only shows up inside SQL comparisons, where it makes keyset
+     * cursors repeat a row (ascending) or silently skip one (descending). That
+     * is precisely the kind of defect that gets reintroduced by a new column
+     * declared without thinking about it — hence a test over
+     * information_schema, not over any one listing.
+     */
+    it('leaves no timestamptz column at the Postgres default precision', async () => {
+      const rows: { table_name: string; column_name: string; datetime_precision: number }[] =
+        await db.query(
+          `SELECT c.table_name, c.column_name, c.datetime_precision
+             FROM information_schema.columns c
+             JOIN information_schema.tables t
+               ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+            WHERE c.table_schema = 'public'
+              AND t.table_type = 'BASE TABLE'
+              AND c.data_type = 'timestamp with time zone'
+              AND c.datetime_precision <> 3
+            ORDER BY c.table_name, c.column_name`,
+        );
+
+      // Named, not counted: a failure should say which column to fix.
+      expect(rows.map((row) => `${row.table_name}.${row.column_name}`)).toEqual([]);
+    });
+
+    it('rounds a stored microsecond value rather than keeping it', async () => {
+      // The behaviour the cursor depends on: what goes in is what comes back,
+      // so a cursor built from a read row compares equal to the stored one.
+      const enterprise = await seedEnterprise(db, 'Acme', 'acme');
+      await db.query(`UPDATE enterprises SET created_at = $1 WHERE id = $2`, [
+        '2026-09-18T10:00:00.993456Z',
+        enterprise,
+      ]);
+
+      const rows: { exact: boolean }[] = await db.query(
+        `SELECT created_at = '2026-09-18T10:00:00.993Z'::timestamptz AS exact
+           FROM enterprises WHERE id = $1`,
+        [enterprise],
+      );
+      expect(rows[0]?.exact).toBe(true);
+    });
+  });
+
   describe('the updated_at trigger', () => {
     it('advances updated_at on a normal update', async () => {
       const enterprise = await seedEnterprise(db, 'Acme', 'acme');

@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { ConnectionStatus, Provider, ProviderCategory, TokenStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §13 — one OAuth grant per provider per business. Connecting Meta
@@ -37,7 +38,7 @@ export class ProviderConnection extends PublicEntity {
   accessToken!: string;
 
   /** NULL = the provider issues non-expiring tokens. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   tokenExpiresAt!: Date | null;
 
   /** Derived state, so the API and the UI do not each re-implement the date maths. */
@@ -49,7 +50,7 @@ export class ProviderConnection extends PublicEntity {
   reauthRequired!: boolean;
 
   /** Stops the notifier re-emailing the same business every run. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   reauthNotifiedAt!: Date | null;
 
   /**

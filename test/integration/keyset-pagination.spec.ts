@@ -113,6 +113,52 @@ describe('keyset pagination', () => {
       expect(pageTwo.map((row) => row.id).sort()).toEqual([quietA, quietB].sort());
     });
 
+    it('loses no conversation when several share a timestamp', async () => {
+      /*
+       * THE DESCENDING PRECISION DEFECT, which is the one that took data away.
+       *
+       * Postgres used to store these to the microsecond and a cursor carries
+       * only milliseconds, so a row written at `.993456` produced a cursor
+       * saying `.993000`. Descending, `last_message_at < '.993000'` is false
+       * for every row in that millisecond — including the ones that should have
+       * come next — so they appeared on NO page. The (last_message_at, id)
+       * tiebreaker could not save them: the comparison never reached the id.
+       *
+       * Every timestamptz is millisecond-precision now, so what is read back is
+       * exactly what is stored and the cursor is exact. Forced here rather than
+       * waited for, because rows written in one transaction genuinely do share
+       * a timestamp — they all take the transaction's now().
+       */
+      // MICROSECONDS ON PURPOSE. Written as .993456: under the old column type
+      // that is what was stored, while the cursor read back through a JS Date
+      // said .993000. An exact-millisecond fixture would pass either way and
+      // pin nothing.
+      const shared = '2026-01-02T00:00:00.993456Z';
+      const a = await newConversation('comment:1', shared);
+      const b = await newConversation('comment:2', shared);
+      const c = await newConversation('comment:3', shared);
+
+      const seen: number[] = [];
+      let cursor: { lastMessageAt: Date | null; id: number } | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const rows = await conversations.listInbox({
+          enterpriseId,
+          status: null,
+          assignedToEmployeeId: null,
+          conversationKind: null,
+          limit: 1,
+          cursor,
+        });
+        if (rows.length === 0) break;
+        const row = rows[0];
+        if (!row) break;
+        seen.push(row.id);
+        cursor = { lastMessageAt: row.lastMessageAt, id: row.id };
+      }
+
+      expect(seen.sort()).toEqual([a, b, c].sort());
+    });
+
     it('pages past a null-keyed row by id, without repeating it', async () => {
       // A page that ENDS on a null row mints a cursor whose timestamp is null,
       // which the third branch of the predicate has to handle on its own.

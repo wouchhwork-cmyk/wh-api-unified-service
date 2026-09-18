@@ -324,11 +324,11 @@ Pinned by `test/integration/retention-sweeps.spec.ts`, which covers both halves,
 the later-event rule, the soft-deleted row, and — the failure a split invites —
 that no row falls into the gap between the two predicates.
 
-### 1.11 Keyset cursors lose sub-millisecond precision — **S, three listings left**
+### ~~1.11 Keyset cursors lose sub-millisecond precision~~ — DONE (18 Sep)
 
 Found on 17 Sep while paginating `GET /employees`, where it failed immediately
-and visibly. **Fixed in the employees query only.** `platform-admin`, `inbox`
-and `catalogue` still carry it.
+and visibly. **Now fixed at the root, for every listing**, by migration
+`1757700000000` — see the end of this section.
 
 Postgres keeps `timestamptz` to the microsecond. A cursor cannot: it round-trips
 through a JS `Date`, which holds milliseconds, so a row stored at `.993456`
@@ -349,19 +349,32 @@ Rows must share a millisecond for the descending case to lose data — which
 sounds rare until you notice that rows written in one transaction all take the
 transaction's `now()`, so a batch insert produces exactly that.
 
-The employees fix truncates the column to milliseconds in the projection, the
-`ORDER BY` and the cursor predicate — all three or none — so the comparison is
-exact and the order stays total. Its cost is that the expression cannot use a
-plain index on `created_at`. That is affordable on one business's staff and
-**would not be** on `conversations`, so the other three need either an
-expression index or a cursor that carries the microseconds as text
-(`to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.US')`) and compares as `::timestamptz`.
-The second is the better answer for the hot tables and is the reason this was
-not simply applied to all four.
+**The fix is the column type, not the queries.** Every timestamptz in the
+schema is now `timestamptz(3)`. Nothing in the application could ever READ a
+microsecond — the driver hands timestamps to a JS `Date` and the API prints
+them with `toISOString()`, both millisecond — so the extra three digits were
+invisible everywhere except inside SQL comparisons, where they were wrong.
+Storing only what can be read makes the whole class of defect unrepresentable,
+costs no query changes at all, and leaves plain b-tree indexes usable. The
+alternatives considered — `date_trunc` in every query, or a cursor carrying
+microseconds as text — both forfeit the index or touch every listing, on
+exactly the hot tables that can least afford either.
 
-Pinned by `test/e2e/employees.e2e.spec.ts` — "loses nobody when two people share
-a timestamp to the microsecond", which forces the shared timestamp rather than
-waiting for one.
+The `date_trunc` workaround added to the employees query on 17 Sep is reverted;
+it was the right local fix and is now redundant.
+
+121 columns across 26 tables, altered in a loop over the catalogue rather than
+hand-listed, so the migration states the invariant and stays correct. Each
+`ALTER ... TYPE` rewrites its table under an ACCESS EXCLUSIVE lock — free now,
+on empty tables, and the reason this was worth doing before launch rather than
+after.
+
+Pinned in three places: `schema-guarantees.spec.ts` asserts no timestamptz
+column sits at the Postgres default and that a stored microsecond value rounds;
+`keyset-pagination.spec.ts` drives the descending inbox listing with three
+conversations sharing `.993456` and requires all three back — reverting one
+column to microseconds makes it return one of the three, which is the defect;
+and `employees.e2e.spec.ts` covers the ascending case.
 
 ---
 

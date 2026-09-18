@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { AttachmentStatus, MediaKind } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §22 — media on a message. Stores the platform's CDN link and, once
@@ -73,7 +74,7 @@ export class MessageAttachment extends BaseEntity {
   @Column({ type: 'boolean', default: false })
   isDownloaded!: boolean;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   downloadedAt!: Date | null;
 
   /** Alt text, sticker pack, platform extras. */

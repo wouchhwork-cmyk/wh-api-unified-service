@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { Platform, PostKind, PostStatus } from '@/shared/enums';
 import { bigintCountTransformer, bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §19 — mirrored platform posts. V1 is read-only: the business sees
@@ -76,7 +77,7 @@ export class Post extends PublicEntity {
   metrics!: Record<string, unknown>;
 
   /** When the counts above were last refreshed. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   metricsSyncedAt!: Date | null;
 
   /** Set only when WE published it — NULL for every mirrored post. */
@@ -84,17 +85,17 @@ export class Post extends PublicEntity {
   authoredByEmployeeId!: number | null;
 
   /** When the platform says it went live. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   publishedAt!: Date | null;
 
   /** Detected as removed at the platform. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   platformDeletedAt!: Date | null;
 
   @Column({ type: 'varchar', length: 30, default: PostStatus.Published })
   status!: PostStatus;
 
   /** Last full refresh of the post itself, as opposed to just its metrics. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   syncedAt!: Date | null;
 }

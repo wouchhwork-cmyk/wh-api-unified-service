@@ -1,6 +1,7 @@
 import { Column, Entity } from 'typeorm';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §8 — which roles a employee holds. No `ref_id`: the grant is managed
@@ -29,6 +30,6 @@ export class EmployeeRole extends BaseEntity {
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   grantedByEmployeeId!: number | null;
 
-  @Column({ type: 'timestamptz', default: () => 'now()' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, default: () => 'now()' })
   grantedAt!: Date;
 }

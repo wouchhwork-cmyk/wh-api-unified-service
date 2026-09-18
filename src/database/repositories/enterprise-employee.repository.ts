@@ -64,25 +64,6 @@ export interface EmployeeRecord {
   readonly employeeKind: EmployeeKind;
 }
 
-/**
- * TRUNCATED TO MILLISECONDS, in the projection, the ordering and the cursor
- * predicate alike — all three, or none.
- *
- * Postgres keeps timestamptz to the microsecond; a JS Date cannot hold one, so
- * a cursor built from a row that was stored at .993456 says .993000. Compared
- * against the untruncated column, `created_at > '.993000'` is still true of the
- * cursor row itself, and the page repeats the row it was supposed to resume
- * after. Descending listings have the mirror image of the same fault and SKIP
- * every row sharing that millisecond, which is worse for being invisible.
- *
- * Truncating the column to the precision the cursor can actually carry makes
- * the comparison exact, and the (truncated timestamp, id) order stays total.
- * The cost is that the expression cannot use a plain index on created_at —
- * affordable here, where the table holds one business's staff and the query
- * already sorts behind an aggregate.
- */
-const CURSOR_TIMESTAMP = "date_trunc('milliseconds', e.created_at)";
-
 @Injectable()
 export class EnterpriseEmployeeRepository extends BaseRepository {
   /**
@@ -257,15 +238,23 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
     let cursorPredicate = '';
     if (options.cursor) {
       params.push(options.cursor.createdAt, options.cursor.id);
-      // Ascending order, so the next page resumes AFTER the cursor row.
+      /*
+       * Ascending order, so the next page resumes AFTER the cursor row.
+       *
+       * A plain comparison against the column, and it is exact: every
+       * timestamptz here is millisecond-precision (see timestamp-precision.ts),
+       * which is what a JS Date — and therefore a cursor — can carry. This
+       * briefly used `date_trunc` to force that; the column type does it now, so
+       * the index is a plain b-tree again.
+       */
       cursorPredicate =
-        `AND (${CURSOR_TIMESTAMP}, e.id) > ` +
+        `AND (e.created_at, e.id) > ` +
         `($${params.length - 1}::timestamptz, $${params.length}::bigint)`;
     }
 
     return this.query<EmployeeListRow>(
       `SELECT e.id            AS "internalId",
-              ${CURSOR_TIMESTAMP} AS "createdAt",
+              e.created_at    AS "createdAt",
               e.ref_id        AS "refId",
               i.first_name    AS "firstName",
               i.last_name     AS "lastName",
@@ -291,7 +280,7 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
          LEFT JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
         WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate} ${cursorPredicate}
         GROUP BY e.id, i.id
-        ORDER BY ${CURSOR_TIMESTAMP} ASC, e.id ASC
+        ORDER BY e.created_at ASC, e.id ASC
         LIMIT $2`,
       params,
     );

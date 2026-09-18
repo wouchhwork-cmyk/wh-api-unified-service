@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §15 — resumable backfill and refresh work for a channel. Connecting
@@ -45,11 +46,11 @@ export class SyncJob extends PublicEntity {
   pageCursor!: string | null;
 
   /** Oldest record this job should fetch. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   windowStartAt!: Date | null;
 
   /** Newest record this job should fetch. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   windowEndAt!: Date | null;
 
   /** Progress, for the UI — a human is watching a "connecting your account" screen. */
@@ -65,11 +66,11 @@ export class SyncJob extends PublicEntity {
   leaseOwner!: string | null;
 
   /** Lease lapse — a dead worker releases the job without any external reaper. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   leaseExpiresAt!: Date | null;
 
   /** Honour the platform's backoff before resuming. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   rateLimitedUntil!: Date | null;
 
   @Column({ type: 'int', default: 0 })
@@ -79,22 +80,22 @@ export class SyncJob extends PublicEntity {
   maxAttempts!: number;
 
   /** Backoff with jitter. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   nextAttemptAt!: Date | null;
 
   @Column({ type: 'text', nullable: true })
   lastError!: string | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastErrorAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   startedAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   completedAt!: Date | null;
 
   /** Terminal — attempts are exhausted and no further work is scheduled. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   deadLetteredAt!: Date | null;
 }

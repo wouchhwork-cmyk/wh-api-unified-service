@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import type { Platform } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §18 — where a customer actually engages, and how much. One row per
@@ -39,11 +40,11 @@ export class CustomerEngagement extends BaseEntity {
   platform!: Platform;
 
   /** First interaction on this channel. */
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   firstEngagedAt!: Date;
 
   /** Most recent — the sort key for "recently active where". */
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   lastEngagedAt!: Date;
 
   /** Threads on this channel. */

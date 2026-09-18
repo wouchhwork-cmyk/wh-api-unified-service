@@ -2,6 +2,7 @@ import { Column, Entity } from 'typeorm';
 import { CustomerStatus, type CustomerFirstSource } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §16 — one row per human per enterprise: the enterprise's record of
@@ -80,7 +81,7 @@ export class Customer extends PublicEntity {
    * `status` to `'active'` and LEAVES them as the record of the last block.
    * There is deliberately no `is_blocked` boolean.
    */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   blockedAt!: Date | null;
 
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
@@ -101,11 +102,11 @@ export class Customer extends PublicEntity {
   @Column({ type: 'bigint', transformer: bigintTransformer, nullable: true })
   mergedIntoCustomerId!: number | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   firstSeenAt!: Date | null;
 
   /** Most recent interaction — the directory's sort key. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastSeenAt!: Date | null;
 
   /**

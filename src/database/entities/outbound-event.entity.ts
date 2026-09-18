@@ -8,6 +8,7 @@ import {
 } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §24 — the outbound half of the transport ledger: §23's shape
@@ -126,7 +127,7 @@ export class OutboundEvent extends BaseEntity {
   leaseOwner!: string | null;
 
   /** Lapse makes the row claimable again — leases are always bounded. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   leaseExpiresAt!: Date | null;
 
   @Column({ type: 'int', default: 0 })
@@ -136,24 +137,24 @@ export class OutboundEvent extends BaseEntity {
   maxAttempts!: number;
 
   /** Backoff with jitter, so a platform outage does not stampede on recovery. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   nextAttemptAt!: Date | null;
 
   @Column({ type: 'text', nullable: true })
   lastError!: string | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   lastErrorAt!: Date | null;
 
   /** Terminal: an exhausted row stops retrying and waits for an operator. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   deadLetteredAt!: Date | null;
 
   /** NULL = send now; a future value = scheduled. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   scheduledAt!: Date | null;
 
   /** When it was actually delivered. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   sentAt!: Date | null;
 }

@@ -7,6 +7,7 @@ import {
 } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
+import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
  * schema.md §12 — EVERY verification challenge in the product, of any type:
@@ -101,11 +102,11 @@ export class Verification extends PublicEntity {
    */
 
   /** Typically now() + 10 minutes, from config — per kind, never hardcoded. */
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   expiresAt!: Date;
 
   /** Single use: set on successful verification. */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   consumedAt!: Date | null;
 
   /**
@@ -113,7 +114,7 @@ export class Verification extends PublicEntity {
    * the new one. Stops two live codes existing where a user requesting a resend
    * could unknowingly validate the older one.
    */
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   supersededAt!: Date | null;
 
   /** Wrong guesses so far. */
@@ -136,7 +137,7 @@ export class Verification extends PublicEntity {
    * answers the hourly cap. Both are configuration — "without them this endpoint
    * is a free SMS pump billed to us".
    */
-  @Column({ type: 'timestamptz' })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
   lastSentAt!: Date;
 
   /** The send itself, via the transactional outbox — "did it leave our system". */
