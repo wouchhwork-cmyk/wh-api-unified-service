@@ -772,6 +772,19 @@ export async function applyPostTableObjects(
       CREATE INDEX outbound_events_dead_letter_idx ON outbound_events (dead_lettered_at DESC)
       WHERE status = 'dead_letter'
     `);
+  /*
+   * The third ledger's dead letters. The other two had this and sync_jobs did
+   * not, so the queue gauge — which counts all three the same way — fell back
+   * to a sequential scan for that one column, every minute.
+   *
+   * Carries `is_deleted = false` because that is how the gauge asks: sync_jobs
+   * is the only one of the three that is soft-deletable, and a partial index
+   * serves only a query repeating its predicate.
+   */
+  await run(`
+      CREATE INDEX sync_jobs_dead_letter_idx ON sync_jobs (dead_lettered_at DESC)
+      WHERE is_deleted = false AND status = 'dead_letter'
+    `);
 
   // --- the audit trail --------------------------------------------------
   await run(

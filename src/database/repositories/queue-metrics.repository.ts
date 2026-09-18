@@ -42,52 +42,82 @@ export interface QueueGauge {
  */
 @Injectable()
 export class QueueMetricsRepository extends BaseRepository {
+  /**
+   * ONE SUBQUERY PER GAUGE, rather than one pass per table with FILTER.
+   *
+   * The FILTER form reads beautifully and scans the whole ledger: with no WHERE
+   * clause, `count(*) FILTER (...) FROM inbound_events` visits every row ever
+   * written, including the overwhelming majority in a terminal state. Sampled
+   * every minute, that is three full scans a minute over the three
+   * highest-volume tables in the schema, growing forever.
+   *
+   * Each subquery below repeats the predicate of an index that already exists —
+   * `inbound_events_claimable_idx`, `..._expired_lease_idx`,
+   * `..._dead_letter_idx` and their outbound and sync counterparts — because a
+   * partial index only serves a query that names its predicate. So the work
+   * becomes proportional to the ACTIVE set rather than the archive, and no new
+   * index is needed to get it.
+   *
+   * Still one round trip, for the reason the class comment gives.
+   */
   async gauges(): Promise<QueueGauge[]> {
+    /*
+     * The status sets, written once. They are not arbitrary: each matches a
+     * partial index, so changing one here without changing that index silently
+     * returns this query to a sequential scan.
+     */
+    const inboundClaimable = `status IN ('pending','failed')`;
+    const outboundClaimable = `status IN ('pending','scheduled','failed')`;
+    const syncClaimable = `is_deleted = false AND status IN ('pending','failed','rate_limited')`;
+
+    const queue = (
+      name: string,
+      table: string,
+      claimable: string,
+      dueAt: string,
+      leased: string,
+      deadLetter: string,
+    ): string => `
+      SELECT '${name}' AS queue,
+             (SELECT count(*) FROM ${table} WHERE ${claimable}) AS depth,
+             (SELECT count(*) FROM ${table}
+               WHERE ${claimable} AND ${dueAt} <= now()) AS due,
+             (SELECT min(created_at) FROM ${table}
+               WHERE ${claimable} AND ${dueAt} <= now()) AS oldest_due,
+             (SELECT count(*) FROM ${table} WHERE ${leased}) AS leased,
+             (SELECT count(*) FROM ${table} WHERE ${deadLetter}) AS dead_lettered,
+             (SELECT count(*) FROM ${table}
+               WHERE ${deadLetter} AND dead_lettered_at > now() - $1::interval)
+               AS recent_dead_lettered`;
+
     return this.query<QueueGauge>(
-      `WITH inbound AS (
-         SELECT 'inbound' AS queue,
-                count(*) FILTER (WHERE status IN ('pending','failed'))            AS depth,
-                count(*) FILTER (WHERE status IN ('pending','failed')
-                                   AND COALESCE(next_attempt_at, created_at) <= now()) AS due,
-                min(created_at) FILTER (WHERE status IN ('pending','failed')
-                                   AND COALESCE(next_attempt_at, created_at) <= now()) AS oldest_due,
-                count(*) FILTER (WHERE status IN ('leased','processing'))          AS leased,
-                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered,
-                count(*) FILTER (WHERE status = 'dead_letter'
-                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
-           FROM inbound_events
-       ),
-       outbound AS (
-         SELECT 'outbound' AS queue,
-                count(*) FILTER (WHERE status IN ('pending','scheduled','failed')) AS depth,
-                count(*) FILTER (WHERE status IN ('pending','scheduled','failed')
-                                   AND COALESCE(next_attempt_at, scheduled_at, created_at) <= now()) AS due,
-                min(created_at) FILTER (WHERE status IN ('pending','scheduled','failed')
-                                   AND COALESCE(next_attempt_at, scheduled_at, created_at) <= now()) AS oldest_due,
-                count(*) FILTER (WHERE status IN ('leased','sending'))             AS leased,
-                count(*) FILTER (WHERE status = 'dead_letter')                     AS dead_lettered,
-                count(*) FILTER (WHERE status = 'dead_letter'
-                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
-           FROM outbound_events
-       ),
-       sync AS (
-         SELECT 'sync' AS queue,
-                count(*) FILTER (WHERE is_deleted = false
-                                   AND status IN ('pending','failed','rate_limited'))  AS depth,
-                count(*) FILTER (WHERE is_deleted = false
-                                   AND status IN ('pending','failed','rate_limited')
-                                   AND COALESCE(next_attempt_at, rate_limited_until, created_at) <= now()) AS due,
-                min(created_at) FILTER (WHERE is_deleted = false
-                                   AND status IN ('pending','failed','rate_limited')
-                                   AND COALESCE(next_attempt_at, rate_limited_until, created_at) <= now()) AS oldest_due,
-                count(*) FILTER (WHERE is_deleted = false AND status = 'running')  AS leased,
-                count(*) FILTER (WHERE is_deleted = false AND status = 'dead_letter') AS dead_lettered,
-                count(*) FILTER (WHERE is_deleted = false AND status = 'dead_letter'
-                                   AND dead_lettered_at > now() - $1::interval) AS recent_dead_lettered
-           FROM sync_jobs
-       ),
-       combined AS (
-         SELECT * FROM inbound UNION ALL SELECT * FROM outbound UNION ALL SELECT * FROM sync
+      `WITH combined AS (
+         ${queue(
+           'inbound',
+           'inbound_events',
+           inboundClaimable,
+           'COALESCE(next_attempt_at, created_at)',
+           `status IN ('leased','processing')`,
+           `status = 'dead_letter'`,
+         )}
+         UNION ALL
+         ${queue(
+           'outbound',
+           'outbound_events',
+           outboundClaimable,
+           'COALESCE(next_attempt_at, scheduled_at, created_at)',
+           `status IN ('leased','sending')`,
+           `status = 'dead_letter'`,
+         )}
+         UNION ALL
+         ${queue(
+           'sync',
+           'sync_jobs',
+           syncClaimable,
+           'COALESCE(next_attempt_at, rate_limited_until, created_at)',
+           `is_deleted = false AND status = 'running'`,
+           `is_deleted = false AND status = 'dead_letter'`,
+         )}
        )
        SELECT queue,
               depth::int                                              AS "depth",

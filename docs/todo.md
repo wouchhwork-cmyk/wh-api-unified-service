@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **5 done, 18 open, 1 parked** (one of the 19 was
+Status at 18 Sep 2026: **6 done, 17 open, 1 parked** (one of the 19 was
 found, not inherited — see A1).
 
 ---
@@ -44,8 +44,6 @@ found, not inherited — see A1).
   The tail of a large batch is guaranteed to overrun its lease.
 - [ ] **C3. The daily metrics refresh has no retention** — S
   One `inbound_events` row per post per day, kept forever.
-- [ ] **C4. Queue gauges scan three ledgers** — S
-  Three unfiltered aggregate scans per sample and per `/health/detail`.
 - [ ] **C5. `LISTEN` clients have no TCP keepalive** — S
   A socket reaped without FIN leaves a zombie listener. Latency only — every
   worker still polls its own timer — and deployment-dependent.
@@ -102,6 +100,10 @@ without being asked**, however well they fit whatever else is being done.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **C4. Queue gauges scanned three ledgers** — 18 Sep — migration
+      `1757800000000`. One subquery per gauge instead of one pass per table
+      with `FILTER`, so each matches a partial index that already existed. The
+      one that did not exist — `sync_jobs_dead_letter_idx` — is added.
 - [x] **A1. Keyset cursors lost sub-millisecond precision** — 18 Sep —
       migration `1757700000000`. Fixed at the root instead of per query: every
       timestamptz column is millisecond now, so no listing can reintroduce it

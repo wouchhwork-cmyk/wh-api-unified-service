@@ -11,6 +11,7 @@ import { MentionParentLink1757400000000 } from './migrations/1757400000000-Menti
 import { MarkTextlessComments1757500000000 } from './migrations/1757500000000-MarkTextlessComments';
 import { RetentionSweepIndexes1757600000000 } from './migrations/1757600000000-RetentionSweepIndexes';
 import { MillisecondTimestamps1757700000000 } from './migrations/1757700000000-MillisecondTimestamps';
+import { SyncJobDeadLetterIndex1757800000000 } from './migrations/1757800000000-SyncJobDeadLetterIndex';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -67,6 +68,7 @@ export function buildDataSourceOptions(
       MarkTextlessComments1757500000000,
       RetentionSweepIndexes1757600000000,
       MillisecondTimestamps1757700000000,
+      SyncJobDeadLetterIndex1757800000000,
     ],
     migrationsTableName: 'schema_migrations',
 
