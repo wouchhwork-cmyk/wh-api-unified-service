@@ -8,6 +8,7 @@ import {
   NOTIFY_INBOX_CHANNEL,
   RETRY_MAX_DELAY_MS,
   SSE_MAX_STREAMS_PER_ENTERPRISE,
+  LISTEN_KEEPALIVE_DELAY_MS,
 } from '@/shared/constants';
 
 /** What a subscriber is told. Ids only — never content. */
@@ -125,6 +126,10 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
        */
       ...(database.ssl ? { ssl: { rejectUnauthorized: true } } : {}),
       connectionTimeoutMillis: database.connectTimeoutMs,
+      // This connection is idle by design; without keepalive a silently
+      // reclaimed socket leaves a listener nothing will ever notify again.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: LISTEN_KEEPALIVE_DELAY_MS,
       application_name: 'wouchh-inbox-events',
     });
 

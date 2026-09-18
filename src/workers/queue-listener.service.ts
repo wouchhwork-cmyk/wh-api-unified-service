@@ -8,6 +8,7 @@ import {
   NOTIFY_OUTBOUND_CHANNEL,
   NOTIFY_SYNC_CHANNEL,
   RETRY_MAX_DELAY_MS,
+  LISTEN_KEEPALIVE_DELAY_MS,
 } from '@/shared/constants';
 import { nextAttemptDelayMs } from '@/modules/ledger/backoff.util';
 import { BackfillWorker } from './backfill.worker';
@@ -87,6 +88,10 @@ export class QueueListenerService implements OnModuleInit, OnApplicationShutdown
       // inbox-events.service.ts.
       ...(database.ssl ? { ssl: { rejectUnauthorized: true } } : {}),
       connectionTimeoutMillis: database.connectTimeoutMs,
+      // This connection is idle by design; without keepalive a silently
+      // reclaimed socket leaves a listener nothing will ever notify again.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: LISTEN_KEEPALIVE_DELAY_MS,
       application_name: 'wouchh-queue-listener',
     });
 

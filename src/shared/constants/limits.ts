@@ -218,6 +218,23 @@ export const NOTIFY_SYNC_CHANNEL = 'wouchh_sync_ready';
 /** Coalesce a burst of notifications into one wake-up. */
 export const NOTIFY_DEBOUNCE_MS = 50;
 
+/**
+ * TCP keepalive for the two connections that sit idle ON PURPOSE.
+ *
+ * A LISTEN connection sends nothing for as long as nothing is enqueued, and an
+ * idle socket is what a NAT gateway or load balancer reclaims — usually without
+ * a FIN, so neither end learns of it. Postgres keeps its side; we keep a client
+ * that will never be told anything again. Nothing errors, nothing logs, and the
+ * only symptom is that live updates quietly stop while the process looks
+ * healthy.
+ *
+ * Keepalive turns that into a socket error, which both listeners already handle
+ * by reconnecting. Thirty seconds sits under the idle timeouts that do this —
+ * AWS NLB at 350s is the long end, many NAT devices are far shorter — and the
+ * traffic is two packets a minute per connection.
+ */
+export const LISTEN_KEEPALIVE_DELAY_MS = 30_000;
+
 /** How often the queue gauge is sampled and logged. */
 export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
 
