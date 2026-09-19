@@ -54,6 +54,17 @@ export interface NormalizedMedia {
 export const STORY_MENTION_TYPE = 'story_mention';
 
 /**
+ * Somebody forwarding ANOTHER account's story into the chat.
+ *
+ * Distinct from a story mention, and the difference matters beyond the label:
+ * a mention's story belongs to the SENDER, so we know whose it is, while a
+ * shared story belongs to a third party who is unknowable — Meta sends only a
+ * media id and an expiring link, and that id resolves for nobody but the
+ * connected account (docs/platform-limitations.md §3.1).
+ */
+export const SHARED_STORY_TYPE = 'ig_story';
+
+/**
  * Meta's attachment type to ours.
  *
  * A story mention is an image as far as storage is concerned; that it is a story
@@ -262,7 +273,17 @@ export function normalizeAttachments(
      * the cost of a network call on a path that already renders correctly, and
      * the link expires in a day so the label would outlive its own evidence.
      */
-    if (type === STORY_MENTION_TYPE) metadata.kindIsGuessed = true;
+    /*
+     * A SHARED story has the same uncertainty as a story MENTION, and only the
+     * mention was flagged. Both arrive as one CDN link with no mime type, and
+     * both can be video: verified 19 Sep on a real `ig_story` share whose link
+     * served `video/mp4` while we had labelled it an image. The client retries
+     * a failed image as a video either way — this makes that expected rather
+     * than accidental, which is the whole point of the flag.
+     */
+    if (type === STORY_MENTION_TYPE || type === SHARED_STORY_TYPE) {
+      metadata.kindIsGuessed = true;
+    }
     if (attachment.payload?.reel_video_id) metadata.reelVideoId = attachment.payload.reel_video_id;
     /*
      * The post's own id, which outlives the CDN link exactly as a story's asset

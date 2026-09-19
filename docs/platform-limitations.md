@@ -579,6 +579,33 @@ encoding bridges the two.
 - **`story_mention`** — the story's owner **is the message sender**, so their
   profile link is correct by definition.
 
+### 3.4 A shared story is not a story mention, and only one has an owner
+
+Verified 19 Sep 2026 on live messages, because the two render identically and
+are not the same thing:
+
+| type | who owns it | can we name them |
+| --- | --- | --- |
+| `story_mention` | the **sender** — they tagged us in their own story | **yes**, by definition |
+| `ig_story` | a **third party** whose story the sender forwarded | **no** |
+
+A forwarded story arrives as `story_media_id` and an expiring
+`story_media_url`, and nothing else — no owner id, no handle, no permalink. The
+media id resolves for nobody but the connected account (§3.1), so the owner is
+unknowable. The portal says "shared someone's story" rather than inventing one.
+
+**Both are a guess about media KIND.** Meta serves a story's photo and its video
+under one link and names neither: a real `ig_story` share on 19 Sep was stored
+as an image and its link served `video/mp4`, 540 KB. `kindIsGuessed` now covers
+both shapes, and is derived at read as well as stored, so rows written before
+that still report honestly.
+
+**A shared PROFILE yields nothing at all.** It arrives as
+`is_unsupported: true` with no text and no attachment — Meta declining to
+describe it. That is now reported as `contentUnavailable`, which it was not:
+the marker was stored and never surfaced, so the one case the field exists for
+rendered as the blank bubble it was written to prevent.
+
 ### 3.3 Shared content is unrecoverable after a dropped delivery
 
 Meta exposes a shared post, story or reel **only on the live webhook**. Every

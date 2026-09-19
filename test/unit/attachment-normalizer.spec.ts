@@ -328,3 +328,39 @@ describe('a story mention does not claim to know what it is', () => {
     expect(result.attachments[0]?.metadata.kindIsGuessed).toBeUndefined();
   });
 });
+
+describe("a story's kind is a guess, shared or mentioned", () => {
+  /**
+   * Meta serves a story's photo and its video under ONE link and names neither.
+   * Verified 19 Sep on a real `ig_story` share: the link we had labelled an
+   * image served `video/mp4`, 540 KB of it.
+   *
+   * The client recovers by retrying a failed image as a video. `kindIsGuessed`
+   * is what makes that expected rather than accidental — and it was set for a
+   * story MENTION and not for a SHARED story, which has exactly the same
+   * problem.
+   */
+  const story = (type: string) =>
+    normalizeAttachments([
+      {
+        type,
+        payload: {
+          url: 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=17861305863695146',
+        },
+      },
+    ]).attachments[0];
+
+  it('flags a story mention', () => {
+    expect(story('story_mention')?.metadata.kindIsGuessed).toBe(true);
+  });
+
+  it('flags a SHARED story, which had the problem and not the flag', () => {
+    expect(story('ig_story')?.metadata.kindIsGuessed).toBe(true);
+  });
+
+  it('leaves an ordinary image alone, whose type Meta does give', () => {
+    // The flag has to mean something. Applying it everywhere would tell a
+    // client to expect failure on links that are perfectly well described.
+    expect(story('image')?.metadata.kindIsGuessed).toBeUndefined();
+  });
+});

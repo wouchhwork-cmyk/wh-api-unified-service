@@ -478,12 +478,21 @@ function toMessage(
     /** When the customer read it. Outbound only; null until they do. */
     seenAt: typeof row.metadata.seenAt === 'string' ? row.metadata.seenAt : null,
     /*
-     * The customer sent something the platform will not describe. Recovered
-     * after a dropped delivery, and Meta exposes a shared post or story only on
-     * the live webhook — so this message has an id and a time and no content,
-     * permanently. The client says so instead of showing an empty bubble.
+     * The customer sent something the platform will not describe, and the
+     * client says so instead of showing an empty bubble.
+     *
+     * TWO WAYS TO ARRIVE HERE, and only one was reported. `contentUnavailable`
+     * is set when a resync recovers a message Meta will no longer describe.
+     * `isUnsupported` is Meta saying so ON THE LIVE WEBHOOK — `is_unsupported:
+     * true`, with no text and no attachments — which is what a shared PROFILE
+     * produces. That fact was stored and never surfaced, so the very case this
+     * field exists for rendered as the blank bubble it was written to prevent.
+     *
+     * Observed 19 Sep on a real profile share: message 181, metadata
+     * `{"isUnsupported": true}`, reported as an ordinary empty message.
      */
-    contentUnavailable: row.metadata.contentUnavailable === true,
+    contentUnavailable:
+      row.metadata.contentUnavailable === true || row.metadata.isUnsupported === true,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
     /*
@@ -524,7 +533,20 @@ function toMessage(
        * deliberate rather than accidental, and so a first failure is expected
        * rather than reported as a broken attachment.
        */
-      kindIsGuessed: attachment.metadata.kindIsGuessed === true,
+      /*
+       * Derived as well as read, so rows written before a story type was known
+       * to be a guess still say so. The flag is stored at projection time,
+       * which is the right place for new messages and no help at all to the
+       * ones already in the table — a shared story stored on 19 Sep carried
+       * `kindIsGuessed: false` while its link served video/mp4.
+       *
+       * Both story shapes arrive as one CDN link with no mime type, so the
+       * platform type alone is enough to know we are guessing.
+       */
+      kindIsGuessed:
+        attachment.metadata.kindIsGuessed === true ||
+        attachment.metadata.platformType === 'story_mention' ||
+        attachment.metadata.platformType === 'ig_story',
     })),
     // Null for anything the customer sent, and for a message projected from a
     // webhook rather than typed by somebody here.
