@@ -241,6 +241,22 @@ export async function applyPostTableObjects(
       CREATE UNIQUE INDEX channels_platform_uniq
       ON channels (platform, platform_channel_id, provider_connection_id)
     `);
+  /*
+   * One Page, one connection, PER BUSINESS — the rule the index above does not
+   * express, because it is keyed by connection rather than by enterprise.
+   *
+   * Scoped by enterprise and never global: an agency and the brand it manages
+   * can both connect the same Page and each must process events independently.
+   *
+   * Partial on is_deleted, unlike the external-identity keys above, because this
+   * is a business rule rather than a dedup guarantee: removing a connection has
+   * to release the Page, or it could never be connected again.
+   */
+  await run(`
+      CREATE UNIQUE INDEX channels_enterprise_platform_uniq
+      ON channels (enterprise_id, platform, platform_channel_id)
+      WHERE is_deleted = false
+    `);
   await run(`CREATE UNIQUE INDEX posts_platform_uniq ON posts (channel_id, platform_post_id)`);
   await run(`
       CREATE UNIQUE INDEX conversations_thread_uniq

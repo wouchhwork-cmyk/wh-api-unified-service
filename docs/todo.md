@@ -9,21 +9,20 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 18 Sep 2026: **10 done, 6 open, 7 parked.**
+Status at 19 Sep 2026: **11 done, 6 open, 7 parked.**
 
-A2 is the only open item I cannot decide alone. The seven parked ones are not
-started without being asked — six of them pre-launch work that never existed,
-one a monitoring piece recorded on request.
+The seven parked items are not started without being asked — six of them
+pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ---
 
 ## A. Correctness — wrong answers today
 
-- [ ] **A2. `provider_connections` uniqueness** — S — **needs your decision**
-  One tenant can hold two channel rows for the same Page, because
-  `channels_platform_uniq` includes `provider_connection_id`. The index is the
-  easy part; what happens when a business reconnects through a *different*
-  Facebook login is a product question. See the note at the bottom.
+- [ ] **A3. Disconnect a connection** — S — **A2 depends on this**
+  There is no disconnect endpoint. None. It is not even listed in backlog §3
+  as a missing one. Until it exists, A2's refusal is a **lockout**: a business
+  that has lost the original Facebook login cannot release the Page and cannot
+  reconnect. Decided 19 Sep to ship the refusal first and this after.
 
 ## B. Safety and correctness of the integration
 
@@ -101,6 +100,13 @@ about where secrets live.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **A2. One Page, one connection, per business** — 19 Sep — migration
+      `1758000000000`. Refuse, as decided: `CHANNEL_ALREADY_CONNECTED`. The
+      harm was not duplicate processing — the inbound dedup key is scoped by
+      enterprise and catches the second copy — it was that events attach to the
+      OLDER channel, so reconnecting appeared to work and changed nothing while
+      the token stayed dead. Index scoped by enterprise, never global: an
+      agency and its client must still both connect one Page. **See A3.**
 - [x] **B1. Graph responses were not runtime-validated** — 18 Sep. All 23 call
       sites carry a schema; `request<T>` cannot be called without one. The
       response types are now INFERRED from the schemas rather than declared
@@ -160,22 +166,3 @@ problem and the queue gauge alarms on it, so sweeping one would erase the
 evidence and the alarm together.
 
 ---
-
-## The one decision I need from you (A2)
-
-Today a business that reconnects through a different Facebook login gets a
-second `provider_connections` row, and therefore a second `channels` row for
-the same Page — duplicate webhooks, duplicate conversations, the Page listed
-twice.
-
-A unique index on `(enterprise_id, platform, platform_channel_id)` stops it.
-What it cannot decide is what should happen at that moment:
-
-1. **Move the Page** onto the new connection, keeping its conversations and
-   history. Right when someone re-authorises with a personal account after
-   using a shared one — the common case, I think.
-2. **Refuse the connection** and tell them the Page is already connected. Safer,
-   and irritating if they no longer control the old login.
-
-I would build (1) unless you say otherwise, since (2) can strand a business
-with no way back in. Everything else on this list I can decide myself.

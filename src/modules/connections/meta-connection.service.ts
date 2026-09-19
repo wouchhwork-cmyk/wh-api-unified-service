@@ -159,6 +159,47 @@ export class MetaConnectionService implements ProviderConnector {
         connectedByEmployeeId: employeeId,
       });
 
+      /*
+       * ONE PAGE, ONE CONNECTION, PER BUSINESS.
+       *
+       * Refused rather than quietly allowed. Without this a business that
+       * reconnects through a DIFFERENT Facebook login gets a second channel row
+       * for the same Page — and the webhook fan-out attaches events to whichever
+       * channel is older, so every event keeps landing on the old channel whose
+       * token is dead, which is the reason they were reconnecting. The new
+       * connection sits unused, the Page appears twice on the connections
+       * screen, and the inbox stays broken with nothing to explain why.
+       *
+       * The whole callback is refused, not the conflicting pages alone: a
+       * partial connection is a state nobody asked for and cannot see. This runs
+       * inside the transaction, so the provider_connections row created moments
+       * ago rolls back with it and no half-connection survives.
+       *
+       * Instagram ids are checked alongside Page ids because an Instagram
+       * channel is a channel row too, with the same uniqueness.
+       *
+       * UNTIL DISCONNECT EXISTS THIS CAN STRAND SOMEBODY. A business that has
+       * lost access to the original login has no way to release the Page. That
+       * is a known, accepted gap with the endpoint scheduled — see docs/todo.md
+       * A2 — and the message says what to do in the meantime.
+       */
+      const claimed = await this.channels.findClaimedByAnotherConnection(
+        enterpriseId,
+        connection.id,
+        usablePages.flatMap((page) =>
+          page.instagramAccountId ? [page.pageId, page.instagramAccountId] : [page.pageId],
+        ),
+      );
+      if (claimed.length > 0) {
+        throw new AppException(ErrorCode.ChannelAlreadyConnected, {
+          // The same business owns both, so naming them leaks nothing.
+          details: claimed.map((channel) => ({
+            field: 'page',
+            issue: `${channel.name ?? channel.platformChannelId} is already connected`,
+          })),
+        });
+      }
+
       const channelIds: number[] = [];
       // Page id -> our channel id, so the post-commit subscribe step does not
       // have to look the channel up again with an untenanted query.

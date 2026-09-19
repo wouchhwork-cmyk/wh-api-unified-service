@@ -198,6 +198,37 @@ export class ChannelRepository extends BaseRepository {
   }
 
   /**
+   * Channels this business already holds for these platform ids, under a
+   * DIFFERENT connection.
+   *
+   * Scoped to one enterprise on purpose. Across enterprises the same Page
+   * legitimately exists more than once — an agency and the brand it manages can
+   * both connect it, and each processes events independently (see
+   * findAllByPlatformId). Within one enterprise it is a second copy nobody
+   * asked for: events attach to whichever channel is older, so the newer
+   * connection sits unused and reconnecting appears to work while changing
+   * nothing.
+   */
+  async findClaimedByAnotherConnection(
+    enterpriseId: number,
+    providerConnectionId: number,
+    platformChannelIds: readonly string[],
+  ): Promise<{ platformChannelId: string; name: string | null }[]> {
+    if (platformChannelIds.length === 0) return [];
+
+    return this.query<{ platformChannelId: string; name: string | null }>(
+      `SELECT platform_channel_id AS "platformChannelId", name
+         FROM channels
+        WHERE enterprise_id = $1
+          AND provider_connection_id <> $2
+          AND platform_channel_id = ANY($3)
+          AND is_deleted = false
+        ORDER BY platform_channel_id`,
+      [this.requireEnterprise(enterpriseId), providerConnectionId, [...platformChannelIds]],
+    );
+  }
+
+  /**
    * Records that a Page is subscribed and will receive events.
    *
    * Stamped only on success, so null keeps meaning "receives nothing yet" rather

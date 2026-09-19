@@ -13,6 +13,7 @@ import { RetentionSweepIndexes1757600000000 } from './migrations/1757600000000-R
 import { MillisecondTimestamps1757700000000 } from './migrations/1757700000000-MillisecondTimestamps';
 import { SyncJobDeadLetterIndex1757800000000 } from './migrations/1757800000000-SyncJobDeadLetterIndex';
 import { LedgerRetentionIndexes1757900000000 } from './migrations/1757900000000-LedgerRetentionIndexes';
+import { OnePageOneConnection1758000000000 } from './migrations/1758000000000-OnePageOneConnection';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -71,6 +72,7 @@ export function buildDataSourceOptions(
       MillisecondTimestamps1757700000000,
       SyncJobDeadLetterIndex1757800000000,
       LedgerRetentionIndexes1757900000000,
+      OnePageOneConnection1758000000000,
     ],
     migrationsTableName: 'schema_migrations',
 

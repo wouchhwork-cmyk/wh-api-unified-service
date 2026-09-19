@@ -89,6 +89,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.OauthExchangeFailed]: HttpStatus.BAD_GATEWAY,
   [ErrorCode.UpstreamUnavailable]: HttpStatus.BAD_GATEWAY,
   [ErrorCode.UpstreamContractChanged]: HttpStatus.BAD_GATEWAY,
+  [ErrorCode.ChannelAlreadyConnected]: HttpStatus.CONFLICT,
   [ErrorCode.InternalError]: HttpStatus.INTERNAL_SERVER_ERROR,
 };
 
@@ -179,6 +180,9 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.UpstreamRateLimited]: 'The provider is rate limiting us. Try again shortly.',
   [ErrorCode.UpstreamContractChanged]:
     'The provider returned something we could not read. This needs our attention, not yours.',
+  [ErrorCode.ChannelAlreadyConnected]:
+    'This Page is already connected through another account. Disconnect it there first, or ' +
+    'reconnect using the account that set it up.',
   [ErrorCode.RequestTimeout]: 'The request took too long.',
   [ErrorCode.PayloadTooLarge]: 'That request is too large.',
   // Never leaks the cause; the stack goes to the log under the same requestId.

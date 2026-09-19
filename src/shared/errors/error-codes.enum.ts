@@ -111,6 +111,15 @@ export enum ErrorCode {
    * CapabilityMissing mapping exists for.
    */
   UpstreamContractChanged = 'UPSTREAM_CONTRACT_CHANGED',
+
+  /**
+   * This business already has this Page, through a different login.
+   *
+   * Not a duplicate of ChannelNotFound or a generic conflict: the person is
+   * being told something specific and actionable — the Page is connected, but
+   * not by the account they just used.
+   */
+  ChannelAlreadyConnected = 'CHANNEL_ALREADY_CONNECTED',
   RequestTimeout = 'REQUEST_TIMEOUT',
   PayloadTooLarge = 'PAYLOAD_TOO_LARGE',
   InternalError = 'INTERNAL_ERROR',
