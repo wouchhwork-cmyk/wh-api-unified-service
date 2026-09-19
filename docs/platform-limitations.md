@@ -671,6 +671,26 @@ the content they point at — about 24 hours for a story. Links on any other hos
 are treated as permanent, which is why `isExpiringMediaUrl` matches on host
 rather than assuming everything expires.
 
+### 6.0 Ask the API what the media is; guess only where it cannot say
+
+`media_url` is NOT always an image. On a reel it is the `.mp4` itself — 1.6 MB
+of `video/mp4`, verified on the wire — so putting it in an `<img>` always fails.
+
+**Where the API declares a type, use it.** `mentionContext.mediaType` says
+`VIDEO`, and `thumbnailUrl` is always a still, so the order is thumbnail for a
+preview, `media_url` for playback. Discovering this by loading the file into an
+`<img>` and waiting for the error downloads the whole thing into a tag that can
+never render it, and shows nothing until it fails.
+
+**Guess only in the two places Meta genuinely gives no type:** a story reply and
+a shared story, where the CDN serves photo and video under one link with no mime
+type. Those are the only legitimate uses of load-and-retry.
+
+Worth stating plainly because it has been got wrong three times in one file.
+`43ceca4` established the rule for attachments on 6 Sep; the mention card was
+written the SAME DAY in the old style, and two later passes over `inbox.js`
+missed it. It was fixed on 19 Sep in `c409d2d`.
+
 ### 6.1 The expiry is in the link, and it is shorter than it looks
 
 Measured 19 Sep 2026 on a live mention (a reel, resolved 09 Sep 19:40 UTC). The
