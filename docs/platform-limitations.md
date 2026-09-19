@@ -691,6 +691,39 @@ rather than the 4.5 days.
 `permalink` never expires and is always stored. It is the answer whenever a CDN
 link is not.
 
+### 6.2 What can and cannot be refreshed, measured
+
+Every column that can hold a Meta CDN link, checked 19 Sep 2026 against the live
+API with the app's own token:
+
+| link | refreshable? | call latency |
+| --- | --- | --- |
+| a mention's media | **yes** | **3.1–4.8s**, and 8.4s end to end through the resolver |
+| a customer's `profile_pic` | **yes** | 756–866ms |
+| `channels.profile_picture_url` | yes, daily `RefreshProfile` | — |
+| `posts.media` | yes, daily `RefreshPostMetrics` | — |
+| a message attachment | **NO — see below** | — |
+
+**The latency split is the design.** A profile picture is fetched inside the
+read; a mention's media cannot be, so that refresh runs behind the response and
+the next open is correct. Narrowing the mention query to the two link fields
+was tried and changed nothing — the cost is in Meta's mentions edge, not the
+field list.
+
+**Message attachments cannot currently be refreshed at all.** Their links are
+`lookaside.fbsbx.com`, which carry **no `oe=` parameter**, so nothing in the URL
+says whether it still works — of five stored on 06 Sep, a HEAD on 19 Sep gave
+200, 404, 200, 404, 200. Roughly half dead in thirteen days, unpredictably.
+Refreshing them means re-reading the conversation, and the projector writes
+attachments only for messages it has not seen (`if (!inserted) return`), so a
+resync updates nothing. Fixing it means making that path update existing rows,
+which is a deliberate change to an append-only projector.
+
+**`posts.media` has a scale caveat.** `RefreshPostMetrics` runs once a day over
+200 channels per tick, least-recently-synced first. Under 200 active channels
+everything is refreshed daily and the ~35h link survives; above that a channel
+is reached every `ceil(N/200)` days, which at 1000 channels is five.
+
 ---
 
 ## 7. Delivery behaviour

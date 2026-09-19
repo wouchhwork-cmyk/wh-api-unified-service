@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MENTION_MEDIA_READ_BUDGET_MS,
+  READ_PATH_PLATFORM_BUDGET_MS,
   MENTION_MEDIA_TTL_MS,
   PLATFORM_REQUEST_TIMEOUT_MS,
 } from '@/shared/constants';
@@ -95,20 +95,35 @@ describe('mention media refresh', () => {
     });
   });
 
-  describe('the read budget', () => {
+  describe('the read budget, and what it may be spent on', () => {
+    /*
+     * MEASURED 19 Sep 2026 against the live API, end to end. These numbers are
+     * why the two refreshes are built differently — and why the first attempt
+     * did not work at all: a 1.5s budget was applied to a call that takes four
+     * seconds, so it timed out every time and silently served the stale answer.
+     * Narrowing the query changed nothing; the latency is Meta's mentions edge,
+     * not the field list.
+     */
+    const PROFILE_CALL_MS = 866;
+    const MENTION_CALL_MS = 3_158;
+
     it('is far tighter than the timeout a worker gets', () => {
-      /*
-       * Ten seconds is reasonable for a worker with nothing else to do and
-       * unreasonable for somebody who clicked a conversation. Without this, a
-       * slow Meta turns every mention into a ten-second open that then shows
-       * the stale image anyway — strictly worse than showing it at once.
-       */
-      expect(MENTION_MEDIA_READ_BUDGET_MS).toBeLessThan(PLATFORM_REQUEST_TIMEOUT_MS / 4);
+      // Ten seconds is reasonable for a worker and not for somebody who has
+      // just clicked a conversation.
+      expect(READ_PATH_PLATFORM_BUDGET_MS).toBeLessThan(PLATFORM_REQUEST_TIMEOUT_MS / 4);
     });
 
-    it('is long enough for a call that is merely normal', () => {
-      // Too tight and it never wins, which is the same as not having built it.
-      expect(MENTION_MEDIA_READ_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+    it('comfortably covers the profile call, which the read does wait for', () => {
+      expect(READ_PATH_PLATFORM_BUDGET_MS).toBeGreaterThan(PROFILE_CALL_MS);
+    });
+
+    it('does NOT cover the mention call, which is why that one runs behind', () => {
+      /*
+       * The assertion that would have caught the bug. If this budget is ever
+       * raised past the mention latency and that call moved back onto the read
+       * path, opening a mention takes four seconds.
+       */
+      expect(READ_PATH_PLATFORM_BUDGET_MS).toBeLessThan(MENTION_CALL_MS);
     });
   });
 

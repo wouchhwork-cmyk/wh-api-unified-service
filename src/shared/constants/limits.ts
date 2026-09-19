@@ -256,20 +256,39 @@ export const LISTEN_KEEPALIVE_DELAY_MS = 30_000;
 export const MENTION_MEDIA_TTL_MS = 6 * 60 * 60 * 1000;
 
 /**
- * How long a thread read will WAIT for that refresh before giving up on it.
+ * How long a thread read will WAIT for a platform call before giving up on it.
  *
  * Far tighter than PLATFORM_REQUEST_TIMEOUT_MS, and deliberately so: ten
- * seconds is a reasonable budget for a worker that has nothing else to do, and
- * an unreasonable one for somebody who clicked a conversation. Waiting the full
- * platform timeout would mean a slow Meta turns every mention into a ten-second
- * open that then shows the stale image anyway — strictly worse than showing the
- * stale image at once.
+ * seconds is a reasonable budget for a worker that has nothing else to do and
+ * an unreasonable one for somebody who clicked a conversation.
  *
- * Losing the race costs nothing but the call: the stored answer is served, and
- * the next open tries again. Nothing is written in the background, so a request
- * that gives up leaves no work running behind it.
+ * MEASURED 19 Sep 2026 against the live API, which is what set this apart from
+ * a guess:
+ *
+ *   profile_pic (a customer's picture)   756–866 ms
+ *   mentioned_comment (a mention's media) 3.1–4.8 s
+ *
+ * So the picture is fetched inside the read and the mention is NOT — the
+ * mention refresh runs behind the response instead (see
+ * InboxService.refreshMentionMediaInBackground). Narrowing the mention query to
+ * the two link fields was tried and changed nothing: the latency is in Meta's
+ * mentions edge, not in the field expansion.
  */
-export const MENTION_MEDIA_READ_BUDGET_MS = 1_500;
+export const READ_PATH_PLATFORM_BUDGET_MS = 1_500;
+
+/**
+ * How long a customer's profile picture is trusted before being refetched.
+ *
+ * Measured 19 Sep 2026 against the live API: a freshly fetched Instagram
+ * `profile_pic` carried an `oe=` four to five days out. The one actually in the
+ * database had been taken on 06 Sep and died on 10 Sep — nine days before
+ * anybody noticed, because nothing ever looked at it again.
+ *
+ * A day is comfortable against four, and it also covers the OTHER half of the
+ * problem: the picture is only fetched during a conversation backfill, so most
+ * customers never had one at all. Refreshing on read fills those in too.
+ */
+export const CUSTOMER_AVATAR_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** How often the queue gauge is sampled and logged. */
 export const QUEUE_GAUGE_INTERVAL_MS = 60_000;

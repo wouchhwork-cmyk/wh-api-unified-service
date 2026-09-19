@@ -18,6 +18,17 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## A. Correctness — wrong answers today
 
+- [ ] **A4. Message attachment links are never refreshed** — M
+  `lookaside.fbsbx.com` links carry no `oe=`, so nothing can predict death —
+  measured 19 Sep, of five stored on 06 Sep a HEAD gave 200/404/200/404/200.
+  Refreshing means re-reading the conversation, and the projector writes
+  attachments only for messages it has not seen (`if (!inserted) return`), so a
+  resync updates nothing. Needs that append-only path to start updating
+  existing rows. platform-limitations §6.2.
+- [ ] **A5. `posts.media` refresh does not scale** — S
+  `RefreshPostMetrics` does 200 channels per daily tick, so above 200 active
+  channels a channel is reached every `ceil(N/200)` days — longer than the ~35h
+  link life. Fine today, silent at scale.
 - [ ] **A3. Disconnect a connection** — S — **A2 depends on this**
   There is no disconnect endpoint. None. It is not even listed in backlog §3
   as a missing one. Until it exists, A2's refusal is a **lockout**: a business
@@ -100,12 +111,14 @@ about where secrets live.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
-- [x] **Mention media links expired and were never refreshed** — 19 Sep.
-      Re-resolved on thread open when older than six hours, behind a 1.5s
-      budget so a slow Meta never delays a read. The API now says whether the
-      links expire and how fresh they are; the portal falls back to the
-      permalink, which does not. See platform-limitations §6.1 for the measured
-      lifetimes.
+- [x] **Mention media and customer avatars expired, never refreshed** — 19 Sep.
+      **Verified end to end against the live API**, not just unit-tested — which
+      is what caught the first attempt being broken: a 1.5s read budget applied
+      to a call that takes 3–5s, so it timed out every time and silently served
+      stale links. The mention refresh now runs BEHIND the response (35ms open,
+      fresh within seconds); the avatar refresh stays inside it at 756–866ms.
+      Avatars were also barely populated — one customer of five — because they
+      were only fetched during a backfill. platform-limitations §6.1, §6.2.
 - [x] **A2. One Page, one connection, per business** — 19 Sep — migration
       `1758000000000`. Refuse, as decided: `CHANNEL_ALREADY_CONNECTED`. The
       harm was not duplicate processing — the inbound dedup key is scoped by

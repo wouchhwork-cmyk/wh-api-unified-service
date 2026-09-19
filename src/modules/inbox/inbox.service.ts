@@ -19,13 +19,18 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
 import { clampLimit } from '@/shared/utils/page-limit';
-import { MENTION_MEDIA_READ_BUDGET_MS, MENTION_MEDIA_TTL_MS } from '@/shared/constants';
+import {
+  CUSTOMER_AVATAR_TTL_MS,
+  READ_PATH_PLATFORM_BUDGET_MS,
+  MENTION_MEDIA_TTL_MS,
+} from '@/shared/constants';
 import {
   AuditAction,
   AuditEntityType,
   ConversationKind,
   MessageDirection,
   ConversationStatus,
+  Platform,
   DestinationKind,
   MessageKind,
   MessageStatus,
@@ -68,6 +73,15 @@ export interface ReplyResult {
 
 @Injectable()
 export class InboxService {
+  /**
+   * Conversations whose media refresh is already running.
+   *
+   * Per process, deliberately: this guards against the same agent's repeated
+   * opens and a few colleagues looking at once, which is the realistic case. A
+   * cross-process guard would be a lock for a call that costs one request.
+   */
+  private readonly mentionRefreshesInFlight = new Set<number>();
+
   constructor(
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
@@ -206,10 +220,17 @@ export class InboxService {
      * hands back the row with fresh ones when they were due — see
      * withFreshMentionMedia for why that happens on read rather than on a timer.
      */
-    const conversation = await this.withFreshMentionMedia(
+    const conversation = await this.withFreshCustomerAvatar(
       enterpriseId,
       await this.requireConversation(enterpriseId, conversationRefId),
     );
+
+    /*
+     * NOT AWAITED, and that is the whole design — see the method.
+     * Measured at 3.1–4.8s against the live API, so waiting for it would make
+     * every stale mention a five-second open.
+     */
+    this.refreshMentionMediaInBackground(enterpriseId, conversation);
 
     /*
      * beforeId is the DEPRECATED form of this cursor and is translated rather
@@ -309,15 +330,15 @@ export class InboxService {
    * thread that will not open because Meta is slow. Every failure path below
    * leaves the stored answer in place and returns.
    */
-  private async withFreshMentionMedia(
+  private refreshMentionMediaInBackground(
     enterpriseId: number,
     conversation: ConversationRow,
-  ): Promise<ConversationRow> {
-    if (conversation.conversationKind !== ConversationKind.Mention) return conversation;
+  ): void {
+    if (conversation.conversationKind !== ConversationKind.Mention) return;
 
     const metadata = conversation.contextMetadata ?? {};
     const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
-    if (!mediaId) return conversation;
+    if (!mediaId) return;
 
     const refreshedAt =
       typeof metadata.postDetailsRefreshedAt === 'string'
@@ -325,36 +346,64 @@ export class InboxService {
         : Number.NaN;
     // NaN fails this comparison, which is the wanted answer for a conversation
     // resolved before the stamp existed: refresh it once, then it has one.
-    if (Date.now() - refreshedAt < MENTION_MEDIA_TTL_MS) return conversation;
+    if (Date.now() - refreshedAt < MENTION_MEDIA_TTL_MS) return;
+
+    /*
+     * ONE CALL PER CONVERSATION AT A TIME. Ten agents opening the same mention
+     * is ten opens of one thread, not ten reasons to ask Meta the same question
+     * — and at four seconds each they would overlap freely.
+     */
+    if (this.mentionRefreshesInFlight.has(conversation.id)) return;
+    this.mentionRefreshesInFlight.add(conversation.id);
+
+    void this.resolveMentionMedia(enterpriseId, conversation, metadata, mediaId).finally(() => {
+      this.mentionRefreshesInFlight.delete(conversation.id);
+    });
+  }
+
+  /** The body of the background refresh. Never throws; never blocks a read. */
+  private async resolveMentionMedia(
+    enterpriseId: number,
+    conversation: ConversationRow,
+    metadata: Record<string, unknown>,
+    mediaId: string,
+  ): Promise<void> {
 
     const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
-    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return conversation;
+    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return;
     // A channel already known to need re-auth would spend a call to be told so.
-    if (channel.reauthRequired) return conversation;
+    if (channel.reauthRequired) return;
 
     let token: string;
     try {
       token = this.cipher.decrypt(channel.effectiveAccessToken);
     } catch {
       // Key loss or tampering. The relay and backfill both alert on this.
-      return conversation;
+      return;
     }
 
     const commentId =
       typeof metadata.mentionedCommentId === 'string' ? metadata.mentionedCommentId : null;
 
     try {
-      const resolved = await withinBudget(
-        this.graph.resolveInstagramMention(
-          channel.platformChannelId,
-          { commentId, mediaId },
-          token,
-        ),
-        MENTION_MEDIA_READ_BUDGET_MS,
+      /*
+       * The full platform timeout, not the read budget: nobody is waiting on
+       * this, and the call genuinely takes three to five seconds.
+       */
+      const resolved = await this.graph.resolveInstagramMention(
+        channel.platformChannelId,
+        { commentId, mediaId },
+        token,
       );
-      // Null means Meta would not describe it — deleted, or gone private. The
-      // stored answer stays, and the permalink beside it still works.
-      if (!resolved?.media) return conversation;
+      if (!resolved?.media) {
+        // Logged, because silence here is what hid a 1.5s budget that could
+        // never be met: "Meta said nothing" and "we gave up" looked identical.
+        this.logger.debug(
+          { enterpriseId, conversationId: conversation.id },
+          'the mentions edge described no media; keeping the stored links',
+        );
+        return;
+      }
 
       const patch = {
         postDetails: resolved.media,
@@ -362,19 +411,91 @@ export class InboxService {
       };
       await this.conversations.mergeContextMetadata(enterpriseId, conversation.id, patch);
 
-      // Returned rather than mutated: the row is readonly, and the caller is
-      // about to read the metadata this just replaced.
-      return { ...conversation, contextMetadata: { ...metadata, ...patch } };
+      this.logger.debug(
+        { enterpriseId, conversationId: conversation.id },
+        'refreshed a mention\u2019s media links',
+      );
     } catch (error) {
       /*
-       * Swallowed deliberately, and logged at debug rather than warn: an
-       * unreadable mention is ordinary — the post may be deleted, the account
-       * gone private, or the quota spent — and this runs on every stale thread
-       * open. At warn it would be noise that trains people to ignore the log.
+       * Swallowed deliberately: an unreadable mention is ordinary — the post
+       * may be deleted, the account gone private, or the quota spent — and
+       * nobody is waiting on the answer. Debug rather than warn because this
+       * runs whenever a stale mention is opened.
        */
       this.logger.debug(
         { err: error, enterpriseId, conversationId: conversation.id },
-        'could not refresh mention media; serving what we have',
+        'could not refresh mention media; the stored links stay',
+      );
+    }
+  }
+
+  /**
+   * Re-fetches a customer's profile picture when it is missing or old.
+   *
+   * TWO PROBLEMS, ONE FIX. Instagram's `profile_pic` is a signed link that
+   * lasts four to five days, and nothing ever refreshed it — the one picture in
+   * the dev database was taken on 06 Sep and died on 10 Sep. Worse, the picture
+   * was only ever fetched during a conversation BACKFILL, so most customers
+   * never had one at all: of five customers, one.
+   *
+   * Refreshing on read fixes both, because "missing" and "stale" take the same
+   * branch — a customer with no stamp is due, which is exactly right for one
+   * that was never fetched.
+   *
+   * Same rules as the mention refresh beside it: bounded, and a failure leaves
+   * the stored answer alone rather than failing the read.
+   */
+  private async withFreshCustomerAvatar(
+    enterpriseId: number,
+    conversation: ConversationRow,
+  ): Promise<ConversationRow> {
+    if (conversation.platform !== Platform.Instagram) return conversation;
+
+    const target = await this.customers.findAvatarRefreshTarget(
+      enterpriseId,
+      conversation.customerId,
+    );
+    if (!target) return conversation;
+
+    const fetchedAt = target.fetchedAt === null ? Number.NaN : Date.parse(target.fetchedAt);
+    // NaN fails this, which is what makes a customer who never had a picture due.
+    if (Date.now() - fetchedAt < CUSTOMER_AVATAR_TTL_MS) return conversation;
+
+    const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
+    if (!channel?.effectiveAccessToken || channel.reauthRequired) return conversation;
+
+    let token: string;
+    try {
+      token = this.cipher.decrypt(channel.effectiveAccessToken);
+    } catch {
+      return conversation;
+    }
+
+    try {
+      const profile = await withinBudget(
+        this.graph.getInstagramUserProfile(target.scopedId, token),
+        READ_PATH_PLATFORM_BUDGET_MS,
+      );
+      if (!profile?.profile_pic) return conversation;
+
+      await this.customers.applyPlatformProfile({
+        enterpriseId,
+        customerId: conversation.customerId,
+        // Only the picture is being refreshed here; the name and the follow
+        // flags are left to the backfill that owns them.
+        displayName: null,
+        firstName: null,
+        lastName: null,
+        avatarUrl: profile.profile_pic,
+        profile: { profileFetchedAt: new Date().toISOString() },
+      });
+
+      return { ...conversation, customerAvatarUrl: profile.profile_pic };
+    } catch (error) {
+      // Ordinary: the account may have gone private, or the quota is spent.
+      this.logger.debug(
+        { err: error, enterpriseId, customerId: conversation.customerId },
+        'could not refresh the customer picture; serving what we have',
       );
       return conversation;
     }

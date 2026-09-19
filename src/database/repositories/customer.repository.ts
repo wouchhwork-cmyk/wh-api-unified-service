@@ -562,4 +562,36 @@ export class CustomerRepository extends BaseRepository {
     );
     return affected > 0;
   }
+  /**
+   * What is needed to decide whether this customer's picture is worth refetching.
+   *
+   * The Instagram scoped id comes from the identifier table rather than the
+   * customer row, because a customer can be reached on more than one platform
+   * and only the Instagram one has a profile edge we can read.
+   */
+  async findAvatarRefreshTarget(
+    enterpriseId: number,
+    customerId: number,
+  ): Promise<{ scopedId: string; avatarUrl: string | null; fetchedAt: string | null } | null> {
+    const rows = await this.query<{
+      scopedId: string;
+      avatarUrl: string | null;
+      fetchedAt: string | null;
+    }>(
+      `SELECT ci.identifier_value           AS "scopedId",
+              cu.avatar_url                 AS "avatarUrl",
+              cu.metadata->>'profileFetchedAt' AS "fetchedAt"
+         FROM customers cu
+         JOIN customer_identifiers ci
+           ON ci.customer_id = cu.id
+          AND ci.enterprise_id = cu.enterprise_id
+          AND ci.identifier_kind = $3
+          AND ci.is_deleted = false
+        WHERE cu.enterprise_id = $1 AND cu.id = $2 AND cu.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), customerId, IdentifierKind.InstagramUserId],
+    );
+    return rows[0] ?? null;
+  }
+
 }
