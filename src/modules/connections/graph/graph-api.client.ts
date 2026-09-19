@@ -573,6 +573,8 @@ export class GraphApiClient {
     instagramUserId: string,
     target: { readonly commentId?: string | null; readonly mediaId?: string | null },
     accessToken: string,
+    /** For a caller nobody is waiting on. Defaults to the ordinary timeout. */
+    timeoutMs?: number,
   ): Promise<ResolvedMention | null> {
     /*
      * WHY THESE FIELDS AND NOT MORE. Every one was probed individually against
@@ -606,8 +608,20 @@ export class GraphApiClient {
        * paying for a `parent_id` probe on every mention to learn which it is.
        */
       const comment =
-        (await this.fetchMentionedComment(instagramUserId, target.commentId, accessToken, true)) ??
-        (await this.fetchMentionedComment(instagramUserId, target.commentId, accessToken, false));
+        (await this.fetchMentionedComment(
+          instagramUserId,
+          target.commentId,
+          accessToken,
+          true,
+          timeoutMs,
+        )) ??
+        (await this.fetchMentionedComment(
+          instagramUserId,
+          target.commentId,
+          accessToken,
+          false,
+          timeoutMs,
+        ));
 
       if (!comment?.username) return null;
       return {
@@ -684,6 +698,7 @@ export class GraphApiClient {
     commentId: string,
     accessToken: string,
     withReplies: boolean,
+    timeoutMs?: number,
   ): Promise<GraphMentionedComment | null> {
     const mediaFields =
       'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
@@ -711,6 +726,7 @@ export class GraphApiClient {
         {
           schema: GraphMentionedCommentEnvelopeSchema,
           accessToken,
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
           params: {
             fields: `mentioned_comment.comment_id(${commentId}){id,text,timestamp,username,like_count,parent_id,${replies}media{${mediaFields}}}`,
           },
@@ -718,13 +734,38 @@ export class GraphApiClient {
       );
       return result.mentioned_comment ?? null;
     } catch (error) {
+      const graph = error instanceof GraphApiError ? error : null;
+
+      /*
+       * A REPLY HAS NO REPLIES, and asking fails the whole query.
+       * `(#100) Field is only available for top-level comments` — returning
+       * null makes the caller ask again without them.
+       */
       const isNestedComment =
         withReplies &&
-        error instanceof GraphApiError &&
-        error.code === 100 &&
-        error.message.includes('only available for top-level comments');
+        graph?.code === 100 &&
+        graph.message.includes('only available for top-level comments');
 
-      if (isNestedComment) return null;
+      /*
+       * META ASKING US TO ASK FOR LESS, which is the same remedy.
+       *
+       * `(#1) Please reduce the amount of data you're asking for` arrives as a
+       * 500 on a mention whose reply thread is large, and it was rethrown —
+       * abandoning the mention over a request we were being told how to fix.
+       * Observed on a bulk refresh of 18 mentions: one failed every attempt,
+       * and standalone the same query took 7–8.5s against a 10s timeout, so it
+       * was also the one most likely to be cut off. Dropping `replies` is
+       * exactly the smaller request Meta is asking for.
+       *
+       * Only when we HAVE something to drop: without `withReplies` there is no
+       * smaller query to fall back to, and returning null would claim the
+       * mention has no author.
+       */
+      const askedForTooMuch =
+        withReplies &&
+        (graph?.code === 1 || graph?.message.includes('reduce the amount of data') === true);
+
+      if (isNestedComment || askedForTooMuch) return null;
       throw error;
     }
   }
@@ -900,6 +941,11 @@ export class GraphApiClient {
       params?: Record<string, string>;
       body?: Record<string, string>;
       skipProof?: boolean;
+      /**
+       * Overrides the default per-call timeout. Used by callers nobody is
+       * waiting on, where ten seconds is a ceiling rather than a kindness.
+       */
+      timeoutMs?: number;
     },
   ): Promise<z.infer<S>> {
     const url = new URL(`${GRAPH_HOST}/${this.version}/${path}`);
@@ -923,7 +969,7 @@ export class GraphApiClient {
         method,
         // Every external call is bounded. An unbounded platform call ties up a
         // worker slot indefinitely when Meta stalls.
-        signal: AbortSignal.timeout(PLATFORM_REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(options.timeoutMs ?? PLATFORM_REQUEST_TIMEOUT_MS),
         ...(method === 'POST'
           ? {
               headers: { 'content-type': 'application/x-www-form-urlencoded' },

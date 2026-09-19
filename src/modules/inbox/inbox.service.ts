@@ -21,6 +21,7 @@ import { RequestContext } from '@/shared/context';
 import { clampLimit } from '@/shared/utils/page-limit';
 import { isExpiringMediaUrl, toWebhookAttachments } from './attachment-normalizer';
 import {
+  BACKGROUND_PLATFORM_TIMEOUT_MS,
   CUSTOMER_AVATAR_TTL_MS,
   READ_PATH_PLATFORM_BUDGET_MS,
   MENTION_MEDIA_TTL_MS,
@@ -395,6 +396,9 @@ export class InboxService {
         channel.platformChannelId,
         { commentId, mediaId },
         token,
+        // Nobody is waiting on this, and one mention in eighteen needs longer
+        // than a worker's ceiling — see BACKGROUND_PLATFORM_TIMEOUT_MS.
+        BACKGROUND_PLATFORM_TIMEOUT_MS,
       );
       if (!resolved?.media) {
         // Logged, because silence here is what hid a 1.5s budget that could
@@ -445,8 +449,20 @@ export class InboxService {
        * nobody is waiting on the answer. Debug rather than warn because this
        * runs whenever a stale mention is opened.
        */
+      /*
+       * `reason` alongside `err`, because the serialised error came back EMPTY
+       * in a bulk run — eighteen refreshes, two failures, and a log line that
+       * said only that something went wrong. An error log without the error is
+       * an operator reading tea leaves, and the one place that costs most is
+       * exactly here, where every failure is swallowed on purpose.
+       */
       this.logger.debug(
-        { err: error, enterpriseId, conversationId: conversation.id },
+        {
+          err: error,
+          reason: error instanceof Error ? error.message : String(error),
+          enterpriseId,
+          conversationId: conversation.id,
+        },
         'could not refresh mention media; the stored links stay',
       );
     }

@@ -720,6 +720,37 @@ refreshed (`391ec1c3`, `c7ed146d`) already carried a thumbnail and no
 showing a bare thumbnail, because a silent still reads as something broken —
 it cost twenty minutes of looking for a bug that was not there.
 
+### 6.0.2 What a full refresh of every mention actually produced
+
+Run 19 Sep 2026 over all 18 mentions in the dev database, through the real read
+path rather than fabricated events:
+
+```
+links rewritten : 6/18      newly working : 5
+now live        : media 12/18, thumbnail 9/18
+```
+
+Five links that were dead came back alive; one mention whose thumbnail was
+absent gained one. The rest were already current.
+
+Two things the run found that no amount of reading would have:
+
+**One mention in eighteen could not be refreshed at all** until the timeout was
+raised. Meta answers its query in 7–8.5s standalone — close enough to the 10s
+worker ceiling that it was cut off on every attempt while the other seventeen
+finished. Hence `BACKGROUND_PLATFORM_TIMEOUT_MS`: a refresh running behind a
+response that has already been sent is not holding anything, so ten seconds is
+an arbitrary ceiling rather than a protective one.
+
+**The same mention intermittently returns `(#1) Please reduce the amount of data
+you're asking for`** as a 500. That was rethrown, abandoning the mention over a
+request Meta was telling us how to fix. It now drops the `replies` expansion and
+retries — the same remedy already used for `(#100)`.
+
+**`media_url` absent is not a failure to fix.** Six of the eighteen have no
+`media_url` at all and a refresh will never produce one; see §6.0.1. Of those,
+five have a working thumbnail, which is the correct thing to show.
+
 ### 6.1 The expiry is in the link, and it is shorter than it looks
 
 Measured 19 Sep 2026 on a live mention (a reel, resolved 09 Sep 19:40 UTC). The

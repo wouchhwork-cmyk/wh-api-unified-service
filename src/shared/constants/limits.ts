@@ -38,6 +38,23 @@ export const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 export const PLATFORM_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
+ * The timeout for a platform call that NOBODY IS WAITING ON.
+ *
+ * Three tiers, each set by who is blocked: a read path gets
+ * READ_PATH_PLATFORM_BUDGET_MS, ordinary work gets
+ * PLATFORM_REQUEST_TIMEOUT_MS, and a refresh running behind a response that has
+ * already been sent gets this.
+ *
+ * Measured, not guessed. Refreshing eighteen mentions found one whose query
+ * Meta answers in 7–8.5 seconds standalone — close enough to ten that it was
+ * cut off on every attempt inside the server, while the other seventeen
+ * finished. Ten seconds is the right ceiling when a worker is holding a lease;
+ * it is an arbitrary one when the alternative is simply never refreshing that
+ * mention.
+ */
+export const BACKGROUND_PLATFORM_TIMEOUT_MS = 30_000;
+
+/**
  * How long past its lease a SENDING row is left alone before the reaper takes it.
  *
  * The reaper cannot tell a dead worker from a slow one. A row was reclaimed the
