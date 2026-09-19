@@ -349,6 +349,27 @@ export class InboxController {
     return this.inbox.requestResync(actor.enterpriseId, RefIdParamSchema.parse(refId));
   }
 
+  @Post(':refId/attachments/refresh')
+  @RequirePermission(Permission.ConversationsView)
+  @ApiOperation({
+    summary: 'Replace expired media links in this thread',
+    description:
+      'For the client to call when an attachment fails to load. Meta serves message media from ' +
+      'links that expire and carry no expiry in the URL, so the browser is the only party that ' +
+      'discovers a dead one — nothing on the server can predict it. Re-reads the thread and ' +
+      'replaces the links it can. ' +
+      'Meta returns only the ~20 most recent messages, so `beyondReach` counts the attachments ' +
+      'whose message is older than that: those are permanently unrecoverable, and a client that ' +
+      'sees a non-zero count should stop asking and offer the permalink instead. ' +
+      'Safe to call repeatedly, and cheap when there is nothing to do.',
+  })
+  async refreshAttachments(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+  ): Promise<{ refreshed: number; beyondReach: number }> {
+    return this.inbox.refreshAttachments(actor.enterpriseId, RefIdParamSchema.parse(refId));
+  }
+
   @Post(':refId/read')
   @RequirePermission(Permission.ConversationsView)
   @HttpCode(HttpStatus.NO_CONTENT)

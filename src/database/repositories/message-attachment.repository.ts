@@ -89,4 +89,70 @@ export class MessageAttachmentRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), messageIds],
     );
   }
+  /**
+   * The attachments in one conversation whose links can expire, with the
+   * platform message id they hang off.
+   *
+   * ONLY THE EXPIRING ONES. A share is an instagram.com permalink and a GIF
+   * comes from Giphy; both are permanent, and including them would shift the
+   * positions the refresh matches on — it zips our rows against the fresh links
+   * in order, so both sides have to be filtered the same way.
+   *
+   * Ordered by message and then sort_order, which is the order
+   * `toWebhookAttachments` produced them in.
+   */
+  async listRefreshable(
+    enterpriseId: number,
+    conversationId: number,
+  ): Promise<
+    { id: number; platformMessageId: string; sortOrder: number; sourceUrl: string }[]
+  > {
+    return this.query(
+      `SELECT a.id,
+              m.platform_message_id AS "platformMessageId",
+              a.sort_order          AS "sortOrder",
+              a.source_url          AS "sourceUrl"
+         FROM message_attachments a
+         JOIN messages m ON m.id = a.message_id AND m.enterprise_id = a.enterprise_id
+        WHERE a.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND a.source_url IS NOT NULL
+          AND m.platform_message_id IS NOT NULL
+          AND a.metadata->>'stableUrl' IS DISTINCT FROM 'true'
+        ORDER BY m.platform_message_id, a.sort_order`,
+      [this.requireEnterprise(enterpriseId), conversationId],
+    );
+  }
+
+  /**
+   * Replaces the links on attachments we already hold.
+   *
+   * THE ONLY PLACE AN ATTACHMENT IS MUTATED. Everything else about this table
+   * is append-only — the projector writes rows for messages it has not seen and
+   * never revisits them — which is why a resync could not fix an expired link
+   * and this exists instead. Nothing but `source_url` moves: the media kind,
+   * the sort order and the metadata describe what was sent, and re-reading the
+   * thread is not new information about any of that.
+   */
+  async refreshSourceUrls(
+    enterpriseId: number,
+    updates: readonly { id: number; sourceUrl: string }[],
+  ): Promise<number> {
+    if (updates.length === 0) return 0;
+
+    const ids = updates.map((update) => update.id);
+    const urls = updates.map((update) => update.sourceUrl);
+
+    // One statement rather than one per row: a carousel that has expired is
+    // several rows, and they belong to the same click.
+    const { affected } = await this.mutate(
+      `UPDATE message_attachments AS a
+          SET source_url = fresh.url, updated_at = now()
+         FROM (SELECT unnest($2::bigint[]) AS id, unnest($3::text[]) AS url) AS fresh
+        WHERE a.id = fresh.id AND a.enterprise_id = $1`,
+      [this.requireEnterprise(enterpriseId), ids, urls],
+    );
+    return affected;
+  }
+
 }

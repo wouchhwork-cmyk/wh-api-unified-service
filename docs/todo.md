@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 19 Sep 2026: **12 done, 6 open, 7 parked.**
+Status at 19 Sep 2026: **13 done, 6 open, 7 parked.**
 
 The seven parked items are not started without being asked — six of them
 pre-launch work that never existed, one a monitoring piece recorded on request.
@@ -18,13 +18,6 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## A. Correctness — wrong answers today
 
-- [ ] **A4. Message attachment links are never refreshed** — M
-  `lookaside.fbsbx.com` links carry no `oe=`, so nothing can predict death —
-  measured 19 Sep, of five stored on 06 Sep a HEAD gave 200/404/200/404/200.
-  Refreshing means re-reading the conversation, and the projector writes
-  attachments only for messages it has not seen (`if (!inserted) return`), so a
-  resync updates nothing. Needs that append-only path to start updating
-  existing rows. platform-limitations §6.2.
 - [ ] **A5. `posts.media` refresh does not scale** — S
   `RefreshPostMetrics` does 200 channels per daily tick, so above 200 active
   channels a channel is reached every `ceil(N/200)` days — longer than the ~35h
@@ -111,6 +104,13 @@ about where secrets live.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **A4. Expired attachment links can now be replaced** — 19 Sep.
+      `POST /conversations/:refId/attachments/refresh`, called by the client
+      when an image fails — which is the only party that can tell, since these
+      links carry no expiry. **Recovers only what Meta still returns** (~20
+      most recent messages); older media is permanently gone and is counted as
+      `beyondReach` so a client stops asking and offers the permalink.
+      platform-limitations §6.2.
 - [x] **Mention media and customer avatars expired, never refreshed** — 19 Sep.
       **Verified end to end against the live API**, not just unit-tested — which
       is what caught the first attempt being broken: a 1.5s read budget applied

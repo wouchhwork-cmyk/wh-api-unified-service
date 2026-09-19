@@ -16,7 +16,6 @@ import type {
   GraphComment,
   GraphConversation,
   GraphEdge,
-  GraphMessageAttachment,
   GraphFeedPost,
   GraphInstagramComment,
   GraphInstagramMedia,
@@ -42,53 +41,8 @@ import {
 import { ErrorCode } from '@/shared/errors';
 import { BasePoller } from './base-poller';
 import { splitPersonName } from '@/shared/utils/person-name';
+import { toWebhookAttachments } from '@/modules/inbox/attachment-normalizer';
 
-/**
- * The read edge's attachment shape, expressed the way a webhook would say it.
- *
- * Graph nests the link under `image_data`, `video_data` or `file_url` and names
- * no type at all; a webhook says `{ type, payload: { url } }`. Everything
- * downstream — GIF detection, story mentions, media kinds — is written against
- * the webhook shape, so the translation happens once, here.
- */
-function toWebhookAttachments(
-  attachments: readonly GraphMessageAttachment[],
-  shares: readonly { link?: string | undefined }[] = [],
-): { type: string; payload: { url: string } }[] {
-  const translated: { type: string; payload: { url: string } }[] = [];
-
-  /*
-   * A SHARE IS NOT AN ATTACHMENT as far as Graph is concerned — it has its own
-   * edge, and `attachments` comes back empty for one. So a shared reel arrived
-   * as a message with no text and no media, which renders as a blank line.
-   *
-   * The link is a public instagram.com permalink rather than a signed CDN URL,
-   * so unlike everything else here it does not expire.
-   */
-  for (const share of shares) {
-    if (share.link) translated.push({ type: 'share', payload: { url: share.link } });
-  }
-
-  for (const attachment of attachments) {
-    if (attachment.image_data?.url) {
-      translated.push({ type: 'image', payload: { url: attachment.image_data.url } });
-      continue;
-    }
-    if (attachment.video_data?.url) {
-      translated.push({ type: 'video', payload: { url: attachment.video_data.url } });
-      continue;
-    }
-    if (attachment.file_url) {
-      // `file` covers documents and voice notes; the mime type on the row is
-      // what tells them apart, and the normalizer keeps it.
-      translated.push({ type: 'file', payload: { url: attachment.file_url } });
-    }
-    // An attachment with no link at all is dropped: there is nothing to store
-    // and nothing to show, and a row with a null url would only look broken.
-  }
-
-  return translated;
-}
 
 /**
  * The kinds this worker can actually walk. Anything else is paused rather than

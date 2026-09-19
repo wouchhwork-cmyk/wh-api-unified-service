@@ -691,6 +691,24 @@ Worth stating plainly because it has been got wrong three times in one file.
 written the SAME DAY in the old style, and two later passes over `inbox.js`
 missed it. It was fixed on 19 Sep in `c409d2d`.
 
+### 6.0.1 Meta omits `media_url` on some reels, and means it
+
+Verified on the wire 19 Sep 2026. For a reel whose `media_type` is `VIDEO` and
+`media_product_type` is `REELS`, the mentions edge returned **ten of the eleven
+fields asked for and simply left out `media_url`** — `thumbnail_url` came back
+fine, so it is not a permissions or expiry problem:
+
+```
+keys Meta sent: id, caption, media_type, media_product_type, thumbnail_url,
+                permalink, username, timestamp, like_count, comments_count
+```
+
+Another reel in the same account returns both. So a still with no player is the
+CORRECT rendering for that post, not a failure, and re-resolving will not
+produce a video that Meta does not have. The portal now says so rather than
+showing a bare thumbnail, because a silent still reads as something broken —
+it cost twenty minutes of looking for a bug that was not there.
+
 ### 6.1 The expiry is in the link, and it is shorter than it looks
 
 Measured 19 Sep 2026 on a live mention (a reel, resolved 09 Sep 19:40 UTC). The
@@ -730,7 +748,13 @@ the next open is correct. Narrowing the mention query to the two link fields
 was tried and changed nothing — the cost is in Meta's mentions edge, not the
 field list.
 
-**Message attachments cannot currently be refreshed at all.** Their links are
+**Message attachments are refreshed on demand, by the client** —
+`POST /conversations/:refId/attachments/refresh`. The browser is the only party
+that can tell a dead link from a live one here, so it reports the failure and
+the server re-reads the thread. What follows is why that is the shape, and what
+it cannot reach.
+
+Previously: Their links are
 `lookaside.fbsbx.com`, which carry **no `oe=` parameter**, so nothing in the URL
 says whether it still works — of five stored on 06 Sep, a HEAD on 19 Sep gave
 200, 404, 200, 404, 200. Roughly half dead in thirteen days, unpredictably.

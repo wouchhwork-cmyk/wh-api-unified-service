@@ -19,6 +19,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
 import { clampLimit } from '@/shared/utils/page-limit';
+import { isExpiringMediaUrl, toWebhookAttachments } from './attachment-normalizer';
 import {
   CUSTOMER_AVATAR_TTL_MS,
   READ_PATH_PLATFORM_BUDGET_MS,
@@ -499,6 +500,148 @@ export class InboxService {
       );
       return conversation;
     }
+  }
+
+  /**
+   * Replaces expired attachment links with fresh ones, for whatever Meta will
+   * still describe.
+   *
+   * DRIVEN BY THE CLIENT, because nothing else can tell. These links live on
+   * `lookaside.fbsbx.com` and carry NO expiry parameter — unlike a mention's
+   * media, where `oe=` says when it dies. Measured 19 Sep: of five stored on
+   * 06 Sep, a HEAD gave 200, 404, 200, 404, 200. Half dead in under a
+   * fortnight, with nothing in the URL to predict which half. So the browser,
+   * which is the only party that finds out, asks for a refresh.
+   *
+   * WHAT IT CANNOT DO, and this is the honest limit rather than a bug: Meta's
+   * conversations edge returns only the most recent messages of a thread —
+   * about twenty. Anything older cannot be re-read, so its media is gone for
+   * good. On the dev data every attachment that was actually dead fell outside
+   * that window; the threads held 27 and 29 messages and Meta returned 21 and
+   * 19. The caller is told how many were beyond reach rather than left to
+   * wonder why nothing changed.
+   *
+   * Never throws for an unreadable thread: a refresh that cannot help is not an
+   * error, it is an answer.
+   */
+  async refreshAttachments(
+    enterpriseId: number,
+    conversationRefId: string,
+  ): Promise<{ refreshed: number; beyondReach: number }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+
+    const stored = await this.attachments.listRefreshable(enterpriseId, conversation.id);
+    if (stored.length === 0) return { refreshed: 0, beyondReach: 0 };
+
+    const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
+    if (!channel?.effectiveAccessToken || channel.reauthRequired) {
+      return { refreshed: 0, beyondReach: stored.length };
+    }
+
+    let token: string;
+    try {
+      token = this.cipher.decrypt(channel.effectiveAccessToken);
+    } catch {
+      return { refreshed: 0, beyondReach: stored.length };
+    }
+
+    /*
+     * The customer's id, which scopes the read to this one thread. Without it
+     * the walk widens to the whole account — the same trap requestResync
+     * guards against.
+     */
+    const participantId = conversation.platformThreadId.replace(/^dm:/, '');
+    if (!participantId) return { refreshed: 0, beyondReach: stored.length };
+
+    let fresh: Map<string, string[]>;
+    try {
+      fresh = await this.readFreshAttachmentLinks(conversation, channel, token, participantId);
+    } catch (error) {
+      this.logger.debug(
+        { err: error, enterpriseId, conversationId: conversation.id },
+        'could not re-read the thread for fresh attachment links',
+      );
+      return { refreshed: 0, beyondReach: stored.length };
+    }
+
+    const byMessage = new Map<string, typeof stored>();
+    for (const row of stored) {
+      const existing = byMessage.get(row.platformMessageId);
+      if (existing) existing.push(row);
+      else byMessage.set(row.platformMessageId, [row]);
+    }
+
+    const updates: { id: number; sourceUrl: string }[] = [];
+    let beyondReach = 0;
+
+    for (const [platformMessageId, rows] of byMessage) {
+      const links = fresh.get(platformMessageId);
+      if (!links) {
+        // Outside the window Meta returned. Permanently unrecoverable.
+        beyondReach += rows.length;
+        continue;
+      }
+      /*
+       * MATCHED BY POSITION, and only when the counts agree. Both sides are
+       * filtered to expiring links in the same order, so position is meaningful
+       * — but if Meta returns a different number than we hold, something about
+       * the message has changed and guessing which link belongs to which row
+       * would put a customer's photo under the wrong bubble.
+       */
+      if (links.length !== rows.length) {
+        beyondReach += rows.length;
+        continue;
+      }
+      rows.forEach((row, index) => {
+        const link = links[index];
+        if (link && link !== row.sourceUrl) updates.push({ id: row.id, sourceUrl: link });
+      });
+    }
+
+    const refreshed = await this.attachments.refreshSourceUrls(enterpriseId, updates);
+
+    this.logger.info(
+      { enterpriseId, conversationId: conversation.id, refreshed, beyondReach },
+      'refreshed expired attachment links',
+    );
+    return { refreshed, beyondReach };
+  }
+
+  /** The thread as Meta describes it now: message id to its expiring links. */
+  private async readFreshAttachmentLinks(
+    conversation: ConversationRow,
+    channel: { platformChannelId: string; parentPlatformChannelId: string | null },
+    token: string,
+    participantId: string,
+  ): Promise<Map<string, string[]>> {
+    const instagram = conversation.platform === Platform.Instagram;
+    /*
+     * An Instagram thread is read through its PARENT Page — the Instagram node
+     * has no conversations edge of its own — which is the same reason the send
+     * path resolves a parent token.
+     */
+    const readAs = instagram ? channel.parentPlatformChannelId : channel.platformChannelId;
+    if (!readAs) return new Map();
+
+    const page = instagram
+      ? await this.graph.listInstagramConversations(readAs, token, undefined, participantId)
+      : await this.graph.listPageConversations(readAs, token, undefined, participantId);
+
+    const links = new Map<string, string[]>();
+    for (const thread of page.data ?? []) {
+      for (const message of thread.messages?.data ?? []) {
+        const translated = toWebhookAttachments(
+          message.attachments?.data ?? [],
+          message.shares?.data ?? [],
+        );
+        // Same filter as the stored side, so the two lists line up by position.
+        const expiring = translated
+          .map((attachment) => attachment.payload.url)
+          .filter((url) => isExpiringMediaUrl(url));
+        if (expiring.length > 0) links.set(message.id, expiring);
+      }
+    }
+    return links;
   }
 
   /**
