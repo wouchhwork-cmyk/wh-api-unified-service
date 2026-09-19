@@ -9,7 +9,7 @@ behind it. Verified-and-not-a-defect gets struck through with a note, because a
 wrong entry costs more than a missing one — four entries in `backlog.md` sent
 people hunting for bugs that were already fixed.
 
-Status at 19 Sep 2026: **11 done, 6 open, 7 parked.**
+Status at 19 Sep 2026: **12 done, 6 open, 7 parked.**
 
 The seven parked items are not started without being asked — six of them
 pre-launch work that never existed, one a monitoring piece recorded on request.
@@ -100,6 +100,12 @@ about where secrets live.
 - [x] **Three copies of `clampLimit`** — 17 Sep — same commit. They had drifted.
 - [x] **Neither retention sweep could use an index** — 17 Sep — `0fafbfc`,
       migration `1757600000000`. backlog §1.12.
+- [x] **Mention media links expired and were never refreshed** — 19 Sep.
+      Re-resolved on thread open when older than six hours, behind a 1.5s
+      budget so a slow Meta never delays a read. The API now says whether the
+      links expire and how fresh they are; the portal falls back to the
+      permalink, which does not. See platform-limitations §6.1 for the measured
+      lifetimes.
 - [x] **A2. One Page, one connection, per business** — 19 Sep — migration
       `1758000000000`. Refuse, as decided: `CHANNEL_ALREADY_CONNECTED`. The
       harm was not duplicate processing — the inbound dedup key is scoped by

@@ -235,6 +235,42 @@ export const NOTIFY_DEBOUNCE_MS = 50;
  */
 export const LISTEN_KEEPALIVE_DELAY_MS = 30_000;
 
+/**
+ * How long a resolved mention's media links are trusted before being refetched.
+ *
+ * Instagram serves media from signed CDN links that EXPIRE, and the expiry is
+ * in the link itself — the `oe=` parameter, a hex Unix timestamp. Measured on
+ * live data: a reel's `media_url` lasted about 35 hours and its thumbnail about
+ * 4.5 days. We resolve a mention once, when it arrives, and used to serve that
+ * answer forever — so anything opened a couple of days later showed a broken
+ * image on a post that was perfectly fine.
+ *
+ * Six hours is chosen against the SHORTEST of those, not the average: a link
+ * handed to a browser is at most six hours old, leaving well over a day of
+ * validity for the session that receives it. Raising this towards 35 hours
+ * would start serving links that expire while somebody is looking at them.
+ *
+ * The cost is one Graph call per mention thread opened more than six hours
+ * after the last one — and only for threads somebody actually opens.
+ */
+export const MENTION_MEDIA_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * How long a thread read will WAIT for that refresh before giving up on it.
+ *
+ * Far tighter than PLATFORM_REQUEST_TIMEOUT_MS, and deliberately so: ten
+ * seconds is a reasonable budget for a worker that has nothing else to do, and
+ * an unreasonable one for somebody who clicked a conversation. Waiting the full
+ * platform timeout would mean a slow Meta turns every mention into a ten-second
+ * open that then shows the stale image anyway — strictly worse than showing the
+ * stale image at once.
+ *
+ * Losing the race costs nothing but the call: the stored answer is served, and
+ * the next open tries again. Nothing is written in the background, so a request
+ * that gives up leaves no work running behind it.
+ */
+export const MENTION_MEDIA_READ_BUDGET_MS = 1_500;
+
 /** How often the queue gauge is sampled and logged. */
 export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
 

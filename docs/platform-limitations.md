@@ -671,6 +671,26 @@ the content they point at — about 24 hours for a story. Links on any other hos
 are treated as permanent, which is why `isExpiringMediaUrl` matches on host
 rather than assuming everything expires.
 
+### 6.1 The expiry is in the link, and it is shorter than it looks
+
+Measured 19 Sep 2026 on a live mention (a reel, resolved 09 Sep 19:40 UTC). The
+`oe=` parameter on a CDN link is a **hex Unix timestamp** of when it stops
+working:
+
+| link | `oe=` | expires | lifetime |
+| --- | --- | --- | --- |
+| `media_url` (the .mp4) | `6AA39DCE` | 2026-09-11 06:21 UTC | **~35 hours** |
+| `thumbnail_url` | `6AA79C10` | 2026-09-14 07:02 UTC | **~4.5 days** |
+
+Two things follow. The video dies **first and fastest**, which is why the portal
+falls back video → still → permalink rather than treating them as one asset. And
+a mention resolved once and served forever is broken within two days — so
+`MENTION_MEDIA_TTL_MS` re-resolves on thread open, chosen against the 35 hours
+rather than the 4.5 days.
+
+`permalink` never expires and is always stored. It is the answer whenever a CDN
+link is not.
+
 ---
 
 ## 7. Delivery behaviour

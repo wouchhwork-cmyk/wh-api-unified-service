@@ -702,6 +702,24 @@ function toMentionContext(
     previewUrl: asText(details.thumbnailUrl) ?? asText(details.mediaUrl),
     mediaUrl: asText(details.mediaUrl),
     thumbnailUrl: asText(details.thumbnailUrl),
+    /*
+     * WHETHER THOSE LINKS DIE, and how fresh they are.
+     *
+     * Instagram serves media from signed CDN links that expire — the expiry is
+     * the `oe=` parameter in the link itself, and a reel's `media_url` has been
+     * measured at about 35 hours. The links above are refreshed when a thread is
+     * opened and they are older than MENTION_MEDIA_TTL_MS, so in practice a
+     * client receives one with well over a day left.
+     *
+     * These two say so explicitly, because without them a client cannot tell a
+     * live link from a dead one and has no reason to fall back to `permalink` —
+     * which never expires. Message attachments already carry the same `expires`
+     * signal; a mention had none.
+     */
+    mediaExpires: isExpiringMediaUrl(
+      asText(details.thumbnailUrl) ?? asText(details.mediaUrl),
+    ),
+    mediaRefreshedAt: asText(metadata.postDetailsRefreshedAt),
     /** `FEED`, `REELS`, `STORY` — lets a client say "Reel" rather than "post". */
     productType: asText(details.productType),
     postedAt: asText(details.timestamp),

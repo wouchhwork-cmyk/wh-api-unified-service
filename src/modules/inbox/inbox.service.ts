@@ -7,6 +7,8 @@ import {
 } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
+import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { TokenCipherService } from '@/shared/crypto/token-cipher.service';
 import {
   MessageAttachmentRepository,
   type AttachmentRow,
@@ -17,6 +19,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
 import { clampLimit } from '@/shared/utils/page-limit';
+import { MENTION_MEDIA_READ_BUDGET_MS, MENTION_MEDIA_TTL_MS } from '@/shared/constants';
 import {
   AuditAction,
   AuditEntityType,
@@ -74,6 +77,8 @@ export class InboxService {
     private readonly channels: ChannelRepository,
     private readonly customers: CustomerRepository,
     private readonly employees: EnterpriseEmployeeRepository,
+    private readonly graph: GraphApiClient,
+    private readonly cipher: TokenCipherService,
     private readonly audit: AuditService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(InboxService.name) private readonly logger: PinoLogger,
@@ -194,8 +199,17 @@ export class InboxService {
     nextCursor: string | null;
     hasMore: boolean;
   }> {
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
     const size = clampLimit(limit);
+
+    /*
+     * Before anything is read from it. A mention's media links expire, and this
+     * hands back the row with fresh ones when they were due — see
+     * withFreshMentionMedia for why that happens on read rather than on a timer.
+     */
+    const conversation = await this.withFreshMentionMedia(
+      enterpriseId,
+      await this.requireConversation(enterpriseId, conversationRefId),
+    );
 
     /*
      * beforeId is the DEPRECATED form of this cursor and is translated rather
@@ -274,6 +288,96 @@ export class InboxService {
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,
     };
+  }
+
+  /**
+   * Re-resolves a mention's media links when they are old enough to be at risk.
+   *
+   * WHY THIS IS NEEDED AT ALL. Instagram serves media from signed CDN links
+   * that expire — the expiry is the `oe=` parameter in the link itself — and a
+   * mention is resolved exactly once, when it arrives. Measured on live data, a
+   * reel's `media_url` lasted about 35 hours. So a mention opened two days
+   * later showed a broken image, on a post that was perfectly fine, with
+   * nothing to say why.
+   *
+   * ON READ RATHER THAN ON A TIMER, because the alternative is refreshing
+   * millions of links nobody will look at. A thread nobody opens costs nothing;
+   * one that is opened pays at most one Graph call per six hours.
+   *
+   * A FAILURE HERE MUST NOT FAIL THE READ. The same rule the projector follows:
+   * this is enrichment, and a mention with stale links is far better than a
+   * thread that will not open because Meta is slow. Every failure path below
+   * leaves the stored answer in place and returns.
+   */
+  private async withFreshMentionMedia(
+    enterpriseId: number,
+    conversation: ConversationRow,
+  ): Promise<ConversationRow> {
+    if (conversation.conversationKind !== ConversationKind.Mention) return conversation;
+
+    const metadata = conversation.contextMetadata ?? {};
+    const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
+    if (!mediaId) return conversation;
+
+    const refreshedAt =
+      typeof metadata.postDetailsRefreshedAt === 'string'
+        ? Date.parse(metadata.postDetailsRefreshedAt)
+        : Number.NaN;
+    // NaN fails this comparison, which is the wanted answer for a conversation
+    // resolved before the stamp existed: refresh it once, then it has one.
+    if (Date.now() - refreshedAt < MENTION_MEDIA_TTL_MS) return conversation;
+
+    const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
+    if (!channel?.effectiveAccessToken || !channel.platformChannelId) return conversation;
+    // A channel already known to need re-auth would spend a call to be told so.
+    if (channel.reauthRequired) return conversation;
+
+    let token: string;
+    try {
+      token = this.cipher.decrypt(channel.effectiveAccessToken);
+    } catch {
+      // Key loss or tampering. The relay and backfill both alert on this.
+      return conversation;
+    }
+
+    const commentId =
+      typeof metadata.mentionedCommentId === 'string' ? metadata.mentionedCommentId : null;
+
+    try {
+      const resolved = await withinBudget(
+        this.graph.resolveInstagramMention(
+          channel.platformChannelId,
+          { commentId, mediaId },
+          token,
+        ),
+        MENTION_MEDIA_READ_BUDGET_MS,
+      );
+      // Null means Meta would not describe it — deleted, or gone private. The
+      // stored answer stays, and the permalink beside it still works.
+      if (!resolved?.media) return conversation;
+
+      const patch = {
+        postDetails: resolved.media,
+        postDetailsRefreshedAt: new Date().toISOString(),
+      };
+      await this.conversations.mergeContextMetadata(enterpriseId, conversation.id, patch);
+
+      // Returned rather than mutated: the row is readonly, and the caller is
+      // about to read the metadata this just replaced.
+      return { ...conversation, contextMetadata: { ...metadata, ...patch } };
+    } catch (error) {
+      /*
+       * Swallowed deliberately, and logged at debug rather than warn: an
+       * unreadable mention is ordinary — the post may be deleted, the account
+       * gone private, or the quota spent — and this runs on every stale thread
+       * open. At warn it would be noise that trains people to ignore the log.
+       */
+      this.logger.debug(
+        { err: error, enterpriseId, conversationId: conversation.id },
+        'could not refresh mention media; serving what we have',
+      );
+      return conversation;
+    }
   }
 
   /**
@@ -803,4 +907,37 @@ function platformIds(value: unknown): string[] {
         : null,
     )
     .filter((id): id is string => typeof id === 'string');
+}
+
+/**
+ * Resolves `work`, or null if it takes longer than `budgetMs`.
+ *
+ * The loser is not abandoned carelessly: a rejection arriving after the budget
+ * has passed would otherwise be an unhandled rejection, which in Node takes the
+ * process down. It is caught and discarded, and the timer is always cleared so
+ * a fast answer does not hold the event loop open for the rest of the budget.
+ *
+ * Nothing is written by the abandoned call — losing the race means the stored
+ * answer is served and the next read tries again, rather than a write landing
+ * from a request that has already finished.
+ */
+async function withinBudget<T>(work: Promise<T>, budgetMs: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), budgetMs);
+  });
+
+  try {
+    return await Promise.race([
+      work.catch(() => {
+        throw new Error('the platform call failed');
+      }),
+      expiry,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    // The race may already be decided; this keeps a late rejection from
+    // escaping as an unhandled one.
+    void work.catch(() => undefined);
+  }
 }

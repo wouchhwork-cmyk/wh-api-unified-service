@@ -511,4 +511,27 @@ export class ConversationRepository extends BaseRepository {
       }),
     );
   }
+  /**
+   * Merges keys into a conversation's context metadata, leaving the rest alone.
+   *
+   * `||` is a SHALLOW merge, which is exactly what is wanted here: the caller
+   * replaces whole sub-objects — `postDetails` as one unit — rather than trying
+   * to patch fields inside them. A deep merge would leave a stale `mediaUrl`
+   * sitting beside a fresh `thumbnailUrl` if the new answer happened to omit
+   * one, which is the shape of bug this exists to remove.
+   */
+  async mergeContextMetadata(
+    enterpriseId: number,
+    conversationId: number,
+    patch: Record<string, unknown>,
+  ): Promise<void> {
+    await this.mutate(
+      `UPDATE conversations
+          SET context_metadata = COALESCE(context_metadata, '{}'::jsonb) || $3::jsonb,
+              updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), conversationId, JSON.stringify(patch)],
+    );
+  }
+
 }
