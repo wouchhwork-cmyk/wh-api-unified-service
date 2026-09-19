@@ -432,10 +432,40 @@ export class InboxService {
         if (value !== null && value !== undefined) merged[field] = value;
       }
 
-      const patch = {
+      /*
+       * EVERYTHING THE CALL RETURNED, not only the media.
+       *
+       * resolveInstagramMention answers with twelve things and the first
+       * version of this stored one. The call is the expensive part — three to
+       * five seconds of it — and the rest arrived free in the same response.
+       *
+       * Two of them genuinely CHANGE between reads and so were frozen at
+       * projection time for ever: `replies` under our mention, and
+       * `postComments`, the room around it. Meta sends no webhook when somebody
+       * replies to a mention (§1.x), which makes a re-read the only way either
+       * is ever updated — and this was the re-read.
+       *
+       * The same keys the projector writes, so one shape reaches the thread
+       * whether it came from the webhook or from here. Each is set only when
+       * present, so a quieter answer never deletes a fuller one.
+       */
+      const patch: Record<string, unknown> = {
         postDetails: merged,
         postDetailsRefreshedAt: new Date().toISOString(),
       };
+      if (resolved.permalink) patch.postPermalink = resolved.permalink;
+      if (resolved.mediaOwnerUsername) patch.postOwnerUsername = resolved.mediaOwnerUsername;
+      if (resolved.replies.length > 0) patch.replyThread = resolved.replies;
+      if (resolved.parent) patch.mentionParent = resolved.parent;
+      if (resolved.parentCommentId) patch.mentionParentId = resolved.parentCommentId;
+      // Zero is a real answer and must survive; `if (count)` would drop it and
+      // make an unliked mention look like one Meta refused to count.
+      if (typeof resolved.likeCount === 'number') patch.mentionLikeCount = resolved.likeCount;
+      if (resolved.postComments.length > 0) {
+        patch.postComments = resolved.postComments;
+        // The snapshot is worthless without saying when it was taken.
+        patch.postCommentsReadAt = new Date().toISOString();
+      }
       await this.conversations.mergeContextMetadata(enterpriseId, conversation.id, patch);
 
       this.logger.debug(
@@ -517,16 +547,51 @@ export class InboxService {
       );
       if (!profile?.profile_pic) return conversation;
 
+      /*
+       * EVERYTHING THE CALL ALREADY RETURNED, not just the picture.
+       *
+       * This asked for `name,username,profile_pic,follower_count` and the
+       * profile edge answers with the follow flags and the verified flag
+       * besides — and the first version of this stored the picture and threw
+       * the rest away. Two customers ended up with a fresh avatar and no idea
+       * whether they follow the business, from a response that said so.
+       *
+       * The data is already paid for: it arrived in a call we made anyway. The
+       * standing rule is to take the most granular thing Meta offers at every
+       * opportunity, because a field not captured on arrival usually cannot be
+       * captured later (platform-limitations §0.5).
+       *
+       * Each is spread only when present, so a field Meta omits leaves the
+       * stored answer alone rather than overwriting it with undefined — the
+       * same merge discipline the mention refresh uses.
+       *
+       * The display NAME is deliberately left to the backfill. It is the one
+       * field here a human might reasonably edit, and a read path rewriting it
+       * on every thread open is a different decision from capturing a fact only
+       * Meta knows.
+       */
       await this.customers.applyPlatformProfile({
         enterpriseId,
         customerId: conversation.customerId,
-        // Only the picture is being refreshed here; the name and the follow
-        // flags are left to the backfill that owns them.
         displayName: null,
         firstName: null,
         lastName: null,
         avatarUrl: profile.profile_pic,
-        profile: { profileFetchedAt: new Date().toISOString() },
+        profile: {
+          ...(profile.follower_count === undefined
+            ? {}
+            : { followerCount: profile.follower_count }),
+          ...(profile.is_verified_user === undefined
+            ? {}
+            : { isVerified: profile.is_verified_user }),
+          ...(profile.is_user_follow_business === undefined
+            ? {}
+            : { followsUs: profile.is_user_follow_business }),
+          ...(profile.is_business_follow_user === undefined
+            ? {}
+            : { weFollowThem: profile.is_business_follow_user }),
+          profileFetchedAt: new Date().toISOString(),
+        },
       });
 
       return { ...conversation, customerAvatarUrl: profile.profile_pic };

@@ -412,11 +412,28 @@ export class InboxController {
  * to rediscover that `share` means a permalink and `ig_post` does not, and get
  * it subtly wrong.
  */
+/** Every name Meta has used for "a forwarded post, not a media file". */
+const SHARE_PLATFORM_TYPES = new Set(['share', 'ig_reel', 'ig_post']);
+
 function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'audio' | 'link' {
-  // A share carries an instagram.com permalink, never media — whatever its
-  // media kind happens to say.
-  if (attachment.metadata.platformType === 'share') return 'link';
+  /*
+   * A share carries an instagram.com permalink, never media — whatever its
+   * media kind happens to say.
+   *
+   * AND `share` IS NOT THE ONLY NAME META USES FOR ONE. The same forwarded reel
+   * arrives as `share` on one delivery and `ig_reel` on another; observed in
+   * one thread, 08 Sep as `share` and 19 Sep as `ig_reel`. Only the first was
+   * recognised, so the second was reported as a VIDEO — and the client dutifully
+   * put an instagram.com page into a player and said the video could not be
+   * loaded, about a link that opens fine.
+   *
+   * The url is checked as well as the label, because what actually makes this a
+   * share is that the link is a page rather than a file. That stays true
+   * whatever Meta calls it next.
+   */
+  if (SHARE_PLATFORM_TYPES.has(String(attachment.metadata.platformType))) return 'link';
   if (!attachment.sourceUrl) return 'link';
+  if (/^https:\/\/(www\.)?instagram\.com\//u.test(attachment.sourceUrl)) return 'link';
 
   switch (attachment.mediaKind) {
     case MediaKind.Image:
