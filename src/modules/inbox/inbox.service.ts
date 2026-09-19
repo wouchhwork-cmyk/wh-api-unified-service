@@ -406,8 +406,30 @@ export class InboxService {
         return;
       }
 
+      /*
+       * MERGED, NOT REPLACED, and this is not defensive coding — Meta really
+       * does vary what it returns for the same media between calls. Asked for
+       * eleven fields on one reel it sent ten and omitted `media_url`, while
+       * another reel in the same account returned both (§6.0.1). A wholesale
+       * replace would let one such answer delete a link we already had and
+       * could still use.
+       *
+       * So a new value wins only when there IS one. The worst case is keeping a
+       * link that has since expired, and the client already falls back from a
+       * dead video to the still and then to the permalink — whereas a field we
+       * threw away is not recoverable from anywhere.
+       */
+      const previous =
+        typeof metadata.postDetails === 'object' && metadata.postDetails !== null
+          ? (metadata.postDetails as Record<string, unknown>)
+          : {};
+      const merged: Record<string, unknown> = { ...previous };
+      for (const [field, value] of Object.entries(resolved.media)) {
+        if (value !== null && value !== undefined) merged[field] = value;
+      }
+
       const patch = {
-        postDetails: resolved.media,
+        postDetails: merged,
         postDetailsRefreshedAt: new Date().toISOString(),
       };
       await this.conversations.mergeContextMetadata(enterpriseId, conversation.id, patch);

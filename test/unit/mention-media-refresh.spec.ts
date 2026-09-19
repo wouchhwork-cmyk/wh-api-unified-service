@@ -127,6 +127,71 @@ describe('mention media refresh', () => {
     });
   });
 
+  describe('a refresh must not lose what it already had', () => {
+    /**
+     * The merge rule, as the service applies it.
+     *
+     * Meta varies what it returns for the SAME media between calls: asked for
+     * eleven fields on one reel it sent ten and omitted `media_url`, while
+     * another reel in the same account returned both. A wholesale replace would
+     * let one such answer delete a link we already held and could still use —
+     * and a field thrown away is not recoverable from anywhere.
+     */
+    const merge = (
+      previous: Record<string, unknown>,
+      incoming: Record<string, unknown>,
+    ): Record<string, unknown> => {
+      const merged: Record<string, unknown> = { ...previous };
+      for (const [field, value] of Object.entries(incoming)) {
+        if (value !== null && value !== undefined) merged[field] = value;
+      }
+      return merged;
+    };
+
+    it('keeps a link the new answer simply omitted', () => {
+      // The case observed live: a reel that returns a thumbnail and no video.
+      const result = merge(
+        { mediaUrl: 'https://cdn/old.mp4', thumbnailUrl: 'https://cdn/old.jpg' },
+        { thumbnailUrl: 'https://cdn/new.jpg' },
+      );
+
+      expect(result.mediaUrl).toBe('https://cdn/old.mp4');
+      expect(result.thumbnailUrl).toBe('https://cdn/new.jpg');
+    });
+
+    it('keeps a link the new answer sent as null', () => {
+      // Absent and explicitly null mean the same thing here: Meta has nothing
+      // to say, which is not the same as "there is nothing".
+      const result = merge({ mediaUrl: 'https://cdn/old.mp4' }, { mediaUrl: null });
+
+      expect(result.mediaUrl).toBe('https://cdn/old.mp4');
+    });
+
+    it('takes every fresh value that is actually there', () => {
+      const result = merge(
+        { mediaUrl: 'old', thumbnailUrl: 'old', likeCount: 1 },
+        { mediaUrl: 'new', thumbnailUrl: 'new', likeCount: 99 },
+      );
+
+      expect(result).toEqual({ mediaUrl: 'new', thumbnailUrl: 'new', likeCount: 99 });
+    });
+
+    it('adds a field we never had', () => {
+      const result = merge({ mediaUrl: 'old' }, { thumbnailUrl: 'new' });
+
+      expect(result).toEqual({ mediaUrl: 'old', thumbnailUrl: 'new' });
+    });
+
+    it('does not resurrect a count of zero as missing', () => {
+      // 0 and '' are values, not absence. Treating them as absence would pin a
+      // like count at its old number for ever.
+      const result = merge({ likeCount: 42, caption: 'hello' }, { likeCount: 0, caption: '' });
+
+      expect(result.likeCount).toBe(0);
+      expect(result.caption).toBe('');
+    });
+  });
+
   describe('the expiry really is in the link', () => {
     it('reads oe= as the moment the link stops working', () => {
       /*

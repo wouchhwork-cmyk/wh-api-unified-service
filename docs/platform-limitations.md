@@ -705,7 +705,18 @@ keys Meta sent: id, caption, media_type, media_product_type, thumbnail_url,
 
 Another reel in the same account returns both. So a still with no player is the
 CORRECT rendering for that post, not a failure, and re-resolving will not
-produce a video that Meta does not have. The portal now says so rather than
+produce a video that Meta does not have.
+
+**This is why the mention refresh MERGES rather than replaces.** Because the
+same media can come back with fewer fields than last time, writing the new
+answer wholesale would let one such response delete a link we already held. A
+new value wins only when there is one; the worst case is keeping a link that
+has since expired, which the client already degrades through — whereas a field
+thrown away is gone from everywhere.
+
+Checked before assuming: two mention conversations that had NEVER been
+refreshed (`391ec1c3`, `c7ed146d`) already carried a thumbnail and no
+`media_url`, so the omission pre-dates the refresh and was not caused by it. The portal now says so rather than
 showing a bare thumbnail, because a silent still reads as something broken —
 it cost twenty minutes of looking for a bug that was not there.
 
