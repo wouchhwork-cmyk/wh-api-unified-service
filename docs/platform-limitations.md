@@ -31,6 +31,45 @@ inertia.
 
 ---
 
+
+---
+
+## 0.5 The standing rule: take everything Meta offers, every time
+
+**Extract the most granular data available from EVERY interaction with Meta —
+webhooks, Graph reads, backfills, resyncs, refreshes and the responses to our
+own writes. Without exception.** Capture a field even when nothing consumes it
+yet, provided it costs no extra call.
+
+This is a rule rather than a preference because of what the rest of this
+document records. Meta omits fields without warning (§6.0.1: ten of eleven
+fields returned, `media_url` simply absent). Media links expire in as little as
+35 hours, and on some hosts carry no expiry marker at all, so there is no way to
+know a link is dying until it is dead (§6.2). Shared posts and stories are
+exposed **only on the live webhook** — every read path returns them empty
+afterwards (§3.3). A shared story's owner is unknowable the moment the payload
+is gone (§3.4).
+
+**A field not captured on arrival usually cannot be captured later.** The cost
+of storing something unused is a column. The cost of missing it is a customer's
+message that can never be explained.
+
+In practice:
+
+- Keep every identifier and descriptor, not just what the current screen
+  renders: `storyMediaId`, `reelVideoId`, `assetId`, `platformType`, captions,
+  owner handles, counts. These are what make a thing recoverable, or at least
+  nameable, later.
+- **Merge, never replace,** when refreshing from Meta. A newer answer with fewer
+  fields must not delete what an older one knew (§6.0.1).
+- When a query must be made smaller — Meta answering `(#1) Please reduce the
+  amount of data` — drop the least valuable expansion, never an identifying
+  field.
+- Ask for a field even when nothing reads it yet, as long as it adds no round
+  trip. An extra name in a `fields` list is free; a second call is not.
+- **This is about STORAGE, never logs.** Message text, handles and profile links
+  stay out of log lines whatever else is captured.
+
 ## 0. Two kinds of limitation, and the difference matters
 
 Every entry below is tagged, because "we cannot get it" has two completely
