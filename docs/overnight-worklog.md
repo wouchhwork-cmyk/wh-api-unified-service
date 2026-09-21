@@ -12,9 +12,15 @@ is described under RESUME HERE with enough detail to pick up cold.
 
 ## RESUME HERE
 
-> **Current state:** Task 1 backend is written and type-checks. Not yet
-> committed. Next concrete step: platform contract + controller endpoints, then
-> module wiring, then the sweep, then tests, then the portal page.
+> **Current state:** Task 1 is COMPLETE and committed (`e660405` backend,
+> plus the portal commit after it). Verified end to end against the live Graph
+> API: two real calls produced three pool rows, the business-level Instagram
+> pool was correctly inferred to its enterprise, and both endpoints answered
+> over HTTP with authorization enforced.
+>
+> **Next:** Task 2, RBAC. The research map is at
+> `/Users/NI013/.claude/projects/-Users-NI013-Documents-Om-Docs-depos-wouch-wh-api-unified-service/2edd0520-e262-4416-b8b1-ab7eeac517b6/tool-results/toolu_013xFrGrE22UkXLaDPX6qzFg.txt`
+> (72KB, read it in chunks). Write the plan first, then implement.
 
 ---
 
@@ -80,12 +86,13 @@ persisted so it survives a restart and resets when Meta's window resets.
 - [x] Widen throttle detection to the whole `800xx` range (the published code
       table disagrees with itself on 80002 vs 80005; the range does not)
 - [x] `MetaRateLimitService`
-- [ ] Platform contract + controller endpoints
-- [ ] Module wiring (API **and** workers — both processes make Graph calls)
-- [ ] Retention sweep in `SweeperWorker`
-- [ ] Tests: parser, collector, service, repository (integration), wiring
-- [ ] Portal page
-- [ ] Docs + commit
+- [x] Platform contract + controller endpoints
+- [x] Module wiring (API **and** workers — both processes make Graph calls)
+- [x] Retention sweep in `SweeperWorker`
+- [x] Tests: parser (20), collector (19), repository (28), wiring (5), e2e (3)
+- [x] Portal page
+- [x] Commit — `e660405` and the portal commit
+- [ ] `platform-limitations.md` §0.4 update with the app-meter measurements
 
 ---
 

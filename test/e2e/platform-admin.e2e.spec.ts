@@ -162,7 +162,18 @@ describe('the platform admin console', () => {
   it('refuses the platform surface to a business owner', async () => {
     const { token } = await onboardBusiness();
 
-    for (const path of ['/api/v1/platform/overview', '/api/v1/platform/enterprises']) {
+    /*
+     * EVERY path on the platform surface, not a representative one. The
+     * rate-limit view is the reason this list is spelled out: it reports how
+     * much of Meta's allowance each business is spending, so one tenant reading
+     * it would see the shape of every other tenant's traffic.
+     */
+    for (const path of [
+      '/api/v1/platform/overview',
+      '/api/v1/platform/enterprises',
+      '/api/v1/platform/rate-limits',
+      '/api/v1/platform/rate-limits/history',
+    ]) {
       const response = await http().get(path).set('Authorization', `Bearer ${token}`).expect(403);
       expect(response.body.error.code).toBe('PERMISSION_DENIED');
     }
@@ -171,6 +182,63 @@ describe('the platform admin console', () => {
   it('refuses the platform surface with no token at all', async () => {
     const response = await http().get('/api/v1/platform/enterprises').expect(401);
     expect(response.body.error.code).toBe('AUTH_TOKEN_INVALID');
+
+    await http().get('/api/v1/platform/rate-limits').expect(401);
+  });
+
+  it('serves the rate-limit view to platform staff, and says what it cannot see', async () => {
+    const token = await adminToken();
+
+    const response = await http()
+      .get('/api/v1/platform/rate-limits')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    /*
+     * An empty deployment is the interesting case, not a degenerate one.
+     *
+     * No business has connected anything here, so there are no per-business
+     * pools at all — but the suite DOES attempt Graph calls, against a Meta
+     * that is not there, and those are counted. That is the point being pinned:
+     * a call that failed before any header came back is still a call we made,
+     * and it is reported with `usedPercent: null` and a status of `unknown`.
+     *
+     * NOT zero. A pool we cannot see and a pool with nothing used lead to
+     * opposite decisions, and rendering the first as the second would show a
+     * full budget that nobody measured.
+     */
+    const view = response.body.data;
+    expect(view.enterprises).toEqual([]);
+    expect(view.unattributed).toEqual([]);
+    expect(view.attention).toEqual([]);
+    expect(typeof view.generatedAt).toBe('string');
+
+    if (view.app) {
+      expect(view.app).toMatchObject({
+        scopeKey: 'app',
+        status: 'unknown',
+        usedPercent: null,
+        remainingPercent: null,
+        windowMinutes: 60,
+      });
+      expect(view.app.callsInWindow).toBeGreaterThan(0);
+    }
+  });
+
+  it('bounds the history window rather than trusting the caller', async () => {
+    const token = await adminToken();
+
+    // A monitoring endpoint with an unbounded range is the thing that ends up
+    // needing monitoring.
+    await http()
+      .get('/api/v1/platform/rate-limits/history?windowMinutes=999999')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(422);
+
+    await http()
+      .get('/api/v1/platform/rate-limits/history?limit=100000')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(422);
   });
 
   it('blocks a business from the portal until it is activated, then lets it in', async () => {
