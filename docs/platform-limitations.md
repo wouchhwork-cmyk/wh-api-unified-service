@@ -39,18 +39,64 @@ inertia.
 Researched 21 Sep 2026 — headers read off live responses with our own token,
 formulas from Meta's rate-limiting docs.
 
-### The header arrives on EVERY response, not only under pressure
+### There are TWO meters, and the TOKEN decides which one you get
 
-`x-business-use-case-usage` comes back on ordinary 200s. (`x-app-usage` did not
-appear on any Instagram or Messenger call; the BUC header is the one that
-matters to us.) A real response:
+Corrected 22 Sep after direct measurement. An earlier note here said
+`x-app-usage` never appeared; that was wrong, and wrong in a way that mattered —
+it hid the tighter of the two meters.
 
-```json
-{ "645699291956344":  [{ "type": "instagram", "call_count": 0,
-                         "total_cputime": 0, "total_time": 0,
-                         "estimated_time_to_regain_access": 0 }],
-  "17841472020051826":[{ "type": "instagram", ... }] }
+| token used | header returned | what it meters |
+| --- | --- | --- |
+| app (`{id}\|{secret}`) or **user** | `x-app-usage` | the whole developer app, one pool |
+| Page or Instagram | `x-business-use-case-usage` | one pool per business per product |
+
+Never both on one response. Meta documents that where both could apply, the
+business meter is applied **instead of** the app meter, and measurement agrees:
+ninety business-token calls moved the app counter not at all.
+
+**This means our connect flow and our inbox are metered separately.**
+`oauth/access_token`, `debug_token`, `me` and `me/accounts` all carry a user or
+app token, so the entire OAuth and discovery path draws on the app pool. Every
+inbox read draws on a business pool.
+
+### The app pool is small, and does not grow as customers connect
+
+`200 x daily active users` per **rolling hour** — and "users" means people
+actively using the app that day, not accounts stored. Measured on our own app:
+
 ```
+30 sequential calls   call_count 1%  ->  12%
+```
+
+So the pool holds roughly 250 calls an hour. Connecting one business costs about
+half a dozen app-meter calls (two token exchanges, `me`, `me/accounts`, and
+`debug_token` twice), which puts the ceiling somewhere near forty connections
+per hour **across the whole platform**. That is fine today and is the first
+thing that will bite during an onboarding push or a mass reconnect after a token
+expiry event.
+
+The app header also carries **no** `estimated_time_to_regain_access` — that
+field exists only on the business header. So when the app pool throttles, Meta
+tells us nothing about how long to wait.
+
+### The business pools are roomy by comparison
+
+Thirty consecutive calls against each of `pages`, `messenger` and `instagram`
+moved every one of them **0%**.
+
+### One asset, several pools
+
+The same Page token, the same Page id:
+
+```
+GET /{page-id}                -> type: pages
+GET /{page-id}/conversations  -> type: messenger
+```
+
+And a single Instagram read reports under **two** ids at once — the account
+(which is one of our `platform_channel_id` values) and the owning Meta Business
+(which is not). That second fact is what lets usage be attributed to a channel
+without threading tenant context through every call site.
 
 ### The numbers are PERCENTAGES, not counts
 
@@ -97,10 +143,34 @@ dead-lettered the work — while the client was already reading
 subcode is matched too, so a use case Meta adds later is recognised on arrival
 rather than after an outage.
 
+### What we now do with all this
+
+Every Graph response is read for both headers and folded into `meta_api_usage`,
+one row per pool per minute, and the platform console shows it per business and
+per channel. See the 22 Sep commits.
+
+Two rules in that code are worth repeating because they are easy to get
+backwards:
+
+- **A missing header is `NULL`, never `0`.** Meta's documentation says the
+  header appears on endpoints receiving enough requests, so absence means we
+  cannot see our position. Recording it as zero would show a clear budget at the
+  one moment it is least safe to assume one.
+- **`estimated_time_to_regain_access: 0` does not mean safe.** Meta's own
+  examples show 0 against pools sitting at 95% and 97%. It means "not blocked
+  right now". The percentage is the only thing that says how much room is left.
+
 ### Still not done
 
-Nothing reads the percentages on a SUCCESSFUL response, so we cannot back off
-before Meta refuses. That is todo P1, and it is now the only part of this left.
+Nothing SLOWS DOWN on a rising percentage. The position is now visible and
+recorded; acting on it automatically — pausing a backfill at 80%, spreading a
+poller out — is todo P1 and is the only part of this left.
+
+Meta's own advice, worth honouring when that is built: spread calls evenly
+rather than in bursts, and **stop** when refused rather than retrying, because
+continuing to call while throttled increases the count and extends the block.
+Note also that batching does **not** save quota — three ids in one batched
+request still count as three calls.
 
 ---
 
