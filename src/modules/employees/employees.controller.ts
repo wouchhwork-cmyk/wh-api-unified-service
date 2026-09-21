@@ -70,10 +70,12 @@ export class EmployeesController {
   ): Promise<Paginated<EmployeeDto>> {
     const parsed = EmployeeQuerySchema.parse(query);
 
-    const result = await this.employees.list(actor.enterpriseId, parsed.includeSupport === 'true', {
-      limit: parsed.limit ?? null,
-      cursor: parsed.cursor ?? null,
-    });
+    const result = await this.employees.list(
+      actor.enterpriseId,
+      actor.employeeId,
+      parsed.includeSupport === 'true',
+      { limit: parsed.limit ?? null, cursor: parsed.cursor ?? null },
+    );
 
     return paginated(result.items, {
       // The clamped limit, not the requested one: the meta has to describe the

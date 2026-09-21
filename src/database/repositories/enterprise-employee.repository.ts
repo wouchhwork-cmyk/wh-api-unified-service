@@ -42,6 +42,8 @@ export interface EmployeeListRow {
   readonly joinedAt: Date | null;
   readonly lastActiveAt: Date | null;
   readonly roles: string[];
+  /** Highest level among their roles; NULL when they hold none. */
+  readonly roleLevel: number | null;
 }
 
 /**
@@ -226,9 +228,24 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
       includeSupport: boolean;
       limit: number;
       cursor: { createdAt: Date; id: number } | null;
+      /**
+       * The viewer's own authority. Nobody at or above it appears.
+       *
+       * Applied HERE rather than after the page is fetched, and that is not a
+       * micro-optimisation: filtering a fetched page would return fewer rows
+       * than the limit while more matching rows existed, and the caller reads a
+       * short page as "no more results". People would silently vanish from the
+       * end of the list. `HAVING` runs before `LIMIT`, so the page is full of
+       * rows the viewer may actually see.
+       */
+      viewerLevel: number;
     },
   ): Promise<EmployeeListRow[]> {
-    const params: unknown[] = [this.requireEnterprise(enterpriseId), options.limit];
+    const params: unknown[] = [
+      this.requireEnterprise(enterpriseId),
+      options.limit,
+      options.viewerLevel,
+    ];
     let kindPredicate = '';
     if (!options.includeSupport) {
       params.push(EmployeeKind.Business);
@@ -271,7 +288,8 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
               COALESCE(
                 array_agg(r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL),
                 '{}'
-              )               AS "roles"
+              )               AS "roles",
+              max(r.level)::int AS "roleLevel"
          FROM enterprise_employees e
          JOIN identities i ON i.id = e.identity_id AND i.is_deleted = false
          LEFT JOIN employee_roles er
@@ -280,6 +298,13 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
          LEFT JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
         WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate} ${cursorPredicate}
         GROUP BY e.id, i.id
+        /*
+         * An employee holding NO roles has no level, and COALESCE puts them
+         * below everyone rather than above. They are the half-finished invites,
+         * and hiding them from the person who has to finish the job would be
+         * exactly backwards.
+         */
+        HAVING COALESCE(max(r.level), -1) <= $3
         ORDER BY e.created_at ASC, e.id ASC
         LIMIT $2`,
       params,

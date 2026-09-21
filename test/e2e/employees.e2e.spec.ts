@@ -325,6 +325,50 @@ describe('a business builds its team', () => {
     expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
   });
 
+  it('shows an agent their peers and hides the people above them', async () => {
+    /*
+     * The listing used to show everybody to anybody holding `employees.view` —
+     * which the agent and even the read-only viewer roles hold. So the whole
+     * company's management structure, invitation status and contact shape was
+     * readable by the most junior account in the business.
+     *
+     * Filtered in SQL rather than after the page is fetched: filtering a fetched
+     * page returns fewer rows than the limit while more matching rows exist, and
+     * the caller reads a short page as "no more results".
+     */
+    const { ownerToken, agentRole } = await businessWithAManager();
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Junior', email: 'junior@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'junior@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+    const agentToken = accepted.body.data.accessToken as string;
+
+    const seenByOwner = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const ownerSees = (seenByOwner.body.data as { name: string }[]).map((p) => p.name);
+    expect(ownerSees).toEqual(expect.arrayContaining(['Meera Iyer', 'Priya', 'Junior']));
+
+    const seenByAgent = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .expect(200);
+    const agentSees = (seenByAgent.body.data as { name: string }[]).map((p) => p.name);
+
+    // Their own peer group, and themselves.
+    expect(agentSees).toContain('Junior');
+    // Not the manager, and not the owner.
+    expect(agentSees).not.toContain('Priya');
+    expect(agentSees).not.toContain('Meera Iyer');
+  });
+
   it('gives an agent no authority to build the team', async () => {
     const { ownerToken } = await onboardedBusiness();
     const agentRole = await roleRefId(ownerToken, 'agent');

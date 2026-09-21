@@ -70,6 +70,15 @@ export const EmployeeSchema = z.object({
   employeeKind: z.enum(EmployeeKind),
   status: z.enum(EmployeeStatus),
   roles: z.array(z.string()),
+  /**
+   * Highest level among their roles; null when they hold none.
+   *
+   * Exposed so a client can show the ladder and grey out the people it knows
+   * the viewer cannot act on — the API refuses them anyway, and an interface
+   * that offers a button the server will reject is worse than one that does
+   * not offer it.
+   */
+  roleLevel: z.number().int().nullable(),
   invitedAt: z.date().nullable(),
   joinedAt: z.date().nullable(),
   lastActiveAt: z.date().nullable(),

@@ -9,6 +9,7 @@ import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
 import { VerificationService, type PendingOtpDelivery } from '@/modules/auth/verification.service';
 import { SecretHashService } from '@/shared/crypto';
+import { ROLE_LEVEL } from '@/shared/enums';
 import {
   explainDenial,
   mayAssignRole,
@@ -71,6 +72,8 @@ export class EmployeesService {
    */
   async list(
     enterpriseId: number,
+    /** NULL for a Wouchh staff actor reaching into this business. */
+    actingEmployeeId: number | null,
     includeSupport: boolean,
     query: { limit: number | null; cursor: string | null },
   ): Promise<{
@@ -81,12 +84,41 @@ export class EmployeesService {
   }> {
     const limit = clampLimit(query.limit);
 
+    /*
+     * WHAT YOU MAY SEE FOLLOWS WHAT YOU OUTRANK. An agent sees agents and the
+     * people below them, never the managers above.
+     *
+     * Somebody holding no roles sees nobody — not an empty-list bug but the
+     * honest answer, since they outrank nothing. Their own record still reaches
+     * them through /auth/me, which is not a listing.
+     */
+    /*
+     * STAFF ARE NOT ON THIS LADDER, and must not be silently dropped off it.
+     *
+     * A Wouchh staff actor has no employment in the business, so they have no
+     * role and no level — and treating that as "outranks nobody" would show
+     * support an empty team and look like a bug rather than a rule. Their
+     * authority is governed on the platform side: reaching into a tenant at all
+     * already requires has_all_enterprise_access and is audited as
+     * impersonation. So they see the whole team, which is what they saw before
+     * this filter existed.
+     */
+    const viewerLevel =
+      actingEmployeeId === null
+        ? ROLE_LEVEL.Owner
+        : await this.roles.highestLevelForEmployee(enterpriseId, actingEmployeeId);
+
+    if (viewerLevel === null) {
+      return { items: [], limit, nextCursor: null, hasMore: false };
+    }
+
     const rows = await this.employees.listForEnterprise(enterpriseId, {
       includeSupport,
       // One extra row answers "is there another page" without a second COUNT
       // over the same predicate.
       limit: limit + 1,
       cursor: decodeEmployeeCursor(query.cursor),
+      viewerLevel,
     });
 
     const hasMore = rows.length > limit;
@@ -282,6 +314,8 @@ export class EmployeesService {
         employeeKind: EmployeeKind.Business,
         status: EmployeeStatus.Invited,
         roles: [role.name],
+        // The role was just resolved, so the level is known without a query.
+        roleLevel: role.level,
         invitedAt: new Date(),
         joinedAt: null,
         lastActiveAt: null,
@@ -403,6 +437,7 @@ function toDto(row: EmployeeListRow): EmployeeDto {
     employeeKind: row.employeeKind,
     status: row.status,
     roles: row.roles,
+    roleLevel: row.roleLevel,
     invitedAt: row.invitedAt,
     joinedAt: row.joinedAt,
     lastActiveAt: row.lastActiveAt,
