@@ -30,6 +30,21 @@ export interface PlatformAttachment {
     readonly sticker_id?: number | string;
     /** A shared post's caption. */
     readonly title?: string;
+    /**
+     * WHAT META ACTUALLY SAYS THE FILE IS.
+     *
+     * Absent from a webhook, which names a `type` and nothing else — but the
+     * conversations READ edge carries `mime_type` on every attachment, and it
+     * was being thrown away by the translation into this shape. The comment on
+     * the `file` branch even claimed the normalizer kept it; it never arrived.
+     *
+     * It is the only thing that separates a voice note from a document, both of
+     * which land on `file`, and the only evidence that settles a story's kind
+     * without a HEAD request.
+     */
+    readonly mime_type?: string;
+    /** The file's own name, where Meta has one. Documents and voice notes. */
+    readonly name?: string;
     readonly reel_video_id?: string;
     /** The shared post's media id, as Meta's own APIs address it. */
     readonly ig_post_media_id?: string;
@@ -207,6 +222,31 @@ function toMediaKind(attachment: PlatformAttachment): MediaKind {
   if (attachment.payload?.sticker_id !== undefined) return MediaKind.Sticker;
 
   const type = attachment.type?.trim().toLowerCase() ?? '';
+
+  /*
+   * EVIDENCE BEATS THE TYPE NAME.
+   *
+   * Everything below this point is inference from a label Meta chose. A mime
+   * type is Meta saying what the file IS, and where it says so there is nothing
+   * left to infer — a shared story labelled `ig_story` whose mime type is
+   * `video/mp4` is a video, and storing it as an image was simply wrong.
+   *
+   * Only the family is read. `audio/ogg` and `audio/mpeg` are both audio, and
+   * matching on the whole string would mean a list that goes stale the first
+   * time Meta uses a codec nobody here has heard of.
+   */
+  const mimeType = attachment.payload?.mime_type?.trim().toLowerCase();
+  if (mimeType) {
+    if (mimeType.startsWith('video/')) return MediaKind.Video;
+    if (mimeType.startsWith('audio/')) return MediaKind.Audio;
+    if (mimeType === 'image/gif') return MediaKind.Gif;
+    if (mimeType.startsWith('image/')) {
+      // Still deferred to the GIF check below: Giphy serves animations that a
+      // mime type calls image/gif only sometimes.
+      return isAnimatedImageUrl(attachment.payload?.url) ? MediaKind.Gif : MediaKind.Image;
+    }
+  }
+
   const mediaKind = MEDIA_KIND_BY_TYPE[type] ?? MediaKind.Document;
 
   /*
@@ -281,7 +321,16 @@ export function normalizeAttachments(
      * a failed image as a video either way — this makes that expected rather
      * than accidental, which is the whole point of the flag.
      */
-    if (type === STORY_MENTION_TYPE || type === SHARED_STORY_TYPE) {
+    const mimeType = attachment.payload?.mime_type?.trim().toLowerCase() ?? null;
+    if (mimeType) metadata.mimeType = mimeType;
+    if (attachment.payload?.name) metadata.fileName = attachment.payload.name;
+
+    /*
+     * A MIME TYPE ENDS THE GUESS. Where Meta actually says what the file is,
+     * there is nothing left to discover by trying — so the flag is not set, and
+     * the kind below comes from the evidence rather than from the type name.
+     */
+    if ((type === STORY_MENTION_TYPE || type === SHARED_STORY_TYPE) && !mimeType) {
       metadata.kindIsGuessed = true;
     }
     if (attachment.payload?.reel_video_id) metadata.reelVideoId = attachment.payload.reel_video_id;
@@ -338,8 +387,9 @@ export function normalizeAttachments(
 export function toWebhookAttachments(
   attachments: readonly GraphMessageAttachment[],
   shares: readonly { link?: string | undefined }[] = [],
-): { type: string; payload: { url: string } }[] {
-  const translated: { type: string; payload: { url: string } }[] = [];
+): { type: string; payload: { url: string; mime_type?: string; name?: string } }[] {
+  const translated: { type: string; payload: { url: string; mime_type?: string; name?: string } }[] =
+    [];
 
   /*
    * A SHARE IS NOT AN ATTACHMENT as far as Graph is concerned — it has its own
@@ -354,18 +404,29 @@ export function toWebhookAttachments(
   }
 
   for (const attachment of attachments) {
+    /*
+     * CARRIED THROUGH, not dropped. The read edge knows the mime type and the
+     * file name and this translation used to discard both — so the backfill
+     * stored less about a message than the webhook did, and a re-read could
+     * never settle a kind the webhook had to guess at.
+     */
+    const known = {
+      ...(attachment.mime_type ? { mime_type: attachment.mime_type } : {}),
+      ...(attachment.name ? { name: attachment.name } : {}),
+    };
+
     if (attachment.image_data?.url) {
-      translated.push({ type: 'image', payload: { url: attachment.image_data.url } });
+      translated.push({ type: 'image', payload: { url: attachment.image_data.url, ...known } });
       continue;
     }
     if (attachment.video_data?.url) {
-      translated.push({ type: 'video', payload: { url: attachment.video_data.url } });
+      translated.push({ type: 'video', payload: { url: attachment.video_data.url, ...known } });
       continue;
     }
     if (attachment.file_url) {
-      // `file` covers documents and voice notes; the mime type on the row is
-      // what tells them apart, and the normalizer keeps it.
-      translated.push({ type: 'file', payload: { url: attachment.file_url } });
+      // `file` covers documents and voice notes; the mime type is what tells
+      // them apart, which is why it is carried above.
+      translated.push({ type: 'file', payload: { url: attachment.file_url, ...known } });
     }
     // An attachment with no link at all is dropped: there is nothing to store
     // and nothing to show, and a row with a null url would only look broken.

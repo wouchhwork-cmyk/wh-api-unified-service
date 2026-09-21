@@ -364,3 +364,66 @@ describe("a story's kind is a guess, shared or mentioned", () => {
     expect(story('image')?.metadata.kindIsGuessed).toBeUndefined();
   });
 });
+
+describe('a mime type is evidence, and ends the guessing', () => {
+  /**
+   * Meta's conversations READ edge carries `mime_type` on every attachment, and
+   * the translation into the webhook shape used to discard it — so the backfill
+   * stored LESS about a message than the live webhook did, and a re-read could
+   * never settle a kind the webhook had to guess at.
+   *
+   * It is also the only thing separating a voice note from a document: both
+   * arrive as `file`, and the code said so in a comment while dropping the
+   * field that proved it.
+   */
+  const withMime = (type: string, mime: string | undefined, url = 'https://lookaside.fbsbx.com/x') =>
+    normalizeAttachments([
+      { type, payload: { url, ...(mime === undefined ? {} : { mime_type: mime }) } },
+    ]).attachments[0];
+
+  it('stores what Meta said the file is', () => {
+    expect(withMime('file', 'audio/ogg')?.metadata.mimeType).toBe('audio/ogg');
+  });
+
+  it('tells a voice note from a document, which the type alone cannot', () => {
+    // Both arrive as `file`. Without the mime type they were both documents.
+    expect(withMime('file', 'audio/mpeg')?.mediaKind).toBe(MediaKind.Audio);
+    expect(withMime('file', 'application/pdf')?.mediaKind).toBe(MediaKind.Document);
+  });
+
+  it('corrects a shared story that is really a video', () => {
+    /*
+     * Observed live on 19 Sep: an `ig_story` share stored as an image whose
+     * link served video/mp4, 540 KB of it. The label said image; Meta said
+     * video; Meta was right.
+     */
+    expect(withMime('ig_story', 'video/mp4')?.mediaKind).toBe(MediaKind.Video);
+  });
+
+  it('stops calling the kind a guess once Meta has said what it is', () => {
+    // The flag means "we inferred this and may be wrong". With evidence there
+    // is nothing to retry and nothing to warn a client about.
+    expect(withMime('ig_story', 'video/mp4')?.metadata.kindIsGuessed).toBeUndefined();
+    expect(withMime('story_mention', 'image/jpeg')?.metadata.kindIsGuessed).toBeUndefined();
+  });
+
+  it('still flags the guess when Meta says nothing, which is the usual case', () => {
+    // A live webhook carries no mime type at all, so the flag must survive
+    // exactly where it was needed.
+    expect(withMime('ig_story', undefined)?.metadata.kindIsGuessed).toBe(true);
+    expect(withMime('story_mention', undefined)?.metadata.kindIsGuessed).toBe(true);
+  });
+
+  it('reads the family, not the exact string', () => {
+    // audio/ogg and audio/mpeg are both audio. Matching whole strings would go
+    // stale the first time Meta uses a codec nobody here has heard of.
+    expect(withMime('file', 'audio/x-something-new')?.mediaKind).toBe(MediaKind.Audio);
+  });
+
+  it('keeps a GIF a GIF when the host says so and the mime does not', () => {
+    // The Giphy host is still the stronger signal for an animation.
+    expect(
+      withMime('image', 'image/jpeg', 'https://media2.giphy.com/media/v1/x.gif')?.mediaKind,
+    ).toBe(MediaKind.Gif);
+  });
+});

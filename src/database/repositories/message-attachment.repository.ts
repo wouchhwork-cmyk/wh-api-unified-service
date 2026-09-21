@@ -136,21 +136,46 @@ export class MessageAttachmentRepository extends BaseRepository {
    */
   async refreshSourceUrls(
     enterpriseId: number,
-    updates: readonly { id: number; sourceUrl: string }[],
+    updates: readonly { id: number; sourceUrl: string; mimeType?: string }[],
   ): Promise<number> {
     if (updates.length === 0) return 0;
 
     const ids = updates.map((update) => update.id);
     const urls = updates.map((update) => update.sourceUrl);
+    const mimes = updates.map((update) => update.mimeType ?? null);
 
-    // One statement rather than one per row: a carousel that has expired is
-    // several rows, and they belong to the same click.
+    /*
+     * THE MIME TYPE COMES BACK TOO, when Meta gives one.
+     *
+     * A webhook names a `type` and nothing else; the read edge says what the
+     * file actually is. So a re-read is the one chance to settle a kind that
+     * was a guess when the message arrived — a shared story stored as an image
+     * whose link is really a video. `kindIsGuessed` is dropped at the same
+     * time, because with evidence there is nothing left to retry.
+     *
+     * Written with `||`, a shallow merge, so nothing else in the metadata is
+     * disturbed: the asset id, the platform type and the caption all describe
+     * what was SENT and are none of this statement's business.
+     *
+     * One statement rather than one per row: a carousel that has expired is
+     * several rows and they belong to the same click.
+     */
     const { affected } = await this.mutate(
       `UPDATE message_attachments AS a
-          SET source_url = fresh.url, updated_at = now()
-         FROM (SELECT unnest($2::bigint[]) AS id, unnest($3::text[]) AS url) AS fresh
+          SET source_url = fresh.url,
+              metadata = CASE
+                WHEN fresh.mime IS NULL THEN a.metadata
+                ELSE (a.metadata - 'kindIsGuessed')
+                     || jsonb_build_object('mimeType', fresh.mime)
+              END,
+              updated_at = now()
+         FROM (
+           SELECT unnest($2::bigint[]) AS id,
+                  unnest($3::text[])   AS url,
+                  unnest($4::text[])   AS mime
+         ) AS fresh
         WHERE a.id = fresh.id AND a.enterprise_id = $1`,
-      [this.requireEnterprise(enterpriseId), ids, urls],
+      [this.requireEnterprise(enterpriseId), ids, urls, mimes],
     );
     return affected;
   }

@@ -206,6 +206,47 @@ describe('refreshing expired attachment links', () => {
       expect(rows[0]?.source_url).toBe(DEAD);
     });
 
+    it('records what Meta says the file is, and stops calling the kind a guess', async () => {
+      /*
+       * The one chance to settle it. A webhook names a `type` and nothing else,
+       * so a story's kind is inferred and flagged `kindIsGuessed`. The read
+       * edge carries `mime_type` — verified live on a shared story stored as an
+       * image whose link served video/mp4 — and a re-read is the only moment
+       * that evidence is ever available.
+       */
+      const id = await seedAttachment(enterpriseId, conversationId, 'mid:7', DEAD, 0, {
+        platformType: 'ig_story',
+        kindIsGuessed: true,
+      });
+
+      await attachments.refreshSourceUrls(enterpriseId, [
+        { id, sourceUrl: FRESH, mimeType: 'video/mp4' },
+      ]);
+
+      const rows: { metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT metadata FROM message_attachments WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.metadata).toEqual({ platformType: 'ig_story', mimeType: 'video/mp4' });
+    });
+
+    it('leaves the guess alone when Meta still says nothing', async () => {
+      // No evidence, no change: clearing the flag here would claim a certainty
+      // nobody has.
+      const id = await seedAttachment(enterpriseId, conversationId, 'mid:8', DEAD, 0, {
+        platformType: 'ig_story',
+        kindIsGuessed: true,
+      });
+
+      await attachments.refreshSourceUrls(enterpriseId, [{ id, sourceUrl: FRESH }]);
+
+      const rows: { metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT metadata FROM message_attachments WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.metadata).toEqual({ platformType: 'ig_story', kindIsGuessed: true });
+    });
+
     it('does nothing when there is nothing to do', async () => {
       // The common case once a thread has been refreshed: no statement at all.
       expect(await attachments.refreshSourceUrls(enterpriseId, [])).toBe(0);

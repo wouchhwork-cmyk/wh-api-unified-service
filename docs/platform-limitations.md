@@ -633,11 +633,19 @@ A forwarded story arrives as `story_media_id` and an expiring
 media id resolves for nobody but the connected account (§3.1), so the owner is
 unknowable. The portal says "shared someone's story" rather than inventing one.
 
-**Both are a guess about media KIND.** Meta serves a story's photo and its video
-under one link and names neither: a real `ig_story` share on 19 Sep was stored
-as an image and its link served `video/mp4`, 540 KB. `kindIsGuessed` now covers
-both shapes, and is derived at read as well as stored, so rows written before
-that still report honestly.
+**Both are a guess about media KIND — on the webhook.** Meta serves a story's
+photo and its video under one link and names neither: a real `ig_story` share on
+19 Sep was stored as an image and its link served `video/mp4`, 540 KB.
+`kindIsGuessed` covers both shapes, and is derived at read as well as stored, so
+rows written before that still report honestly.
+
+**The READ edge does say.** `mime_type` comes back on every attachment from the
+conversations edge and was being discarded by the translation into the webhook
+shape — so the backfill stored LESS about a message than the live webhook did.
+It is now carried through, which settles two things nothing else could: a voice
+note from a document (both arrive as `file`, and only the mime type separates
+them), and a story's real kind. When a refresh learns it, `kindIsGuessed` is
+dropped — with evidence there is nothing left to retry.
 
 **A shared PROFILE yields nothing at all.** It arrives as
 `is_unsupported: true` with no text and no attachment — Meta declining to

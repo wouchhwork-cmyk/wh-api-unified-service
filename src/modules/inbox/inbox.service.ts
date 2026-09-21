@@ -656,7 +656,7 @@ export class InboxService {
     const participantId = conversation.platformThreadId.replace(/^dm:/, '');
     if (!participantId) return { refreshed: 0, beyondReach: stored.length };
 
-    let fresh: Map<string, string[]>;
+    let fresh: Map<string, { url: string; mimeType: string | null }[]>;
     try {
       fresh = await this.readFreshAttachmentLinks(conversation, channel, token, participantId);
     } catch (error) {
@@ -674,7 +674,7 @@ export class InboxService {
       else byMessage.set(row.platformMessageId, [row]);
     }
 
-    const updates: { id: number; sourceUrl: string }[] = [];
+    const updates: { id: number; sourceUrl: string; mimeType?: string }[] = [];
     let beyondReach = 0;
 
     for (const [platformMessageId, rows] of byMessage) {
@@ -696,8 +696,16 @@ export class InboxService {
         continue;
       }
       rows.forEach((row, index) => {
-        const link = links[index];
-        if (link && link !== row.sourceUrl) updates.push({ id: row.id, sourceUrl: link });
+        const fresh = links[index];
+        if (!fresh) return;
+        // The mime type is worth writing even when the link has not moved: it
+        // may be the first time Meta has told us what this actually is.
+        if (fresh.url === row.sourceUrl && !fresh.mimeType) return;
+        updates.push({
+          id: row.id,
+          sourceUrl: fresh.url,
+          ...(fresh.mimeType ? { mimeType: fresh.mimeType } : {}),
+        });
       });
     }
 
@@ -710,13 +718,22 @@ export class InboxService {
     return { refreshed, beyondReach };
   }
 
-  /** The thread as Meta describes it now: message id to its expiring links. */
+  /**
+   * The thread as Meta describes it now: message id to its expiring links, WITH
+   * whatever Meta says each one is.
+   *
+   * The mime type comes back on the read edge and not on a webhook, so a
+   * re-read is the only chance to settle a kind that was guessed at when the
+   * message first arrived — a shared story stored as an image whose link is
+   * really a video. Carrying it costs nothing: it arrived in a call already
+   * being made.
+   */
   private async readFreshAttachmentLinks(
     conversation: ConversationRow,
     channel: { platformChannelId: string; parentPlatformChannelId: string | null },
     token: string,
     participantId: string,
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Map<string, { url: string; mimeType: string | null }[]>> {
     const instagram = conversation.platform === Platform.Instagram;
     /*
      * An Instagram thread is read through its PARENT Page — the Instagram node
@@ -730,7 +747,7 @@ export class InboxService {
       ? await this.graph.listInstagramConversations(readAs, token, undefined, participantId)
       : await this.graph.listPageConversations(readAs, token, undefined, participantId);
 
-    const links = new Map<string, string[]>();
+    const links = new Map<string, { url: string; mimeType: string | null }[]>();
     for (const thread of page.data ?? []) {
       for (const message of thread.messages?.data ?? []) {
         const translated = toWebhookAttachments(
@@ -739,8 +756,11 @@ export class InboxService {
         );
         // Same filter as the stored side, so the two lists line up by position.
         const expiring = translated
-          .map((attachment) => attachment.payload.url)
-          .filter((url) => isExpiringMediaUrl(url));
+          .filter((attachment) => isExpiringMediaUrl(attachment.payload.url))
+          .map((attachment) => ({
+            url: attachment.payload.url,
+            mimeType: attachment.payload.mime_type ?? null,
+          }));
         if (expiring.length > 0) links.set(message.id, expiring);
       }
     }
