@@ -12,15 +12,19 @@ is described under RESUME HERE with enough detail to pick up cold.
 
 ## RESUME HERE
 
-> **Current state:** Task 1 is COMPLETE and committed (`e660405` backend,
-> plus the portal commit after it). Verified end to end against the live Graph
-> API: two real calls produced three pool rows, the business-level Instagram
-> pool was correctly inferred to its enterprise, and both endpoints answered
-> over HTTP with authorization enforced.
+> **Current state:** Task 1 COMPLETE. Task 2 in progress — levels, visibility,
+> reconciliation, the permission split and role CRUD are all committed and
+> green (688 tests, lint, typecheck, schema parity).
 >
-> **Next:** Task 2, RBAC. The research map is at
+> **Next:** the portal role editor, then platform-side RBAC (staff roles),
+> then the feature-catalogue review, then the three review rounds.
+>
+> The RBAC research map is at
 > `/Users/NI013/.claude/projects/-Users-NI013-Documents-Om-Docs-depos-wouch-wh-api-unified-service/2edd0520-e262-4416-b8b1-ab7eeac517b6/tool-results/toolu_013xFrGrE22UkXLaDPX6qzFg.txt`
-> (72KB, read it in chunks). Write the plan first, then implement.
+> (72KB — read it in chunks). The plan is `docs/rbac-plan.md`.
+>
+> **Gate for this work:** `npx tsc --noEmit` (covers tests, which `pnpm build`
+> does not), `pnpm lint`, `SCHEMA_PARITY=1 npx vitest run`.
 
 ---
 
@@ -120,14 +124,48 @@ reviewer is available, so I review my own work in multiple rounds.
 
 ### Checklist
 
-- [ ] Research: current RBAC — entities, guards, seeding, enforcement points
-- [ ] Research: every capability the product now has, vs. the catalogue
-- [ ] Research: feature-flag / activation list vs. what exists
-- [ ] Written plan: what is right, what is wrong, what changes
-- [ ] Implementation (to be broken down once the plan exists)
-- [ ] Review round 1 — correctness and privilege escalation
-- [ ] Review round 2 — tenant isolation and backward compatibility
+- [x] Research: current RBAC — entities, guards, seeding, enforcement points
+- [x] Written plan — `docs/rbac-plan.md`
+- [x] **Role levels** — `01778a8`. 0-100, higher is more. Owner 100, manager 70,
+      agent 40, viewer 10. Three comparisons: see `<=`, assign `<`, modify `<`.
+      Rules live in `src/shared/rbac/authority.ts`, pure, 32 unit tests.
+      Closed: a manager could mint another manager, and could suspend the owner.
+- [x] **Visibility by level** — `d418ce5`. The listing showed the whole company
+      to anybody with `employees.view`, which the agent and viewer roles hold.
+      Filtered in SQL (HAVING, before LIMIT) so pages do not come back short.
+- [x] **Template reconciliation (B2)** — `1fc8604`. Additive, except levels,
+      which are corrected because the level IS the hierarchy. Also fixed the
+      seed's `run()` returning TypeORM's `[rows, count]` tuple for UPDATE.
+- [x] **Permission catalogue split** — `61b07c4`. `mentions.*` is new;
+      `comments.assign/manage` fill the gap; `comments.hide/delete` are enforced
+      for the first time. Closed a real feature leak: comment threads were gated
+      on `unified_inbox`, so a tenant with `comment_management` REVOKED kept full
+      comment access — one live tenant was in exactly that state.
+- [x] **Role CRUD** — `f69322e`. Catalogue, list, create, replace, retire, and
+      replacing one person's roles. 21 e2e tests, mostly refusals.
+- [ ] Portal: role editor UI
+- [ ] Platform-side RBAC (staff roles — backlog B3)
+- [ ] Feature-catalogue review
+- [ ] Review round 1 — escalation
+- [ ] Review round 2 — isolation and backward compatibility
 - [ ] Review round 3 — tests and gate
+
+### Decisions worth not re-litigating
+
+- **Levels are spread (100/70/40/10), not dense.** A business can insert
+  `Senior agent` at 55 without renumbering.
+- **An employee's level is the MAX of their roles**, never the min — taking the
+  min would mean granting an extra role silently demotes somebody, which is
+  itself an attack.
+- **The subset rule checks GRANTED codes, not feature-gated ones.** A business
+  whose inbox subscription lapsed should still be able to edit a role that
+  mentions inbox permissions; the gate applies independently at use time.
+- **Mentions ride on `unified_inbox`, not a new feature.** A new feature would
+  break every existing tenant the moment it shipped.
+- **Staff actors get the owner's level for reads and are refused writes.** They
+  have no employment, so a write would record "somebody" in the audit trail.
+- **A conversation you may not see is 404, not 403.** A 403 confirms the refId
+  exists, and a refId is the only handle a client has.
 
 ---
 
