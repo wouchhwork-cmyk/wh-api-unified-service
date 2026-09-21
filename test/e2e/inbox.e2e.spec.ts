@@ -418,6 +418,14 @@ describe('the shared inbox', () => {
       'isInternalNote',
       'isRead',
       'messageKind',
+      /*
+       * The whole stored metadata bag, added so nothing is captured unseen —
+       * we hold far more than the thread shows and none of it was visible
+       * anywhere, which is how a captured field gets dropped for looking
+       * useless. Explicitly NOT part of the contract; the assertion below is
+       * what keeps it from becoming a hole in the rule this test exists for.
+       */
+      'platformDetails',
       'platformSentAt',
       // Added when a GIF comment turned up as a blank line: Instagram omits
       // `text` rather than sending it empty, and exposes no media field at all.
@@ -442,6 +450,54 @@ describe('the shared inbox', () => {
     // Null for an ordinary message; an object with refId, excerpt, direction
     // and isSelfReply when the customer answered one in particular.
     expect(message.replyTo).toBeNull();
+  });
+
+  it('keeps our own ids out of the metadata bag it now exposes', async () => {
+    /*
+     * `platformDetails` ships whatever the projectors stored, which is the
+     * point — and it would be the easy way to undo the rule the test above
+     * enforces. Every id in there is META'S: a comment id, a media id, a story
+     * id. Ours are bigints and belong to nobody outside this service.
+     *
+     * Asserted on shape rather than on a key list, so a projector that starts
+     * storing something new is caught by this rather than by a customer.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const thread = await http()
+      .get(`/api/v1/conversations/${refId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    const internalish = /^(id|.*(?:^|[a-z])(?:Id))$/;
+    const offenders: string[] = [];
+
+    const walk = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => walk(item, `${path}[${index}]`));
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      for (const [key, nested] of Object.entries(value)) {
+        // A NUMBER under an id-shaped key is the tell: every platform id Meta
+        // gives is a string, and every id of ours is a bigint.
+        if (internalish.test(key) && typeof nested === 'number') {
+          offenders.push(`${path}.${key}`);
+        }
+        walk(nested, `${path}.${key}`);
+      }
+    };
+
+    for (const message of thread.body.data.messages) {
+      walk(message.platformDetails, 'message.platformDetails');
+      for (const attachment of message.attachments ?? []) {
+        walk(attachment.platformDetails, 'attachment.platformDetails');
+      }
+    }
+    walk(thread.body.data.conversation.platformDetails, 'conversation.platformDetails');
+
+    expect(offenders).toEqual([]);
   });
 
   it('names the colleague who sent a reply', async () => {

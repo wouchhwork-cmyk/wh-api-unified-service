@@ -131,7 +131,10 @@ describe('sync job queue', () => {
     const reclaimed = returningRows<{ id: string }>(
       await db.query(
         `UPDATE sync_jobs
-          SET status='pending', lease_owner=NULL, lease_expires_at=NULL, next_attempt_at=now()
+          SET status='pending', lease_owner=NULL, lease_expires_at=NULL,
+              -- A moment ago, not now(): a millisecond column rounds now() UP,
+              -- so a row written with it is briefly not yet claimable.
+              next_attempt_at = now() - interval '1 second'
         WHERE id IN (
           SELECT id FROM sync_jobs
            WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at < now()

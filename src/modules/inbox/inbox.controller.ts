@@ -510,6 +510,22 @@ function toMessage(
      */
     contentUnavailable:
       row.metadata.contentUnavailable === true || row.metadata.isUnsupported === true,
+    /*
+     * EVERYTHING ELSE WE HOLD, for looking at rather than for building on.
+     *
+     * The fields above are the contract: named, stable, and chosen because an
+     * agent acts on them. This is the rest of the bag — every key the projector
+     * happened to store — and it exists because we were capturing facts nobody
+     * could see, which is how a field gets quietly dropped for being useless
+     * when nothing had ever shown it.
+     *
+     * DELIBERATELY NOT PART OF THE CONTRACT. Keys appear and vanish as the
+     * projectors change, and a client that branches on one of these will break
+     * without warning. Promote a key to a named field above before depending on
+     * it; that promotion is the decision, and this is the evidence for making
+     * it.
+     */
+    platformDetails: row.metadata,
     platformSentAt: row.platformSentAt,
     createdAt: row.createdAt,
     /*
@@ -534,6 +550,8 @@ function toMessage(
        */
       expires: attachment.storageKey === null && attachment.metadata.stableUrl !== true,
       platformType: attachment.metadata.platformType ?? null,
+      /** The whole bag. Unstable by design — see `platformDetails` on a message. */
+      platformDetails: attachment.metadata,
       /*
        * A shared post's caption. Without it the thread shows a picture with no
        * hint of what was sent or why, which for a shared advert is most of the
@@ -1015,6 +1033,12 @@ function toConversationSummary(row: {
      */
     subject: row.subject,
     mentionContext: toMentionContext(row.contextMetadata ?? {}, known, parentMention),
+    /*
+     * The conversation's whole context bag, on the same terms as a message's:
+     * visible so nothing is captured unseen, and NOT part of the contract.
+     * `mentionContext` above is the shaped, stable view of the same data.
+     */
+    platformDetails: row.contextMetadata ?? {},
     /*
      * Nested rather than flattened, so a client can tell "we have no name for
      * this person" from "there is no person" — a comment thread always has an

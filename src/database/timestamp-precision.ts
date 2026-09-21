@@ -22,6 +22,17 @@
  * Milliseconds are ample: the sub-millisecond ordering of two rows is settled
  * by the id tiebreaker, which is total and does not round.
  *
+ * POSTGRES ROUNDS TO THIS PRECISION, IT DOES NOT TRUNCATE. `now()` at
+ * .956599 is stored as .957 — up to half a millisecond in the FUTURE. So a row
+ * written with `next_attempt_at = now()` is briefly NOT matched by
+ * `next_attempt_at <= now()`.
+ *
+ * Harmless in production, where the writer and the claimer are different worker
+ * ticks seconds apart, and invisible to anything polling on a timer. It is only
+ * reachable by code fast enough to write and read inside one millisecond, which
+ * in practice means a test — two of them were made flaky by this and now say
+ * `now() - interval '1 second'` when they mean "already due".
+ *
  * ONE THING THIS COSTS, recorded honestly. `updated_at <> created_at` is used
  * as a cheap tripwire for rows written outside the service layer (see
  * schema-guarantees.spec.ts). A modification landing in the same millisecond as
