@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  EmployeeStatus,
   EnterpriseFeatureStatus,
   highestRoleLevel,
   PermissionScope,
@@ -417,6 +418,44 @@ export class RoleRepository extends BaseRepository {
       roleNames: rows.map((row) => row.name),
       permissionCodes: [...codes],
     };
+  }
+
+  /**
+   * How many ACTIVE people still hold the owner role, not counting one.
+   *
+   * The exclusion is what makes it useful: the caller is about to suspend or
+   * re-role that person, and the question is what would be left afterwards.
+   * Counting them and subtracting one in the caller would be the same
+   * arithmetic written where a future reader can forget it.
+   *
+   * Employment status matters as much as the grant. An owner who is already
+   * suspended cannot log in, so they are not a way back into a business — and
+   * treating them as one would let the real last owner be locked out.
+   */
+  async countOtherActiveOwners(enterpriseId: number, excludingEmployeeId: number): Promise<number> {
+    const rows = await this.query<{ count: number }>(
+      `SELECT count(DISTINCT er.employee_id)::int AS count
+         FROM employee_roles er
+         JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
+         JOIN enterprise_employees e ON e.id = er.employee_id
+                                    AND e.enterprise_id = er.enterprise_id
+        WHERE er.enterprise_id = $1
+          AND er.employee_id <> $2
+          AND er.is_deleted = false
+          AND r.is_deleted = false
+          AND r.status = $3
+          AND r.name = $4
+          AND e.is_deleted = false
+          AND e.status = $5`,
+      [
+        this.requireEnterprise(enterpriseId),
+        excludingEmployeeId,
+        RoleStatus.Active,
+        SystemRole.Owner,
+        EmployeeStatus.Active,
+      ],
+    );
+    return rows[0]?.count ?? 0;
   }
 
   /**

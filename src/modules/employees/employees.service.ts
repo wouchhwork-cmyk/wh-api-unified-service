@@ -9,7 +9,7 @@ import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
 import { VerificationService, type PendingOtpDelivery } from '@/modules/auth/verification.service';
 import { SecretHashService } from '@/shared/crypto';
-import { ROLE_LEVEL } from '@/shared/enums';
+import { ROLE_LEVEL, SystemRole } from '@/shared/enums';
 import {
   explainDenial,
   mayAssignRole,
@@ -162,6 +162,29 @@ export class EmployeesService {
    * set already does. Putting the level in the JWT would make a demotion wait
    * for the token to expire.
    */
+  /**
+   * Refuses an action that would leave a business with no active owner.
+   *
+   * Cheap to ask and only asked on the two paths that can reduce the count, so
+   * the common case pays nothing for it.
+   */
+  private async assertNotLastOwner(enterpriseId: number, employeeId: number): Promise<void> {
+    const roles = await this.roles.listRoleNamesForEmployee(enterpriseId, employeeId);
+    if (!roles.includes(SystemRole.Owner)) return;
+
+    const others = await this.roles.countOtherActiveOwners(enterpriseId, employeeId);
+    if (others > 0) return;
+
+    throw new AppException(ErrorCode.ValidationFailed, {
+      details: [
+        {
+          field: 'refId',
+          issue: 'this is the last owner; make somebody else an owner first',
+        },
+      ],
+    });
+  }
+
   private async authorityOf(enterpriseId: number, employeeId: number): Promise<ActorAuthority> {
     const authority = await this.roles.authorityOfEmployee(enterpriseId, employeeId);
     return {
@@ -362,6 +385,30 @@ export class EmployeesService {
       throw new AppException(ErrorCode.PermissionDenied, {
         details: [{ field: 'refId', issue: explainDenial(modifyDenial) }],
       });
+    }
+
+    /*
+     * THE LAST OWNER STAYS.
+     *
+     * Owners may act on each other — nobody is above them to settle it, so a
+     * strict rule would leave a departed founder's account live for ever. The
+     * price of that is this: suspending the final active owner would leave a
+     * business nobody can administer, with no self-serve way back, because the
+     * only account that could reinstate them is the one being suspended.
+     *
+     * Checked only when the target actually holds the role and is actually
+     * being suspended; reinstating somebody can never reduce the count.     *
+     * CURRENTLY UNREACHABLE, and kept anyway. To act on an owner you must be an
+     * owner, so if there is somebody to do the acting then the target is not
+     * the last one — the arithmetic cannot come out at zero today. It is here
+     * because that is a property of two rules agreeing, not of this rule, and
+     * the day either moves (a platform-admin path into employee management, a
+     * change to who may act on whom) this is the check that stops a business
+     * being emptied of owners. Cheap to ask, asked only on the two paths that
+     * could ever reduce the count.
+     */
+    if (status === EmployeeStatus.Suspended) {
+      await this.assertNotLastOwner(enterpriseId, employee.employeeId);
     }
 
     if (employee.status === status) {

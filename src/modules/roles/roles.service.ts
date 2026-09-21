@@ -7,7 +7,13 @@ import {
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
-import { AuditAction, AuditEntityType, PermissionResource, ROLE_LEVEL } from '@/shared/enums';
+import {
+  AuditAction,
+  AuditEntityType,
+  PermissionResource,
+  ROLE_LEVEL,
+  SystemRole,
+} from '@/shared/enums';
 import { RequestContext } from '@/shared/context';
 import { AppException, ErrorCode } from '@/shared/errors';
 import {
@@ -305,6 +311,43 @@ export class RolesService {
         throw new AppException(ErrorCode.PermissionDenied, {
           details: [{ field: 'roleRefIds', issue: `${role.name}: ${explainDenial(roleDenial)}` }],
         });
+      }
+    }
+
+    /*
+     * THE LAST OWNER STAYS AN OWNER.
+     *
+     * The suspension path guards this too, and it has to be guarded here as
+     * well: re-roling the final owner down to `manager` empties the business of
+     * owners exactly as suspending them would, and is the quieter of the two —
+     * it looks like an ordinary change of duties rather than a removal.
+     *
+     * Only asked when the role is actually being taken away. Somebody keeping
+     * it, or never having had it, cannot reduce the count.     *
+     * CURRENTLY UNREACHABLE, and kept anyway. To act on an owner you must be an
+     * owner, so if there is somebody to do the acting then the target is not
+     * the last one — the arithmetic cannot come out at zero today. It is here
+     * because that is a property of two rules agreeing, not of this rule, and
+     * the day either moves (a platform-admin path into employee management, a
+     * change to who may act on whom) this is the check that stops a business
+     * being emptied of owners. Cheap to ask, asked only on the two paths that
+     * could ever reduce the count.
+     */
+    const keepsOwner = roles.some((role) => role.name === (SystemRole.Owner as string));
+    if (!keepsOwner) {
+      const held = await this.roles.listRoleNamesForEmployee(enterpriseId, employee.employeeId);
+      if (held.includes(SystemRole.Owner)) {
+        const others = await this.roles.countOtherActiveOwners(enterpriseId, employee.employeeId);
+        if (others === 0) {
+          throw new AppException(ErrorCode.ValidationFailed, {
+            details: [
+              {
+                field: 'roleRefIds',
+                issue: 'this is the last owner; make somebody else an owner first',
+              },
+            ],
+          });
+        }
       }
     }
 

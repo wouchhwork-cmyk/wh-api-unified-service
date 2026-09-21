@@ -472,6 +472,47 @@ describe('a business defines its own roles', () => {
         .expect(403);
     });
 
+    it('lets one owner re-role another while a second owner remains', async () => {
+      /*
+       * The capability the strict rule removed, restored.
+       *
+       * Owners are the one place equals may act on each other, because there is
+       * nobody above them to settle it — and without this a business whose
+       * founder has left could never close their account.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const second = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'owner');
+
+      await http()
+        .post(`/api/v1/roles/employees/${second.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [await roleRefId(ownerToken, 'agent')] })
+        .expect(204);
+    });
+
+    it('still refuses a manager acting on an owner', async () => {
+      /*
+       * The peer rule is for the TOP of the ladder only. A manager acting on an
+       * owner is the escalation the levels exist to stop, and widening the
+       * owner case must not have widened that one.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const team = await http().get('/api/v1/employees').set(bearer(ownerToken)).expect(200);
+      const founder = (team.body.data as { refId: string; name: string }[]).find((person) =>
+        person.name.startsWith('Meera'),
+      );
+
+      const refused = await http()
+        .post(`/api/v1/roles/employees/${founder?.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [await roleRefId(ownerToken, 'agent')] })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+    });
+
     it('refuses a role that belongs to another business', async () => {
       const { ownerToken } = await onboardedBusiness();
       const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');

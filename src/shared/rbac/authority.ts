@@ -154,6 +154,24 @@ export function mayModifyEmployee(
    */
   if (target.level === null) return null;
 
+  /*
+   * THE TOP OF THE LADDER POLICES ITSELF, and it is the one place equals may
+   * act on each other.
+   *
+   * Everywhere else, "strictly below" stops two managers suspending each other
+   * and turning a disagreement into a race won by whoever clicks first. At the
+   * owner level that reasoning inverts: there is nobody above to settle it, so
+   * a strict rule means an owner can never be suspended or re-roled BY ANYONE
+   * — and a business whose founder has left is then stuck with a live account
+   * it cannot close, for ever.
+   *
+   * That is a certainty, where the rogue-co-owner case is a possibility between
+   * two people who already hold total control of the business and could ruin it
+   * a dozen other ways. The last active owner is protected separately, in the
+   * service, so this cannot empty the business of owners.
+   */
+  if (target.level >= ROLE_LEVEL.Owner && actor.level >= ROLE_LEVEL.Owner) return null;
+
   if (target.level >= actor.level) return 'target_not_below_actor';
   return null;
 }

@@ -242,6 +242,41 @@ describe('role authority', () => {
       ).toBe('cannot_act_on_self');
     });
 
+    it('lets one owner act on another, because nobody is above them', () => {
+      /*
+       * THE ONE PLACE EQUALS MAY ACT ON EACH OTHER, and it was a real gap: the
+       * strict rule made an owner unmodifiable BY ANYONE, so a business whose
+       * founder had left was stuck with a live account it could never close.
+       *
+       * That is a certainty. The rogue-co-owner case it trades against is a
+       * possibility between two people who already hold total control and could
+       * ruin the business a dozen other ways. The last active owner is
+       * protected separately, in the service, so this cannot empty a business
+       * of owners.
+       */
+      const owner = actor({ employeeId: 9, level: ROLE_LEVEL.Owner, roleNames: [SystemRole.Owner] });
+
+      expect(mayModifyEmployee(owner, { employeeId: 2, level: ROLE_LEVEL.Owner })).toBeNull();
+    });
+
+    it('still refuses an owner acting on THEMSELVES', () => {
+      // The peer rule must not become a self rule: an owner locking themselves
+      // out has nobody above to undo it either.
+      const owner = actor({ employeeId: 9, level: ROLE_LEVEL.Owner, roleNames: [SystemRole.Owner] });
+
+      expect(mayModifyEmployee(owner, { employeeId: 9, level: ROLE_LEVEL.Owner })).toBe(
+        'cannot_act_on_self',
+      );
+    });
+
+    it('does not extend the peer rule to any other level', () => {
+      // Managers are still strict. The exception is justified only by there
+      // being nobody above; at 70 there is.
+      expect(mayModifyEmployee(actor(), { employeeId: 2, level: ROLE_LEVEL.Manager })).toBe(
+        'target_not_below_actor',
+      );
+    });
+
     it('lets anyone with authority act on somebody who holds no roles', () => {
       // The half-finished invite. Treating "no level" as unreachable would make
       // it impossible to clean up.
