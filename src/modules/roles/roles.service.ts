@@ -164,7 +164,7 @@ export class RolesService {
         description: request.description ?? null,
         level: request.level,
       });
-      await this.roles.replaceRolePermissions(role.id, request.permissions);
+      await this.roles.replaceRolePermissions(enterpriseId, role.id, request.permissions);
       return role;
     });
 
@@ -215,7 +215,7 @@ export class RolesService {
       // Zero means it is a system role; the assertion above should already have
       // refused, so this is the belt to that braces.
       if (affected === 0) throw new AppException(ErrorCode.PermissionDenied);
-      await this.roles.replaceRolePermissions(role.id, request.permissions);
+      await this.roles.replaceRolePermissions(enterpriseId, role.id, request.permissions);
     });
 
     await this.audit.record({

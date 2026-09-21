@@ -247,17 +247,39 @@ export class RoleRepository extends BaseRepository {
    * granted back. Runs inside the caller's transaction, so a role is never
    * briefly permissionless to a concurrent request.
    */
-  async replaceRolePermissions(roleId: number, permissionCodes: readonly string[]): Promise<void> {
-    await this.query(`DELETE FROM role_permissions WHERE role_id = $1`, [roleId]);
+  async replaceRolePermissions(
+    enterpriseId: number,
+    roleId: number,
+    permissionCodes: readonly string[],
+  ): Promise<void> {
+    /*
+     * THE TENANT IS NAMED EVEN THOUGH THE CALLER ALREADY RESOLVED THE ROLE.
+     *
+     * Both callers reach this only after `findAnyByRefId(enterpriseId, refId)`
+     * or `createRole(enterpriseId, ...)`, so the id is already proven to belong
+     * to the business. That makes the clause redundant today and it stays,
+     * because "an id alone is not authority" is the rule this schema is built
+     * on — a role id is a bigint, and the next caller may be a background job,
+     * an import, or a bulk edit that resolved it some other way. The same
+     * reasoning put the tenant clause on attachment refresh, which is the one
+     * place attachments are mutable at all.
+     */
+    await this.query(
+      `DELETE FROM role_permissions rp
+        USING roles r
+        WHERE rp.role_id = r.id AND r.id = $2 AND r.enterprise_id = $1`,
+      [this.requireEnterprise(enterpriseId), roleId],
+    );
     if (permissionCodes.length === 0) return;
 
     await this.query(
       `INSERT INTO role_permissions (role_id, permission_id)
-       SELECT $1, p.id
-         FROM permissions p
-        WHERE p.code = ANY($2::varchar[]) AND p.is_deleted = false
+       SELECT r.id, p.id
+         FROM roles r
+         JOIN permissions p ON p.code = ANY($3::varchar[]) AND p.is_deleted = false
+        WHERE r.id = $2 AND r.enterprise_id = $1 AND r.is_deleted = false
        ON CONFLICT DO NOTHING`,
-      [roleId, [...permissionCodes]],
+      [this.requireEnterprise(enterpriseId), roleId, [...permissionCodes]],
     );
   }
 
