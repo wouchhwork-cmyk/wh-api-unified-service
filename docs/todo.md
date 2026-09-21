@@ -76,8 +76,12 @@ about where secrets live.
 
 ### Other parked work
 
-- [ ] **P1. Monitor Meta's rate-limit headers** — asked for 18 Sep 2026, on hold
-      until explicitly requested.
+- [ ] **P1. Back off on Meta's rate-limit headers BEFORE being refused** —
+      researched 21 Sep, see platform-limitations §0.4. The research found and
+      fixed a live defect (BUC throttle codes were unmapped and dead-lettering
+      retryable work). What remains is the proactive half: nothing reads the
+      usage percentages on a SUCCESSFUL response, so we still cannot slow down
+      before Meta says no. Headers, formulas and pools are now documented.
       Every Graph response carries the budget we have already spent, and we
       currently read none of it — so the first sign of trouble is a `(#4)` or
       `(#17)` error, which is the point at which a business's inbox has already

@@ -60,3 +60,66 @@ describe('mapGraphError', () => {
     expect(mapped.retryable).toBe(false);
   });
 });
+
+describe('business use case throttling is a rate limit, not a dead end', () => {
+  /**
+   * WHAT INSTAGRAM AND MESSENGER ACTUALLY SEND. The mapper knew the legacy
+   * platform codes — 4, 17, 32, 613 — and none of the BUC ones, so the limit
+   * our calls really hit fell through to the bottom of the function and came
+   * back `retryable: false`.
+   *
+   * That is the single most retryable failure there is: wait and it clears. It
+   * was dead-lettering work permanently, while the client read
+   * `estimated_time_to_regain_access` off the same response and threw the job
+   * away anyway.
+   *
+   * Verified on the wire 21 Sep: Meta meters per business AND per product — the
+   * same thread reports `type: instagram` under one business id and
+   * `type: messenger` under another, so the pools empty independently and
+   * either code can arrive on its own.
+   */
+  const throttle = (code: number, subcode: number | null = 2446079): GraphApiError =>
+    new GraphApiError(400, code, subcode, 'OAuthException', null, 'throttled', 12);
+
+  it('retries an Instagram throttle', () => {
+    const mapped = mapGraphError(throttle(80002));
+    expect(mapped.code).toBe(ErrorCode.UpstreamRateLimited);
+    expect(mapped.retryable).toBe(true);
+  });
+
+  it('retries a Messenger throttle, which is a separate pool', () => {
+    const mapped = mapGraphError(throttle(80006));
+    expect(mapped.code).toBe(ErrorCode.UpstreamRateLimited);
+    expect(mapped.retryable).toBe(true);
+  });
+
+  it('retries a Page throttle', () => {
+    expect(mapGraphError(throttle(80001)).retryable).toBe(true);
+  });
+
+  it('recognises a bucket we have not met yet, by its subcode', () => {
+    // Meta adds use cases. Matching the subcode too means the next one is a
+    // rate limit on arrival rather than after an outage teaches us the number.
+    const mapped = mapGraphError(throttle(99_999));
+    expect(mapped.code).toBe(ErrorCode.UpstreamRateLimited);
+    expect(mapped.retryable).toBe(true);
+  });
+
+  it('never makes a dead token look retryable', () => {
+    /*
+     * The boundary worth guarding. Re-auth is checked BEFORE throttling, and
+     * widening the throttle branch must not swallow a token failure — retrying
+     * that forever would spend quota to be told the same thing.
+     */
+    const expired = new GraphApiError(400, 190, 463, 'OAuthException', null, 'expired');
+    const mapped = mapGraphError(expired);
+    expect(mapped.code).toBe(ErrorCode.ChannelReauthRequired);
+    expect(mapped.retryable).toBe(false);
+    expect(mapped.requiresReauth).toBe(true);
+  });
+
+  it('carries the wait Meta named, so the retry is not a guess', () => {
+    // estimated_time_to_regain_access, in MINUTES, read off the same response.
+    expect(throttle(80002).retryAfterMinutes).toBe(12);
+  });
+});

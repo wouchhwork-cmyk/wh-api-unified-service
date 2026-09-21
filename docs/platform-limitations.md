@@ -34,6 +34,76 @@ inertia.
 
 ---
 
+## 0.4 Rate limits: what Meta meters, and how it tells us
+
+Researched 21 Sep 2026 — headers read off live responses with our own token,
+formulas from Meta's rate-limiting docs.
+
+### The header arrives on EVERY response, not only under pressure
+
+`x-business-use-case-usage` comes back on ordinary 200s. (`x-app-usage` did not
+appear on any Instagram or Messenger call; the BUC header is the one that
+matters to us.) A real response:
+
+```json
+{ "645699291956344":  [{ "type": "instagram", "call_count": 0,
+                         "total_cputime": 0, "total_time": 0,
+                         "estimated_time_to_regain_access": 0 }],
+  "17841472020051826":[{ "type": "instagram", ... }] }
+```
+
+### The numbers are PERCENTAGES, not counts
+
+Six consecutive calls to one edge left `call_count` at **1**, not 6. Each figure
+is a whole-number percentage of the allowance, and **throttling begins at 100**.
+So this is a fuel gauge, readable continuously — not an error to react to.
+
+| field | meaning |
+| --- | --- |
+| `call_count` | % of allowed calls used |
+| `total_cputime` | % of CPU allowance used |
+| `total_time` | % of total time allowance used |
+| `estimated_time_to_regain_access` | **minutes** until calls stop being throttled |
+
+### Metering is per business AND per product — separate pools
+
+The same thread reports `type: instagram` under one business id and
+`type: messenger` under another. Reading DMs and reading media drain different
+quotas, so one can throttle while the other is idle.
+
+| product | quota, 24-hour rolling window |
+| --- | --- |
+| Instagram | `4800 x impressions` |
+| Messenger | `200 x engaged users` |
+
+Both are **24-hour** windows, not the one-hour window most other BUC types use.
+The quota therefore grows with the business's own reach: a quiet account has a
+small allowance, which is exactly when a backfill is most likely to exhaust it.
+
+### The throttle codes we did not know
+
+| code | product |
+| --- | --- |
+| `80001` | Pages |
+| `80002` | Instagram |
+| `80006` | Messenger |
+| subcode `2446079` | attached across products |
+
+**These were unmapped, and that was a live defect.** The error mapper knew only
+the legacy platform limits (4, 17, 32, 613), so every real Instagram or
+Messenger throttle fell through to the fallback as `retryable: false` and
+dead-lettered the work — while the client was already reading
+`estimated_time_to_regain_access` off the same response. Fixed 21 Sep; the
+subcode is matched too, so a use case Meta adds later is recognised on arrival
+rather than after an outage.
+
+### Still not done
+
+Nothing reads the percentages on a SUCCESSFUL response, so we cannot back off
+before Meta refuses. That is todo P1, and it is now the only part of this left.
+
+---
+
 ## 0.5 The standing rule: take everything Meta offers, every time
 
 **Extract the most granular data available from EVERY interaction with Meta —

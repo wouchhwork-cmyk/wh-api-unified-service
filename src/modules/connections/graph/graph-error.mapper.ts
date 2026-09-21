@@ -12,10 +12,37 @@ const META = {
   OAuthException: 190,
   /** Permission missing, or the messaging window has closed. */
   PermissionDenied: 10,
+  /*
+   * THE LEGACY PLATFORM LIMITS. Real, still issued, and NOT the ones our calls
+   * actually hit.
+   */
   ApplicationRateLimit: 4,
   UserRequestLimit: 17,
   PageRateLimit: 32,
   CustomRateLimit: 613,
+  /*
+   * BUSINESS USE CASE THROTTLING — what Instagram and Messenger really return,
+   * and what this mapper had never heard of.
+   *
+   * Meta meters our calls per business and per product: an Instagram read and a
+   * Messenger conversations read draw on SEPARATE pools, verified on the wire —
+   * the same thread returns `type: instagram` under one business id and
+   * `type: messenger` under another. When a pool runs out the error is one of
+   * these codes, not code 4.
+   *
+   * Unmapped, they fell through to the bottom of this function and came back
+   * `retryable: false`, so the single most retryable failure there is — wait a
+   * while and it clears — was dead-lettering work permanently. Worse, the
+   * client already reads `estimated_time_to_regain_access` off the response, so
+   * we knew exactly how long to wait and threw the job away anyway.
+   *
+   * The quotas are a 24-hour rolling window for both:
+   *   Instagram  calls = 4800 x impressions
+   *   Messenger  calls = 200 x engaged users
+   */
+  InstagramBucThrottle: 80002,
+  MessengerBucThrottle: 80006,
+  PageBucThrottle: 80001,
   /** Temporary Graph failure — retryable. */
   TemporaryIssue: 2,
   /**
@@ -38,6 +65,14 @@ const SUBCODE = {
    * told "you can't do that" instead of "this conversation has gone quiet".
    */
   MessagingWindowClosed: 2534022,
+  /**
+   * Business-use-case throttling, attached across products.
+   *
+   * Checked alongside the codes so a bucket we have not met yet — Meta adds
+   * them — is still recognised as a rate limit rather than dead-lettered as an
+   * unknown failure.
+   */
+  BucThrottled: 2446079,
 } as const;
 
 export interface MappedGraphError {
@@ -74,7 +109,15 @@ export function mapGraphError(error: GraphApiError): MappedGraphError {
     error.code === META.ApplicationRateLimit ||
     error.code === META.UserRequestLimit ||
     error.code === META.PageRateLimit ||
-    error.code === META.CustomRateLimit
+    error.code === META.CustomRateLimit ||
+    // The business-use-case codes, which is what Instagram and Messenger
+    // actually send. See the constants above for why these were missing.
+    error.code === META.InstagramBucThrottle ||
+    error.code === META.MessengerBucThrottle ||
+    error.code === META.PageBucThrottle ||
+    // Meta attaches this subcode to throttling across products, so it catches a
+    // bucket we have not met yet rather than waiting for the next outage.
+    error.subcode === SUBCODE.BucThrottled
   ) {
     return { code: ErrorCode.UpstreamRateLimited, requiresReauth: false, retryable: true };
   }
