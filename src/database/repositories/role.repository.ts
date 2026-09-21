@@ -1,5 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { highestRoleLevel, RoleScope, RoleStatus, SystemRole } from '@/shared/enums';
+import {
+  EnterpriseFeatureStatus,
+  highestRoleLevel,
+  PermissionScope,
+  PermissionStatus,
+  RoleScope,
+  RoleStatus,
+  SystemRole,
+} from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 export interface RoleRow {
@@ -12,6 +20,24 @@ export interface RoleRow {
   readonly level: number;
   /** Seeded by us: grantable, never editable by the business. */
   readonly isSystem: boolean;
+}
+
+/** A role with everything a role editor needs to show it. */
+export interface RoleDetailRow extends RoleRow {
+  readonly description: string | null;
+  readonly permissionCodes: string[];
+  /** How many people currently hold it. Archiving one that is in use is not silent. */
+  readonly holderCount: number;
+}
+
+/** One assignable permission, as the catalogue defines it. */
+export interface PermissionCatalogueRow {
+  readonly code: string;
+  readonly description: string | null;
+  /** NULL when the permission is not gated on a feature at all. */
+  readonly featureKey: string | null;
+  /** Whether this enterprise currently holds that feature. */
+  readonly featureActive: boolean;
 }
 
 @Injectable()
@@ -64,6 +90,227 @@ export class RoleRepository extends BaseRepository {
     }
 
     return new Map(created.map((role) => [role.name, role.id]));
+  }
+
+  /**
+   * Every role this business has, with what each one grants.
+   *
+   * One query rather than a role query plus a grant query per role: a role
+   * editor lists them all with their permissions, and the N+1 version is the
+   * obvious way to write it.
+   */
+  async listDetailed(enterpriseId: number): Promise<RoleDetailRow[]> {
+    return this.query<RoleDetailRow>(
+      `SELECT r.id,
+              r.ref_id AS "refId",
+              r.name,
+              r.scope,
+              r.level,
+              r.is_system AS "isSystem",
+              r.description,
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes",
+              (SELECT count(*)::int FROM employee_roles er
+                WHERE er.role_id = r.id AND er.enterprise_id = r.enterprise_id
+                  AND er.is_deleted = false) AS "holderCount"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+        WHERE r.enterprise_id = $1 AND r.is_deleted = false AND r.status = $2
+        GROUP BY r.id
+        ORDER BY r.level DESC, r.is_system DESC, r.name`,
+      [this.requireEnterprise(enterpriseId), RoleStatus.Active],
+    );
+  }
+
+  /**
+   * The permissions a business may put in a role, and whether each is live.
+   *
+   * ENTERPRISE-SCOPED ONLY. A staff code in a tenant's role editor would be a
+   * toggle that can never do anything — `features.decide` is ours, not theirs.
+   *
+   * The feature state travels with each row rather than filtering the list.
+   * A business whose comment feature lapsed should still SEE the comment
+   * permissions, greyed out and explained; hiding them would make a role that
+   * already grants them look corrupt, and would hide what buying the feature
+   * back would restore.
+   */
+  async listAssignablePermissions(enterpriseId: number): Promise<PermissionCatalogueRow[]> {
+    return this.query<PermissionCatalogueRow>(
+      `SELECT p.code,
+              p.description,
+              f.key AS "featureKey",
+              COALESCE(ef.status = $2, false) AS "featureActive"
+         FROM permissions p
+         LEFT JOIN features f ON f.id = p.feature_id AND f.is_deleted = false
+         LEFT JOIN enterprise_features ef
+                ON ef.feature_id = p.feature_id AND ef.enterprise_id = $1
+               AND ef.is_deleted = false
+        WHERE p.is_deleted = false
+          AND p.status = $3
+          AND p.scope <> $4
+        ORDER BY p.code`,
+      [
+        this.requireEnterprise(enterpriseId),
+        EnterpriseFeatureStatus.Active,
+        PermissionStatus.Active,
+        PermissionScope.Staff,
+      ],
+    );
+  }
+
+  /** A role by refId whatever its status, for editing and archiving. */
+  async findAnyByRefId(enterpriseId: number, refId: string): Promise<RoleDetailRow | null> {
+    const rows = await this.query<RoleDetailRow>(
+      `SELECT r.id, r.ref_id AS "refId", r.name, r.scope, r.level,
+              r.is_system AS "isSystem", r.description,
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes",
+              (SELECT count(*)::int FROM employee_roles er
+                WHERE er.role_id = r.id AND er.enterprise_id = r.enterprise_id
+                  AND er.is_deleted = false) AS "holderCount"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+        WHERE r.enterprise_id = $1 AND r.ref_id = $2 AND r.is_deleted = false
+        GROUP BY r.id`,
+      [this.requireEnterprise(enterpriseId), refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Creates a role the business owns.
+   *
+   * `is_system` is hard-coded false and is not a parameter. A business minting
+   * a row that claims to be one of ours would be immune to editing — the
+   * service refuses to edit system roles — and would be overwritten by the
+   * template reconciliation if the name ever collided.
+   */
+  async createRole(input: {
+    enterpriseId: number;
+    name: string;
+    description: string | null;
+    level: number;
+  }): Promise<{ id: number; refId: string }> {
+    const { rows } = await this.mutate<{ id: number; refId: string }>(
+      `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+       VALUES ($1, $2, $3, $4, false, $5, $6)
+       RETURNING id, ref_id AS "refId"`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        RoleScope.Enterprise,
+        input.name,
+        input.description,
+        RoleStatus.Active,
+        input.level,
+      ],
+    );
+    const created = rows[0];
+    if (!created) throw new Error('role insert returned nothing');
+    return created;
+  }
+
+  async updateRole(input: {
+    enterpriseId: number;
+    roleId: number;
+    name: string;
+    description: string | null;
+    level: number;
+  }): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE roles
+          SET name = $3, description = $4, level = $5, updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false AND is_system = false
+        RETURNING id`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.roleId,
+        input.name,
+        input.description,
+        input.level,
+      ],
+    );
+    return affected;
+  }
+
+  /**
+   * Replaces a role's permissions with exactly this set.
+   *
+   * DELETE-THEN-INSERT rather than a diff, and hard delete rather than soft.
+   * `role_permissions` is a join table with no history worth keeping — the
+   * audit trail records who changed a role and to what — and a soft-deleted row
+   * would collide with the unique index the next time the same permission was
+   * granted back. Runs inside the caller's transaction, so a role is never
+   * briefly permissionless to a concurrent request.
+   */
+  async replaceRolePermissions(roleId: number, permissionCodes: readonly string[]): Promise<void> {
+    await this.query(`DELETE FROM role_permissions WHERE role_id = $1`, [roleId]);
+    if (permissionCodes.length === 0) return;
+
+    await this.query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, p.id
+         FROM permissions p
+        WHERE p.code = ANY($2::varchar[]) AND p.is_deleted = false
+       ON CONFLICT DO NOTHING`,
+      [roleId, [...permissionCodes]],
+    );
+  }
+
+  /**
+   * Archives a role. NOT a delete.
+   *
+   * The grants pointing at it stay, so the record of who held what survives —
+   * and `listForEnterprise` filters on `status = active`, so an archived role
+   * stops being assignable without anything being removed. Deleting would take
+   * the history with it and break the audit trail's references.
+   */
+  async archiveRole(enterpriseId: number, roleId: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE roles SET status = $3, updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false AND is_system = false
+        RETURNING id`,
+      [this.requireEnterprise(enterpriseId), roleId, RoleStatus.Archived],
+    );
+    return affected;
+  }
+
+  /** Replaces one employee's roles with exactly this set, inside a transaction. */
+  async replaceEmployeeRoles(input: {
+    enterpriseId: number;
+    employeeId: number;
+    roleIds: readonly number[];
+    grantedByEmployeeId: number | null;
+  }): Promise<void> {
+    await this.query(
+      `DELETE FROM employee_roles WHERE enterprise_id = $1 AND employee_id = $2`,
+      [this.requireEnterprise(input.enterpriseId), input.employeeId],
+    );
+    if (input.roleIds.length === 0) return;
+
+    await this.guard(async () => {
+      await this.query(
+        `INSERT INTO employee_roles (enterprise_id, employee_id, role_id, granted_by_employee_id)
+         SELECT $1, $2, unnest($3::bigint[]), $4
+         ON CONFLICT DO NOTHING`,
+        [input.enterpriseId, input.employeeId, [...input.roleIds], input.grantedByEmployeeId],
+      );
+    });
+  }
+
+  /** Several roles by refId, within one enterprise. Missing ones simply do not appear. */
+  async findManyByRefIds(enterpriseId: number, refIds: readonly string[]): Promise<RoleRow[]> {
+    if (refIds.length === 0) return [];
+    return this.query<RoleRow>(
+      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
+         FROM roles
+        WHERE enterprise_id = $1 AND ref_id = ANY($2::uuid[])
+          AND is_deleted = false AND status = $3`,
+      [this.requireEnterprise(enterpriseId), [...refIds], RoleStatus.Active],
+    );
   }
 
   async findByNameInEnterprise(enterpriseId: number, name: string): Promise<RoleRow | null> {

@@ -11,6 +11,7 @@ import { CatalogueModule } from '@/modules/catalogue/catalogue.module';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { ConnectionsModule } from '@/modules/connections/connections.module';
 import { EmployeesModule } from '@/modules/employees/employees.module';
+import { RolesModule } from '@/modules/roles/roles.module';
 import { EnterprisesModule } from '@/modules/enterprises/enterprises.module';
 import { HealthModule } from '@/modules/health/health.module';
 import { InboxModule } from '@/modules/inbox/inbox.module';
@@ -82,6 +83,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     AuthModule,
     ConnectionsModule,
     EmployeesModule,
+    RolesModule,
     EnterprisesModule,
     InboxModule,
     CatalogueModule,
