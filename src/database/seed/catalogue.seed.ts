@@ -389,9 +389,30 @@ async function run<T>(
   sql: string,
   parameters: readonly unknown[],
 ): Promise<T[]> {
-  // No assertion: the declared return type already supplies it, and TypeORM's
-  // query() returns `any` so an `as T[]` would be laundering rather than checking.
-  return await manager.query(sql, parameters as unknown[]);
+  /*
+   * TYPEORM'S SHAPES ARE NOT UNIFORM, and this cost an hour:
+   *
+   *   SELECT                      -> [{...}, {...}]          flat rows
+   *   INSERT ... RETURNING        -> [{...}]                 flat rows
+   *   UPDATE/DELETE ... RETURNING -> [[{...}], 1]            [rows, count]
+   *
+   * Every caller here used to be an INSERT, so returning the raw result worked.
+   * The first UPDATE ... RETURNING added — correcting a drifted role level —
+   * came back as the two-element tuple, so `.length` was 2 whatever happened
+   * and the reconciliation reported "2 levels corrected" on an unchanged
+   * database, for ever. It looked like a real number, which is what made it
+   * worth catching: an idempotent seed that always claims to have done work is
+   * a seed nobody can use to tell whether anything changed.
+   *
+   * `base.repository.ts` normalises exactly this; the seed predates it and
+   * cannot use it, so the discriminator is repeated. A row is always an object
+   * and never an array, which is what makes the check safe.
+   */
+  const result = (await manager.query(sql, parameters as unknown[])) as unknown;
+  if (Array.isArray(result) && Array.isArray(result[0]) && typeof result[1] === 'number') {
+    return result[0] as T[];
+  }
+  return (Array.isArray(result) ? result : []) as T[];
 }
 
 /**
@@ -604,7 +625,11 @@ async function seedRolePermissions(
 // Entry point
 // ===========================================================================
 
-function report(summaries: readonly Summary[], insertedByRole: ReadonlyMap<string, number>): void {
+function report(
+  summaries: readonly Summary[],
+  insertedByRole: ReadonlyMap<string, number>,
+  reconciled?: { rolesAdded: number; grantsAdded: number; levelsCorrected: number },
+): void {
   const width = Math.max(...summaries.map((summary) => summary.table.length));
 
   console.log('seed — global catalogue (no tenant data)\n');
@@ -623,11 +648,130 @@ function report(summaries: readonly Summary[], insertedByRole: ReadonlyMap<strin
         `${String(role.permissions.length).padStart(2)} permissions (${added} new)`,
     );
   }
+
+  /*
+   * Printed even when it is all zeroes. A silent reconciliation is how B2
+   * survived: the copy happened once at signup, nothing reported on it again,
+   * and a template change reaching no existing tenant looked exactly like a
+   * template change reaching every tenant.
+   */
+  if (reconciled) {
+    console.log('\n  existing businesses reconciled against the templates');
+    console.log(`    roles added       ${reconciled.rolesAdded}`);
+    console.log(`    grants added      ${reconciled.grantsAdded}`);
+    console.log(`    levels corrected  ${reconciled.levelsCorrected}`);
+  }
+}
+
+/**
+ * Pushes template changes out to the businesses that already exist.
+ *
+ * WHY THIS HAD TO BE WRITTEN. `instantiateSystemRoles` copies the four
+ * enterprise templates into a new tenant exactly once, at signup, and nothing
+ * ever ran again. So a permission added to the `agent` template in a later
+ * release reached every business created AFTERWARDS and no business created
+ * before — silently, with no error and no drift report. Backlog B2.
+ *
+ * ADDITIVE ONLY, and deliberately so. It adds a missing role, adds a missing
+ * grant, and corrects a level; it never removes a grant. Removing a permission
+ * from a live tenant takes something away from people who are using it right
+ * now, and that deserves to be a considered migration with its own rollout
+ * rather than a side effect of a boot-time seed. The consequence — a permission
+ * withdrawn from a template still lingering on older tenants — is written down
+ * here rather than discovered later.
+ *
+ * Set-based: three statements regardless of how many businesses exist, because
+ * this runs on every seed and a per-tenant loop would make that cost grow with
+ * the customer base.
+ */
+export async function reconcileTenantSystemRoles(manager: EntityManager): Promise<{
+  rolesAdded: number;
+  grantsAdded: number;
+  levelsCorrected: number;
+}> {
+  /*
+   * 1. A system role a tenant never received, because it did not exist when
+   *    they signed up. Only enterprise-scoped templates: the staff ones are
+   *    structurally ungrantable through employee_roles (see rbac-plan.md §2.4).
+   */
+  const roles = await run<{ id: number }>(
+    manager,
+    `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+     SELECT e.id, t.scope, t.name, t.description, true, $1, t.level
+       FROM enterprises e
+       CROSS JOIN roles t
+      WHERE e.is_deleted = false
+        AND t.enterprise_id IS NULL
+        AND t.scope = $2
+        AND t.is_system = true
+        AND t.is_deleted = false
+        AND NOT EXISTS (
+          SELECT 1 FROM roles r
+           WHERE r.enterprise_id = e.id AND r.name = t.name AND r.is_deleted = false
+        )
+     RETURNING id`,
+    [RoleStatus.Active, RoleScope.Enterprise],
+  );
+
+  // 2. A grant the template has and the tenant's copy does not.
+  const grants = await run<{ role_id: number }>(
+    manager,
+    `INSERT INTO role_permissions (role_id, permission_id)
+     SELECT r.id, trp.permission_id
+       FROM roles r
+       JOIN roles t
+         ON t.enterprise_id IS NULL
+        AND t.name = r.name
+        AND t.scope = r.scope
+        AND t.is_system = true
+        AND t.is_deleted = false
+       JOIN role_permissions trp ON trp.role_id = t.id AND trp.is_deleted = false
+      WHERE r.enterprise_id IS NOT NULL
+        AND r.is_system = true
+        AND r.is_deleted = false
+     ON CONFLICT DO NOTHING
+     RETURNING role_id`,
+    [],
+  );
+
+  /*
+   * 3. A level that has drifted from its template.
+   *
+   * Corrected rather than left alone because the level IS the hierarchy: a
+   * tenant whose `manager` outranked their `owner` would have an escalation
+   * path, and this is the only place that could happen — system roles are not
+   * editable by a business.
+   */
+  const levels = await run<{ id: number }>(
+    manager,
+    `UPDATE roles r
+        SET level = t.level, updated_at = now()
+       FROM roles t
+      WHERE t.enterprise_id IS NULL
+        AND t.name = r.name
+        AND t.scope = r.scope
+        AND t.is_system = true
+        AND t.is_deleted = false
+        AND r.enterprise_id IS NOT NULL
+        AND r.is_system = true
+        AND r.is_deleted = false
+        AND r.level IS DISTINCT FROM t.level
+     RETURNING r.id`,
+    [],
+  );
+
+  return {
+    rolesAdded: roles.length,
+    grantsAdded: grants.length,
+    levelsCorrected: levels.length,
+  };
 }
 
 export interface SeedReport {
   readonly summaries: readonly Summary[];
   readonly insertedByRole: ReadonlyMap<string, number>;
+  /** What reconciling existing tenants against the templates changed. */
+  readonly reconciled: { rolesAdded: number; grantsAdded: number; levelsCorrected: number };
 }
 
 /**
@@ -651,9 +795,18 @@ export async function seedCatalogue(manager: EntityManager): Promise<SeedReport>
   const [roleSummary, roleIds] = await seedRoles(manager);
   const grants = await seedRolePermissions(manager, roleIds, permissionIds);
 
+  /*
+   * LAST, and inside the same transaction. The templates have just been brought
+   * up to date; this is what carries that to the businesses that already exist.
+   * Running it before the template updates would reconcile against yesterday's
+   * definitions.
+   */
+  const reconciled = await reconcileTenantSystemRoles(manager);
+
   return {
     summaries: [featureSummary, permissionSummary, roleSummary, grants.summary],
     insertedByRole: grants.insertedByRole,
+    reconciled,
   };
 }
 

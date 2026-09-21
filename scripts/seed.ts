@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   await AppDataSource.initialize();
   try {
     const result = await AppDataSource.transaction((manager) => seedCatalogue(manager));
-    reportSeed(result.summaries, result.insertedByRole);
+    reportSeed(result.summaries, result.insertedByRole, result.reconciled);
   } finally {
     await AppDataSource.destroy();
   }
