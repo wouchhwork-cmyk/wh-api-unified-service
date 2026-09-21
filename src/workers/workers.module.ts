@@ -12,6 +12,7 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
+import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -68,6 +69,7 @@ import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reco
     PostRepository,
     SyncJobRepository,
     QueueMetricsRepository,
+    EnterpriseFeatureRepository,
     GraphApiClient,
     /*
      * The workers make most of the Graph calls in this system — backfills,

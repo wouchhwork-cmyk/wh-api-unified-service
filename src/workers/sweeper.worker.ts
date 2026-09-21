@@ -9,6 +9,7 @@ import { InboundEventRepository } from '@/database/repositories/inbound-event.re
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { MetaApiUsageRepository } from '@/database/repositories/meta-api-usage.repository';
+import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
 import { META_USAGE_RETENTION_MS } from '@/shared/constants';
 
 const SWEEP_BATCH = 500;
@@ -57,6 +58,7 @@ export class SweeperWorker {
     private readonly outboundEvents: OutboundEventRepository,
     private readonly syncJobs: SyncJobRepository,
     private readonly metaUsage: MetaApiUsageRepository,
+    private readonly features: EnterpriseFeatureRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,
   ) {}
@@ -115,6 +117,20 @@ export class SweeperWorker {
         this.metaUsage.sweep(META_USAGE_RETENTION_MS, limit),
       );
 
+      /*
+       * Features whose term has run out.
+       *
+       * `enterprise_features_expiry_idx` has existed since the first migration
+       * for a sweep that was never written, so `expires_at` was decoration: a
+       * trial with a date in the past stayed ACTIVE for ever and the business
+       * kept the feature. This is the sweep the index was always for.
+       *
+       * Not a retention sweep at all — nothing is deleted. It is a state
+       * transition the product depends on, run here because this is the only
+       * scheduled job that already exists.
+       */
+      const featuresExpired = await drain((limit) => this.features.expireDue(limit));
+
       this.logger.info(
         {
           verifications,
@@ -124,6 +140,7 @@ export class SweeperWorker {
           outboundEvents,
           syncJobs,
           metaUsage,
+          featuresExpired,
         },
         'retention sweep complete',
       );

@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { AuditLogRepository } from './repositories/audit-log.repository';
 import { EnterpriseEmployeeRepository } from './repositories/enterprise-employee.repository';
+import { EnterpriseFeatureRepository } from './repositories/enterprise-feature.repository';
 import { EnterpriseRepository } from './repositories/enterprise.repository';
 import { IdentityRepository } from './repositories/identity.repository';
 import { MetaApiUsageRepository } from './repositories/meta-api-usage.repository';
@@ -17,6 +18,7 @@ const PROVIDERS = [
   TransactionManager,
   AuditLogRepository,
   EnterpriseRepository,
+  EnterpriseFeatureRepository,
   EnterpriseEmployeeRepository,
   IdentityRepository,
   MetaApiUsageRepository,
