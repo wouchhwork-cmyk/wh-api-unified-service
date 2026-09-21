@@ -12,16 +12,14 @@ is described under RESUME HERE with enough detail to pick up cold.
 
 ## RESUME HERE
 
-> **Current state:** Task 1 COMPLETE. Task 2 in progress — levels, visibility,
-> reconciliation, the permission split and role CRUD are all committed and
-> green (688 tests, lint, typecheck, schema parity).
+> **Current state:** BOTH TASKS COMPLETE and committed. 722 tests, lint,
+> typecheck and schema parity all green; the app boots with 11 new routes and no
+> errors.
 >
-> **Next:** the portal role editor, then platform-side RBAC (staff roles),
-> then the feature-catalogue review, then the three review rounds.
->
-> The RBAC research map is at
-> `/Users/NI013/.claude/projects/-Users-NI013-Documents-Om-Docs-depos-wouch-wh-api-unified-service/2edd0520-e262-4416-b8b1-ab7eeac517b6/tool-results/toolu_013xFrGrE22UkXLaDPX6qzFg.txt`
-> (72KB — read it in chunks). The plan is `docs/rbac-plan.md`.
+> What is NOT done, deliberately, is listed under "E. Found during the RBAC
+> work, not fixed" in `docs/todo.md` — chiefly a separate `mention_monitoring`
+> feature (needs a commercial decision plus a backfill) and moving the invite
+> form onto `GET /roles` so it only offers assignable roles.
 >
 > **Gate for this work:** `npx tsc --noEmit` (covers tests, which `pnpm build`
 > does not), `pnpm lint`, `SCHEMA_PARITY=1 npx vitest run`.
@@ -143,12 +141,25 @@ reviewer is available, so I review my own work in multiple rounds.
       comment access — one live tenant was in exactly that state.
 - [x] **Role CRUD** — `f69322e`. Catalogue, list, create, replace, retire, and
       replacing one person's roles. 21 e2e tests, mostly refusals.
-- [ ] Portal: role editor UI
-- [ ] Platform-side RBAC (staff roles — backlog B3)
-- [ ] Feature-catalogue review
-- [ ] Review round 1 — escalation
-- [ ] Review round 2 — isolation and backward compatibility
-- [ ] Review round 3 — tests and gate
+- [x] Portal: role editor UI — portal `6367899`
+- [x] **Platform-side RBAC (B3)** — `64e9db5`. `staff_roles`, no enterprise_id,
+      composite FK through `(role_id, role_scope)`. Behaviour-preserving for
+      existing admins.
+- [x] **Feature model** — `114b5a3`. The expiry sweep the index was always
+      for, and the request path that made `access_requested`,
+      `features.request` and `AuditAction.FeatureRequested` reachable.
+- [x] **Review round 1 — escalation** — `62a014a`. Found: strict levels made
+      an owner unmodifiable by anyone, so a departed founder's account was
+      permanent. Owners now police each other; last-owner protection added.
+- [x] **Review round 2 — isolation** — `171a051`. Every new query audited;
+      `replaceRolePermissions` gained its tenant clause.
+- [x] **Review round 3 — adversarial** — `87321fd`, `a60f26f`. A fresh-eyes
+      pass found the one that mattered: **the subset rule ran on role
+      DEFINITION and not on ASSIGNMENT**, so a manager could hand out an
+      owner-made custom role carrying `enterprise.manage`. Also: the SSE stream
+      was widened to `@RequireAnyPermission` and never filtered, leaking the
+      existence and timing of every private thread to somebody holding only
+      `mentions.view`.
 
 ### Decisions worth not re-litigating
 
