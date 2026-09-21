@@ -1,6 +1,10 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { DEFAULT_PAGE_SIZE } from '@/shared/constants';
+import {
+  DEFAULT_PAGE_SIZE,
+  DEFAULT_RATE_LIMIT_POINTS,
+  DEFAULT_RATE_LIMIT_WINDOW_MINUTES,
+} from '@/shared/constants';
 import { RequirePlatformAdmin } from '@/shared/decorators';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import {
@@ -8,8 +12,14 @@ import {
   PlatformEnterpriseStatusSchema,
   PlatformFeatureDecisionSchema,
   PlatformFeatureKeyParamSchema,
+  PlatformRateLimitHistoryQuerySchema,
 } from '@/shared/contracts/platform/platform.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import {
+  MetaRateLimitService,
+  type MetaRateLimitOverview,
+  type MetaUsagePoint,
+} from './meta-rate-limit.service';
 import {
   PlatformService,
   type EnterpriseDetail,
@@ -27,7 +37,43 @@ import {
 @ApiTags('platform')
 @Controller({ path: 'platform', version: '1' })
 export class PlatformController {
-  constructor(private readonly platform: PlatformService) {}
+  constructor(
+    private readonly platform: PlatformService,
+    private readonly rateLimits: MetaRateLimitService,
+  ) {}
+
+  @Get('rate-limits')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'How much of the Meta API allowance is spent, and by whom',
+    description:
+      'Two meters, because Meta runs two. The app pool is one allowance for the whole developer ' +
+      'app, drained by the connect and token paths; the business pools are per business per ' +
+      'product and carry the inbox. Every figure Meta gives is a PERCENTAGE of an allowance it ' +
+      'never states, so usedPercent is authoritative for how close a pool is to refusal and ' +
+      'callsInWindow is ours, for volume. A null percentage means Meta sent no header, which is ' +
+      'unknown rather than zero.',
+  })
+  async rateLimitOverview(): Promise<MetaRateLimitOverview> {
+    return this.rateLimits.overview();
+  }
+
+  @Get('rate-limits/history')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'Minute-by-minute rate-limit history',
+    description:
+      'Oldest first, so it can be charted directly. Bounded by both a window and a row cap — an ' +
+      'unbounded series is how a monitoring endpoint becomes the thing that needs monitoring.',
+  })
+  async rateLimitHistory(@Query() query: unknown): Promise<readonly MetaUsagePoint[]> {
+    const parsed = PlatformRateLimitHistoryQuerySchema.parse(query);
+    return this.rateLimits.history({
+      windowMinutes: parsed.windowMinutes ?? DEFAULT_RATE_LIMIT_WINDOW_MINUTES,
+      limit: parsed.limit ?? DEFAULT_RATE_LIMIT_POINTS,
+      scopeKey: parsed.scopeKey ?? null,
+    });
+  }
 
   @Get('overview')
   @RequirePlatformAdmin()

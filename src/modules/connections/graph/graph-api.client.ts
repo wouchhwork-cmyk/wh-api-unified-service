@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { AppConfigService } from '@/config';
 import {
   PLATFORM_REQUEST_TIMEOUT_MS,
@@ -11,6 +11,9 @@ import {
 import { Platform } from '@/shared/enums';
 import { z, type ZodType } from 'zod';
 import { GraphApiError } from './graph-api.error';
+import { isRateLimit } from './graph-error.mapper';
+import { longestRegainMinutes, parseUsageReadings } from './graph-usage.parser';
+import { MetaUsageCollector } from './meta-usage.collector';
 import {
   GraphAccountsResponseSchema,
   GraphAckSchema,
@@ -99,7 +102,18 @@ const SCHEMA_ISSUES_REPORTED = 5;
 
 @Injectable()
 export class GraphApiClient {
-  constructor(private readonly config: AppConfigService) {}
+  /**
+   * The collector is OPTIONAL so that a unit test can construct a client with
+   * nothing but configuration — a dozen of them do, and none of them are about
+   * rate limits. Both real wirings provide it, and
+   * `test/unit/rate-limit-wiring.spec.ts` fails if either stops, because a
+   * monitor that is silently absent in production is the one failure mode this
+   * whole feature cannot tolerate.
+   */
+  constructor(
+    private readonly config: AppConfigService,
+    @Optional() private readonly usage?: MetaUsageCollector,
+  ) {}
 
   private get version(): string {
     return this.config.meta.graphApiVersion;
@@ -978,6 +992,12 @@ export class GraphApiClient {
           : {}),
       });
     } catch (cause) {
+      /*
+       * Counted even though there is no header to read: the call was made, so
+       * it drew on a pool, and a monitor that only counted calls that came back
+       * would under-report exactly when Meta is struggling.
+       */
+      this.usage?.observe({ readings: [], throttled: false, failed: true });
       // Timeout, DNS, reset: the outcome is UNKNOWN, which matters for sends.
       throw GraphApiError.fromTransport(cause, `graph ${method} ${path} did not complete`);
     }
@@ -990,6 +1010,7 @@ export class GraphApiClient {
     try {
       text = await response.text();
     } catch (cause) {
+      this.usage?.observe({ readings: parseUsageReadings(response.headers), throttled: false, failed: true });
       throw GraphApiError.fromTransport(cause, `graph ${method} ${path} body was interrupted`);
     }
 
@@ -998,7 +1019,7 @@ export class GraphApiClient {
     if (!response.ok) {
       const body = (parsed ?? {}) as { error?: Record<string, unknown> };
       const error = body.error ?? {};
-      throw new GraphApiError(
+      const failure = new GraphApiError(
         response.status,
         typeof error.code === 'number' ? error.code : null,
         typeof error.error_subcode === 'number' ? error.error_subcode : null,
@@ -1007,9 +1028,30 @@ export class GraphApiClient {
         // Meta's message is safe to keep for diagnosis; it names no token.
         typeof error.message === 'string' ? error.message : `graph ${method} ${path} failed`,
         // What Meta itself says about waiting, when it says anything.
-        readRetryAfterMinutes(response.headers),
+        longestRegainMinutes(response.headers),
       );
+      /*
+       * Recorded BEFORE it is thrown, and recorded as throttled where it is a
+       * throttle — that is the single most important row in this table. Meta is
+       * explicit that calling while throttled extends the block, so a non-zero
+       * throttled count is the signal that something is still hammering a pool
+       * that has already said no.
+       */
+      this.usage?.observe({
+        readings: parseUsageReadings(response.headers),
+        throttled: isRateLimit(failure),
+        failed: true,
+      });
+      throw failure;
     }
+
+    // The ordinary case, and the whole point: a SUCCESSFUL response carries the
+    // budget we have already spent, and until now nothing read it.
+    this.usage?.observe({
+      readings: parseUsageReadings(response.headers),
+      throttled: false,
+      failed: false,
+    });
 
     const validated = options.schema.safeParse(parsed);
     if (!validated.success) {
@@ -1028,54 +1070,6 @@ export class GraphApiClient {
 
     return validated.data;
   }
-}
-
-/**
- * Meta's own estimate of when a throttled app may call again, in minutes.
- *
- * Both headers carry JSON. `X-App-Usage` is a flat object; the business one is
- * keyed by business id, each value an ARRAY of per-endpoint objects — so the
- * largest estimate across all of them is the one to wait for, because any
- * smaller wait would still be throttled.
- *
- * Entirely best-effort: these headers appear only under quota pressure, their
- * shape is undocumented in places, and a malformed one must not turn a rate
- * limit into a parse error. Null means "Meta did not say", and the caller falls
- * back to its own park window.
- */
-function readRetryAfterMinutes(headers: Headers): number | null {
-  let longest: number | null = null;
-
-  const consider = (value: unknown): void => {
-    if (typeof value !== 'object' || value === null) return;
-    const estimate = (value as { estimated_time_to_regain_access?: unknown })
-      .estimated_time_to_regain_access;
-    if (typeof estimate !== 'number' || !Number.isFinite(estimate) || estimate <= 0) return;
-    longest = longest === null ? estimate : Math.max(longest, estimate);
-  };
-
-  for (const name of ['x-app-usage', 'x-business-use-case-usage', 'x-ad-account-usage']) {
-    const raw = headers.get(name);
-    if (!raw) continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-
-    consider(parsed);
-    // The business-scoped header nests one array of endpoint objects per id.
-    if (typeof parsed === 'object' && parsed !== null) {
-      for (const value of Object.values(parsed as Record<string, unknown>)) {
-        if (Array.isArray(value)) value.forEach(consider);
-        else consider(value);
-      }
-    }
-  }
-
-  return longest;
 }
 
 function safeJsonParse(text: string): unknown {

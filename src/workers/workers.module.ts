@@ -15,6 +15,7 @@ import { ProviderConnectionRepository } from '@/database/repositories/provider-c
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { WebhookSubscriptionService } from '@/modules/connections/webhook-subscription.service';
 import { InboxModule } from '@/modules/inbox/inbox.module';
 import { CryptoModule } from '@/shared/crypto';
@@ -68,6 +69,12 @@ import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reco
     SyncJobRepository,
     QueueMetricsRepository,
     GraphApiClient,
+    /*
+     * The workers make most of the Graph calls in this system — backfills,
+     * relays, refreshes — so without this the console would report the API
+     * process's traffic and call it the platform's.
+     */
+    MetaUsageCollector,
     InboundProjectorWorker,
     OutboundRelayWorker,
     BackfillWorker,

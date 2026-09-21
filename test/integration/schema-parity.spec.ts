@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DataSource } from 'typeorm';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
-import { InitialSchema1756000000000 } from '@/database/migrations/1756000000000-InitialSchema';
 import { applyPostTableObjects, applyPreTableObjects } from '@/database/schema/schema-objects';
 
 /**
@@ -12,6 +11,9 @@ import { applyPostTableObjects, applyPreTableObjects } from '@/database/schema/s
  * synchronize cannot express a partial unique index or a composite foreign key,
  * so a sync-built database can look perfectly healthy while a business's
  * conversation is free to point at another business's channel.
+ *
+ * The migrated side replays the FULL migration list, so a table or column a
+ * later migration adds is compared too — not only the initial schema.
  *
  * Both paths share one module, which makes drift unlikely rather than
  * impossible — TypeORM could change a column type such that an index no longer
@@ -46,6 +48,42 @@ interface SchemaFacts {
  * So it is a PRE-DEPLOY gate. It must pass before anything ships to qa or prod,
  * because that is the moment the migration becomes the authority again.
  */
+/**
+ * Two renderings of the same index predicate, made comparable.
+ *
+ * `ALTER TABLE ... ALTER COLUMN ... TYPE` REBUILDS every index that depends on
+ * the column, and Postgres re-renders the rebuilt predicate in a different but
+ * equivalent form. Migration 1757700000000 retypes 121 timestamp columns, so
+ * every index whose predicate mentions one comes out of the migrated database
+ * spelled differently from the synced one:
+ *
+ *   migrated  status::text = ANY (ARRAY[('pending'::character varying)::text, ...])
+ *   synced    status::text = ANY ((ARRAY['pending'::character varying, ...])::text[])
+ *
+ * Same columns, same predicate, same plan — only the parenthesisation of the
+ * casts differs. Comparing the raw text would fail forever on a difference that
+ * is not one, so the casts and grouping parentheses are stripped before
+ * comparing.
+ *
+ * SAFE TO STRIP, because column types are asserted separately and exactly, by
+ * the `columns` comparison. Nothing that distinguishes two real indexes —
+ * table, name, columns, order, WHERE clause, uniqueness — is touched here.
+ */
+function comparableIndexes(values: string[]): string[] {
+  return values
+    .map((value) =>
+      value
+        .replace(/::(?:character varying|text|bpchar)(?:\[\])?/g, '')
+        .replace(/[()]/g, ' ')
+        .replace(/\s+/g, ' ')
+        // Dropping the parentheses leaves the two forms spaced differently
+        // inside the ARRAY literal, so separators are closed up too.
+        .replace(/\s*([[\],])\s*/g, '$1')
+        .trim(),
+    )
+    .sort();
+}
+
 describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', () => {
   let admin: DataSource;
 
@@ -73,10 +111,26 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
   }, 180_000);
 
   async function connect(database: string, withMigrations: boolean): Promise<DataSource> {
+    const base = buildDataSourceOptions(loadConfiguration().database);
+    /*
+     * EVERY migration, in the order `data-source.ts` lists them — not just the
+     * initial one.
+     *
+     * Replaying only the first migration compared a database from ONE migration
+     * against a database from ALL the entities, so anything a later migration
+     * created was guaranteed to look like drift. That stayed invisible for as
+     * long as the later migrations only added indexes, because indexes come
+     * from `schema-objects`, which both paths share. The first later migration
+     * to create a TABLE — `1758100000000-MetaApiUsage` — is what exposed it.
+     *
+     * Taking the list from the same factory the application uses also means a
+     * migration nobody registered fails here, which is the mistake
+     * `data-source.ts` warns about in its own comment.
+     */
     const dataSource = new DataSource({
-      ...buildDataSourceOptions(loadConfiguration().database),
+      ...base,
       database,
-      migrations: withMigrations ? [InitialSchema1756000000000] : [],
+      migrations: withMigrations ? base.migrations : [],
     });
     await dataSource.initialize();
     return dataSource;
@@ -140,7 +194,9 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
 
       expect(withoutLedger(fromSync.columns)).toEqual(withoutLedger(fromMigration.columns));
       expect(withoutLedger(fromSync.notNulls)).toEqual(withoutLedger(fromMigration.notNulls));
-      expect(withoutLedger(fromSync.indexes)).toEqual(withoutLedger(fromMigration.indexes));
+      expect(comparableIndexes(withoutLedger(fromSync.indexes))).toEqual(
+        comparableIndexes(withoutLedger(fromMigration.indexes)),
+      );
       expect(fromSync.foreignKeys).toEqual(fromMigration.foreignKeys);
       expect(fromSync.checks).toEqual(fromMigration.checks);
       expect(fromSync.triggers).toEqual(fromMigration.triggers);
@@ -148,7 +204,9 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
       // A guard against the comparison passing because both sides are empty.
       expect(fromMigration.foreignKeys.length).toBeGreaterThan(60);
       expect(fromMigration.indexes.length).toBeGreaterThan(80);
-      expect(fromMigration.checks).toHaveLength(2);
+      // Two from the initial schema, four guarding the rate-limit monitor's
+      // percentages and counts.
+      expect(fromMigration.checks).toHaveLength(6);
     } finally {
       await synced.destroy();
       await migrated.destroy();

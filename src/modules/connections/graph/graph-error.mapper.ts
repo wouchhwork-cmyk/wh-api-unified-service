@@ -43,6 +43,22 @@ const META = {
   InstagramBucThrottle: 80002,
   MessengerBucThrottle: 80006,
   PageBucThrottle: 80001,
+  /**
+   * THE WHOLE 800xx FAMILY IS A THROTTLE, and the range is checked rather than
+   * the individual numbers.
+   *
+   * Meta's published table assigns these codes to use cases, but the table does
+   * not agree with itself across sources: Instagram is documented as 80002 in
+   * some renderings and 80005 in others, with LeadGen and Messenger shifting to
+   * match. What every source DOES agree on is that the whole 800xx block is
+   * business-use-case throttling and nothing else lives in it.
+   *
+   * So the range is the reliable signal and the exact number is not. Naming the
+   * three above still earns its keep as documentation of what we have actually
+   * seen; the range is what decides.
+   */
+  BucThrottleRangeStart: 80000,
+  BucThrottleRangeEnd: 80099,
   /** Temporary Graph failure — retryable. */
   TemporaryIssue: 2,
   /**
@@ -87,6 +103,39 @@ export interface MappedGraphError {
   readonly retryable: boolean;
 }
 
+/**
+ * Whether Meta refused this call for rate limiting.
+ *
+ * Exported because two places need the SAME answer and must not drift: the
+ * mapper, which decides whether the caller may retry, and the client, which
+ * counts a refusal against the pool that refused it. A monitor that disagreed
+ * with the retry logic about what a throttle is would be worse than no monitor,
+ * because both would look right in isolation.
+ */
+export function isRateLimit(error: GraphApiError): boolean {
+  if (
+    error.code === META.ApplicationRateLimit ||
+    error.code === META.UserRequestLimit ||
+    error.code === META.PageRateLimit ||
+    error.code === META.CustomRateLimit
+  ) {
+    return true;
+  }
+
+  // The business-use-case block, matched as a RANGE. See the constants.
+  if (
+    error.code !== null &&
+    error.code >= META.BucThrottleRangeStart &&
+    error.code <= META.BucThrottleRangeEnd
+  ) {
+    return true;
+  }
+
+  // Meta attaches this subcode to throttling across products, so it catches a
+  // bucket outside the range rather than waiting for the next outage.
+  return error.subcode === SUBCODE.BucThrottled;
+}
+
 export function mapGraphError(error: GraphApiError): MappedGraphError {
   // Transport failure: we never learned the outcome.
   if (error.httpStatus === 0) {
@@ -105,20 +154,7 @@ export function mapGraphError(error: GraphApiError): MappedGraphError {
     return { code: ErrorCode.ChannelReauthRequired, requiresReauth: true, retryable: false };
   }
 
-  if (
-    error.code === META.ApplicationRateLimit ||
-    error.code === META.UserRequestLimit ||
-    error.code === META.PageRateLimit ||
-    error.code === META.CustomRateLimit ||
-    // The business-use-case codes, which is what Instagram and Messenger
-    // actually send. See the constants above for why these were missing.
-    error.code === META.InstagramBucThrottle ||
-    error.code === META.MessengerBucThrottle ||
-    error.code === META.PageBucThrottle ||
-    // Meta attaches this subcode to throttling across products, so it catches a
-    // bucket we have not met yet rather than waiting for the next outage.
-    error.subcode === SUBCODE.BucThrottled
-  ) {
+  if (isRateLimit(error)) {
     return { code: ErrorCode.UpstreamRateLimited, requiresReauth: false, retryable: true };
   }
 

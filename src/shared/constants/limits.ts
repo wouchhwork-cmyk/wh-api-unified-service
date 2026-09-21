@@ -365,3 +365,93 @@ export const SSE_HEARTBEAT_MS = 25_000;
 
 /** Per-enterprise cap, so one tenant cannot pin every connection on an instance. */
 export const SSE_MAX_STREAMS_PER_ENTERPRISE = 20;
+
+/**
+ * How wide one row of the rate-limit monitor is.
+ *
+ * A minute is chosen so the dashboard has something moving to show while
+ * somebody watches it, and because a bucket is only written for a scope we
+ * ACTUALLY CALLED in that minute — a quiet business writes nothing. So the row
+ * rate is proportional to real traffic rather than to how many businesses have
+ * connected.
+ */
+export const META_USAGE_BUCKET_MS = 60 * 1000;
+
+/**
+ * How often accumulated usage reaches the database.
+ *
+ * Readings are aggregated in memory and flushed on this timer rather than
+ * written per call: recording an observation must never add a round trip to a
+ * Graph call, and a burst of two hundred calls in a minute should cost one
+ * UPSERT, not two hundred.
+ *
+ * The cost of the delay is that the dashboard is up to this far behind, which
+ * is why it is well under the poll interval a browser would use.
+ */
+export const META_USAGE_FLUSH_MS = 15 * 1000;
+
+/**
+ * The most in-memory buckets one process will hold before it starts discarding.
+ *
+ * A bound, not a target — the normal resident set is the number of scopes
+ * called since the last flush, which is small. This exists so that a database
+ * that is refusing writes degrades into losing MONITORING data rather than into
+ * an out-of-memory kill of a process that is otherwise serving traffic fine.
+ */
+export const META_USAGE_MAX_PENDING_BUCKETS = 10_000;
+
+/**
+ * How long usage history is kept.
+ *
+ * Longer than the widest window Meta meters over (24 hours for Instagram,
+ * Messenger and Pages), so a full window is always visible plus a day to
+ * compare it against. Beyond that it is a chart nobody reads, and this table
+ * has the highest natural row rate of anything added for observability.
+ */
+export const META_USAGE_RETENTION_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * How long a platform-channel-id -> channel lookup is trusted.
+ *
+ * The map from Meta's ids to our channels changes only when a business connects
+ * or disconnects, so this is cached to keep a query off the path of every Graph
+ * response. A newly connected channel is therefore unattributed for at most
+ * this long, and shows up under its Meta id until the cache turns over.
+ */
+export const META_USAGE_SCOPE_CACHE_MS = 5 * 60 * 1000;
+
+/**
+ * The percentage at which Meta starts refusing calls.
+ *
+ * Meta's documentation is explicit that every figure in both usage headers is a
+ * whole-number PERCENTAGE of the allowance, not a count of calls — verified
+ * live: six consecutive calls to one edge left `call_count` at 1, not 6.
+ */
+export const META_USAGE_THROTTLE_PCT = 100;
+
+/**
+ * Where the dashboard turns amber.
+ *
+ * Deliberately far below the limit. Meta's own guidance is that continuing to
+ * call once throttled EXTENDS the block, so the useful warning is the one that
+ * arrives with enough headroom to slow down voluntarily.
+ */
+export const META_USAGE_WARN_PCT = 75;
+
+/**
+ * The default span of the rate-limit chart.
+ *
+ * Three hours: long enough to show the shape of a backfill against the app
+ * pool's one-hour window, short enough that the default view is not mostly
+ * empty on a quiet deployment.
+ */
+export const DEFAULT_RATE_LIMIT_WINDOW_MINUTES = 3 * 60;
+
+/**
+ * The default row cap on one history request.
+ *
+ * At one bucket per pool per minute, this is three hours of a dozen pools with
+ * room to spare. The schema allows more; this is what a client gets for asking
+ * for nothing.
+ */
+export const DEFAULT_RATE_LIMIT_POINTS = 2000;

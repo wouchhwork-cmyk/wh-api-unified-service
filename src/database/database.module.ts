@@ -3,6 +3,7 @@ import { AuditLogRepository } from './repositories/audit-log.repository';
 import { EnterpriseEmployeeRepository } from './repositories/enterprise-employee.repository';
 import { EnterpriseRepository } from './repositories/enterprise.repository';
 import { IdentityRepository } from './repositories/identity.repository';
+import { MetaApiUsageRepository } from './repositories/meta-api-usage.repository';
 import { OauthStateRepository } from './repositories/oauth-state.repository';
 import { PermissionRepository } from './repositories/permission.repository';
 import { PlatformAdminRepository } from './repositories/platform-admin.repository';
@@ -18,6 +19,7 @@ const PROVIDERS = [
   EnterpriseRepository,
   EnterpriseEmployeeRepository,
   IdentityRepository,
+  MetaApiUsageRepository,
   OauthStateRepository,
   PermissionRepository,
   PlatformAdminRepository,

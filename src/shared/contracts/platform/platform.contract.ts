@@ -59,3 +59,22 @@ export const PlatformFeatureKeyParamSchema = z.enum(FeatureKey);
 export type PlatformEnterpriseQuery = z.infer<typeof PlatformEnterpriseQuerySchema>;
 export type PlatformEnterpriseStatusRequest = z.infer<typeof PlatformEnterpriseStatusSchema>;
 export type PlatformFeatureDecisionRequest = z.infer<typeof PlatformFeatureDecisionSchema>;
+
+/**
+ * The window a rate-limit chart covers.
+ *
+ * Bounded at both ends. The lower bound is one bucket — anything shorter would
+ * return a single point and read as a flat line — and the upper bound matches
+ * the retention window, because asking for more returns less than was asked for
+ * and looks like data loss rather than a setting.
+ */
+export const PlatformRateLimitHistoryQuerySchema = z
+  .object({
+    windowMinutes: z.coerce.number().int().min(1).max(48 * 60).optional(),
+    /** One pool, by its scope key, when drilling into a single line. */
+    scopeKey: z.string().trim().min(1).max(120).optional(),
+    limit: z.coerce.number().int().positive().max(5000).optional(),
+  })
+  .strict();
+
+export type PlatformRateLimitHistoryQuery = z.infer<typeof PlatformRateLimitHistoryQuerySchema>;

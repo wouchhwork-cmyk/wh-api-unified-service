@@ -6,6 +6,7 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { ConnectionsController } from './connections.controller';
 import { ConnectionsService } from './connections.service';
 import { GraphApiClient } from './graph/graph-api.client';
+import { MetaUsageCollector } from './graph/meta-usage.collector';
 import { MetaConnectionService } from './meta-connection.service';
 import { MetaWebhookController } from './meta-webhook.controller';
 import { MetaWebhookService } from './meta-webhook.service';
@@ -17,6 +18,13 @@ import { PROVIDER_CONNECTORS } from './provider-connector';
   controllers: [ConnectionsController, MetaWebhookController],
   providers: [
     GraphApiClient,
+    /*
+     * Feeds the platform console's rate-limit view. Provided wherever
+     * GraphApiClient is, because the client takes it OPTIONALLY — a missing
+     * collector is a silent monitoring outage, so `rate-limit-wiring.spec.ts`
+     * asserts both wirings still list it.
+     */
+    MetaUsageCollector,
     PageDiscoveryService,
     OauthStateService,
     MetaConnectionService,

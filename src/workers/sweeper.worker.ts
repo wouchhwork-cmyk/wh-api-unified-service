@@ -8,6 +8,8 @@ import { VerificationRepository } from '@/database/repositories/verification.rep
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
+import { MetaApiUsageRepository } from '@/database/repositories/meta-api-usage.repository';
+import { META_USAGE_RETENTION_MS } from '@/shared/constants';
 
 const SWEEP_BATCH = 500;
 /** Caps one nightly run at 100k rows per table, so it cannot run unbounded. */
@@ -54,6 +56,7 @@ export class SweeperWorker {
     private readonly inboundEvents: InboundEventRepository,
     private readonly outboundEvents: OutboundEventRepository,
     private readonly syncJobs: SyncJobRepository,
+    private readonly metaUsage: MetaApiUsageRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,
   ) {}
@@ -99,8 +102,29 @@ export class SweeperWorker {
         this.syncJobs.deleteSettledBefore(ledgerCutoff, limit),
       );
 
+      /*
+       * The rate-limit monitor, which has the highest natural row rate of
+       * anything here: one row per Meta pool per minute for every minute we
+       * actually called that pool.
+       *
+       * The window is deliberately wider than the widest thing Meta meters over
+       * (24 hours), so a full window is always chartable with a day behind it
+       * to compare against. Past that it is history nobody reads.
+       */
+      const metaUsage = await drain((limit) =>
+        this.metaUsage.sweep(META_USAGE_RETENTION_MS, limit),
+      );
+
       this.logger.info(
-        { verifications, sessions, oauthStates, inboundEvents, outboundEvents, syncJobs },
+        {
+          verifications,
+          sessions,
+          oauthStates,
+          inboundEvents,
+          outboundEvents,
+          syncJobs,
+          metaUsage,
+        },
         'retention sweep complete',
       );
     } catch (error) {
