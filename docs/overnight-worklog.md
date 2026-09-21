@@ -12,7 +12,7 @@ is described under RESUME HERE with enough detail to pick up cold.
 
 ## RESUME HERE
 
-> **Current state:** BOTH TASKS COMPLETE and committed. 722 tests, lint,
+> **Current state:** BOTH TASKS COMPLETE and committed. 735 tests, lint,
 > typecheck and schema parity all green; the app boots with 11 new routes and no
 > errors.
 >
@@ -160,6 +160,12 @@ reviewer is available, so I review my own work in multiple rounds.
       was widened to `@RequireAnyPermission` and never filtered, leaking the
       existence and timing of every private thread to somebody holding only
       `mentions.view`.
+- [x] **Review round 3b — verifying the fixes** — `87e9d7f`. Caught a blocker I
+      had just introduced (the comment projector announced every MENTION as a
+      comment thread, breaking the new filter in both directions) and a race the
+      owner-peer rule had made reachable (two owners demoting each other
+      concurrently could leave a business with none). The fan-out decision is a
+      pure function with tests now — nothing had tested it through two defects.
 
 ### Decisions worth not re-litigating
 
