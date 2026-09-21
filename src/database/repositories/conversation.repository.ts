@@ -501,6 +501,16 @@ export class ConversationRepository extends BaseRepository {
   async notifyChanged(input: {
     enterpriseId: number;
     conversationRefId: string;
+    /**
+     * WHICH KIND of thread changed, so a subscriber can be filtered.
+     *
+     * Required, because the alternative is a stream that tells somebody holding
+     * only `mentions.view` that a private DM exists and when it changed. That
+     * is not content — the detail read still refuses them — but the existence,
+     * stable refId, count and real-time timing of every private thread is not
+     * nothing, and every other inbox path is filtered by kind.
+     */
+    conversationKind: ConversationKind;
     /*
      * WHY it changed. A client re-reads regardless, so this is only a hint —
      * but 'assigned' and 'status' let one decide whether the OPEN thread needs
@@ -515,6 +525,7 @@ export class ConversationRepository extends BaseRepository {
         enterpriseId: input.enterpriseId,
         conversationRefId: input.conversationRefId,
         kind: input.kind,
+        conversationKind: input.conversationKind,
       }),
     );
   }

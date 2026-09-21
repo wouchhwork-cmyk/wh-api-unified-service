@@ -513,6 +513,56 @@ describe('a business defines its own roles', () => {
       expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
     });
 
+    it('REFUSES a manager handing out a role that carries more than they hold', async () => {
+      /*
+       * THE ESCALATION REVIEW FOUND, closed, walked end to end.
+       *
+       * The level rule alone waves this through: "Billing clerk" sits at 30,
+       * well below the manager's 70. But it carries `enterprise.manage`, which
+       * the manager does not hold — so granting it to anybody, including an
+       * address the manager controls, would hand them billing through a second
+       * session. Delegating billing without handing over the business is the
+       * most natural reason an owner creates a custom role at all, so this is
+       * not a contrived configuration.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+      const junior = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      const clerk = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Billing clerk', level: 30, permissions: ['enterprise.manage'] })
+        .expect(201);
+
+      // Through the re-role endpoint.
+      const refusedGrant = await http()
+        .post(`/api/v1/roles/employees/${junior.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [clerk.body.data.refId] })
+        .expect(403);
+      expect(refusedGrant.body.error.details[0].issue).toMatch(/permissions you do not hold/i);
+
+      // And through the invite, which is the version that needs no accomplice.
+      const refusedInvite = await http()
+        .post('/api/v1/employees')
+        .set(bearer(manager.token))
+        .send({
+          firstName: 'Mine',
+          email: 'mine@bluebottle.test',
+          roleRefId: clerk.body.data.refId,
+        })
+        .expect(403);
+      expect(refusedInvite.body.error.details[0].issue).toMatch(/permissions you do not hold/i);
+
+      // The owner, who holds it, is unaffected.
+      await http()
+        .post(`/api/v1/roles/employees/${junior.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [clerk.body.data.refId] })
+        .expect(204);
+    });
+
     it('refuses a role that belongs to another business', async () => {
       const { ownerToken } = await onboardedBusiness();
       const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');

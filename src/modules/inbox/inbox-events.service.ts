@@ -10,14 +10,31 @@ import {
   SSE_MAX_STREAMS_PER_ENTERPRISE,
   LISTEN_KEEPALIVE_DELAY_MS,
 } from '@/shared/constants';
+import { ConversationKind } from '@/shared/enums';
 
 /** What a subscriber is told. Ids only — never content. */
 export interface InboxChange {
   readonly conversationRefId: string;
   readonly kind: 'inbound' | 'outbound';
+  /**
+   * Which kind of thread it was. Carried so the fan-out can drop a change for a
+   * kind this subscriber may not see — NOT part of what reaches the browser.
+   */
+  readonly conversationKind: ConversationKind;
 }
 
 export type InboxSubscriber = (change: InboxChange) => void;
+
+/**
+ * The kinds of thread one subscriber is allowed to hear about.
+ *
+ * Captured at CONNECT and fixed for the life of the stream, like every other
+ * authorisation on it. The stream already expires on its own timer for exactly
+ * this reason — a long-lived subscription must not outlive the decision that
+ * opened it — so a permission change takes effect at the next reconnect rather
+ * than mid-stream.
+ */
+export type VisibleKinds = ReadonlySet<ConversationKind>;
 
 /**
  * Fans a conversation change out to the browsers watching it.
@@ -45,6 +62,14 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
 
   /** enterpriseId -> the subscribers on THIS instance. */
   private readonly subscribers = new Map<number, Set<InboxSubscriber>>();
+  /**
+   * What each of them may hear about.
+   *
+   * A parallel map rather than a field on the subscriber, because the
+   * subscriber is a plain function the caller owns — wrapping it in an object
+   * would change the shape every caller passes for the sake of one lookup.
+   */
+  private readonly visibleKinds = new Map<InboxSubscriber, VisibleKinds>();
 
   constructor(
     private readonly config: AppConfigService,
@@ -61,6 +86,7 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
     this.stopping = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.subscribers.clear();
+    this.visibleKinds.clear();
 
     const client = this.client;
     this.client = null;
@@ -82,13 +108,18 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
    * Throws when the tenant is already at its cap, so one business cannot pin
    * every connection this instance has.
    */
-  subscribe(enterpriseId: number, subscriber: InboxSubscriber): () => void {
+  subscribe(
+    enterpriseId: number,
+    visibleKinds: VisibleKinds,
+    subscriber: InboxSubscriber,
+  ): () => void {
     const existing = this.subscribers.get(enterpriseId) ?? new Set<InboxSubscriber>();
 
     if (existing.size >= SSE_MAX_STREAMS_PER_ENTERPRISE) {
       throw new Error('too many open streams for this business');
     }
 
+    this.visibleKinds.set(subscriber, visibleKinds);
     existing.add(subscriber);
     this.subscribers.set(enterpriseId, existing);
 
@@ -96,6 +127,7 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
       const set = this.subscribers.get(enterpriseId);
       if (!set) return;
       set.delete(subscriber);
+      this.visibleKinds.delete(subscriber);
       // Drop the empty set rather than leaving a key per tenant forever.
       if (set.size === 0) this.subscribers.delete(enterpriseId);
     };
@@ -194,7 +226,12 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
   private dispatch(raw: string | undefined): void {
     if (!raw) return;
 
-    let parsed: { enterpriseId?: unknown; conversationRefId?: unknown; kind?: unknown };
+    let parsed: {
+      enterpriseId?: unknown;
+      conversationRefId?: unknown;
+      kind?: unknown;
+      conversationKind?: unknown;
+    };
     try {
       parsed = JSON.parse(raw) as typeof parsed;
     } catch {
@@ -205,13 +242,30 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
     const conversationRefId = parsed.conversationRefId;
     if (typeof enterpriseId !== 'number' || typeof conversationRefId !== 'string') return;
 
+    /*
+     * A notification with no conversation kind is DROPPED, not delivered.
+     *
+     * Fail-closed, and it matters during a rolling deploy: an older instance
+     * still publishing the old payload would otherwise have its events fanned
+     * out to every subscriber unfiltered, which is the exact leak this closes.
+     * The cost of dropping is a client that re-reads a beat later on its own
+     * poll; the cost of delivering is telling somebody a private thread exists.
+     */
+    const conversationKind = parsed.conversationKind;
+    if (typeof conversationKind !== 'string') return;
+
     const kind = parsed.kind === 'outbound' ? 'outbound' : 'inbound';
     const listeners = this.subscribers.get(enterpriseId);
     if (!listeners) return;
 
     for (const listener of listeners) {
+      // Only the kinds this subscriber was allowed to hear about when it
+      // connected. Every other inbox path is filtered by kind; this is the one
+      // that was widened and, until now, was not.
+      if (!this.visibleKinds.get(listener)?.has(conversationKind as ConversationKind)) continue;
+
       try {
-        listener({ conversationRefId, kind });
+        listener({ conversationRefId, kind, conversationKind: conversationKind as ConversationKind });
       } catch (error) {
         // One broken stream must not stop the others being told.
         this.logger.warn({ err: error }, 'an inbox subscriber threw');

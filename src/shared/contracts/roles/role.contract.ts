@@ -37,7 +37,14 @@ const PermissionCodesSchema = z
  * clear validation error, and the other holds even if a future caller skips
  * the contract.
  */
-const RoleLevelSchema = z.coerce.number().int().min(MIN_ROLE_LEVEL).max(MAX_CREATABLE_ROLE_LEVEL);
+const RoleLevelSchema = z.number().int().min(MIN_ROLE_LEVEL).max(MAX_CREATABLE_ROLE_LEVEL);
+/*
+ * NOT `z.coerce.number()`, which is the obvious choice and the wrong one here.
+ * Coercion turns `null`, `[]` and `false` all into 0 — a real level, at the
+ * bottom of the ladder. The direction is safe, but silently accepting malformed
+ * input and inventing a level for it is not what an access-control field should
+ * do. This arrives in a JSON body, where a number is a number.
+ */
 
 export const CreateRoleSchema = z
   .object({

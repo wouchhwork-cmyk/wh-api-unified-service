@@ -63,6 +63,14 @@ export interface TargetRole {
   readonly name: string;
   readonly level: number;
   readonly isSystem: boolean;
+  /**
+   * What the role grants. Required, and that is the point.
+   *
+   * It was absent, and `mayAssignRole` therefore checked only the level — which
+   * left the subset rule defending the CREATE half of the threat and not the
+   * GRANT half. See the function below.
+   */
+  readonly permissionCodes: readonly string[];
 }
 
 /** The employee being acted on. */
@@ -97,6 +105,32 @@ export function mayAssignRole(actor: ActorAuthority, role: TargetRole): Authorit
   // escalation this whole mechanism exists to stop: invite an address you
   // control, accept it, and now there are two of you.
   if (role.level >= actor.level) return 'role_not_below_actor';
+
+  /*
+   * AND THE SUBSET RULE, WHICH BELONGS HERE AS MUCH AS IN `mayDefineRole`.
+   *
+   * This was missing, and the gap was real. `mayDefineRole` stops somebody
+   * CREATING a role below themselves that carries more than they hold — but it
+   * assumed the only way such a role can exist is for the actor to have made
+   * it. An owner can make one legitimately, and delegating billing without
+   * handing over the business is the most natural reason to create a custom
+   * role at all.
+   *
+   * So: an owner creates "Billing clerk" at level 30 with `enterprise.manage`.
+   * A manager holds `employees.invite`, does not hold `enterprise.manage`, and
+   * the level check waves it through because 30 < 70. The manager invites an
+   * address they control into that role, accepts from their own mailbox, and
+   * holds — through a second session — the one permission the entire ladder
+   * exists to withhold from them.
+   *
+   * Level dominance does NOT imply permission dominance. It happens to on the
+   * stock seed, where viewer subset agent subset manager subset owner holds by
+   * construction, and it stops holding the moment a business uses the
+   * custom-role feature this work ships.
+   */
+  for (const code of role.permissionCodes) {
+    if (!actor.permissionCodes.has(code)) return 'permissions_exceed_actor';
+  }
 
   return null;
 }

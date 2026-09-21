@@ -43,7 +43,12 @@ describe('role authority', () => {
       ]),
     });
 
-  const role = (level: number, name = 'custom', isSystem = false) => ({ name, level, isSystem });
+  const role = (
+    level: number,
+    name = 'custom',
+    isSystem = false,
+    permissionCodes: string[] = [],
+  ) => ({ name, level, isSystem, permissionCodes });
 
   describe('assigning a role to somebody', () => {
     it('lets a manager assign a role below them', () => {
@@ -84,6 +89,37 @@ describe('role authority', () => {
       expect(mayAssignRole(actor(), role(ROLE_LEVEL.Owner, 'super-admin'))).toBe(
         'owner_grants_owner',
       );
+    });
+
+    it('REFUSES a role carrying more than the assigner holds', () => {
+      /*
+       * FOUND IN REVIEW, AND IT WAS REAL. The subset rule defended the CREATE
+       * half of the threat and not the GRANT half — it assumed the only way
+       * such a role can exist is for the actor to have made it.
+       *
+       * An owner can make one legitimately, and delegating billing without
+       * handing over the business is the most natural reason to create a custom
+       * role at all. So: owner creates "Billing clerk" at level 30 carrying
+       * `enterprise.manage`; a manager holds `employees.invite`, does not hold
+       * `enterprise.manage`, and the level check waves it through because
+       * 30 < 70. The manager invites an address they control into that role,
+       * accepts from their own mailbox, and holds through a second session the
+       * one permission the whole ladder exists to withhold from them.
+       *
+       * Level dominance does NOT imply permission dominance. It happens to on
+       * the stock seed and stops the moment a business uses custom roles.
+       */
+      const billingClerk = role(30, 'Billing clerk', false, ['enterprise.manage']);
+
+      expect(mayAssignRole(actor(), billingClerk)).toBe('permissions_exceed_actor');
+      // The owner, who does hold it, may still hand it out.
+      expect(mayAssignRole(owner(), billingClerk)).toBeNull();
+    });
+
+    it('allows a role whose permissions the assigner does hold', () => {
+      expect(
+        mayAssignRole(actor(), role(30, 'Helper', false, ['conversations.view'])),
+      ).toBeNull();
     });
 
     it('REFUSES somebody holding no roles at all', () => {

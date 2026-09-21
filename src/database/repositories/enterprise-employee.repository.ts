@@ -295,7 +295,18 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
          LEFT JOIN employee_roles er
                 ON er.employee_id = e.id AND er.enterprise_id = e.enterprise_id
                AND er.is_deleted = false
+         /*
+          * Archived and soft-deleted roles are EXCLUDED, matching
+          * authorityOfEmployee and highestLevelForEmployee. Without it the
+          * level shown here disagreed with the level the authority rules use:
+          * somebody could be listed at 90 from an archived role and be
+          * unmodifiable on screen while the server would have allowed it. The
+          * direction was fail-closed, so nothing leaked — but a UI that
+          * disagrees with the rules is how people learn not to trust it. It
+          * also showed archived role names.
+          */
          LEFT JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
+                          AND r.is_deleted = false AND r.status = 'active'
         WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate} ${cursorPredicate}
         GROUP BY e.id, i.id
         /*

@@ -204,6 +204,25 @@ export class RolesService {
     this.assertMayDefine(authority, role.level, role.permissionCodes, role.isSystem);
     this.assertMayDefine(authority, request.level, request.permissions, role.isSystem);
 
+    /*
+     * A rename onto an existing name is caught by `roles_enterprise_name_uniq`
+     * either way, and comes back as a constraint violation. Checked here so it
+     * comes back as the same field-level message `create` gives instead —
+     * "a role with this name already exists" is actionable; a translated
+     * constraint error is a puzzle.
+     *
+     * That index is also the only thing stopping a second role called `owner`,
+     * which `mayAssignRole` reads by NAME. Nothing in this layer would refuse
+     * it, so the guarantee rests on the database — worth knowing if the index
+     * is ever touched.
+     */
+    const clash = await this.roles.findByNameInEnterprise(enterpriseId, request.name);
+    if (clash && clash.id !== role.id) {
+      throw new AppException(ErrorCode.ValidationFailed, {
+        details: [{ field: 'name', issue: 'a role with this name already exists' }],
+      });
+    }
+
     await this.tx.runInTransaction(async () => {
       const affected = await this.roles.updateRole({
         enterpriseId,

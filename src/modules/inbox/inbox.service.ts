@@ -1024,6 +1024,7 @@ export class InboxService {
       await this.conversations.notifyChanged({
         enterpriseId: actor.enterpriseId,
         conversationRefId: conversation.refId,
+        conversationKind: conversation.conversationKind,
         kind: 'outbound',
       });
 
@@ -1097,6 +1098,7 @@ export class InboxService {
     await this.conversations.notifyChanged({
       enterpriseId,
       conversationRefId: conversation.refId,
+      conversationKind: conversation.conversationKind,
       kind: 'assigned',
     });
   }
@@ -1124,6 +1126,7 @@ export class InboxService {
     await this.conversations.notifyChanged({
       enterpriseId,
       conversationRefId: conversation.refId,
+      conversationKind: conversation.conversationKind,
       kind: 'status',
     });
   }

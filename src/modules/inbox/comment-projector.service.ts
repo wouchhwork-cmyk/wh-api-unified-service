@@ -481,6 +481,7 @@ export class CommentProjectorService {
       await this.conversations.notifyChanged({
         enterpriseId,
         conversationRefId: conversation.refId,
+        conversationKind: ConversationKind.CommentThread,
         kind: 'inbound',
       });
 

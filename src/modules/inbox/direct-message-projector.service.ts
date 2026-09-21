@@ -383,6 +383,7 @@ export class DirectMessageProjectorService {
       await this.conversations.notifyChanged({
         enterpriseId,
         conversationRefId: conversation.refId,
+        conversationKind: ConversationKind.DirectMessage,
         kind: 'inbound',
       });
 

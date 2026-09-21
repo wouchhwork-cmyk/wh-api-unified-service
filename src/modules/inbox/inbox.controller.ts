@@ -13,7 +13,8 @@ import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentScopedActor, RequireAnyPermission } from '@/shared/decorators';
-import { anyPermissionFor } from '@/shared/rbac';
+import { anyPermissionFor, visibleKinds } from '@/shared/rbac';
+import { RequestContext } from '@/shared/context';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
 import type { MessageRow } from '@/database/repositories/message.repository';
@@ -128,8 +129,24 @@ export class InboxController {
     let unsubscribe: (() => void) | null = null;
 
     try {
-      unsubscribe = this.events.subscribe(actor.enterpriseId, (change) => {
-        write('inbox', change);
+      /*
+       * FILTERED AT CONNECT, by the same rule the listing uses.
+       *
+       * This route was widened to `@RequireAnyPermission` so that a business
+       * granting only `mentions.view` could reach the endpoint that serves
+       * mentions — and for a while it got the widened door with none of the
+       * filtering. Somebody holding only `mentions.view` then received a change
+       * event for every private DM in the business: not the content, which the
+       * detail read still refuses them, but the existence, stable refId, count
+       * and real-time timing of every thread they were explicitly denied.
+       *
+       * Fixed at connect rather than per event because that is where every
+       * other authorisation on this stream is decided, and the stream already
+       * expires on a timer so the decision cannot outlive its welcome.
+       */
+      const visible = new Set(visibleKinds(RequestContext.actor()?.permissions ?? new Set()));
+      unsubscribe = this.events.subscribe(actor.enterpriseId, visible, (change) => {
+        write('inbox', { conversationRefId: change.conversationRefId, kind: change.kind });
       });
     } catch {
       // At the per-tenant cap. 503 rather than 429: the request is fine, this

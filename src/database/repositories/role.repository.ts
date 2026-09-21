@@ -21,6 +21,12 @@ export interface RoleRow {
   readonly level: number;
   /** Seeded by us: grantable, never editable by the business. */
   readonly isSystem: boolean;
+  /**
+   * What the role grants. Carried on the BASE row, not only on the detailed
+   * one, because `mayAssignRole` needs it — a grant is as much a subset
+   * decision as a definition is.
+   */
+  readonly permissionCodes: string[];
 }
 
 /** A role with everything a role editor needs to show it. */
@@ -276,10 +282,27 @@ export class RoleRepository extends BaseRepository {
       `INSERT INTO role_permissions (role_id, permission_id)
        SELECT r.id, p.id
          FROM roles r
-         JOIN permissions p ON p.code = ANY($3::varchar[]) AND p.is_deleted = false
+         /*
+          * ACTIVE and NON-STAFF, checked here as well as by the subset rule
+          * upstream. This is the last thing between a code and an enterprise
+          * role: a staff-only code such as features.decide in a tenant's role
+          * would be a permission the business was never meant to hold, and the
+          * subset rule only keeps it out for as long as the subset rule is
+          * whole. A retired code is refused for the same reason.
+          */
+         JOIN permissions p ON p.code = ANY($3::varchar[])
+                           AND p.is_deleted = false
+                           AND p.status = $4
+                           AND p.scope <> $5
         WHERE r.id = $2 AND r.enterprise_id = $1 AND r.is_deleted = false
        ON CONFLICT DO NOTHING`,
-      [this.requireEnterprise(enterpriseId), roleId, [...permissionCodes]],
+      [
+        this.requireEnterprise(enterpriseId),
+        roleId,
+        [...permissionCodes],
+        PermissionStatus.Active,
+        PermissionScope.Staff,
+      ],
     );
   }
 
@@ -328,20 +351,42 @@ export class RoleRepository extends BaseRepository {
   async findManyByRefIds(enterpriseId: number, refIds: readonly string[]): Promise<RoleRow[]> {
     if (refIds.length === 0) return [];
     return this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
-         FROM roles
-        WHERE enterprise_id = $1 AND ref_id = ANY($2::uuid[])
-          AND is_deleted = false AND status = $3`,
-      [this.requireEnterprise(enterpriseId), [...refIds], RoleStatus.Active],
+      `SELECT r.id, r.ref_id AS "refId", r.name, r.scope, r.level,
+              r.is_system AS "isSystem",
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $4
+        WHERE r.enterprise_id = $1 AND r.ref_id = ANY($2::uuid[])
+          AND r.is_deleted = false AND r.status = $3
+        GROUP BY r.id`,
+      [
+        this.requireEnterprise(enterpriseId),
+        [...refIds],
+        RoleStatus.Active,
+        PermissionStatus.Active,
+      ],
     );
   }
 
   async findByNameInEnterprise(enterpriseId: number, name: string): Promise<RoleRow | null> {
     const rows = await this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
-         FROM roles
-        WHERE enterprise_id = $1 AND name = $2 AND is_deleted = false LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), name],
+      `SELECT r.id, r.ref_id AS "refId", r.name, r.scope, r.level,
+              r.is_system AS "isSystem",
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $3
+        WHERE r.enterprise_id = $1 AND r.name = $2 AND r.is_deleted = false
+        GROUP BY r.id
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), name, PermissionStatus.Active],
     );
     return rows[0] ?? null;
   }
@@ -353,22 +398,39 @@ export class RoleRepository extends BaseRepository {
    */
   async findByRefId(enterpriseId: number, refId: string): Promise<RoleRow | null> {
     const rows = await this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
-         FROM roles
-        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false AND status = $3
+      `SELECT r.id, r.ref_id AS "refId", r.name, r.scope, r.level,
+              r.is_system AS "isSystem",
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $4
+        WHERE r.enterprise_id = $1 AND r.ref_id = $2 AND r.is_deleted = false
+          AND r.status = $3
+        GROUP BY r.id
         LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), refId, RoleStatus.Active],
+      [this.requireEnterprise(enterpriseId), refId, RoleStatus.Active, PermissionStatus.Active],
     );
     return rows[0] ?? null;
   }
 
   async listForEnterprise(enterpriseId: number): Promise<RoleRow[]> {
     return this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
-         FROM roles
-        WHERE enterprise_id = $1 AND is_deleted = false AND status = $2
-        ORDER BY level DESC, is_system DESC, name`,
-      [this.requireEnterprise(enterpriseId), RoleStatus.Active],
+      `SELECT r.id, r.ref_id AS "refId", r.name, r.scope, r.level,
+              r.is_system AS "isSystem",
+              COALESCE(
+                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL), '{}'
+              ) AS "permissionCodes"
+         FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $3
+        WHERE r.enterprise_id = $1 AND r.is_deleted = false AND r.status = $2
+        GROUP BY r.id
+        ORDER BY r.level DESC, r.is_system DESC, r.name`,
+      [this.requireEnterprise(enterpriseId), RoleStatus.Active, PermissionStatus.Active],
     );
   }
 
@@ -422,14 +484,21 @@ export class RoleRepository extends BaseRepository {
          FROM employee_roles er
          JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
          LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         /*
+          * p.status is filtered, so a DEPRECATED permission does not count as
+          * held. It fed the subset rule, so without this a retired code could
+          * be copied into a new role — inert while deprecated, and silently
+          * live the day anybody reactivated it.
+          */
          LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $4
         WHERE er.enterprise_id = $1
           AND er.employee_id = $2
           AND er.is_deleted = false
           AND r.is_deleted = false
           AND r.status = $3
         GROUP BY r.id, r.level, r.name`,
-      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active],
+      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active, PermissionStatus.Active],
     );
 
     const codes = new Set<string>();
