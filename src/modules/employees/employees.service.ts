@@ -10,12 +10,17 @@ import { AuditService } from '@/modules/audit';
 import { VerificationService, type PendingOtpDelivery } from '@/modules/auth/verification.service';
 import { SecretHashService } from '@/shared/crypto';
 import {
+  explainDenial,
+  mayAssignRole,
+  mayModifyEmployee,
+  type ActorAuthority,
+} from '@/shared/rbac';
+import {
   AuditAction,
   AuditEntityType,
   DeliveryChannel,
   EmployeeKind,
   EmployeeStatus,
-  SystemRole,
   VerificationKind,
   VerificationSecretShape,
   VerificationSubjectKind,
@@ -117,6 +122,24 @@ export class EmployeesService {
    * owner would know a credential that can act as their colleague, and every
    * message that colleague sends would have two people who could have sent it.
    */
+  /**
+   * What the acting employee is allowed to do, in one round trip.
+   *
+   * Fetched per request rather than carried on the token: a role changed a
+   * moment ago must take effect on the next action, exactly as the permission
+   * set already does. Putting the level in the JWT would make a demotion wait
+   * for the token to expire.
+   */
+  private async authorityOf(enterpriseId: number, employeeId: number): Promise<ActorAuthority> {
+    const authority = await this.roles.authorityOfEmployee(enterpriseId, employeeId);
+    return {
+      employeeId,
+      level: authority.level,
+      roleNames: authority.roleNames,
+      permissionCodes: new Set(authority.permissionCodes),
+    };
+  }
+
   async create(
     enterpriseId: number,
     actingEmployeeId: number,
@@ -135,22 +158,20 @@ export class EmployeesService {
     /*
      * NOBODY GRANTS ABOVE THEMSELVES.
      *
-     * employees.invite is held by the manager role, and without this check the
-     * body could name the OWNER role — so a manager could invite an address they
-     * control, accept the invite, and hold full control of the business,
-     * including billing and the ability to remove the real owner. The permission
-     * that guards the endpoint cannot express this: it says who may invite, not
-     * what they may hand out.
+     * `employees.invite` says who may invite, not what they may hand out — so
+     * without this an actor holding it could name any role in the body, invite
+     * an address they control, accept the invite and come back holding it.
      *
-     * Checked against the roles the actor actually holds rather than against a
-     * permission, because "can grant owner" is not a permission the catalogue
-     * has — owner is the top of the ladder by definition.
+     * This used to be one string comparison against the name `owner`, which
+     * covered the worst case and nothing else: a manager could still mint
+     * another manager. It is now a level comparison, so the rule is "strictly
+     * below you" for every role rather than "not the top one".
      */
-    if (role.name === (SystemRole.Owner as string)) {
-      const actorRoles = await this.roles.listRoleNamesForEmployee(enterpriseId, actingEmployeeId);
-      if (!actorRoles.includes(SystemRole.Owner)) {
-        throw new AppException(ErrorCode.PermissionDenied);
-      }
+    const denial = mayAssignRole(await this.authorityOf(enterpriseId, actingEmployeeId), role);
+    if (denial) {
+      throw new AppException(ErrorCode.PermissionDenied, {
+        details: [{ field: 'roleRefId', issue: explainDenial(denial) }],
+      });
     }
 
     /*
@@ -286,11 +307,26 @@ export class EmployeesService {
     const employee = await this.employees.findAnyByRefId(enterpriseId, refId);
     if (!employee) throw new AppException(ErrorCode.EmployeeNotFound);
 
-    // Nobody suspends themselves out of their own business. The realistic case is
-    // an owner locking themselves out with no second admin to undo it.
-    if (employee.employeeId === actingEmployeeId) {
+    /*
+     * Nobody suspends themselves out of their own business, and nobody suspends
+     * somebody at or above their own level.
+     *
+     * The second half is new and was a real hole: `employees.manage` is held by
+     * the manager role, and the only check here was the self one — so a manager
+     * could suspend the owner, which revokes every session that identity holds
+     * across every business. Two managers could also suspend each other, which
+     * turns a disagreement into a race.
+     */
+    const modifyDenial = mayModifyEmployee(
+      await this.authorityOf(enterpriseId, actingEmployeeId),
+      {
+        employeeId: employee.employeeId,
+        level: await this.roles.highestLevelForEmployee(enterpriseId, employee.employeeId),
+      },
+    );
+    if (modifyDenial) {
       throw new AppException(ErrorCode.PermissionDenied, {
-        details: [{ field: 'refId', issue: 'you cannot change your own status' }],
+        details: [{ field: 'refId', issue: explainDenial(modifyDenial) }],
       });
     }
 

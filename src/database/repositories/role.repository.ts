@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { RoleScope, RoleStatus, SystemRole } from '@/shared/enums';
+import { highestRoleLevel, RoleScope, RoleStatus, SystemRole } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 export interface RoleRow {
@@ -8,6 +8,10 @@ export interface RoleRow {
   readonly refId: string;
   readonly name: string;
   readonly scope: RoleScope;
+  /** Higher means more authority. See ROLE_LEVEL. */
+  readonly level: number;
+  /** Seeded by us: grantable, never editable by the business. */
+  readonly isSystem: boolean;
 }
 
 @Injectable()
@@ -25,8 +29,8 @@ export class RoleRepository extends BaseRepository {
    */
   async instantiateSystemRoles(enterpriseId: number): Promise<Map<string, number>> {
     const { rows: created } = await this.mutate<{ id: number; name: string }>(
-      `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status)
-       SELECT $1, t.scope, t.name, t.description, true, $2
+      `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+       SELECT $1, t.scope, t.name, t.description, true, $2, t.level
          FROM roles t
         WHERE t.enterprise_id IS NULL
           AND t.scope = $3
@@ -64,7 +68,8 @@ export class RoleRepository extends BaseRepository {
 
   async findByNameInEnterprise(enterpriseId: number, name: string): Promise<RoleRow | null> {
     const rows = await this.query<RoleRow>(
-      `SELECT id, name, scope FROM roles
+      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
+         FROM roles
         WHERE enterprise_id = $1 AND name = $2 AND is_deleted = false LIMIT 1`,
       [this.requireEnterprise(enterpriseId), name],
     );
@@ -78,7 +83,8 @@ export class RoleRepository extends BaseRepository {
    */
   async findByRefId(enterpriseId: number, refId: string): Promise<RoleRow | null> {
     const rows = await this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope FROM roles
+      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
+         FROM roles
         WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false AND status = $3
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), refId, RoleStatus.Active],
@@ -88,9 +94,10 @@ export class RoleRepository extends BaseRepository {
 
   async listForEnterprise(enterpriseId: number): Promise<RoleRow[]> {
     return this.query<RoleRow>(
-      `SELECT id, ref_id AS "refId", name, scope FROM roles
+      `SELECT id, ref_id AS "refId", name, scope, level, is_system AS "isSystem"
+         FROM roles
         WHERE enterprise_id = $1 AND is_deleted = false AND status = $2
-        ORDER BY is_system DESC, name`,
+        ORDER BY level DESC, is_system DESC, name`,
       [this.requireEnterprise(enterpriseId), RoleStatus.Active],
     );
   }
@@ -119,6 +126,72 @@ export class RoleRepository extends BaseRepository {
         ],
       );
     });
+  }
+
+  /**
+   * How much authority one employee has, and what they hold.
+   *
+   * ONE ROUND TRIP, because every authority decision needs all three parts —
+   * the level to compare against, the names for the owner rule, and the
+   * permission codes for the subset rule — and fetching them separately would
+   * put three queries on the path of every grant.
+   *
+   * The permission codes here are the GRANTED set, deliberately not passed
+   * through the feature gate. A business whose inbox subscription has lapsed
+   * should still be able to edit a role that mentions inbox permissions; the
+   * gate is applied independently every time anybody actually uses one. See
+   * rbac-plan.md §3.2 — the other choice is defensible and would produce
+   * baffling behaviour.
+   */
+  async authorityOfEmployee(
+    enterpriseId: number,
+    employeeId: number,
+  ): Promise<{ level: number | null; roleNames: string[]; permissionCodes: string[] }> {
+    const rows = await this.query<{ level: number; name: string; codes: string[] }>(
+      `SELECT r.level, r.name, COALESCE(array_agg(p.code) FILTER (WHERE p.code IS NOT NULL), '{}') AS codes
+         FROM employee_roles er
+         JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+        WHERE er.enterprise_id = $1
+          AND er.employee_id = $2
+          AND er.is_deleted = false
+          AND r.is_deleted = false
+          AND r.status = $3
+        GROUP BY r.id, r.level, r.name`,
+      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active],
+    );
+
+    const codes = new Set<string>();
+    for (const row of rows) for (const code of row.codes) codes.add(code);
+
+    return {
+      level: highestRoleLevel(rows.map((row) => row.level)),
+      roleNames: rows.map((row) => row.name),
+      permissionCodes: [...codes],
+    };
+  }
+
+  /**
+   * One employee's level, for the "do you outrank them" check.
+   *
+   * Separate from `authorityOfEmployee` because the TARGET of an action needs
+   * only this — pulling their permission codes as well would be fetching a set
+   * nobody compares.
+   */
+  async highestLevelForEmployee(enterpriseId: number, employeeId: number): Promise<number | null> {
+    const rows = await this.query<{ level: number | null }>(
+      `SELECT max(r.level)::int AS level
+         FROM employee_roles er
+         JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
+        WHERE er.enterprise_id = $1
+          AND er.employee_id = $2
+          AND er.is_deleted = false
+          AND r.is_deleted = false
+          AND r.status = $3`,
+      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active],
+    );
+    return rows[0]?.level ?? null;
   }
 
   /**

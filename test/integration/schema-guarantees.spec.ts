@@ -33,9 +33,11 @@ describe('schema guarantees', () => {
         `INSERT INTO enterprise_employees (identity_id, enterprise_id) VALUES ($1, $2) RETURNING id`,
         [identity[0]?.id, acme],
       );
-      // The role belongs to Zenith.
+      // The role belongs to Zenith. `level` is supplied because it is NOT NULL
+      // and has no default on purpose — every path that mints a role states its
+      // authority rather than inheriting one.
       const role: { id: string }[] = await db.query(
-        `INSERT INTO roles (enterprise_id, name) VALUES ($1, 'owner') RETURNING id`,
+        `INSERT INTO roles (enterprise_id, name, level) VALUES ($1, 'owner', 100) RETURNING id`,
         [zenith],
       );
 

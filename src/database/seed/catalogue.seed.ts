@@ -23,6 +23,7 @@ import {
   PermissionScope,
   PermissionStatus,
   RoleScope,
+  SYSTEM_ROLE_LEVELS,
   RoleStatus,
   SystemRole,
 } from '@/shared/enums';
@@ -283,17 +284,25 @@ interface RoleSeed {
   readonly scope: RoleScope;
   readonly description: string;
   readonly permissions: readonly Permission[];
+  /**
+   * Where this role sits in the hierarchy. Taken from SYSTEM_ROLE_LEVELS rather
+   * than written out again here, so the seed and the migration's backfill
+   * cannot disagree about what a manager outranks.
+   */
+  readonly level: number;
 }
 
 const ROLES: readonly RoleSeed[] = [
   {
     name: SystemRole.Owner,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Owner],
     scope: RoleScope.Enterprise,
     description: 'Full control of the enterprise, including settings and billing.',
     permissions: ENTERPRISE_PERMISSIONS,
   },
   {
     name: SystemRole.Manager,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Manager],
     scope: RoleScope.Enterprise,
     description: 'Every feature action plus employee and role management; no billing.',
     // enterprise.manage is the billing and settings surface §8 withholds from
@@ -302,18 +311,21 @@ const ROLES: readonly RoleSeed[] = [
   },
   {
     name: SystemRole.Agent,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Agent],
     scope: RoleScope.Enterprise,
     description: 'Works the inbox and comments; cannot change configuration.',
     permissions: ENTERPRISE_PERMISSIONS.filter((code) => AGENT_ACTIONS.includes(actionOf(code))),
   },
   {
     name: SystemRole.Viewer,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Viewer],
     scope: RoleScope.Enterprise,
     description: 'Read-only across every granted feature.',
     permissions: ENTERPRISE_PERMISSIONS.filter((code) => hasAction(code, PermissionAction.View)),
   },
   {
     name: SystemRole.Support,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Support],
     scope: RoleScope.Staff,
     description:
       'Read-only across assigned enterprises, plus replying where a conversation is escalated.',
@@ -324,6 +336,7 @@ const ROLES: readonly RoleSeed[] = [
   },
   {
     name: SystemRole.Ops,
+    level: SYSTEM_ROLE_LEVELS[SystemRole.Ops],
     scope: RoleScope.Staff,
     description: 'Connection and sync administration across assigned enterprises.',
     // Listed explicitly because there is no sync.* code: sync_jobs hang off a
@@ -501,9 +514,10 @@ async function seedRoles(manager: EntityManager): Promise<[Summary, ReadonlyMap<
   // creation copies them into the new tenant instead.
   const inserted = await run<{ name: string }>(
     manager,
-    `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status)
-     SELECT NULL, s.scope, s.name, s.description, true, $4
-       FROM unnest($1::varchar[], $2::varchar[], $3::varchar[]) AS s(scope, name, description)
+    `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+     SELECT NULL, s.scope, s.name, s.description, true, $5, s.level
+       FROM unnest($1::varchar[], $2::varchar[], $3::varchar[], $4::smallint[])
+            AS s(scope, name, description, level)
      ON CONFLICT (name) WHERE is_deleted = false AND enterprise_id IS NULL
      DO NOTHING
      RETURNING name`,
@@ -511,6 +525,7 @@ async function seedRoles(manager: EntityManager): Promise<[Summary, ReadonlyMap<
       ROLES.map((role) => role.scope),
       ROLES.map((role) => role.name),
       ROLES.map((role) => role.description),
+      ROLES.map((role) => role.level),
       RoleStatus.Active,
     ],
   );

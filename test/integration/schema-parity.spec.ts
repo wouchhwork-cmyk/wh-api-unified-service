@@ -130,7 +130,10 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
     const dataSource = new DataSource({
       ...base,
       database,
-      migrations: withMigrations ? base.migrations : [],
+      // `?? []` because the options type allows `migrations` to be absent, and
+      // under exactOptionalPropertyTypes an `undefined` here is not the same as
+      // an omitted key.
+      migrations: withMigrations ? (base.migrations ?? []) : [],
     });
     await dataSource.initialize();
     return dataSource;
@@ -205,8 +208,8 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
       expect(fromMigration.foreignKeys.length).toBeGreaterThan(60);
       expect(fromMigration.indexes.length).toBeGreaterThan(80);
       // Two from the initial schema, four guarding the rate-limit monitor's
-      // percentages and counts.
-      expect(fromMigration.checks).toHaveLength(6);
+      // percentages and counts, and one keeping a role's level in range.
+      expect(fromMigration.checks).toHaveLength(7);
     } finally {
       await synced.destroy();
       await migrated.destroy();

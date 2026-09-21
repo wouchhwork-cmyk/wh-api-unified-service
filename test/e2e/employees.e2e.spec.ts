@@ -230,6 +230,101 @@ describe('a business builds its team', () => {
     expect(replay.body.error.code).toBe('VERIFICATION_NOT_FOUND');
   });
 
+  /**
+   * Everything a manager must NOT be able to do.
+   *
+   * Until the level rules landed, `employees.invite` and `employees.manage`
+   * said who may act, never on whom — so a manager could invite a second
+   * manager and could suspend the owner. Both are exercised through real HTTP
+   * here rather than only against the pure rules, because the rules being right
+   * is worth nothing if a service forgets to call them.
+   */
+  async function businessWithAManager(): Promise<{
+    ownerToken: string;
+    managerToken: string;
+    managerRole: string;
+    agentRole: string;
+  }> {
+    const { ownerToken } = await onboardedBusiness();
+    const managerRole = await roleRefId(ownerToken, 'manager');
+    const agentRole = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Priya', email: 'priya@bluebottle.test', roleRefId: managerRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'priya@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+
+    return {
+      ownerToken,
+      managerToken: accepted.body.data.accessToken as string,
+      managerRole,
+      agentRole,
+    };
+  }
+
+  it('refuses a manager inviting another manager', async () => {
+    /*
+     * The escalation the old name-only check missed: a manager invites an
+     * address they control into their OWN level, accepts it, and the business
+     * now has a second manager nobody senior approved.
+     */
+    const { managerToken, managerRole } = await businessWithAManager();
+
+    const refused = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ firstName: 'Clone', email: 'clone@bluebottle.test', roleRefId: managerRole })
+      .expect(403);
+
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+  });
+
+  it('still lets a manager invite below themselves', async () => {
+    // The rule has to stop the escalation without stopping the job.
+    const { managerToken, agentRole } = await businessWithAManager();
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ firstName: 'Junior', email: 'junior@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+  });
+
+  it('refuses a manager suspending the owner', async () => {
+    /*
+     * Suspending somebody revokes every session that identity holds across
+     * EVERY business, so this was not only a takeover route inside one tenant.
+     */
+    const { ownerToken, managerToken } = await businessWithAManager();
+
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    // Meera is the signup owner (see SIGNUP); Priya is the manager this helper
+    // adds. Found by name rather than by position, because the listing order is
+    // not part of what this test is about.
+    const ownerRow = (team.body.data as { refId: string; name: string }[]).find(
+      (person) => person.name.startsWith('Meera'),
+    );
+    expect(ownerRow).toBeDefined();
+
+    const refused = await http()
+      .post(`/api/v1/employees/${ownerRow?.refId}/status`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ status: 'suspended', reason: 'attempted takeover' })
+      .expect(403);
+
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+  });
+
   it('gives an agent no authority to build the team', async () => {
     const { ownerToken } = await onboardedBusiness();
     const agentRole = await roleRefId(ownerToken, 'agent');
@@ -337,7 +432,12 @@ describe('a business builds its team', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ status: 'suspended', reason: 'by mistake' })
       .expect(403);
-    expect(refused.body.error.details[0].issue).toMatch(/your own status/i);
+    /*
+     * The wording is deliberately about the ACCOUNT rather than the status: the
+     * same rule now guards changing your own roles as well as your own status,
+     * and a message naming only one of them would be wrong on the other.
+     */
+    expect(refused.body.error.details[0].issue).toMatch(/your own account/i);
   });
 
   it('resends an invitation that a stranger burned, and reveals nothing', async () => {
