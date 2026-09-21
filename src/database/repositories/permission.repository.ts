@@ -79,15 +79,29 @@ export class PermissionRepository extends BaseRepository {
    * outlived either — still resolved to the full set, and the failure mode of the
    * highest-privilege path in the service was fail-OPEN.
    *
-   * There is deliberately no role join. staff authority is the
-   * has_all_enterprise_access flag and nothing else: the two RoleScope.Staff
-   * templates the catalogue seeds cannot be granted at all, because
-   * employee_roles.enterprise_id is NOT NULL behind a composite foreign key and
-   * a staff template has no enterprise. Making support and ops mean something
-   * needs a staff-role mechanism that does not exist yet — see docs/backlog.md.
+   * TWO KINDS OF STAFF, since `staff_roles` exists (backlog B3):
+   *
+   *   has_all_enterprise_access = true   every staff-scoped permission. The
+   *                                      platform admin. Unchanged, so no
+   *                                      existing console access moves.
+   *   has_all_enterprise_access = false  only what their staff ROLES grant.
+   *                                      Previously this person could log in
+   *                                      and reach nothing at all, because
+   *                                      there was no way to grant them
+   *                                      anything — `support` and `ops` were
+   *                                      structurally ungrantable.
+   *
+   * The flag stays the superuser switch rather than becoming another role,
+   * because it is what `PlatformAdminGuard` asks and what decides whether
+   * somebody may reach into a tenant at all. Folding it into the role system
+   * would mean a single bad grant could hand out platform-wide reach.
    */
   async listStaffPermissions(staffId: number, enterpriseId: number | null): Promise<string[]> {
-    if (!(await this.isActivePlatformStaff(staffId))) return [];
+    const staff = await this.staffStanding(staffId);
+    if (!staff.active) return [];
+    if (!staff.hasAllEnterpriseAccess) {
+      return this.listStaffRolePermissions(staffId, enterpriseId);
+    }
 
     if (enterpriseId === null) {
       // No enterprise selected yet: only permissions that are not feature-gated
@@ -121,16 +135,66 @@ export class PermissionRepository extends BaseRepository {
   }
 
   /** Still one of ours, still active, still full-reach — asked of the row, now. */
-  private async isActivePlatformStaff(staffId: number): Promise<boolean> {
-    const rows = await this.query<{ ok: boolean }>(
-      `SELECT true AS ok FROM staff_members
-        WHERE id = $1
-          AND has_all_enterprise_access = true
-          AND status = $2
-          AND is_deleted = false
+  private async staffStanding(
+    staffId: number,
+  ): Promise<{ active: boolean; hasAllEnterpriseAccess: boolean }> {
+    const rows = await this.query<{ hasAllEnterpriseAccess: boolean }>(
+      `SELECT has_all_enterprise_access AS "hasAllEnterpriseAccess"
+         FROM staff_members
+        WHERE id = $1 AND status = $2 AND is_deleted = false
         LIMIT 1`,
       [staffId, StaffStatus.Active],
     );
-    return rows.length === 1;
+    const row = rows[0];
+    return {
+      active: row !== undefined,
+      hasAllEnterpriseAccess: row?.hasAllEnterpriseAccess ?? false,
+    };
+  }
+
+  /**
+   * A scoped staff member's permissions: only what their staff roles grant.
+   *
+   * Still subject to gate 1 — a permission whose feature the business does not
+   * have is not returned, exactly as for an employee. Reach and entitlement are
+   * different questions, and being one of ours answers only the first.
+   */
+  private async listStaffRolePermissions(
+    staffId: number,
+    enterpriseId: number | null,
+  ): Promise<string[]> {
+    const featurePredicate =
+      enterpriseId === null
+        ? // No business selected, so nothing feature-gated can apply yet.
+          'AND p.feature_id IS NULL'
+        : 'AND (p.feature_id IS NULL OR ef.status = $4)';
+
+    const rows = await this.query<{ code: string }>(
+      `SELECT DISTINCT p.code
+         FROM staff_roles sr
+         JOIN roles r ON r.id = sr.role_id AND r.scope = sr.role_scope
+         JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+         LEFT JOIN enterprise_features ef ON ef.feature_id = p.feature_id
+                                         AND ef.enterprise_id = $3
+                                         AND ef.is_deleted = false
+        WHERE sr.staff_id = $1
+          AND sr.is_deleted = false
+          AND r.is_deleted = false
+          AND r.status = $2
+          AND p.is_deleted = false
+          AND p.status = $5
+          ${featurePredicate}`,
+      enterpriseId === null
+        ? [staffId, RoleStatus.Active, null, null, PermissionStatus.Active]
+        : [
+            staffId,
+            RoleStatus.Active,
+            enterpriseId,
+            EnterpriseFeatureStatus.Active,
+            PermissionStatus.Active,
+          ],
+    );
+    return rows.map((row) => row.code);
   }
 }

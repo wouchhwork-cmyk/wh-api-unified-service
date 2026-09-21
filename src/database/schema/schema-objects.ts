@@ -905,3 +905,73 @@ export async function applyPostTableObjects(
       END $$
     `);
 }
+
+/**
+ * Objects belonging to tables that a LATER migration creates.
+ *
+ * WHY THIS IS SEPARATE from `applyPostTableObjects`. That one runs inside the
+ * initial migration, immediately after its own CREATE TABLE block — so it
+ * cannot touch a table that a migration three releases later will add. The sync
+ * path has no such problem, because `synchronize()` has already built every
+ * table from the entities by the time it runs.
+ *
+ * The consequence, before this existed, was that anything a later migration
+ * created had to express its indexes and constraints TWICE — once in the
+ * migration and once on the entity — and the two forms are not equally capable.
+ * TypeORM cannot express a partial index, an expression index, or a composite
+ * foreign key at all, which is the whole reason this file exists. So a later
+ * migration could not have the tenant-isolation shape the rest of the schema
+ * relies on without losing schema parity.
+ *
+ * Called by both paths: the migration that creates the table, and `syncSchema`
+ * after `applyPostTableObjects`. Every statement is IF NOT EXISTS or guarded,
+ * because on a fresh migrate it runs once per migration that calls it.
+ */
+export async function applyLateTableObjects(run: SqlRunner): Promise<void> {
+  /*
+   * The parent key that makes the staff-role grant below structural.
+   *
+   * Same shape as `roles_id_enterprise_uniq` and the other composite parents:
+   * a unique index on (id, scope) is what lets a child table reference a role
+   * AND pin which scope it must be, in one constraint the database enforces.
+   */
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS roles_id_scope_uniq ON roles (id, scope)`);
+
+  await run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS staff_roles_uniq
+      ON staff_roles (staff_id, role_id) WHERE is_deleted = false
+    `);
+  await run(`
+      CREATE INDEX IF NOT EXISTS staff_roles_staff_idx
+      ON staff_roles (staff_id) WHERE is_deleted = false
+    `);
+
+  await run(`
+      ALTER TABLE staff_roles DROP CONSTRAINT IF EXISTS staff_roles_staff_fk
+    `);
+  await run(`
+      ALTER TABLE staff_roles ADD CONSTRAINT staff_roles_staff_fk
+      FOREIGN KEY (staff_id) REFERENCES staff_members (id)
+    `);
+
+  /*
+   * THE COMPOSITE KEY, and the reason this function had to exist.
+   *
+   * `role_scope` is a column on the child pinned to 'staff' by a CHECK, and the
+   * foreign key routes through it — so a row pairing a staff member with an
+   * ENTERPRISE-scoped role cannot be represented. It is the same trick
+   * `employee_roles` uses in the opposite direction, where the composite key
+   * through enterprise_id makes a staff template ungrantable to an employee.
+   *
+   * Without it, "staff may only hold staff roles" would be a service-layer
+   * convention — and the one thing this schema has consistently refused to do
+   * is leave an access rule somewhere it can be forgotten.
+   */
+  await run(`
+      ALTER TABLE staff_roles DROP CONSTRAINT IF EXISTS staff_roles_role_fk
+    `);
+  await run(`
+      ALTER TABLE staff_roles ADD CONSTRAINT staff_roles_role_fk
+      FOREIGN KEY (role_id, role_scope) REFERENCES roles (id, scope)
+    `);
+}

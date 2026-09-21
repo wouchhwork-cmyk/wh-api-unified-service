@@ -13,8 +13,11 @@ import {
   PlatformFeatureDecisionSchema,
   PlatformFeatureKeyParamSchema,
   PlatformRateLimitHistoryQuerySchema,
+  PlatformStaffRolesSchema,
 } from '@/shared/contracts/platform/platform.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import { RequestContext } from '@/shared/context';
+import { AppException, ErrorCode } from '@/shared/errors';
 import {
   MetaRateLimitService,
   type MetaRateLimitOverview,
@@ -73,6 +76,49 @@ export class PlatformController {
       limit: parsed.limit ?? DEFAULT_RATE_LIMIT_POINTS,
       scopeKey: parsed.scopeKey ?? null,
     });
+  }
+
+  @Get('staff')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: "Wouchh's own people, and what each of them may do",
+    description:
+      'Until staff roles existed there was nothing to show here: every platform admin had ' +
+      'identical authority over every business, and the support and ops roles were two seeded ' +
+      'rows nothing could point at. A person marked hasAllEnterpriseAccess is a full admin and ' +
+      'their roles are ignored.',
+  })
+  async listStaff(): Promise<Awaited<ReturnType<PlatformService['listStaff']>>> {
+    return this.platform.listStaff();
+  }
+
+  @Get('staff/roles')
+  @RequirePlatformAdmin()
+  @ApiOperation({ summary: 'The staff roles that can be granted' })
+  async staffRoleOptions(): Promise<Awaited<ReturnType<PlatformService['listStaffRoleOptions']>>> {
+    return this.platform.listStaffRoleOptions();
+  }
+
+  @Post('staff/:refId/roles')
+  @RequirePlatformAdmin()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: "Replace a staff member's roles",
+    description:
+      'Only for scoped staff. A full platform admin is refused, because their permissions come ' +
+      'from the flag and roles would be recorded while doing nothing. Nobody may change their ' +
+      'own — staff have no signup route, so an admin who narrowed themselves out of the console ' +
+      'would have no way back.',
+  })
+  async setStaffRoles(
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const actor = RequestContext.actor();
+    if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
+
+    const parsed = PlatformStaffRolesSchema.parse(body);
+    await this.platform.setStaffRoles(actor.staffId, RefIdParamSchema.parse(refId), parsed.roleRefIds);
   }
 
   @Get('overview')

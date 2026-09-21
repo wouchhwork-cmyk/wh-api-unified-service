@@ -8,6 +8,7 @@ import {
   type PlatformOverview,
 } from '@/database/repositories/platform-admin.repository';
 import { AuditService } from '@/modules/audit';
+import { StaffMemberRepository } from '@/database/repositories/staff-member.repository';
 import { clampLimit } from '@/shared/utils/page-limit';
 import { RequestContext } from '@/shared/context';
 import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
@@ -21,6 +22,18 @@ import {
 } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { maskEmail, maskMobile } from '@/shared/utils/normalize';
+
+/** One of our own people, as the console shows them. */
+export interface StaffListItem {
+  readonly refId: string;
+  readonly name: string;
+  readonly email: string | null;
+  readonly status: string;
+  /** True means the platform admin: every staff permission, every business. */
+  readonly hasAllEnterpriseAccess: boolean;
+  readonly roles: readonly string[];
+  readonly lastLoginAt: Date | null;
+}
 
 /** What a client is allowed to see about a business. No internal ids. */
 export interface EnterpriseListItem {
@@ -62,9 +75,95 @@ export interface EnterpriseDetail extends EnterpriseListItem {
 export class PlatformService {
   constructor(
     private readonly platform: PlatformAdminRepository,
+    private readonly staff: StaffMemberRepository,
     private readonly audit: AuditService,
     @InjectPinoLogger(PlatformService.name) private readonly logger: PinoLogger,
   ) {}
+
+  /**
+   * Wouchh's own people and what each of them may do.
+   *
+   * Until `staff_roles` existed there was nothing to show: every platform admin
+   * had identical authority, and the `support` and `ops` roles were two seeded
+   * rows nothing could point at (backlog B3).
+   */
+  async listStaff(): Promise<readonly StaffListItem[]> {
+    const rows = await this.staff.listWithRoles();
+    return rows.map((row) => ({
+      refId: row.refId,
+      name: [row.firstName, row.lastName].filter(Boolean).join(' '),
+      // Masked like every other contact detail. An internal list is still the
+      // most screenshotted kind of screen.
+      email: row.email ? maskEmail(row.email) : null,
+      status: row.status,
+      hasAllEnterpriseAccess: row.hasAllEnterpriseAccess,
+      roles: row.roles,
+      lastLoginAt: row.lastLoginAt,
+    }));
+  }
+
+  /** The staff roles a platform admin can hand out. */
+  async listStaffRoleOptions(): Promise<readonly { refId: string; name: string }[]> {
+    const rows = await this.staff.listStaffRoleOptions();
+    return rows.map((row) => ({ refId: row.refId, name: row.name }));
+  }
+
+  /**
+   * Replaces exactly which staff roles somebody holds.
+   *
+   * NOBODY CHANGES THEIR OWN. The realistic failure is an admin narrowing
+   * themselves out of the console with no second admin to undo it — the same
+   * reasoning as the tenant-side self guard, and here there is no support path
+   * at all because staff have no signup route.
+   *
+   * A platform admin — `has_all_enterprise_access` — is refused outright:
+   * their permissions come from the flag, so roles would be recorded and do
+   * nothing, which is worse than refusing. Narrowing one is a deliberate act
+   * on the flag, not a side effect of granting roles.
+   */
+  async setStaffRoles(
+    actingStaffId: number,
+    staffRefId: string,
+    roleRefIds: readonly string[],
+  ): Promise<void> {
+    const target = await this.staff.findByRefId(staffRefId);
+    if (!target) throw new AppException(ErrorCode.EmployeeNotFound);
+
+    if (target.id === actingStaffId) {
+      throw new AppException(ErrorCode.PermissionDenied, {
+        details: [{ field: 'refId', issue: 'you cannot change your own access' }],
+      });
+    }
+    if (target.hasAllEnterpriseAccess) {
+      throw new AppException(ErrorCode.ValidationFailed, {
+        details: [
+          {
+            field: 'refId',
+            issue: 'this person is a platform admin; roles would have no effect',
+          },
+        ],
+      });
+    }
+
+    const options = await this.staff.listStaffRoleOptions();
+    const wanted = options.filter((option) => roleRefIds.includes(option.refId));
+    if (wanted.length !== roleRefIds.length) throw new AppException(ErrorCode.RoleNotFound);
+
+    await this.staff.replaceStaffRoles({
+      staffId: target.id,
+      roleIds: wanted.map((role) => role.id),
+      grantedByStaffId: actingStaffId,
+    });
+
+    await this.audit.record({
+      action: AuditAction.RoleGranted,
+      entityType: AuditEntityType.StaffMember,
+      entityId: target.id,
+      enterpriseId: null,
+      metadata: { roles: wanted.map((role) => role.name) },
+    });
+    this.logger.info({ roleCount: wanted.length }, 'staff roles replaced');
+  }
 
   async overview(): Promise<PlatformOverview> {
     return this.platform.overview();

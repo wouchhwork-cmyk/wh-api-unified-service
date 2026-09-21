@@ -26,6 +26,8 @@ export enum AuditEntityType {
   Enterprise = 'enterprise',
   Identity = 'identity',
   EnterpriseEmployee = 'enterprise_employee',
+  /** One of ours, not a business's. Staff role grants are recorded against it. */
+  StaffMember = 'staff_member',
   Role = 'role',
   EnterpriseFeature = 'enterprise_feature',
   ProviderConnection = 'provider_connection',

@@ -33,6 +33,7 @@ import { RolePermission } from './role-permission.entity';
 import { Role } from './role.entity';
 import { Session } from './session.entity';
 import { StaffMember } from './staff-member.entity';
+import { StaffRole } from './staff-role.entity';
 import { SyncJob } from './sync-job.entity';
 import { Verification } from './verification.entity';
 
@@ -62,6 +63,7 @@ export { RolePermission } from './role-permission.entity';
 export { Role } from './role.entity';
 export { Session } from './session.entity';
 export { StaffMember } from './staff-member.entity';
+export { StaffRole } from './staff-role.entity';
 export { SyncJob } from './sync-job.entity';
 export { Verification } from './verification.entity';
 
@@ -92,6 +94,7 @@ export const ENTITIES = [
   Role,
   Session,
   StaffMember,
+  StaffRole,
   SyncJob,
   Verification,
 ];

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DataSource } from 'typeorm';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
-import { applyPostTableObjects, applyPreTableObjects } from '@/database/schema/schema-objects';
+import { syncSchema } from '@/database/schema/provision';
 
 /**
  * The migration and `pnpm db:sync` must produce the SAME schema.
@@ -183,9 +183,18 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
     try {
       await migrated.runMigrations({ transaction: 'all' });
 
-      await applyPreTableObjects((sql) => synced.query(sql));
-      await synced.synchronize();
-      await applyPostTableObjects((sql) => synced.query(sql));
+      /*
+       * The REAL sync path, not a copy of it.
+       *
+       * This used to inline the three calls `syncSchema` makes, which meant the
+       * comparison could only catch drift between the migration and a
+       * reimplementation of db:sync — not between the migration and db:sync
+       * itself. It missed `applyLateTableObjects` the day that was added: the
+       * migrated database grew three objects and the synced one did not, and
+       * the test that exists to notice exactly that had been taught the old
+       * sequence by hand.
+       */
+      await syncSchema(synced);
 
       const fromMigration = await factsOf(migrated);
       const fromSync = await factsOf(synced);
@@ -207,9 +216,15 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
       // A guard against the comparison passing because both sides are empty.
       expect(fromMigration.foreignKeys.length).toBeGreaterThan(60);
       expect(fromMigration.indexes.length).toBeGreaterThan(80);
-      // Two from the initial schema, four guarding the rate-limit monitor's
-      // percentages and counts, and one keeping a role's level in range.
-      expect(fromMigration.checks).toHaveLength(7);
+      /*
+       * Two from the initial schema, four guarding the rate-limit monitor's
+       * percentages and counts, one keeping a role's level in range, and one
+       * pinning a staff-role grant to a staff-scoped role.
+       *
+       * Counted rather than merely compared so that a constraint quietly
+       * disappearing from BOTH paths still fails here.
+       */
+      expect(fromMigration.checks).toHaveLength(8);
     } finally {
       await synced.destroy();
       await migrated.destroy();

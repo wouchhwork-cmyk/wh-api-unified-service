@@ -78,3 +78,17 @@ export const PlatformRateLimitHistoryQuerySchema = z
   .strict();
 
 export type PlatformRateLimitHistoryQuery = z.infer<typeof PlatformRateLimitHistoryQuerySchema>;
+
+/**
+ * The staff roles somebody should hold afterwards.
+ *
+ * May be EMPTY, unlike the tenant-side equivalent. An employee with no roles is
+ * indistinguishable from a half-finished invitation, so that one insists on at
+ * least one; a staff member with no roles is a meaningful state — somebody who
+ * still works here and currently reaches nothing.
+ */
+export const PlatformStaffRolesSchema = z
+  .object({ roleRefIds: z.array(z.uuid()).max(10) })
+  .strict();
+
+export type PlatformStaffRolesRequest = z.infer<typeof PlatformStaffRolesSchema>;

@@ -1,7 +1,11 @@
 import { DataSource } from 'typeorm';
 import type { DatabaseConfig } from '@/config/config.types';
 import { buildDataSourceOptions } from '@/database/data-source';
-import { applyPostTableObjects, applyPreTableObjects } from './schema-objects';
+import {
+  applyLateTableObjects,
+  applyPostTableObjects,
+  applyPreTableObjects,
+} from './schema-objects';
 
 /** Postgres says the object is already there. Under a sync that is the goal. */
 const ALREADY_EXISTS = new Set([
@@ -95,25 +99,34 @@ export async function syncSchema(
 
   let applied = 0;
   let existing = 0;
-  await applyPostTableObjects(
-    async (sql) => {
-      try {
-        const result = await dataSource.query(sql);
-        applied += 1;
-        return result;
-      } catch (error) {
-        const code = (error as { code?: string }).code;
-        if (code && ALREADY_EXISTS.has(code)) {
-          existing += 1;
-          return undefined;
-        }
-        throw error;
+  const tolerant = async (sql: string): Promise<unknown> => {
+    try {
+      const result = await dataSource.query(sql);
+      applied += 1;
+      return result;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code && ALREADY_EXISTS.has(code)) {
+        existing += 1;
+        return undefined;
       }
-    },
+      throw error;
+    }
+  };
+
+  await applyPostTableObjects(
+    tolerant,
     // Passed through so the audit_logs append-only grant applies. Without it
     // that control reads as though it were in force and does nothing.
     { appRole: options.appRole ?? null },
   );
+
+  /*
+   * Objects on tables a later migration created. Applied AFTER the post-table
+   * set because they depend on it — the composite foreign key for staff roles
+   * needs `roles_id_scope_uniq`, and that needs `roles` to exist.
+   */
+  await applyLateTableObjects(tolerant);
 
   const stamped = await stampMigrationsAsApplied(dataSource);
   return { applied, existing, stamped };
