@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { EmployeeKind, EmployeeStatus } from '@/shared/enums';
+import { EmployeeKind, EmployeeStatus, RoleStatus } from '@/shared/enums';
 import { EnterpriseEmployee } from '../entities/enterprise-employee.entity';
 import { BaseRepository } from './base.repository';
 
@@ -245,6 +245,9 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
       this.requireEnterprise(enterpriseId),
       options.limit,
       options.viewerLevel,
+      // Bound rather than inlined, like every other status in this file — an
+      // inlined literal is the one that stops following the enum.
+      RoleStatus.Active,
     ];
     let kindPredicate = '';
     if (!options.includeSupport) {
@@ -306,7 +309,7 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
           * also showed archived role names.
           */
          LEFT JOIN roles r ON r.id = er.role_id AND r.enterprise_id = er.enterprise_id
-                          AND r.is_deleted = false AND r.status = 'active'
+                          AND r.is_deleted = false AND r.status = $4
         WHERE e.enterprise_id = $1 AND e.is_deleted = false ${kindPredicate} ${cursorPredicate}
         GROUP BY e.id, i.id
         /*

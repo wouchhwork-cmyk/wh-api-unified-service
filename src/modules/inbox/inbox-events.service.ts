@@ -36,6 +36,63 @@ export type InboxSubscriber = (change: InboxChange) => void;
  */
 export type VisibleKinds = ReadonlySet<ConversationKind>;
 
+/** A subscriber with no recorded kinds hears nothing, which is the safe default. */
+const EMPTY: VisibleKinds = new Set<ConversationKind>();
+
+/**
+ * What a notification payload has to look like to be delivered, and to whom.
+ *
+ * PURE, AND EXPORTED, because it is a security control and the only reason the
+ * last defect in it shipped is that nothing tested it. The fan-out lives behind
+ * a Postgres LISTEN connection, so testing it in place means standing up a
+ * client; extracting the decision means testing every branch directly, which is
+ * what an access rule deserves.
+ *
+ * Returns the parsed change when it should reach this subscriber, or null.
+ */
+export function deliverableChange(
+  raw: string | undefined,
+  enterpriseId: number,
+  visibleKinds: VisibleKinds,
+): InboxChange | null {
+  if (!raw) return null;
+
+  let parsed: {
+    enterpriseId?: unknown;
+    conversationRefId?: unknown;
+    kind?: unknown;
+    conversationKind?: unknown;
+  };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return null;
+  }
+
+  if (parsed.enterpriseId !== enterpriseId) return null;
+  if (typeof parsed.conversationRefId !== 'string') return null;
+
+  /*
+   * A payload with no conversation kind is DROPPED, not delivered.
+   *
+   * Fail-closed, and it matters during a rolling deploy: an older instance
+   * still publishing the old shape would otherwise have its events fanned out
+   * unfiltered, which is the exact leak this closes. The cost of dropping is a
+   * client that re-reads a beat later on its own poll; the cost of delivering
+   * is telling somebody a private thread exists.
+   */
+  const conversationKind = parsed.conversationKind;
+  if (typeof conversationKind !== 'string') return null;
+  if (!visibleKinds.has(conversationKind as ConversationKind)) return null;
+
+  return {
+    conversationRefId: parsed.conversationRefId,
+    kind: parsed.kind === 'outbound' ? 'outbound' : 'inbound',
+    conversationKind: conversationKind as ConversationKind,
+  };
+}
+
+
 /**
  * Fans a conversation change out to the browsers watching it.
  *
@@ -235,46 +292,29 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
   private dispatch(raw: string | undefined): void {
     if (!raw) return;
 
-    let parsed: {
-      enterpriseId?: unknown;
-      conversationRefId?: unknown;
-      kind?: unknown;
-      conversationKind?: unknown;
-    };
+    /*
+     * The tenant is read once, cheaply, only to find the subscriber set. The
+     * real decision — including re-checking the tenant — is `deliverableChange`,
+     * which is applied PER SUBSCRIBER because the visible kinds differ between
+     * them.
+     */
+    let enterpriseId: unknown;
     try {
-      parsed = JSON.parse(raw) as typeof parsed;
+      enterpriseId = (JSON.parse(raw) as { enterpriseId?: unknown }).enterpriseId;
     } catch {
       return;
     }
+    if (typeof enterpriseId !== 'number') return;
 
-    const enterpriseId = parsed.enterpriseId;
-    const conversationRefId = parsed.conversationRefId;
-    if (typeof enterpriseId !== 'number' || typeof conversationRefId !== 'string') return;
-
-    /*
-     * A notification with no conversation kind is DROPPED, not delivered.
-     *
-     * Fail-closed, and it matters during a rolling deploy: an older instance
-     * still publishing the old payload would otherwise have its events fanned
-     * out to every subscriber unfiltered, which is the exact leak this closes.
-     * The cost of dropping is a client that re-reads a beat later on its own
-     * poll; the cost of delivering is telling somebody a private thread exists.
-     */
-    const conversationKind = parsed.conversationKind;
-    if (typeof conversationKind !== 'string') return;
-
-    const kind = parsed.kind === 'outbound' ? 'outbound' : 'inbound';
     const listeners = this.subscribers.get(enterpriseId);
     if (!listeners) return;
 
     for (const listener of listeners) {
-      // Only the kinds this subscriber was allowed to hear about when it
-      // connected. Every other inbox path is filtered by kind; this is the one
-      // that was widened and, until now, was not.
-      if (!this.visibleKinds.get(listener)?.has(conversationKind as ConversationKind)) continue;
+      const change = deliverableChange(raw, enterpriseId, this.visibleKinds.get(listener) ?? EMPTY);
+      if (!change) continue;
 
       try {
-        listener({ conversationRefId, kind, conversationKind: conversationKind as ConversationKind });
+        listener(change);
       } catch (error) {
         // One broken stream must not stop the others being told.
         this.logger.warn({ err: error }, 'an inbox subscriber threw');

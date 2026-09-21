@@ -74,7 +74,17 @@ export const SetEmployeeRolesSchema = z
      * access is what suspension is for, and it keeps the audit trail honest
      * about which of the two happened.
      */
-    roleRefIds: z.array(z.uuid()).min(1).max(10),
+    roleRefIds: z
+      .array(z.uuid())
+      .min(1)
+      .max(10)
+      /*
+       * Deduplicated at the edge, like the permission codes above. The same
+       * refId twice is a client bug rather than a request to refuse — and
+       * without this the service's "did I find every role you named" check
+       * counts 2 against 1 and reports ROLE_NOT_FOUND for a role that exists.
+       */
+      .transform((refIds) => [...new Set(refIds)]),
   })
   .strict();
 

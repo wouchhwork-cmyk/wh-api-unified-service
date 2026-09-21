@@ -481,7 +481,20 @@ export class CommentProjectorService {
       await this.conversations.notifyChanged({
         enterpriseId,
         conversationRefId: conversation.refId,
-        conversationKind: ConversationKind.CommentThread,
+        /*
+         * THE PARAMETER, not a constant. This projector handles BOTH comment
+         * threads and mentions — `store` is called with
+         * `ConversationKind.CommentThread` for a comment on our own post and
+         * with `ConversationKind.Mention` when somebody tags us on theirs — and
+         * the conversation ROW is written with it a few lines up.
+         *
+         * Hardcoding it here announced every mention as a comment thread, which
+         * broke the stream filter in both directions at once: somebody holding
+         * `comments.view` and not `mentions.view` was told about every mention,
+         * and somebody holding only `mentions.view` — the exact tenant the
+         * per-kind split was built for — was told about none of theirs.
+         */
+        conversationKind,
         kind: 'inbound',
       });
 

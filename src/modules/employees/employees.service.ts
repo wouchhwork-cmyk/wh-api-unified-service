@@ -398,18 +398,18 @@ export class EmployeesService {
      *
      * Checked only when the target actually holds the role and is actually
      * being suspended; reinstating somebody can never reduce the count.     *
-     * CURRENTLY UNREACHABLE, and kept anyway. To act on an owner you must be an
-     * owner, so if there is somebody to do the acting then the target is not
-     * the last one — the arithmetic cannot come out at zero today. It is here
-     * because that is a property of two rules agreeing, not of this rule, and
-     * the day either moves (a platform-admin path into employee management, a
-     * change to who may act on whom) this is the check that stops a business
-     * being emptied of owners. Cheap to ask, asked only on the two paths that
-     * could ever reduce the count.
+     * REACHABLE ONLY CONCURRENTLY, which is why it sits behind a lock.
+     *
+     * Sequentially it cannot fire: to act on an owner you must be an owner, so
+     * if there is somebody doing the acting then the target is not the last
+     * one. Concurrently it absolutely can — two owners suspending each other at
+     * the same moment each read "one other owner remains" and both commit. That
+     * became possible in the same change that let owners act on each other at
+     * all, so the guard and the race arrived together.
      */
-    if (status === EmployeeStatus.Suspended) {
-      await this.assertNotLastOwner(enterpriseId, employee.employeeId);
-    }
+    // Ordered AFTER the no-op check below in effect, because re-suspending an
+    // already-suspended sole owner should say "already suspended" rather than
+    // "this is the last owner" — the second is true and unhelpful.
 
     if (employee.status === status) {
       throw new AppException(ErrorCode.InvalidStateTransition, {
@@ -417,12 +417,21 @@ export class EmployeesService {
       });
     }
 
-    const applied = await this.employees.setStatus(
-      enterpriseId,
-      employee.employeeId,
-      employee.status,
-      status,
-    );
+    /*
+     * THE CHECK AND THE WRITE IN ONE TRANSACTION, behind a lock.
+     *
+     * Counting owners and then writing is a read-then-write, and owner-on-owner
+     * action is now the ordinary case — so two owners suspending each other at
+     * the same moment each read "one other owner remains", each pass, and both
+     * commit. The business ends with no owners and no way back.
+     */
+    const applied = await this.tx.runInTransaction(async () => {
+      if (status === EmployeeStatus.Suspended) {
+        await this.roles.lockOwnerRole(enterpriseId);
+        await this.assertNotLastOwner(enterpriseId, employee.employeeId);
+      }
+      return this.employees.setStatus(enterpriseId, employee.employeeId, employee.status, status);
+    });
     if (!applied) throw new AppException(ErrorCode.ConcurrentModification);
 
     /*

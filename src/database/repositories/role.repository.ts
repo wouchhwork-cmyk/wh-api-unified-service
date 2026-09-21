@@ -123,11 +123,21 @@ export class RoleRepository extends BaseRepository {
                   AND er.is_deleted = false) AS "holderCount"
          FROM roles r
          LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+         /*
+          * p.status is filtered here for the same reason it is in
+          * authorityOfEmployee: these codes are one side of the subset
+          * comparison and the actor's set is the other. Filtering one and not
+          * the other means that the day any permission is deprecated, every
+          * role still holding it becomes uneditable and unarchivable by
+          * everybody — including the owner — with a message about permissions
+          * they do not hold.
+          */
          LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $3
         WHERE r.enterprise_id = $1 AND r.is_deleted = false AND r.status = $2
         GROUP BY r.id
         ORDER BY r.level DESC, r.is_system DESC, r.name`,
-      [this.requireEnterprise(enterpriseId), RoleStatus.Active],
+      [this.requireEnterprise(enterpriseId), RoleStatus.Active, PermissionStatus.Active],
     );
   }
 
@@ -181,9 +191,10 @@ export class RoleRepository extends BaseRepository {
          FROM roles r
          LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
          LEFT JOIN permissions p ON p.id = rp.permission_id AND p.is_deleted = false
+                                AND p.status = $3
         WHERE r.enterprise_id = $1 AND r.ref_id = $2 AND r.is_deleted = false
         GROUP BY r.id`,
-      [this.requireEnterprise(enterpriseId), refId],
+      [this.requireEnterprise(enterpriseId), refId, PermissionStatus.Active],
     );
     return rows[0] ?? null;
   }
@@ -273,7 +284,8 @@ export class RoleRepository extends BaseRepository {
     await this.query(
       `DELETE FROM role_permissions rp
         USING roles r
-        WHERE rp.role_id = r.id AND r.id = $2 AND r.enterprise_id = $1`,
+        WHERE rp.role_id = r.id AND r.id = $2 AND r.enterprise_id = $1
+          AND r.is_deleted = false`,
       [this.requireEnterprise(enterpriseId), roleId],
     );
     if (permissionCodes.length === 0) return;
@@ -509,6 +521,34 @@ export class RoleRepository extends BaseRepository {
       roleNames: rows.map((row) => row.name),
       permissionCodes: [...codes],
     };
+  }
+
+  /**
+   * Serialises every decision about who holds the owner role in one business.
+   *
+   * WHY A LOCK IS NEEDED AT ALL. Counting the owners and then writing is a
+   * read-then-write, and owner-on-owner action is now the ordinary case — so
+   * two owners demoting each other at the same moment each read "one other
+   * owner remains", each pass the check, and both commit. The business ends
+   * with NO owners and no self-serve way back, because the only accounts that
+   * could restore one are the two that were just removed.
+   *
+   * The owner ROLE row is the thing to lock, not the employees: the two
+   * transactions touch different employees, so locking those serialises
+   * nothing. They both want to change who holds this one role, so this is the
+   * narrowest row that actually contends — and it is a lock per business, held
+   * for the length of one small transaction.
+   *
+   * Must be called INSIDE a transaction. `FOR UPDATE` outside one takes the
+   * lock and releases it on the next statement, which would look like it worked.
+   */
+  async lockOwnerRole(enterpriseId: number): Promise<void> {
+    await this.query(
+      `SELECT id FROM roles
+        WHERE enterprise_id = $1 AND name = $2 AND is_deleted = false
+        FOR UPDATE`,
+      [this.requireEnterprise(enterpriseId), SystemRole.Owner],
+    );
   }
 
   /**
