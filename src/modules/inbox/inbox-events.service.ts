@@ -68,8 +68,14 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
    * A parallel map rather than a field on the subscriber, because the
    * subscriber is a plain function the caller owns — wrapping it in an object
    * would change the shape every caller passes for the sake of one lookup.
+   *
+   * A WeakMap, so a subscriber that is dropped without its unsubscribe running
+   * cannot hold an entry open. Keyed by a function object, an ordinary Map
+   * turns every missed cleanup into a leak that nothing else would surface —
+   * and the cleanup below sits behind an early return, which is exactly the
+   * shape that eventually gets one wrong.
    */
-  private readonly visibleKinds = new Map<InboxSubscriber, VisibleKinds>();
+  private readonly visibleKinds = new WeakMap<InboxSubscriber, VisibleKinds>();
 
   constructor(
     private readonly config: AppConfigService,
@@ -85,8 +91,8 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
   async onApplicationShutdown(): Promise<void> {
     this.stopping = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    // The WeakMap needs no clearing: its entries go with the subscribers.
     this.subscribers.clear();
-    this.visibleKinds.clear();
 
     const client = this.client;
     this.client = null;
@@ -124,10 +130,13 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
     this.subscribers.set(enterpriseId, existing);
 
     return () => {
+      // Dropped FIRST, before the early return below, so it happens whatever
+      // state the subscriber set is in.
+      this.visibleKinds.delete(subscriber);
+
       const set = this.subscribers.get(enterpriseId);
       if (!set) return;
       set.delete(subscriber);
-      this.visibleKinds.delete(subscriber);
       // Drop the empty set rather than leaving a key per tenant forever.
       if (set.size === 0) this.subscribers.delete(enterpriseId);
     };
