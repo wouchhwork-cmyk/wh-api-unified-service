@@ -1,7 +1,18 @@
 /** schema.md §6 — the resource half of a `<resource>.<action>` code. */
 export enum PermissionResource {
+  /**
+   * Direct messages ONLY, since mentions and comment threads were split out.
+   *
+   * They all live in `conversations` as rows — a mention IS a conversation with
+   * `conversation_kind = 'mention'` — but storing three things in one table is
+   * not a reason to govern them with one permission. A business that wants
+   * somebody handling public mentions without reading its private DMs could not
+   * express that, and a business whose comment_management feature was revoked
+   * kept full comment access because comments rode in on `conversations.view`.
+   */
   Conversations = 'conversations',
   Comments = 'comments',
+  Mentions = 'mentions',
   Posts = 'posts',
   Channels = 'channels',
   Customers = 'customers',
@@ -41,6 +52,30 @@ export enum Permission {
   CommentsReply = 'comments.reply',
   CommentsHide = 'comments.hide',
   CommentsDelete = 'comments.delete',
+  /**
+   * Handing a comment thread to a colleague, and closing or resyncing one.
+   *
+   * Both existed for direct messages and not for comments, so a business could
+   * route a DM to the right person and had no way to route a comment. The two
+   * screens do the same job.
+   */
+  CommentsAssign = 'comments.assign',
+  CommentsManage = 'comments.manage',
+
+  /*
+   * MENTIONS. Somebody tagging the business in their own post or story.
+   *
+   * There was no permission for this at all: mentions are stored as
+   * conversations, so they were governed by `conversations.*` and could not be
+   * granted without also granting the private inbox. There is deliberately no
+   * `mentions.hide` or `mentions.delete` — a mention lives on somebody else's
+   * post, and Meta gives us no way to hide or remove it. Modelling an action
+   * the platform cannot perform would be a toggle that silently does nothing.
+   */
+  MentionsView = 'mentions.view',
+  MentionsReply = 'mentions.reply',
+  MentionsAssign = 'mentions.assign',
+  MentionsManage = 'mentions.manage',
 
   PostsView = 'posts.view',
 

@@ -12,7 +12,8 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
+import { CurrentScopedActor, RequireAnyPermission } from '@/shared/decorators';
+import { anyPermissionFor } from '@/shared/rbac';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
 import type { MessageRow } from '@/database/repositories/message.repository';
@@ -25,7 +26,6 @@ import {
   ConversationStatus,
   MediaKind,
   MessageDirection,
-  Permission,
 } from '@/shared/enums';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import { evaluateReplyWindow } from './reply-window';
@@ -54,7 +54,7 @@ export class InboxController {
   ) {}
 
   @Get()
-  @RequirePermission(Permission.ConversationsView)
+  @RequireAnyPermission(...anyPermissionFor('view'))
   @ApiOperation({
     summary: 'The inbox',
     description:
@@ -114,7 +114,7 @@ export class InboxController {
    * pushed to a session that has since lost access.
    */
   @Get('stream')
-  @RequirePermission(Permission.ConversationsView)
+  @RequireAnyPermission(...anyPermissionFor('view'))
   @SkipThrottle()
   @SkipTimeout()
   @RawResponse()
@@ -201,7 +201,7 @@ export class InboxController {
   }
 
   @Get(':refId')
-  @RequirePermission(Permission.ConversationsView)
+  @RequireAnyPermission(...anyPermissionFor('view'))
   @ApiOperation({ summary: 'One conversation and its messages' })
   async thread(
     @CurrentScopedActor() actor: ScopedActor,
@@ -246,7 +246,7 @@ export class InboxController {
   }
 
   @Post(':refId/messages/:messageRefId/moderate')
-  @RequirePermission(Permission.ConversationsManage)
+  @RequireAnyPermission(...anyPermissionFor('manage'))
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Hide, unhide or delete a comment on a post you own',
@@ -272,7 +272,7 @@ export class InboxController {
   }
 
   @Post(':refId/reply')
-  @RequirePermission(Permission.ConversationsReply)
+  @RequireAnyPermission(...anyPermissionFor('reply'))
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Reply to a conversation',
@@ -297,7 +297,7 @@ export class InboxController {
   }
 
   @Post(':refId/assign')
-  @RequirePermission(Permission.ConversationsAssign)
+  @RequireAnyPermission(...anyPermissionFor('assign'))
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Assign a conversation to a team employee, or unassign it' })
   async assign(
@@ -315,7 +315,7 @@ export class InboxController {
   }
 
   @Post(':refId/status')
-  @RequirePermission(Permission.ConversationsManage)
+  @RequireAnyPermission(...anyPermissionFor('manage'))
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Move a conversation through its workflow' })
   async setStatus(
@@ -332,7 +332,7 @@ export class InboxController {
   }
 
   @Post(':refId/resync')
-  @RequirePermission(Permission.ConversationsManage)
+  @RequireAnyPermission(...anyPermissionFor('manage'))
   @ApiOperation({
     summary: 'Re-read this thread from the platform',
     description:
@@ -350,7 +350,7 @@ export class InboxController {
   }
 
   @Post(':refId/attachments/refresh')
-  @RequirePermission(Permission.ConversationsView)
+  @RequireAnyPermission(...anyPermissionFor('view'))
   @ApiOperation({
     summary: 'Replace expired media links in this thread',
     description:
@@ -371,7 +371,7 @@ export class InboxController {
   }
 
   @Post(':refId/read')
-  @RequirePermission(Permission.ConversationsView)
+  @RequireAnyPermission(...anyPermissionFor('view'))
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Clear the unread badge',

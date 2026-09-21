@@ -292,8 +292,17 @@ export class ConversationRepository extends BaseRepository {
     enterpriseId: number;
     status: ConversationStatus | null;
     assignedToEmployeeId: number | null;
-    /** Narrow to one kind of thread — mentions, comments, DMs. Null means all. */
-    conversationKind: ConversationKind | null;
+    /**
+     * The kinds of thread to return — ALWAYS an explicit list, never "all".
+     *
+     * It used to be one optional kind, with null meaning every kind. That is no
+     * longer expressible on purpose: which kinds a person may see depends on
+     * their permissions now, and an "all" that quietly meant "including the
+     * ones they may not see" is the exact shape of the bug this replaced. The
+     * caller intersects what was asked for with what is permitted and passes
+     * the result.
+     */
+    conversationKinds: readonly ConversationKind[];
     limit: number;
     cursor: { lastMessageAt: Date | null; id: number } | null;
   }): Promise<ConversationRow[]> {
@@ -318,10 +327,8 @@ export class ConversationRepository extends BaseRepository {
      * the edge, and interpolating it anyway would be the one place in this file
      * where a query is built from a string.
      */
-    if (input.conversationKind !== null) {
-      params.push(input.conversationKind);
-      filters.push(`AND cv.conversation_kind = $${params.length}`);
-    }
+    params.push([...input.conversationKinds]);
+    filters.push(`AND cv.conversation_kind = ANY($${params.length}::varchar[])`);
     if (input.cursor) {
       params.push(input.cursor.lastMessageAt, input.cursor.id);
       const at = `$${params.length - 1}::timestamptz`;

@@ -93,7 +93,23 @@ describe('the shared inbox', () => {
      * every request below is a 403 rather than a failure of what is under test.
      * That the gate itself works is asserted in the platform-console suite.
      */
-    for (const feature of ['unified_inbox', 'post_insights', 'customer_directory']) {
+    /*
+     * `comment_management` is in this list now, and it has to be: the threads
+     * this suite creates are `comment_thread` rows, and comment threads are
+     * governed by `comments.*` rather than by `conversations.*`.
+     *
+     * They passed without it before, which was the bug — comments rode in on
+     * `conversations.view`, gated on `unified_inbox`, so a business whose
+     * comment feature had never been granted (or had been REVOKED) kept full
+     * comment access. Measured on real data: one tenant was in exactly that
+     * state.
+     */
+    for (const feature of [
+      'unified_inbox',
+      'comment_management',
+      'post_insights',
+      'customer_directory',
+    ]) {
       await http()
         .post(
           `/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/features/${feature}`,
@@ -230,6 +246,48 @@ describe('the shared inbox', () => {
 
     return conversation[0]?.ref_id as string;
   }
+
+  it('hides comment threads from a business whose comment feature is revoked', async () => {
+    /*
+     * THE LEAK THIS SPLIT CLOSES, pinned.
+     *
+     * Comment threads used to be governed by `conversations.view`, which is
+     * gated on `unified_inbox`. So a business could have `comment_management`
+     * declined, disabled or REVOKED and keep full access to every comment —
+     * reading them, replying, and hiding or deleting a customer's comment from
+     * a public post. Measured on real data before the fix: one live tenant sat
+     * in exactly that state.
+     *
+     * Revoking is the sharpest version of the test because it is the state a
+     * business is put into deliberately, by us, and it is terminal — the
+     * feature state machine has no transition out of `revoked`.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+
+    // Visible while the feature is active.
+    await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+
+    await http()
+      .post(`/api/v1/platform/enterprises/${enterpriseRefId}/features/comment_management`)
+      .set({ Authorization: `Bearer ${admin.body.data.accessToken as string}` })
+      .send({ status: 'revoked', reason: 'terms breach' })
+      .expect(200);
+
+    /*
+     * NOT FOUND rather than FORBIDDEN, on the same access token. The route is
+     * still reachable — this business still has the DM inbox — so a 403 would
+     * confirm that this particular conversation exists to somebody who may not
+     * see it, and a refId is the only handle a client has.
+     */
+    await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(404);
+
+    // And it is gone from the listing, not merely unreadable.
+    const listed = await http().get('/api/v1/conversations').set(auth).expect(200);
+    expect(listed.body.data).toEqual([]);
+  });
 
   it('tells the client who it is, so it can offer "assign to me"', async () => {
     const { ownerToken } = await onboardedBusiness();

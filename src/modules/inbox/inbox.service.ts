@@ -18,6 +18,11 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
+import {
+  permissionFor,
+  visibleKinds,
+  type ConversationAction,
+} from '@/shared/rbac';
 import { clampLimit } from '@/shared/utils/page-limit';
 import { isExpiringMediaUrl, toWebhookAttachments } from './attachment-normalizer';
 import {
@@ -30,6 +35,7 @@ import {
   AuditAction,
   AuditEntityType,
   ConversationKind,
+  Permission,
   MessageDirection,
   ConversationStatus,
   Platform,
@@ -111,11 +117,37 @@ export class InboxService {
     },
   ): Promise<{ items: ConversationRow[]; nextCursor: string | null; hasMore: boolean }> {
     const limit = clampLimit(options.limit);
+
+    /*
+     * ONLY THE KINDS THIS ACTOR MAY SEE.
+     *
+     * Filtered into the query rather than out of the page, for the reason the
+     * employee listing is: dropping rows after the fetch returns a short page
+     * while more matching rows exist, and a short page reads as the end of the
+     * results — so threads would silently disappear off the end.
+     *
+     * An explicit `kind` filter is INTERSECTED with this rather than trusted.
+     * Asking for a kind you may not see returns nothing, which is the same
+     * answer as a business that has none of that kind — and is what stops the
+     * filter being a way to probe for what exists.
+     */
+    const permitted = visibleKinds(RequestContext.actor()?.permissions ?? new Set());
+    if (permitted.length === 0) {
+      return { items: [], nextCursor: null, hasMore: false };
+    }
+    const kinds =
+      options.conversationKind === null
+        ? permitted
+        : permitted.filter((kind) => kind === options.conversationKind);
+    if (kinds.length === 0) {
+      return { items: [], nextCursor: null, hasMore: false };
+    }
+
     const rows = await this.conversations.listInbox({
       enterpriseId,
       status: options.status,
       assignedToEmployeeId: options.assignedToEmployeeId,
-      conversationKind: options.conversationKind,
+      conversationKinds: kinds,
       // One extra row is the cheapest way to know whether another page exists,
       // without a second COUNT query over the same predicate.
       limit: limit + 1,
@@ -224,7 +256,7 @@ export class InboxService {
      */
     const conversation = await this.withFreshCustomerAvatar(
       enterpriseId,
-      await this.requireConversation(enterpriseId, conversationRefId),
+      await this.requireConversation(enterpriseId, conversationRefId, 'view'),
     );
 
     /*
@@ -631,7 +663,9 @@ export class InboxService {
     enterpriseId: number,
     conversationRefId: string,
   ): Promise<{ refreshed: number; beyondReach: number }> {
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    // A refresh replaces a dead media link with a live one and reveals nothing
+    // that reading the thread did not already show, so it is a read.
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'view');
 
     const stored = await this.attachments.listRefreshable(enterpriseId, conversation.id);
     if (stored.length === 0) return { refreshed: 0, beyondReach: 0 };
@@ -786,6 +820,7 @@ export class InboxService {
     const conversation = await this.requireConversation(
       actor.enterpriseId,
       input.conversationRefId,
+      'reply',
     );
 
     /*
@@ -1044,7 +1079,7 @@ export class InboxService {
       employeeId = employee.employeeId;
     }
 
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'assign');
     if (conversation.assignedToEmployeeId === employeeId) return;
 
     await this.conversations.assign(enterpriseId, conversation.id, employeeId);
@@ -1071,7 +1106,7 @@ export class InboxService {
     conversationRefId: string,
     status: ConversationStatus,
   ): Promise<void> {
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'manage');
     // A no-op is reported as success and does nothing: re-resolving an already
     // resolved conversation is not an error, but it is not an event either.
     if (conversation.status === status) return;
@@ -1116,7 +1151,21 @@ export class InboxService {
     messageRefId: string,
     action: 'hide' | 'unhide' | 'delete',
   ): Promise<{ messageRefId: string; action: string }> {
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'manage');
+
+    /*
+     * HIDING AND DELETING ARE THEIR OWN PERMISSIONS, and always were — the
+     * catalogue has carried `comments.hide` and `comments.delete` since the
+     * beginning and nothing enforced either. The route asked for
+     * `conversations.manage`, so anybody who could close a thread could also
+     * delete a customer's comment from a public post, which is not recoverable.
+     */
+    const needed = action === 'delete' ? Permission.CommentsDelete : Permission.CommentsHide;
+    if (!RequestContext.actor()?.permissions.has(needed)) {
+      throw new AppException(ErrorCode.PermissionDenied, {
+        details: [{ field: 'permission', issue: needed }],
+      });
+    }
 
     /*
      * Not a comment thread, or a comment thread on a post that is not ours:
@@ -1200,7 +1249,7 @@ export class InboxService {
   }
 
   async markRead(enterpriseId: number, conversationRefId: string): Promise<void> {
-    const conversation = await this.requireConversation(enterpriseId, conversationRefId);
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'view');
     await this.conversations.markRead(enterpriseId, conversation.id);
   }
 
@@ -1212,12 +1261,40 @@ export class InboxService {
    * A conversation belonging to another tenant is a 404, not a 403: a 403 would
    * confirm that the refId exists.
    */
+  /**
+   * The conversation, and the right to do this to THIS KIND of conversation.
+   *
+   * The action is a required parameter rather than an option with a default,
+   * and that is the point: a direct message, a comment thread and a mention are
+   * governed by different permissions, the route cannot tell which until the
+   * row is loaded, and a call site that forgot to say what it was doing would
+   * otherwise silently get the most permissive reading. Making it required
+   * turns that into a compile error.
+   */
   private async requireConversation(
     enterpriseId: number,
     conversationRefId: string,
+    action: ConversationAction,
   ): Promise<ConversationRow> {
     const conversation = await this.conversations.findByRefId(enterpriseId, conversationRefId);
     if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
+
+    const needed = permissionFor(conversation.conversationKind, action);
+    const held = RequestContext.actor()?.permissions;
+    if (!held?.has(needed)) {
+      /*
+       * NOT FOUND, not FORBIDDEN, and deliberately.
+       *
+       * The route is reachable by anyone holding the equivalent right on any
+       * kind of thread, so a 403 here would confirm that a particular
+       * conversation ref exists to somebody who may not see it — and refIds are
+       * the only identifier a client holds, which makes that a usable oracle.
+       * Somebody who cannot see a thread should find it indistinguishable from
+       * one that is not there.
+       */
+      throw new AppException(ErrorCode.ConversationNotFound);
+    }
+
     return conversation;
   }
 }

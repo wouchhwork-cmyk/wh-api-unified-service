@@ -4,6 +4,9 @@ import { ConversationRepository } from '@/database/repositories/conversation.rep
 import { ConversationKind, ConversationStatus, Platform } from '@/shared/enums';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
+/** Every kind, for tests that are not about permission filtering. */
+const ALL_CONVERSATION_KINDS = Object.values(ConversationKind);
+
 /**
  * Assigning a conversation and closing it — the two writes that make a shared
  * inbox shared.
@@ -167,7 +170,7 @@ describe('conversation assignment and status', () => {
       enterpriseId,
       status: null,
       assignedToEmployeeId: employeeId,
-      conversationKind: null,
+      conversationKinds: ALL_CONVERSATION_KINDS,
       limit: 10,
       cursor: null,
     });

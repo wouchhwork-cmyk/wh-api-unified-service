@@ -5,6 +5,9 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { ConversationKind, ConversationStatus, Platform } from '@/shared/enums';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
+/** Every kind, for tests that are not about permission filtering. */
+const ALL_CONVERSATION_KINDS = Object.values(ConversationKind);
+
 /**
  * Keyset pagination, against real Postgres — the only place these two defects
  * are visible.
@@ -94,7 +97,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
-      conversationKind: null,
+      conversationKinds: ALL_CONVERSATION_KINDS,
         limit: 2,
         cursor: null,
       });
@@ -105,7 +108,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
-      conversationKind: null,
+      conversationKinds: ALL_CONVERSATION_KINDS,
         limit: 2,
         cursor: { lastMessageAt: anchor?.lastMessageAt ?? null, id: anchor?.id ?? 0 },
       });
@@ -145,7 +148,7 @@ describe('keyset pagination', () => {
           enterpriseId,
           status: null,
           assignedToEmployeeId: null,
-          conversationKind: null,
+          conversationKinds: ALL_CONVERSATION_KINDS,
           limit: 1,
           cursor,
         });
@@ -170,7 +173,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
-      conversationKind: null,
+      conversationKinds: ALL_CONVERSATION_KINDS,
         limit: 1,
         cursor: null,
       });
@@ -181,7 +184,7 @@ describe('keyset pagination', () => {
         enterpriseId,
         status: null,
         assignedToEmployeeId: null,
-      conversationKind: null,
+      conversationKinds: ALL_CONVERSATION_KINDS,
         limit: 5,
         cursor: { lastMessageAt: null, id: third },
       });

@@ -76,6 +76,18 @@ const FEATURES: readonly FeatureSeed[] = [
 const FEATURE_BY_RESOURCE: Readonly<Record<PermissionResource, FeatureKey | null>> = {
   [PermissionResource.Conversations]: FeatureKey.UnifiedInbox,
   [PermissionResource.Comments]: FeatureKey.CommentManagement,
+  /*
+   * MENTIONS RIDE ON THE INBOX FEATURE, deliberately, and not on a new one.
+   *
+   * A separate `mention_monitoring` feature would be defensible commercially
+   * and would break every existing tenant the moment it shipped: nobody holds a
+   * feature that did not exist yesterday, so mentions would go dark until an
+   * admin granted it to each business one at a time. Mapping to the feature
+   * they already have keeps behaviour identical. Splitting it out later is a
+   * feature insert plus a backfill for whoever has unified_inbox, which is a
+   * deliberate commercial decision rather than a side effect of this change.
+   */
+  [PermissionResource.Mentions]: FeatureKey.UnifiedInbox,
   [PermissionResource.Posts]: FeatureKey.PostInsights,
   [PermissionResource.Customers]: FeatureKey.CustomerDirectory,
   [PermissionResource.Channels]: null,
@@ -105,6 +117,12 @@ const PERMISSION_SCOPES: Readonly<Record<Permission, PermissionScope>> = {
   [Permission.CommentsReply]: PermissionScope.Enterprise,
   [Permission.CommentsHide]: PermissionScope.Enterprise,
   [Permission.CommentsDelete]: PermissionScope.Enterprise,
+  [Permission.CommentsAssign]: PermissionScope.Enterprise,
+  [Permission.CommentsManage]: PermissionScope.Both,
+  [Permission.MentionsView]: PermissionScope.Both,
+  [Permission.MentionsReply]: PermissionScope.Both,
+  [Permission.MentionsAssign]: PermissionScope.Enterprise,
+  [Permission.MentionsManage]: PermissionScope.Both,
 
   [Permission.PostsView]: PermissionScope.Both,
 
@@ -142,6 +160,12 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
   [Permission.CommentsReply]: 'Reply to a comment.',
   [Permission.CommentsHide]: 'Hide a comment on the platform.',
   [Permission.CommentsDelete]: 'Delete a comment on the platform.',
+  [Permission.CommentsAssign]: 'Hand a comment thread to a colleague.',
+  [Permission.CommentsManage]: 'Close, reopen or resync a comment thread.',
+  [Permission.MentionsView]: 'See posts and stories that tag this business.',
+  [Permission.MentionsReply]: 'Reply to a mention.',
+  [Permission.MentionsAssign]: 'Hand a mention to a colleague.',
+  [Permission.MentionsManage]: 'Close, reopen or resync a mention.',
 
   [Permission.PostsView]: 'See published posts and their metrics.',
 
