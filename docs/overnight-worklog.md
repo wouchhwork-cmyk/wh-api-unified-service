@@ -12,17 +12,18 @@ is described under RESUME HERE with enough detail to pick up cold.
 
 ## RESUME HERE
 
-> **Current state:** BOTH TASKS COMPLETE and committed. 735 tests, lint,
-> typecheck and schema parity all green; the app boots with 11 new routes and no
-> errors.
+> **Current state:** Both tasks complete; five review rounds done. 794 tests,
+> lint, typecheck and schema parity green. The app boots, all new routes answer,
+> and the platform endpoints were checked live against the dev database.
 >
-> What is NOT done, deliberately, is listed under "E. Found during the RBAC
-> work, not fixed" in `docs/todo.md` — chiefly a separate `mention_monitoring`
-> feature (needs a commercial decision plus a backfill) and moving the invite
-> form onto `GET /roles` so it only offers assignable roles.
+> Deploy order is NOT the obvious one — see `docs/deploy-order.md`. It is
+> migrations, then **seed**, then code, and the seed must run again after the
+> rollout completes.
 >
-> **Gate for this work:** `npx tsc --noEmit` (covers tests, which `pnpm build`
-> does not), `pnpm lint`, `SCHEMA_PARITY=1 npx vitest run`.
+> What was deliberately not fixed is in `docs/todo.md` §E.
+>
+> **Gate:** `npx tsc --noEmit` (covers tests, which `pnpm build` does not),
+> `pnpm lint`, `SCHEMA_PARITY=1 npx vitest run`.
 
 ---
 
@@ -160,6 +161,22 @@ reviewer is available, so I review my own work in multiple rounds.
       was widened to `@RequireAnyPermission` and never filtered, leaking the
       existence and timing of every private thread to somebody holding only
       `mentions.view`.
+- [x] **Review round 4 — the rate-limit monitor and the tests** — `2001f33`,
+      `db56985`. The monitor had never been reviewed by anyone but me. Found:
+      unrelated timeouts corrupting the app gauge; one refusal painting a pool
+      red for 24 hours; no upper bound on a percentage, so one odd header could
+      blind the monitor platform-wide; and a console query whose comment claimed
+      an index scan it provably did not do (EXPLAIN showed a Sort over a CTE
+      Scan). A deploy rehearsal against a database with existing data found a
+      NOT NULL column that would have broken signup mid-rollover — and the first
+      fix for it silently set every existing role to level 0.
+      A test-quality audit found four security-critical paths with no coverage
+      at all and five assertions that could not tell which rule had fired.
+- [x] **Review round 5 — verifying round 4** — `22bfc1e`. The headline fix from
+      round 4 was COSMETIC: headerless calls were moved off the `app` scope key
+      and left on the `App` meter, and the console groups by meter. The bug was
+      untouched and the tests agreed with the commit message because they
+      asserted the key and never the meter.
 - [x] **Review round 3b — verifying the fixes** — `87e9d7f`. Caught a blocker I
       had just introduced (the comment projector announced every MENTION as a
       comment thread, breaking the new filter in both directions) and a race the
