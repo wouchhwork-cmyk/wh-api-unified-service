@@ -56,7 +56,16 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ---
 
-## E. Found during the RBAC work, not fixed
+## E. Found during the RBAC and rate-limit work, not fixed
+
+- [ ] **E11. A pool being refused on one endpoint can report `ok`** — S
+      Status reads the NEWEST minute's refusals, which is the fix for a single
+      refusal painting a pool red for 24 hours. The residual: a later successful
+      call to the same pool opens a fresh bucket with no refusals, so a pool
+      still throttled on one endpoint while another succeeds reads as healthy.
+      Recency is the right trade against the staleness it replaced, and the
+      refused count is still shown beside it — but the status alone is not
+      sufficient during a partial throttle.
 
 - [ ] **E7. The inbox SSE stream is not filtered by conversation kind** — S
       `GET /conversations/stream` emits a refId whenever anything in the tenant

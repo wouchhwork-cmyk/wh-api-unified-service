@@ -22,7 +22,9 @@ still serving. That is not automatic — `RoleLevels` adds a `NOT NULL` column t
 signup path, inserts a role without naming it. The column therefore carries a
 `DEFAULT` of the bottom level, attached **after** the backfill so the backfill
 still sees NULLs. `test/integration/migration-rehearsal.spec.ts` runs exactly
-this sequence against a database with a business already in it.
+this sequence against a database with a business already in it — via
+`pnpm test:schema`, which is the pre-deploy gate and is the only thing that
+runs it.
 
 **Locks.** `RoleLevels` holds `ACCESS EXCLUSIVE` on `roles` for the length of one
 transaction — six updates and two alters over a tiny table, but signups block for
