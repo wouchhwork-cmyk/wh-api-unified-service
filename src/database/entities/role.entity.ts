@@ -54,11 +54,17 @@ export class Role extends PublicEntity {
    *   assign a role        role   <  actor   a manager cannot mint a manager
    *   modify an employee   target <  actor   a manager cannot suspend an owner
    *
-   * NO DEFAULT, on purpose. Every path that creates a role decides the level
-   * explicitly; a default would let a forgotten field mint a role at whatever
-   * that default happened to be, which for access control is the wrong kind of
-   * convenience.
+   * The default is the BOTTOM of the ladder, and it is there for deploys
+   * rather than for callers. Migrations run before the code that needs them, so
+   * during a rollover the OLD code is still inserting roles without naming this
+   * column — signup does exactly that — and a NOT NULL column with no default
+   * would fail every one of them.
+   *
+   * A role that arrives without stating its authority should outrank nothing.
+   * Every path that a caller can reach states it explicitly anyway: the field
+   * is required here, every repository method takes it, and the contract
+   * validates the range.
    */
-  @Column({ type: 'smallint' })
+  @Column({ type: 'smallint', default: MIN_ROLE_LEVEL })
   level!: number;
 }
