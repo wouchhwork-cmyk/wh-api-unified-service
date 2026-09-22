@@ -39,8 +39,16 @@ const SCRATCH = 'wouchh_migration_rehearsal';
  */
 type MigrationClass = (new () => object) & { name: string };
 
-/** The migrations that existed before this release. */
-const PREVIOUS_RELEASE = /1758100000000|1758200000000|1758300000000/;
+/**
+ * THIS release's migrations — the ones the rehearsal applies second.
+ *
+ * Named for what it holds rather than for how it is used. It was called
+ * PREVIOUS_RELEASE and used negated, which reads backwards and hides the real
+ * risk: a migration from this release left out of the list is applied during
+ * the "previous release" phase instead, and the rehearsal silently covers
+ * nothing for it.
+ */
+const THIS_RELEASE = /1758100000000|1758200000000|1758300000000/;
 
 describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already has data', () => {
   let admin: DataSource;
@@ -61,7 +69,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
      * database through them would prove nothing.
      */
     const asShipped = ((base.migrations ?? []) as MigrationClass[]).filter(
-      (migration) => !PREVIOUS_RELEASE.test(migration.name),
+      (migration) => !THIS_RELEASE.test(migration.name),
     );
     const previous = new DataSource({ ...base, database: SCRATCH, migrations: asShipped });
     await previous.initialize();
@@ -139,13 +147,17 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
      * without naming `level`. Against NOT NULL with no default that fails, and
      * every new business signup breaks for the duration of the deploy.
      */
+    /*
+     * `.resolves` is the assertion that bites; `.not.toThrow()` after it is a
+     * no-op against a resolved array and was misleading about what is checked.
+     */
     await expect(
       db.query(
         `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status)
          VALUES ($1,'enterprise','as-the-old-code-writes-it','legacy',false,'active')`,
         [enterpriseId],
       ),
-    ).resolves.not.toThrow();
+    ).resolves.toBeDefined();
   });
 
   it('gives a role inserted without a level the BOTTOM of the ladder', async () => {

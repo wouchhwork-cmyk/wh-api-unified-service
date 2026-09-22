@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { RoleRepository } from '@/database/repositories/role.repository';
 import { SystemRole } from '@/shared/enums';
+import { RequestContext } from '@/shared/context';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /**
@@ -188,42 +189,75 @@ describe('the last owner', () => {
        * then write, so two owners removing each other at the same moment would
        * each see "one other remains" and both commit — leaving none.
        *
-       * Proven by holding the lock in one transaction and watching a second
-       * block on it rather than proceeding.
+       * THE REPOSITORY METHOD IS CALLED, not a hand-written `FOR UPDATE`. An
+       * earlier version of this test wrote the lock statement itself in both
+       * transactions, which proved that Postgres implements row locks: delete
+       * `FOR UPDATE` from `lockOwnerRole` and it stayed green. Going through
+       * `RoleRepository` is what ties it to the code the services actually run.
        */
       await seedMember(enterpriseId, 'founder@acme.test', SystemRole.Owner);
 
-      const runner = db.createQueryRunner();
-      await runner.connect();
-      await runner.startTransaction();
-      await runner.query(
-        `SELECT id FROM roles WHERE enterprise_id = $1 AND name = $2 AND is_deleted = false
-         FOR UPDATE`,
-        [enterpriseId, SystemRole.Owner],
+      // The first transaction takes the lock and holds it.
+      const holder = db.createQueryRunner();
+      await holder.connect();
+      await holder.startTransaction();
+      await RequestContext.runInTransaction(holder.manager, () =>
+        roles.lockOwnerRole(enterpriseId),
       );
 
-      let secondCompleted = false;
-      const second = db
+      let secondAcquired = false;
+      const contender = db
         .transaction(async (manager) => {
-          await manager.query(
-            `SELECT id FROM roles WHERE enterprise_id = $1 AND name = $2 AND is_deleted = false
-             FOR UPDATE`,
-            [enterpriseId, SystemRole.Owner],
+          await RequestContext.runInTransaction(manager, () =>
+            roles.lockOwnerRole(enterpriseId),
           );
-          secondCompleted = true;
+          secondAcquired = true;
         })
         .catch(() => {
-          secondCompleted = true;
+          // An error here must fail the first assertion rather than look like
+          // blocking, so it is recorded the same way a success would be.
+          secondAcquired = true;
         });
 
-      // Long enough that an unserialised second transaction would have finished.
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      expect(secondCompleted).toBe(false);
+      /*
+       * Long enough that an unserialised second transaction would have finished
+       * — it is one indexed SELECT. A real-time wait can only fail in the
+       * passing direction if the pool is starved, and the assertion after the
+       * release is what proves the lock was the reason rather than slowness.
+       */
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(secondAcquired).toBe(false);
 
-      await runner.commitTransaction();
-      await runner.release();
-      await second;
-      expect(secondCompleted).toBe(true);
+      await holder.commitTransaction();
+      await holder.release();
+      await contender;
+
+      // It was waiting on the lock, not failing: released, it completes.
+      expect(secondAcquired).toBe(true);
+    });
+
+    it('does not block a DIFFERENT business', async () => {
+      // The lock is per business. One tenant's role change must not queue
+      // behind another's.
+      await seedMember(enterpriseId, 'founder@acme.test', SystemRole.Owner);
+      await seedMember(otherId, 'rival@rival.test', SystemRole.Owner);
+
+      const holder = db.createQueryRunner();
+      await holder.connect();
+      await holder.startTransaction();
+      await RequestContext.runInTransaction(holder.manager, () =>
+        roles.lockOwnerRole(enterpriseId),
+      );
+
+      // The other business proceeds immediately rather than waiting.
+      await expect(
+        db.transaction(async (manager) =>
+          RequestContext.runInTransaction(manager, () => roles.lockOwnerRole(otherId)),
+        ),
+      ).resolves.toBeUndefined();
+
+      await holder.commitTransaction();
+      await holder.release();
     });
   });
 });

@@ -74,9 +74,14 @@ const APP_SCOPE_KEY = 'app';
 const UNKNOWN_SCOPE_KEY = 'unknown';
 
 /**
- * The widest a scope key can be. `scope_key` is VARCHAR(120); a Meta business
- * id plus a product is far shorter, but neither is ours to bound, and an
- * over-long one would abort the whole flush rather than just itself.
+ * The widest a scope key can be, matching `scope_key VARCHAR(120)`.
+ *
+ * UNREACHABLE TODAY, and kept as the backstop it is rather than the protection
+ * it looks like: the parser already bounds the business id at 64 and the
+ * product at 40, so the composed key cannot exceed 105 whenever the row is
+ * storable at all. It earns its place only if either of those bounds moves —
+ * which is exactly the kind of change that would otherwise reintroduce a
+ * flush-killing overflow silently.
  */
 const MAX_SCOPE_KEY_LENGTH = 120;
 

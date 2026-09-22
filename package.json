@@ -31,7 +31,7 @@
     "test:watch": "vitest --project unit",
     "test:integration": "vitest run --project integration",
     "test:e2e": "vitest run --project e2e",
-    "test:schema": "SCHEMA_PARITY=1 vitest run --project integration schema-parity",
+    "test:schema": "SCHEMA_PARITY=1 vitest run --project integration schema-parity migration-rehearsal",
     "test:all": "vitest run",
     "db:migrate": "node --env-file=.env.dev --import tsx scripts/db.ts migrate",
     "db:sync": "node --env-file=.env.dev --import tsx scripts/db.ts sync",

@@ -274,9 +274,17 @@ export class MetaApiUsageRepository extends BaseRepository {
          LEFT JOIN enterprises e ON e.id = r.enterprise_id
          LEFT JOIN channels c    ON c.id = r.channel_id
         WHERE r.rn = 1
-        ORDER BY r.call_pct DESC NULLS LAST, r.scope_key
+        /*
+         * The app pool sorts FIRST, unconditionally, because it is the one row
+         * with no substitute — there is exactly one of it and nothing else
+         * describes that allowance. Ordering by percentage alone put it last
+         * whenever Meta had not reported one (NULLS LAST), so it would be the
+         * first row the cap dropped, and the console would render "No calls
+         * yet" for a pool that simply had not been measured.
+         */
+        ORDER BY (r.meter = $2) DESC, r.call_pct DESC NULLS LAST, r.scope_key
         LIMIT $1`,
-      [limit],
+      [limit, MetaUsageMeter.App],
     );
   }
 

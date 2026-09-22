@@ -69,13 +69,20 @@ const AD_ACCOUNT_HEADER = 'x-ad-account-usage';
  * The widest values that can be stored.
  *
  * These are not opinions about Meta, they are the column's limits: `call_pct`
- * and friends are SMALLINT behind `CHECK (... BETWEEN 0 AND 1000)`, and
- * `product` is VARCHAR(40). Anything wider has to be cut here, because the
- * alternative is a rejected INSERT that takes an entire flush with it.
+ * and friends are SMALLINT behind `CHECK (... BETWEEN 0 AND 1000)`, `product`
+ * is VARCHAR(40) and `meta_business_id` VARCHAR(64). Anything wider has to be
+ * cut HERE, because the alternative is a rejected INSERT that takes an entire
+ * flush with it — and Postgres does not truncate on plain column assignment,
+ * only on an explicit cast, so the row really does fail.
+ *
+ * The business id is the JSON KEY of the header object, which makes it the one
+ * value here that is entirely Meta's to choose and was the one originally
+ * missed.
  */
 const MAX_RECORDED_PERCENTAGE = 1000;
 const MAX_RECORDED_REGAIN_MINUTES = 7 * 24 * 60;
 const MAX_PRODUCT_LENGTH = 40;
+const MAX_BUSINESS_ID_LENGTH = 64;
 
 function headerValue(source: UsageHeaderSource, name: string): string | null {
   if (typeof (source as Headers).get === 'function') {
@@ -185,7 +192,8 @@ export function parseUsageReadings(source: UsageHeaderSource): MetaUsageReading[
         readings.push(
           readingFrom(
             MetaUsageMeter.BusinessUseCase,
-            metaBusinessId,
+            // Truncated like every other Meta-chosen value. See the constants.
+            metaBusinessId.slice(0, MAX_BUSINESS_ID_LENGTH),
             entry as Record<string, unknown>,
           ),
         );
