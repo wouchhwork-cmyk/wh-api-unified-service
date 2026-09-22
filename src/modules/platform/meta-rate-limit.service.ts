@@ -179,8 +179,22 @@ export class MetaRateLimitService {
      */
     for (const [index, row] of rows.entries()) {
       const pool = pools[index]!;
+      /*
+       * ONLY a real app-meter reading becomes the app gauge.
+       *
+       * The headerless scope used to share this meter, which meant it landed
+       * here — and because it carries no percentage it sorts last, so it
+       * overwrote the genuine reading every single time. The fix that moved it
+       * to its own scope key changed nothing until the meter moved with it.
+       */
       if (row.meter === MetaUsageMeter.App) {
         app = pool;
+        continue;
+      }
+      if (row.meter === MetaUsageMeter.Unknown) {
+        // Shown, because these are calls we really made, but never presented as
+        // a position in a pool — there is no pool it belongs to.
+        unattributed.push(pool);
         continue;
       }
       if (row.enterpriseRefId && row.enterpriseName) {

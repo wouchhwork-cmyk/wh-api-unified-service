@@ -156,7 +156,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
       this.fold(
         {
           scopeKey: UNKNOWN_SCOPE_KEY,
-          meter: MetaUsageMeter.App,
+          meter: MetaUsageMeter.Unknown,
           product: null,
           metaBusinessId: null,
         },

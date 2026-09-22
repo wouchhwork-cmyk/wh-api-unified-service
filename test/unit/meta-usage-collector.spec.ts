@@ -170,6 +170,13 @@ describe('MetaUsageCollector', () => {
       expect(only('unknown').failedCalls).toBe(1);
       expect(only('unknown').callPct).toBeNull();
       expect(written.map((bucket) => bucket.scopeKey)).not.toContain('app');
+      /*
+       * THE METER, not just the scope key. Moving the key without moving the
+       * meter changed nothing: the console groups the app gauge BY METER, so
+       * the headerless row was still the app pool as far as it was concerned —
+       * and carrying no percentage it sorted last, so it won every time.
+       */
+      expect(only('unknown').meter).toBe(MetaUsageMeter.Unknown);
     });
 
     it('leaves a real app reading alone when a headerless call happens beside it', async () => {

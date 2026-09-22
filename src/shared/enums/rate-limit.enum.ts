@@ -36,6 +36,23 @@ export enum MetaUsageMeter {
    * starve another.
    */
   BusinessUseCase = 'business_use_case',
+
+  /**
+   * NEITHER, because the call came back without a usage header at all.
+   *
+   * A timeout, a reset, or one of the responses Meta documents as carrying no
+   * header. The call was made and is worth counting, but nothing was learned
+   * about any pool — and attributing it to one is actively harmful: a
+   * Page-token call that timed out touched no app allowance, so filing it under
+   * `App` writes a NULL percentage that then reads as the app pool's current
+   * state and blanks a gauge that was working.
+   *
+   * It exists as a third value rather than being folded into `App` because the
+   * console keys the app gauge off the meter. Sharing the value meant the
+   * headerless row WAS the app pool as far as the grouping was concerned — and
+   * it sorted last, so it won every time.
+   */
+  Unknown = 'unknown',
 }
 
 /**
