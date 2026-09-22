@@ -58,6 +58,29 @@ interface CachedOwner {
 const APP_SCOPE_KEY = 'app';
 
 /**
+ * Where a call with NO usage header is counted.
+ *
+ * NOT the app pool, which is what it used to be and was wrong in the way that
+ * matters most. The app meter and the business meters are mutually exclusive —
+ * a Page-token inbox call never touches the app pool — so a timeout on one of
+ * those was writing an `app` row with a NULL percentage. Because the console
+ * reads the LATEST row per pool, one timed-out inbox call blanked the app gauge
+ * to "unknown", and a pool sitting at 95% silently dropped off the needs-
+ * attention banner because of something unrelated to it.
+ *
+ * A call we learned nothing about is still a call we made, so it is counted —
+ * just under its own name, where it cannot overwrite a real reading.
+ */
+const UNKNOWN_SCOPE_KEY = 'unknown';
+
+/**
+ * The widest a scope key can be. `scope_key` is VARCHAR(120); a Meta business
+ * id plus a product is far shorter, but neither is ours to bound, and an
+ * over-long one would abort the whole flush rather than just itself.
+ */
+const MAX_SCOPE_KEY_LENGTH = 120;
+
+/**
  * Keeps a running account of how much of Meta's rate limit we have spent.
  *
  * WHY IT BUFFERS. Every Graph response carries a usage header, and the obvious
@@ -110,9 +133,10 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
   /**
    * Records one Graph call. Synchronous, non-blocking, never throws.
    *
-   * An observation with NO readings is still recorded against the app scope,
-   * because Meta omitting the header is a real case and our own call count is
-   * the only thing that stays true through it.
+   * An observation with NO readings is still recorded — Meta omitting the
+   * header is a real case, and our own call count is the only thing that stays
+   * true through it — but under its OWN scope rather than the app pool. See
+   * UNKNOWN_SCOPE_KEY.
    */
   observe(observation: MetaUsageObservation): void {
     const nowMs = Date.now();
@@ -124,9 +148,14 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     const siblingIds = named.map((reading) => reading.metaBusinessId as string);
 
     if (observation.readings.length === 0) {
+      /*
+       * Its own scope, never the app pool. See UNKNOWN_SCOPE_KEY: a timeout on
+       * a Page-token call touched no app allowance, and recording it there
+       * blanked a gauge that was reading perfectly well.
+       */
       this.fold(
         {
-          scopeKey: APP_SCOPE_KEY,
+          scopeKey: UNKNOWN_SCOPE_KEY,
           meter: MetaUsageMeter.App,
           product: null,
           metaBusinessId: null,
@@ -144,7 +173,10 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
       const scopeKey =
         reading.meter === MetaUsageMeter.App
           ? APP_SCOPE_KEY
-          : `${reading.metaBusinessId ?? 'unknown'}:${reading.product ?? 'unknown'}`;
+          : `${reading.metaBusinessId ?? 'unattributed'}:${reading.product ?? 'unknown'}`.slice(
+              0,
+              MAX_SCOPE_KEY_LENGTH,
+            );
 
       this.fold(
         {
@@ -180,8 +212,16 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
 
     if (!bucket) {
       if (this.pending.size >= META_USAGE_MAX_PENDING_BUCKETS) {
-        // Losing monitoring beats an out-of-memory kill of a process that is
-        // otherwise serving traffic. Only reachable when flushes are failing.
+        /*
+         * Losing monitoring beats an out-of-memory kill of a process that is
+         * otherwise serving traffic.
+         *
+         * NOT reachable by a failing flush, which was the original claim and is
+         * wrong: `flush` clears the buffer before it writes, so a rejected
+         * write shrinks it rather than growing it. This needs more than
+         * META_USAGE_MAX_PENDING_BUCKETS DISTINCT pools inside one flush
+         * interval — which means Meta inventing scope keys, not us being busy.
+         */
         this.dropped += 1;
         return;
       }

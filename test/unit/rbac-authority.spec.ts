@@ -7,7 +7,7 @@ import {
   maySeeEmployee,
   type ActorAuthority,
 } from '@/shared/rbac';
-import { MAX_CREATABLE_ROLE_LEVEL, ROLE_LEVEL, SystemRole } from '@/shared/enums';
+import { highestRoleLevel, MAX_CREATABLE_ROLE_LEVEL, ROLE_LEVEL, SystemRole } from '@/shared/enums';
 
 /**
  * Who may hand out what.
@@ -133,16 +133,52 @@ describe('role authority', () => {
     it('takes the HIGHEST of several roles as the actor authority', () => {
       /*
        * Roles are additive, so holding agent as well as manager cannot make
-       * somebody less senior. Taking the minimum would mean granting an extra
-       * role silently demotes a person — and would let an attacker de-escalate
-       * a rival by ADDING a junior role to them.
+       * somebody less senior.
+       *
+       * This calls `highestRoleLevel` — the real rule — rather than computing
+       * `Math.max` in the test and handing the answer in. It used to do the
+       * latter, which meant changing the production rule to `Math.min` left the
+       * test green: it was asserting that Math.max is Math.max.
        */
       const both = actor({
-        level: Math.max(ROLE_LEVEL.Manager, ROLE_LEVEL.Agent),
+        level: highestRoleLevel([ROLE_LEVEL.Agent, ROLE_LEVEL.Manager]),
         roleNames: [SystemRole.Manager, SystemRole.Agent],
       });
 
+      expect(both.level).toBe(ROLE_LEVEL.Manager);
       expect(mayAssignRole(both, role(ROLE_LEVEL.Agent))).toBeNull();
+    });
+  });
+
+  describe('how several roles combine into one authority', () => {
+    /*
+     * `highestRoleLevel` had NO test, and it is the one rule in the module
+     * whose docstring names its own attack: "taking the minimum would let an
+     * attacker de-escalate a rival by ADDING a junior role to them."
+     */
+    it('is the highest, so an extra junior role cannot demote somebody', () => {
+      expect(highestRoleLevel([ROLE_LEVEL.Manager, ROLE_LEVEL.Viewer])).toBe(ROLE_LEVEL.Manager);
+      expect(highestRoleLevel([ROLE_LEVEL.Viewer, ROLE_LEVEL.Manager])).toBe(ROLE_LEVEL.Manager);
+    });
+
+    it('is NULL for somebody holding nothing, not zero', () => {
+      /*
+       * Zero is a real level that compares; "no roles yet" is not a position on
+       * the ladder. Treating the two as the same is how an invited-but-ungranted
+       * employee ends up able to act.
+       */
+      expect(highestRoleLevel([])).toBeNull();
+    });
+
+    it('copes with a single role and with duplicates', () => {
+      expect(highestRoleLevel([ROLE_LEVEL.Agent])).toBe(ROLE_LEVEL.Agent);
+      expect(highestRoleLevel([ROLE_LEVEL.Agent, ROLE_LEVEL.Agent])).toBe(ROLE_LEVEL.Agent);
+    });
+
+    it('keeps a level of zero rather than discarding it as falsy', () => {
+      // 0 is the bottom of the ladder and a legitimate level — a `||` in this
+      // function would turn it into null and make its holder unreachable.
+      expect(highestRoleLevel([0])).toBe(0);
     });
   });
 

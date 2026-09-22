@@ -65,6 +65,18 @@ const BUSINESS_HEADER = 'x-business-use-case-usage';
  */
 const AD_ACCOUNT_HEADER = 'x-ad-account-usage';
 
+/**
+ * The widest values that can be stored.
+ *
+ * These are not opinions about Meta, they are the column's limits: `call_pct`
+ * and friends are SMALLINT behind `CHECK (... BETWEEN 0 AND 1000)`, and
+ * `product` is VARCHAR(40). Anything wider has to be cut here, because the
+ * alternative is a rejected INSERT that takes an entire flush with it.
+ */
+const MAX_RECORDED_PERCENTAGE = 1000;
+const MAX_RECORDED_REGAIN_MINUTES = 7 * 24 * 60;
+const MAX_PRODUCT_LENGTH = 40;
+
 function headerValue(source: UsageHeaderSource, name: string): string | null {
   if (typeof (source as Headers).get === 'function') {
     return (source as Headers).get(name);
@@ -100,12 +112,27 @@ function readJsonHeader(source: UsageHeaderSource, name: string): unknown {
  */
 function percentage(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
-  return Math.round(value);
+  /*
+   * CLAMPED, because the column is a SMALLINT behind a CHECK and the whole
+   * flush is ONE multi-row INSERT. A single figure outside the range aborts
+   * that statement, which drops every other pool in the same flush — and since
+   * the buffer refills from live traffic, the offending pool comes straight
+   * back and kills the next flush too. Monitoring goes dark platform-wide
+   * because Meta reported one unexpected number.
+   *
+   * The ceiling is well above 100 on purpose: 100 is where throttling starts,
+   * not where counting stops, and a pool genuinely reported at 140% is a
+   * reading worth keeping rather than rejecting.
+   */
+  return Math.min(Math.round(value), MAX_RECORDED_PERCENTAGE);
 }
 
 function positiveMinutes(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
-  return Math.round(value);
+  // Bounded for the same reason, and generously: a week is far longer than any
+  // wait Meta has ever quoted, so anything past it is a misread rather than a
+  // number to preserve faithfully.
+  return Math.min(Math.round(value), MAX_RECORDED_REGAIN_MINUTES);
 }
 
 function readingFrom(
@@ -113,7 +140,13 @@ function readingFrom(
   metaBusinessId: string | null,
   entry: Record<string, unknown>,
 ): MetaUsageReading {
-  const product = typeof entry.type === 'string' && entry.type.length > 0 ? entry.type : null;
+  /*
+   * TRUNCATED to what the column holds. Meta documents seven `type` values and
+   * adds more; a longer one is a pool we should still record under a shortened
+   * name rather than a flush we lose entirely.
+   */
+  const rawProduct = typeof entry.type === 'string' && entry.type.length > 0 ? entry.type : null;
+  const product = rawProduct === null ? null : rawProduct.slice(0, MAX_PRODUCT_LENGTH);
   return {
     meter,
     product,

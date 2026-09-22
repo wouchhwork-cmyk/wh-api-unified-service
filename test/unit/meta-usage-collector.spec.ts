@@ -149,18 +149,42 @@ describe('MetaUsageCollector', () => {
       expect(bucket.calls).toBe(1);
     });
 
-    it('still counts a call that never came back', async () => {
+    it('still counts a call that never came back, WITHOUT claiming the app pool', async () => {
       /*
-       * A timeout has no headers at all, but the call was made and it drew on a
-       * pool. Dropping it would make the monitor under-report exactly when Meta
-       * is struggling — the one moment it is being read.
+       * A timeout has no headers at all, but the call was made. Dropping it
+       * would make the monitor under-report exactly when Meta is struggling —
+       * the one moment it is being read.
+       *
+       * It used to be counted against the APP pool, and that was wrong in the
+       * way that matters most. The two meters are mutually exclusive: a
+       * Page-token inbox call never touches the app allowance. So a single
+       * timed-out inbox call wrote an `app` row with a NULL percentage, and
+       * because the console reads the LATEST row per pool that blanked the app
+       * gauge to "unknown" — dropping a pool sitting at 95% off the
+       * needs-attention banner for a reason that had nothing to do with it.
        */
       collector.observe({ readings: [], throttled: false, failed: true });
       await collector.flush();
 
-      expect(only('app').calls).toBe(1);
-      expect(only('app').failedCalls).toBe(1);
-      expect(only('app').callPct).toBeNull();
+      expect(only('unknown').calls).toBe(1);
+      expect(only('unknown').failedCalls).toBe(1);
+      expect(only('unknown').callPct).toBeNull();
+      expect(written.map((bucket) => bucket.scopeKey)).not.toContain('app');
+    });
+
+    it('leaves a real app reading alone when a headerless call happens beside it', async () => {
+      // The failure above, from the console's point of view: the app gauge must
+      // still read 60% after an unrelated inbox call times out.
+      collector.observe({
+        readings: [reading({ meter: MetaUsageMeter.App, metaBusinessId: null, product: null, callPct: 60 })],
+        throttled: false,
+        failed: false,
+      });
+      collector.observe({ readings: [], throttled: false, failed: true });
+      await collector.flush();
+
+      expect(only('app').callPct).toBe(60);
+      expect(only('unknown').callPct).toBeNull();
     });
   });
 

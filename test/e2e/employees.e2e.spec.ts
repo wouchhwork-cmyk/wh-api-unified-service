@@ -282,7 +282,9 @@ describe('a business builds its team', () => {
       .expect(403);
 
     expect(refused.body.error.code).toBe('PERMISSION_DENIED');
-    expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+    // `/assign roles below/`, not the looser `/below your own level/` that both
+    // denial reasons match — otherwise this passes when the WRONG rule fires.
+    expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
   });
 
   it('still lets a manager invite below themselves', async () => {
@@ -322,7 +324,8 @@ describe('a business builds its team', () => {
       .expect(403);
 
     expect(refused.body.error.code).toBe('PERMISSION_DENIED');
-    expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+    // The other sentence: acting on a PERSON, not assigning a role.
+    expect(refused.body.error.details[0].issue).toMatch(/act on people below/i);
   });
 
   it('shows an agent their peers and hides the people above them', async () => {

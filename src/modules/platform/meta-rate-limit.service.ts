@@ -3,7 +3,11 @@ import {
   MetaApiUsageRepository,
   type MetaUsageCurrentRow,
 } from '@/database/repositories/meta-api-usage.repository';
-import { META_USAGE_THROTTLE_PCT, META_USAGE_WARN_PCT } from '@/shared/constants';
+import {
+  MAX_MONITORED_POOLS,
+  META_USAGE_THROTTLE_PCT,
+  META_USAGE_WARN_PCT,
+} from '@/shared/constants';
 import { MetaUsageMeter, MetaUsageProduct } from '@/shared/enums';
 
 /**
@@ -131,6 +135,8 @@ const ALLOWANCE_FORMULA: Record<string, string> = {
 };
 
 const APP_WINDOW_MINUTES = 60;
+/** Every business-use-case pool Meta meters is a 24-hour pool. */
+const BUSINESS_WINDOW_MINUTES = 24 * 60;
 const APP_FORMULA = '200 × daily active users, per hour';
 
 /**
@@ -158,7 +164,7 @@ export class MetaRateLimitService {
   constructor(private readonly usage: MetaApiUsageRepository) {}
 
   async overview(): Promise<MetaRateLimitOverview> {
-    const rows = await this.usage.current();
+    const rows = await this.usage.current(MAX_MONITORED_POOLS);
     const pools = rows.map((row) => this.toPool(row));
 
     const byEnterprise = new Map<string, { name: string; pools: MetaPoolView[] }>();
@@ -241,9 +247,17 @@ export class MetaRateLimitService {
 
   private toPool(row: MetaUsageCurrentRow): MetaPoolView {
     const isApp = row.meter === MetaUsageMeter.App;
+    /*
+     * An unrecognised product falls back to the BUSINESS window, not the app
+     * one. Every business-use-case pool Meta meters runs over 24 hours, and the
+     * enum says in as many words that Meta documents seven types today and adds
+     * more. Falling back to 60 would label a day's percentage as an hour's and
+     * would read the hour's call count beside it — understating the pool by up
+     * to twenty-four times on the first day a new type appears.
+     */
     const windowMinutes = isApp
       ? APP_WINDOW_MINUTES
-      : (WINDOW_MINUTES[row.product ?? ''] ?? APP_WINDOW_MINUTES);
+      : (WINDOW_MINUTES[row.product ?? ''] ?? BUSINESS_WINDOW_MINUTES);
 
     // Over an hourly window the hour totals are the right ones; over a daily
     // window, the day's. Reading the wrong pair is how a daily pool comes to
@@ -260,7 +274,7 @@ export class MetaRateLimitService {
       meter: row.meter,
       product: row.product,
       metaBusinessId: row.metaBusinessId,
-      status: statusOf(usedPercent, throttledCalls, row.regainMinutes),
+      status: statusOf(usedPercent, row.latestThrottledCalls, row.regainMinutes),
       usedPercent,
       remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
       callPercent: row.callPct,
@@ -310,10 +324,21 @@ function highestOf(...values: readonly (number | null)[]): number | null {
  */
 function statusOf(
   usedPercent: number | null,
-  throttledCalls: number,
+  /**
+   * Refusals in the NEWEST minute, NOT the window total.
+   *
+   * Driving this from the window total meant one refusal at breakfast painted a
+   * pool red — and escalated the whole enterprise heading and the banner —
+   * until breakfast the next day, long after Meta had gone back to reporting
+   * 3%. Guaranteed alarm fatigue on a screen whose only job is to be believed.
+   *
+   * The signal wanted here is "something is still hammering a pool that has
+   * already said no", and "still" is the part the day-wide count cannot express.
+   */
+  latestThrottledCalls: number,
   regainMinutes: number | null,
 ): MetaPoolStatus {
-  if (throttledCalls > 0 || (regainMinutes !== null && regainMinutes > 0)) return 'throttled';
+  if (latestThrottledCalls > 0 || (regainMinutes !== null && regainMinutes > 0)) return 'throttled';
   if (usedPercent === null) return 'unknown';
   if (usedPercent >= META_USAGE_THROTTLE_PCT) return 'throttled';
   if (usedPercent >= META_USAGE_WARN_PCT) return 'warning';

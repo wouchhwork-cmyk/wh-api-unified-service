@@ -61,6 +61,16 @@ export interface MetaUsageCurrentRow {
   readonly dayCalls: number;
   readonly dayThrottledCalls: number;
   readonly dayFailedCalls: number;
+  /**
+   * Refusals in the NEWEST minute only.
+   *
+   * Separate from the window totals because status needs recency and volume
+   * does not. Driving "is this pool throttled" from a day-wide count means one
+   * refusal at breakfast paints a pool red until breakfast tomorrow, long after
+   * Meta went back to reporting 3% — which is how a screen whose whole purpose
+   * is to be believed stops being believed.
+   */
+  readonly latestThrottledCalls: number;
 }
 
 /** One minute of one pool, for a chart. */
@@ -149,12 +159,26 @@ export class MetaApiUsageRepository extends BaseRepository {
          regain_minutes  = GREATEST(meta_api_usage.regain_minutes, EXCLUDED.regain_minutes),
          last_seen_at    = GREATEST(meta_api_usage.last_seen_at,   EXCLUDED.last_seen_at),
          /*
-          * Attribution is sticky once learned. A later flush from a process
-          * whose cache had not yet resolved the channel must not blank a name
-          * the dashboard is already showing.
+          * Attribution is FIRST-WINS, not last-wins, and the argument order is
+          * the whole difference.
+          *
+          * Either way a later flush with nulls cannot blank a name the console
+          * is showing — that was the original point. But
+          * COALESCE(EXCLUDED, existing) also let a later NON-NULL value
+          * replace a different one, and two replicas can disagree: a Meta
+          * Business shared across tenants resolves to enterprise 1 in one
+          * process and enterprise 2 in another, depending on which sibling
+          * account each cache had seen. Last-wins made the row flip between
+          * them, so a pool's owner changed every few seconds on screen.
+          *
+          * First-wins is stable instead. The residual limitation is stated
+          * rather than hidden: an early attribution that was unambiguous in its
+          * own bucket, but is genuinely shared, sticks — the collector refuses
+          * to guess when it can see the ambiguity, and it cannot see across
+          * processes.
           */
-         enterprise_id   = COALESCE(EXCLUDED.enterprise_id, meta_api_usage.enterprise_id),
-         channel_id      = COALESCE(EXCLUDED.channel_id,    meta_api_usage.channel_id),
+         enterprise_id   = COALESCE(meta_api_usage.enterprise_id, EXCLUDED.enterprise_id),
+         channel_id      = COALESCE(meta_api_usage.channel_id,    EXCLUDED.channel_id),
          product         = COALESCE(EXCLUDED.product,       meta_api_usage.product),
          updated_at      = now()
        RETURNING id`,
@@ -195,66 +219,64 @@ export class MetaApiUsageRepository extends BaseRepository {
   /**
    * The newest reading for every pool, with our own volume over both windows.
    *
-   * DISTINCT ON walks `meta_api_usage_bucket_uniq` one entry per pool rather
-   * than sorting the history, which is what keeps this cheap enough for a
-   * dashboard that polls.
+   * ONE PASS, using window functions rather than two CTEs over the same rows.
+   * The obvious shape — a `recent` CTE that `latest` and `totals` both select
+   * from — reads beautifully and is materialised: Postgres 12+ materialises any
+   * CTE referenced more than once, so `DISTINCT ON` then sorts a tuplestore
+   * where no index exists. Confirmed with EXPLAIN, which showed a Sort over a
+   * CTE Scan. On a dashboard polling every twenty seconds that is a full sort
+   * of pools x 1440 rows, every time, for every open tab.
    *
-   * The totals are separate aggregates rather than something summed from what
-   * DISTINCT ON returns, because DISTINCT ON returns exactly one row per pool
-   * by construction — summing it would report the newest minute's calls and
-   * label them the hour's.
+   * `row_number()` picks the newest row per pool and the windowed `sum`s carry
+   * the totals alongside it, from a single scan of the same filtered set.
    */
-  async current(): Promise<MetaUsageCurrentRow[]> {
+  async current(limit: number): Promise<MetaUsageCurrentRow[]> {
     return this.query<MetaUsageCurrentRow>(
-      `WITH recent AS (
-         SELECT * FROM meta_api_usage WHERE bucket_start > now() - interval '24 hours'
-       ),
-       latest AS (
-         SELECT DISTINCT ON (scope_key) *
-           FROM recent
-          ORDER BY scope_key, bucket_start DESC
-       ),
-       totals AS (
-         SELECT scope_key,
-                sum(calls) FILTER (WHERE bucket_start > now() - interval '1 hour')::int
-                  AS hour_calls,
-                sum(throttled_calls) FILTER (WHERE bucket_start > now() - interval '1 hour')::int
-                  AS hour_throttled,
-                sum(failed_calls) FILTER (WHERE bucket_start > now() - interval '1 hour')::int
-                  AS hour_failed,
-                sum(calls)::int           AS day_calls,
-                sum(throttled_calls)::int AS day_throttled,
-                sum(failed_calls)::int    AS day_failed
-           FROM recent
-          GROUP BY scope_key
+      `WITH ranked AS (
+         SELECT u.*,
+                row_number() OVER (PARTITION BY u.scope_key ORDER BY u.bucket_start DESC) AS rn,
+                sum(u.calls) FILTER (WHERE u.bucket_start > now() - interval '1 hour')
+                  OVER (PARTITION BY u.scope_key) AS hour_calls,
+                sum(u.throttled_calls) FILTER (WHERE u.bucket_start > now() - interval '1 hour')
+                  OVER (PARTITION BY u.scope_key) AS hour_throttled,
+                sum(u.failed_calls) FILTER (WHERE u.bucket_start > now() - interval '1 hour')
+                  OVER (PARTITION BY u.scope_key) AS hour_failed,
+                sum(u.calls)           OVER (PARTITION BY u.scope_key) AS day_calls,
+                sum(u.throttled_calls) OVER (PARTITION BY u.scope_key) AS day_throttled,
+                sum(u.failed_calls)    OVER (PARTITION BY u.scope_key) AS day_failed
+           FROM meta_api_usage u
+          WHERE u.bucket_start > now() - interval '24 hours'
        )
-       SELECT l.scope_key                         AS "scopeKey",
-              l.meter                             AS "meter",
-              l.product                           AS "product",
-              l.meta_business_id                  AS "metaBusinessId",
-              l.enterprise_id::int                AS "enterpriseId",
-              e.name                              AS "enterpriseName",
-              e.ref_id                            AS "enterpriseRefId",
-              l.channel_id::int                   AS "channelId",
-              COALESCE(c.name, c.username)        AS "channelName",
-              c.platform                          AS "channelPlatform",
-              c.platform_channel_id               AS "platformChannelId",
-              l.call_pct                          AS "callPct",
-              l.cpu_pct                           AS "cpuPct",
-              l.time_pct                          AS "timePct",
-              l.regain_minutes                    AS "regainMinutes",
-              l.last_seen_at                      AS "lastSeenAt",
-              COALESCE(t.hour_calls, 0)           AS "hourCalls",
-              COALESCE(t.hour_throttled, 0)       AS "hourThrottledCalls",
-              COALESCE(t.hour_failed, 0)          AS "hourFailedCalls",
-              COALESCE(t.day_calls, 0)            AS "dayCalls",
-              COALESCE(t.day_throttled, 0)        AS "dayThrottledCalls",
-              COALESCE(t.day_failed, 0)           AS "dayFailedCalls"
-         FROM latest l
-         JOIN totals t           ON t.scope_key = l.scope_key
-         LEFT JOIN enterprises e ON e.id = l.enterprise_id
-         LEFT JOIN channels c    ON c.id = l.channel_id
-        ORDER BY l.call_pct DESC NULLS LAST, l.scope_key`,
+       SELECT r.scope_key                       AS "scopeKey",
+              r.meter                           AS "meter",
+              r.product                         AS "product",
+              r.meta_business_id                AS "metaBusinessId",
+              r.enterprise_id::int              AS "enterpriseId",
+              e.name                            AS "enterpriseName",
+              e.ref_id                          AS "enterpriseRefId",
+              r.channel_id::int                 AS "channelId",
+              COALESCE(c.name, c.username)      AS "channelName",
+              c.platform                        AS "channelPlatform",
+              c.platform_channel_id             AS "platformChannelId",
+              r.call_pct                        AS "callPct",
+              r.cpu_pct                         AS "cpuPct",
+              r.time_pct                        AS "timePct",
+              r.regain_minutes                  AS "regainMinutes",
+              r.last_seen_at                    AS "lastSeenAt",
+              r.throttled_calls                 AS "latestThrottledCalls",
+              COALESCE(r.hour_calls, 0)::int    AS "hourCalls",
+              COALESCE(r.hour_throttled, 0)::int AS "hourThrottledCalls",
+              COALESCE(r.hour_failed, 0)::int   AS "hourFailedCalls",
+              COALESCE(r.day_calls, 0)::int     AS "dayCalls",
+              COALESCE(r.day_throttled, 0)::int AS "dayThrottledCalls",
+              COALESCE(r.day_failed, 0)::int    AS "dayFailedCalls"
+         FROM ranked r
+         LEFT JOIN enterprises e ON e.id = r.enterprise_id
+         LEFT JOIN channels c    ON c.id = r.channel_id
+        WHERE r.rn = 1
+        ORDER BY r.call_pct DESC NULLS LAST, r.scope_key
+        LIMIT $1`,
+      [limit],
     );
   }
 
@@ -278,7 +300,13 @@ export class MetaApiUsageRepository extends BaseRepository {
          FROM meta_api_usage
         WHERE bucket_start > now() - $1::interval
           AND ($3::varchar IS NULL OR scope_key = $3)
-        ORDER BY bucket_start DESC
+        /*
+         * scope_key is the tiebreaker, and it is not decoration. Without it
+         * every pool's rows share a bucket_start, so the cut at the boundary
+         * minute is arbitrary and moves between calls — a chart that redraws
+         * differently on each poll for no reason anybody can see.
+         */
+        ORDER BY bucket_start DESC, scope_key
         LIMIT $2`,
       [`${windowMs} milliseconds`, maxPoints, scopeKey],
     );

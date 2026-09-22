@@ -733,6 +733,20 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
           SELECT 1 FROM roles r
            WHERE r.enterprise_id = e.id AND r.name = t.name AND r.is_deleted = false
         )
+     /*
+      * ON CONFLICT as well as NOT EXISTS, because the two do different jobs.
+      *
+      * NOT EXISTS decides what to insert; this survives a signup that commits
+      * BETWEEN that decision and the insert. The conflict target is
+      * roles_enterprise_name_uniq, and without this clause that race raises a
+      * unique violation which aborts the WHOLE seed transaction — features,
+      * permissions, roles, grants and this reconciliation, all rolled back
+      * because one business signed up at the wrong moment.
+      *
+      * RETURNING still reports only the rows actually inserted, so the count
+      * stays honest.
+      */
+     ON CONFLICT DO NOTHING
      RETURNING id`,
     [RoleStatus.Active, RoleScope.Enterprise],
   );

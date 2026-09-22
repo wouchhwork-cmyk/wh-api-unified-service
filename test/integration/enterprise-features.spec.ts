@@ -198,6 +198,12 @@ describe('a business asking for features, and features running out', () => {
 
       const rows = await features.listForEnterprise(enterpriseId);
 
+      /*
+       * The length assertion comes first and is not decoration: `[].every()` is
+       * true, so without it any bug that made this return nothing at all would
+       * satisfy the check it is supposed to fail.
+       */
+      expect(rows.length).toBeGreaterThanOrEqual(4);
       expect(rows.every((row) => row.status === null)).toBe(true);
     });
   });

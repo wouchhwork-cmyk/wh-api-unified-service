@@ -121,6 +121,11 @@ describe('a business defines its own roles', () => {
 
       // Daily work first, configuration last. Alphabetically `channels` would
       // come first and bury the inbox under the plumbing.
+      // Presence FIRST: `indexOf` returns -1 for a missing group, and -1 is
+      // less than everything, so a vanished section would read as correct order.
+      for (const resource of ['conversations', 'channels', 'mentions', 'enterprise']) {
+        expect(resources).toContain(resource);
+      }
       expect(resources.indexOf('conversations')).toBeLessThan(resources.indexOf('channels'));
       expect(resources.indexOf('mentions')).toBeLessThan(resources.indexOf('enterprise'));
       expect(groups.every((group) => group.label.length > 0)).toBe(true);
@@ -232,7 +237,10 @@ describe('a business defines its own roles', () => {
         .send({ name: 'Co-manager', level: ROLE_LEVEL.Manager, permissions: ['conversations.view'] })
         .expect(403);
 
-      expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+      // Distinguishes `role_not_below_actor` from `target_not_below_actor`,
+      // which share the looser phrase — the reason codes exist so a test cannot
+      // pass because a different rule happened to deny.
+      expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
     });
 
     it('REFUSES a role carrying a permission the creator does not hold', async () => {
@@ -433,7 +441,7 @@ describe('a business defines its own roles', () => {
         .send({ roleRefIds: [managerRole] })
         .expect(403);
 
-      expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+      expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
     });
 
     it('REFUSES promoting yourself', async () => {
@@ -510,7 +518,7 @@ describe('a business defines its own roles', () => {
         .send({ roleRefIds: [await roleRefId(ownerToken, 'agent')] })
         .expect(403);
 
-      expect(refused.body.error.details[0].issue).toMatch(/below your own level/i);
+      expect(refused.body.error.details[0].issue).toMatch(/act on people below/i);
     });
 
     it('REFUSES a manager handing out a role that carries more than they hold', async () => {
@@ -564,6 +572,53 @@ describe('a business defines its own roles', () => {
     });
 
     it('refuses a role that belongs to another business', async () => {
+      /*
+       * A SECOND BUSINESS, with a REAL role of its own.
+       *
+       * This used to send a refId belonging to nobody, which returns 404 from
+       * the plain not-found path — so removing the `enterprise_id` predicate
+       * from the lookup entirely would have left the test green. It was a
+       * not-found test wearing a tenant-isolation test's name.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      const rival = await http()
+        .post('/api/v1/enterprises/signup')
+        .send({
+          business: { name: 'Rival Roasters', email: 'hello@rival.test', city: 'Pune' },
+          owner: {
+            firstName: 'Ada',
+            lastName: 'Byron',
+            email: 'ada@rival.test',
+            password: OWNER_PASSWORD,
+          },
+        })
+        .expect(201);
+      const rivalOwner = await http()
+        .post('/api/v1/auth/verify')
+        .send({ verificationRefId: rival.body.data.verificationRefId, code: code() })
+        .expect(200);
+      const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+      await http()
+        .post(`/api/v1/platform/enterprises/${rival.body.data.enterpriseRefId}/status`)
+        .set(bearer(admin.body.data.accessToken as string))
+        .send({ status: 'active' })
+        .expect(200);
+
+      // A role that genuinely exists — just not here.
+      const theirs = await roleRefId(rivalOwner.body.data.accessToken as string, 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [theirs] })
+        .expect(404);
+    });
+
+    it('refuses a refId that belongs to nobody, the same way', async () => {
+      // Indistinguishable from the case above on purpose: whether a role exists
+      // in somebody else's business is not something to confirm.
       const { ownerToken } = await onboardedBusiness();
       const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
 

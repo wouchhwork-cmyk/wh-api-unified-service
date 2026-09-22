@@ -455,3 +455,14 @@ export const DEFAULT_RATE_LIMIT_WINDOW_MINUTES = 3 * 60;
  * for nothing.
  */
 export const DEFAULT_RATE_LIMIT_POINTS = 2000;
+
+/**
+ * The most pools the rate-limit console returns in one read.
+ *
+ * Every other listing in this service is bounded and this one was not — it is a
+ * row per business per product, so it grows with the customer base while the
+ * screen that reads it polls every twenty seconds. Generous enough that a real
+ * deployment never reaches it, and present so that one cannot discover the
+ * limit by falling over it.
+ */
+export const MAX_MONITORED_POOLS = 500;

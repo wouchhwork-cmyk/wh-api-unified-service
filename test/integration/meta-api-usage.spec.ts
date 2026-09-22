@@ -138,6 +138,23 @@ describe('meta_api_usage', () => {
       expect(await row()).toMatchObject({ call_pct: 33 });
     });
 
+    it('does not let one tenant overwrite another on a shared pool', async () => {
+      /*
+       * A Meta Business shared across two of our tenants resolves differently
+       * in two replicas, depending on which sibling account each cache had
+       * seen. Last-wins made the row flip between them every flush, so a pool's
+       * owner changed on screen every few seconds. First-wins is stable.
+       */
+      const rival = await seedEnterprise(db, 'Rival', 'rival');
+      await usage.record([bucket({ scopeKey: 'SHARED:instagram' })]);
+      await usage.record([
+        bucket({ scopeKey: 'SHARED:instagram', enterpriseId: rival, channelId: null }),
+      ]);
+
+      const stored = await row('SHARED:instagram');
+      expect(Number(stored?.enterprise_id)).toBe(enterpriseId);
+    });
+
     it('keeps attribution once learned', async () => {
       /*
        * A flush from a process whose cache had not yet resolved the channel
@@ -220,7 +237,7 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: MINUTE, callPct: 10 })]);
       await usage.record([bucket({ bucketStart: NEXT_MINUTE, callPct: 20 })]);
 
-      const current = await usage.current();
+      const current = await usage.current(500);
       const pool = current.find((entry) => entry.scopeKey === 'IG_ACCOUNT:instagram');
       expect(pool?.callPct).toBe(20);
       expect(current.filter((entry) => entry.scopeKey === 'IG_ACCOUNT:instagram')).toHaveLength(1);
@@ -237,7 +254,7 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: older, lastSeenAt: older, calls: 4 })]);
       await usage.record([bucket({ bucketStart: recent, lastSeenAt: recent, calls: 6 })]);
 
-      const pool = (await usage.current()).find(
+      const pool = (await usage.current(500)).find(
         (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
       );
       expect(pool?.hourCalls).toBe(10);
@@ -252,7 +269,7 @@ describe('meta_api_usage', () => {
       ]);
       await usage.record([bucket({ bucketStart: withinHour, lastSeenAt: withinHour, calls: 7 })]);
 
-      const pool = (await usage.current()).find(
+      const pool = (await usage.current(500)).find(
         (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
       );
       expect(pool?.hourCalls).toBe(7);
@@ -263,7 +280,7 @@ describe('meta_api_usage', () => {
       const now = new Date();
       await usage.record([bucket({ bucketStart: now, lastSeenAt: now })]);
 
-      const pool = (await usage.current()).find(
+      const pool = (await usage.current(500)).find(
         (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
       );
       expect(pool).toMatchObject({
@@ -289,7 +306,7 @@ describe('meta_api_usage', () => {
         }),
       ]);
 
-      const pool = (await usage.current()).find(
+      const pool = (await usage.current(500)).find(
         (entry) => entry.scopeKey === 'BUSINESS:instagram',
       );
       expect(pool).toMatchObject({ enterpriseName: null, channelName: null });
@@ -300,7 +317,7 @@ describe('meta_api_usage', () => {
       const ancient = new Date(Date.now() - 30 * 60 * 60_000);
       await usage.record([bucket({ bucketStart: ancient, lastSeenAt: ancient })]);
 
-      expect(await usage.current()).toEqual([]);
+      expect(await usage.current(500)).toEqual([]);
     });
   });
 
