@@ -31,6 +31,14 @@ import { ROLE_LEVEL, SystemRole } from '@/shared/enums';
  */
 const SCRATCH = 'wouchh_migration_rehearsal';
 
+/**
+ * A migration class, as `data-source.ts` lists them.
+ *
+ * Spelled out rather than using `Function`, which lint refuses and which would
+ * accept anything callable. The static `name` is what the filter reads.
+ */
+type MigrationClass = (new () => object) & { name: string };
+
 /** The migrations that existed before this release. */
 const PREVIOUS_RELEASE = /1758100000000|1758200000000|1758300000000/;
 
@@ -52,7 +60,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
      * because today's repositories write `level`, and reproducing a legacy
      * database through them would prove nothing.
      */
-    const asShipped = (base.migrations as Function[]).filter(
+    const asShipped = ((base.migrations ?? []) as MigrationClass[]).filter(
       (migration) => !PREVIOUS_RELEASE.test(migration.name),
     );
     const previous = new DataSource({ ...base, database: SCRATCH, migrations: asShipped });
