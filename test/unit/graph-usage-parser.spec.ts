@@ -46,7 +46,7 @@ describe('Meta usage headers', () => {
         cpuPct: 0,
         timePct: 0,
         product: null,
-        metaBusinessId: null,
+        providerScopeId: null,
       });
     });
 
@@ -73,7 +73,7 @@ describe('Meta usage headers', () => {
       expect(reading).toMatchObject({
         meter: MetaUsageMeter.BusinessUseCase,
         product: 'messenger',
-        metaBusinessId: '651551841371924',
+        providerScopeId: '651551841371924',
         callPct: 1,
       });
     });
@@ -89,7 +89,7 @@ describe('Meta usage headers', () => {
       const pages = parseUsageReadings({ 'x-business-use-case-usage': PAGES });
       const messenger = parseUsageReadings({ 'x-business-use-case-usage': MESSENGER });
 
-      expect(pages[0]?.metaBusinessId).toBe(messenger[0]?.metaBusinessId);
+      expect(pages[0]?.providerScopeId).toBe(messenger[0]?.providerScopeId);
       expect(pages[0]?.product).toBe('pages');
       expect(messenger[0]?.product).toBe('messenger');
     });
@@ -105,7 +105,7 @@ describe('Meta usage headers', () => {
       const readings = parseUsageReadings({ 'x-business-use-case-usage': INSTAGRAM });
 
       expect(readings).toHaveLength(2);
-      expect(readings.map((reading) => reading.metaBusinessId).sort()).toEqual([
+      expect(readings.map((reading) => reading.providerScopeId).sort()).toEqual([
         '17841472020051826',
         '645699291956344',
       ]);

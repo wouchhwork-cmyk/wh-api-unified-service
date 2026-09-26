@@ -34,7 +34,7 @@ export interface MetaUsageReading {
   /** Meta's `type`. NULL for the app meter, which has no product breakdown. */
   readonly product: string | null;
   /** The id Meta keyed the entry under. NULL for the app meter. */
-  readonly metaBusinessId: string | null;
+  readonly providerScopeId: string | null;
   /** Percentage of the call allowance used. NULL when Meta omitted it. */
   readonly callPct: number | null;
   readonly cpuPct: number | null;
@@ -70,7 +70,7 @@ const AD_ACCOUNT_HEADER = 'x-ad-account-usage';
  *
  * These are not opinions about Meta, they are the column's limits: `call_pct`
  * and friends are SMALLINT behind `CHECK (... BETWEEN 0 AND 1000)`, `product`
- * is VARCHAR(40) and `meta_business_id` VARCHAR(64). Anything wider has to be
+ * is VARCHAR(40) and `provider_scope_id` VARCHAR(64). Anything wider has to be
  * cut HERE, because the alternative is a rejected INSERT that takes an entire
  * flush with it — and Postgres does not truncate on plain column assignment,
  * only on an explicit cast, so the row really does fail.
@@ -144,7 +144,7 @@ function positiveMinutes(value: unknown): number | null {
 
 function readingFrom(
   meter: MetaUsageMeter,
-  metaBusinessId: string | null,
+  providerScopeId: string | null,
   entry: Record<string, unknown>,
 ): MetaUsageReading {
   /*
@@ -157,7 +157,7 @@ function readingFrom(
   return {
     meter,
     product,
-    metaBusinessId,
+    providerScopeId,
     callPct: percentage(entry.call_count),
     cpuPct: percentage(entry.total_cputime),
     timePct: percentage(entry.total_time),
@@ -182,7 +182,7 @@ export function parseUsageReadings(source: UsageHeaderSource): MetaUsageReading[
 
   const business = readJsonHeader(source, BUSINESS_HEADER);
   if (typeof business === 'object' && business !== null && !Array.isArray(business)) {
-    for (const [metaBusinessId, value] of Object.entries(business as Record<string, unknown>)) {
+    for (const [providerScopeId, value] of Object.entries(business as Record<string, unknown>)) {
       // Documented and observed as an array of one entry per pool. The single
       // object form is tolerated because it costs one branch and the shape is
       // Meta's to change.
@@ -193,7 +193,7 @@ export function parseUsageReadings(source: UsageHeaderSource): MetaUsageReading[
           readingFrom(
             MetaUsageMeter.BusinessUseCase,
             // Truncated like every other Meta-chosen value. See the constants.
-            metaBusinessId.slice(0, MAX_BUSINESS_ID_LENGTH),
+            providerScopeId.slice(0, MAX_BUSINESS_ID_LENGTH),
             entry as Record<string, unknown>,
           ),
         );

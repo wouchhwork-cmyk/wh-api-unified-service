@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import {
-  MetaApiUsageRepository,
-  type MetaUsageBucket,
-} from '@/database/repositories/meta-api-usage.repository';
-import { MetaUsageMeter } from '@/shared/enums';
+  ProviderApiUsageRepository,
+  type ProviderUsageBucket,
+} from '@/database/repositories/provider-api-usage.repository';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /**
@@ -16,9 +16,9 @@ import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.h
  * the single line standing between a monitor that remembers a reading of 80%
  * and one that forgets it on the next quiet response.
  */
-describe('meta_api_usage', () => {
+describe('provider_api_usage', () => {
   let db: DataSource;
-  let usage: MetaApiUsageRepository;
+  let usage: ProviderApiUsageRepository;
   let enterpriseId: number;
   let channelId: number;
 
@@ -42,7 +42,7 @@ describe('meta_api_usage', () => {
 
   beforeAll(async () => {
     db = await createTestDataSource();
-    usage = new MetaApiUsageRepository(db);
+    usage = new ProviderApiUsageRepository(db);
   });
   afterAll(async () => {
     await db.destroy();
@@ -71,11 +71,12 @@ describe('meta_api_usage', () => {
     return Number(channel[0]?.id);
   }
 
-  const bucket = (over: Partial<MetaUsageBucket> = {}): MetaUsageBucket => ({
-    scopeKey: 'IG_ACCOUNT:instagram',
+  const bucket = (over: Partial<ProviderUsageBucket> = {}): ProviderUsageBucket => ({
+    provider: Provider.Meta,
+    scopeKey: 'meta:IG_ACCOUNT:instagram',
     meter: MetaUsageMeter.BusinessUseCase,
     product: 'instagram',
-    metaBusinessId: 'IG_ACCOUNT',
+    providerScopeId: 'IG_ACCOUNT',
     enterpriseId,
     channelId,
     bucketStart: MINUTE,
@@ -91,10 +92,10 @@ describe('meta_api_usage', () => {
   });
 
   const row = async (
-    scopeKey = 'IG_ACCOUNT:instagram',
+    scopeKey = 'meta:IG_ACCOUNT:instagram',
   ): Promise<Record<string, unknown> | undefined> => {
     const rows: Record<string, unknown>[] = await db.query(
-      `SELECT * FROM meta_api_usage WHERE scope_key = $1 ORDER BY bucket_start DESC`,
+      `SELECT * FROM provider_api_usage WHERE scope_key = $1 ORDER BY bucket_start DESC`,
       [scopeKey],
     );
     return rows[0];
@@ -161,12 +162,12 @@ describe('meta_api_usage', () => {
        * owner changed on screen every few seconds. First-wins is stable.
        */
       const rival = await seedEnterprise(db, 'Rival', 'rival');
-      await usage.record([bucket({ scopeKey: 'SHARED:instagram' })]);
+      await usage.record([bucket({ scopeKey: 'meta:SHARED:instagram' })]);
       await usage.record([
-        bucket({ scopeKey: 'SHARED:instagram', enterpriseId: rival, channelId: null }),
+        bucket({ scopeKey: 'meta:SHARED:instagram', enterpriseId: rival, channelId: null }),
       ]);
 
-      const stored = await row('SHARED:instagram');
+      const stored = await row('meta:SHARED:instagram');
       expect(Number(stored?.enterprise_id)).toBe(enterpriseId);
     });
 
@@ -190,27 +191,27 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: NEXT_MINUTE, calls: 7 })]);
 
       const rows: { calls: number }[] = await db.query(
-        `SELECT calls FROM meta_api_usage WHERE scope_key = $1 ORDER BY bucket_start`,
-        ['IG_ACCOUNT:instagram'],
+        `SELECT calls FROM provider_api_usage WHERE scope_key = $1 ORDER BY bucket_start`,
+        ['meta:IG_ACCOUNT:instagram'],
       );
       expect(rows.map((entry) => entry.calls)).toEqual([5, 7]);
     });
 
     it('keeps separate pools of one asset separate', async () => {
       await usage.record([
-        bucket({ scopeKey: 'PAGE:pages', product: 'pages', callPct: 4 }),
-        bucket({ scopeKey: 'PAGE:messenger', product: 'messenger', callPct: 90 }),
+        bucket({ scopeKey: 'meta:PAGE:pages', product: 'pages', callPct: 4 }),
+        bucket({ scopeKey: 'meta:PAGE:messenger', product: 'messenger', callPct: 90 }),
       ]);
 
-      expect(await row('PAGE:pages')).toMatchObject({ call_pct: 4 });
-      expect(await row('PAGE:messenger')).toMatchObject({ call_pct: 90 });
+      expect(await row('meta:PAGE:pages')).toMatchObject({ call_pct: 4 });
+      expect(await row('meta:PAGE:messenger')).toMatchObject({ call_pct: 90 });
     });
 
     it('writes many pools in one statement', async () => {
       const written = await usage.record([
-        bucket({ scopeKey: 'a:instagram' }),
-        bucket({ scopeKey: 'b:instagram' }),
-        bucket({ scopeKey: 'c:instagram' }),
+        bucket({ scopeKey: 'meta:a:instagram' }),
+        bucket({ scopeKey: 'meta:b:instagram' }),
+        bucket({ scopeKey: 'meta:c:instagram' }),
       ]);
 
       expect(written).toBe(3);
@@ -219,6 +220,76 @@ describe('meta_api_usage', () => {
     it('does nothing when there is nothing to write', async () => {
       // The ordinary case on a quiet deployment: no statement at all.
       expect(await usage.record([])).toBe(0);
+    });
+  });
+
+  describe('room for a second provider', () => {
+    /*
+     * THE POINT OF THE `provider` COLUMN. Provider already lists google,
+     * zendesk and hubspot, and every one of them meters its API somehow — so
+     * this table holds more than Meta by design, and the day it does, nothing
+     * about one provider may disturb another.
+     */
+    it('keeps two providers apart even when they name a pool the same thing', async () => {
+      /*
+       * A product name is the provider's to choose and nothing stops two of
+       * them picking the same word. Without the provider in the scope key these
+       * two would share a row and silently ADD their percentages together —
+       * the worst kind of wrong, because the number stays plausible.
+       */
+      await usage.record([
+        bucket({ scopeKey: 'meta:ACCT:inbox', provider: Provider.Meta, callPct: 20, calls: 3 }),
+        bucket({ scopeKey: 'google:ACCT:inbox', provider: Provider.Google, callPct: 70, calls: 9 }),
+      ]);
+
+      expect(await row('meta:ACCT:inbox')).toMatchObject({
+        provider: 'meta',
+        call_pct: 20,
+        calls: 3,
+      });
+      expect(await row('google:ACCT:inbox')).toMatchObject({
+        provider: 'google',
+        call_pct: 70,
+        calls: 9,
+      });
+    });
+
+    it('reports both to the console, each under its own provider', async () => {
+      const now = new Date();
+      await usage.record([
+        bucket({ scopeKey: 'meta:A:inbox', provider: Provider.Meta, bucketStart: now, lastSeenAt: now }),
+        bucket({
+          scopeKey: 'google:B:inbox',
+          provider: Provider.Google,
+          product: 'inbox',
+          bucketStart: now,
+          lastSeenAt: now,
+        }),
+      ]);
+
+      const current = await usage.current(500);
+      const byKey = new Map(current.map((entry) => [entry.scopeKey, entry.provider]));
+
+      expect(byKey.get('meta:A:inbox')).toBe(Provider.Meta);
+      expect(byKey.get('google:B:inbox')).toBe(Provider.Google);
+    });
+
+    it('stores a meter name this codebase has never heard of', async () => {
+      /*
+       * `meter` is free text, not a constrained enum, because Meta's two names
+       * are Meta's. A provider whose meter is called something else must store
+       * rather than fail — a pool we cannot name is still a pool that throttles.
+       */
+      await usage.record([
+        bucket({
+          scopeKey: 'zendesk:X:tickets',
+          provider: Provider.Zendesk,
+          meter: 'per_minute' as never,
+          product: 'tickets',
+        }),
+      ]);
+
+      expect(await row('zendesk:X:tickets')).toMatchObject({ meter: 'per_minute' });
     });
   });
 
@@ -253,9 +324,9 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: NEXT_MINUTE, callPct: 20 })]);
 
       const current = await usage.current(500);
-      const pool = current.find((entry) => entry.scopeKey === 'IG_ACCOUNT:instagram');
+      const pool = current.find((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram');
       expect(pool?.callPct).toBe(20);
-      expect(current.filter((entry) => entry.scopeKey === 'IG_ACCOUNT:instagram')).toHaveLength(1);
+      expect(current.filter((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram')).toHaveLength(1);
     });
 
     it('totals OUR calls across the window, not just the newest minute', async () => {
@@ -270,7 +341,7 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: recent, lastSeenAt: recent, calls: 6 })]);
 
       const pool = (await usage.current(500)).find(
-        (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
       );
       expect(pool?.hourCalls).toBe(10);
       expect(pool?.dayCalls).toBe(10);
@@ -285,7 +356,7 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: withinHour, lastSeenAt: withinHour, calls: 7 })]);
 
       const pool = (await usage.current(500)).find(
-        (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
       );
       expect(pool?.hourCalls).toBe(7);
       expect(pool?.dayCalls).toBe(107);
@@ -296,7 +367,7 @@ describe('meta_api_usage', () => {
       await usage.record([bucket({ bucketStart: now, lastSeenAt: now })]);
 
       const pool = (await usage.current(500)).find(
-        (entry) => entry.scopeKey === 'IG_ACCOUNT:instagram',
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
       );
       expect(pool).toMatchObject({
         enterpriseName: 'Acme',
@@ -312,8 +383,8 @@ describe('meta_api_usage', () => {
       const now = new Date();
       await usage.record([
         bucket({
-          scopeKey: 'BUSINESS:instagram',
-          metaBusinessId: 'BUSINESS',
+          scopeKey: 'meta:BUSINESS:instagram',
+          providerScopeId: 'BUSINESS',
           enterpriseId: null,
           channelId: null,
           bucketStart: now,
@@ -322,10 +393,10 @@ describe('meta_api_usage', () => {
       ]);
 
       const pool = (await usage.current(500)).find(
-        (entry) => entry.scopeKey === 'BUSINESS:instagram',
+        (entry) => entry.scopeKey === 'meta:BUSINESS:instagram',
       );
       expect(pool).toMatchObject({ enterpriseName: null, channelName: null });
-      expect(pool?.metaBusinessId).toBe('BUSINESS');
+      expect(pool?.providerScopeId).toBe('BUSINESS');
     });
 
     it('leaves out anything older than a day', async () => {
@@ -343,19 +414,19 @@ describe('meta_api_usage', () => {
 
       const points = await usage.history(60 * 60_000, 100, null);
       expect(points).toHaveLength(1);
-      expect(points[0]?.scopeKey).toBe('IG_ACCOUNT:instagram');
+      expect(points[0]?.scopeKey).toBe('meta:IG_ACCOUNT:instagram');
     });
 
     it('narrows to one pool when asked', async () => {
       const now = new Date();
       await usage.record([
         bucket({ bucketStart: now, lastSeenAt: now }),
-        bucket({ scopeKey: 'other:pages', bucketStart: now, lastSeenAt: now }),
+        bucket({ scopeKey: 'meta:other:pages', bucketStart: now, lastSeenAt: now }),
       ]);
 
-      const points = await usage.history(60 * 60_000, 100, 'other:pages');
+      const points = await usage.history(60 * 60_000, 100, 'meta:other:pages');
       expect(points).toHaveLength(1);
-      expect(points[0]?.scopeKey).toBe('other:pages');
+      expect(points[0]?.scopeKey).toBe('meta:other:pages');
     });
 
     it('keeps the RECENT end when the cap bites', async () => {
@@ -365,12 +436,12 @@ describe('meta_api_usage', () => {
       for (let index = 0; index < 5; index += 1) {
         const at = new Date(now - index * 60_000);
         await usage.record([
-          bucket({ scopeKey: `s${index}:instagram`, bucketStart: at, lastSeenAt: at }),
+          bucket({ scopeKey: `meta:s${index}:instagram`, bucketStart: at, lastSeenAt: at }),
         ]);
       }
 
       const points = await usage.history(60 * 60_000, 2, null);
-      expect(points.map((point) => point.scopeKey)).toEqual(['s0:instagram', 's1:instagram']);
+      expect(points.map((point) => point.scopeKey)).toEqual(['meta:s0:instagram', 'meta:s1:instagram']);
     });
   });
 
@@ -379,22 +450,22 @@ describe('meta_api_usage', () => {
       const old = new Date(Date.now() - 72 * 60 * 60_000);
       const fresh = new Date();
       await usage.record([
-        bucket({ scopeKey: 'old:instagram', bucketStart: old, lastSeenAt: old }),
-        bucket({ scopeKey: 'fresh:instagram', bucketStart: fresh, lastSeenAt: fresh }),
+        bucket({ scopeKey: 'meta:old:instagram', bucketStart: old, lastSeenAt: old }),
+        bucket({ scopeKey: 'meta:fresh:instagram', bucketStart: fresh, lastSeenAt: fresh }),
       ]);
 
       const removed = await usage.sweep(48 * 60 * 60_000, 500);
 
       expect(removed).toBe(1);
-      expect(await row('old:instagram')).toBeUndefined();
-      expect(await row('fresh:instagram')).toBeDefined();
+      expect(await row('meta:old:instagram')).toBeUndefined();
+      expect(await row('meta:fresh:instagram')).toBeDefined();
     });
 
     it('respects the batch limit, so one pass cannot run unbounded', async () => {
       const old = new Date(Date.now() - 72 * 60 * 60_000);
       await usage.record(
         [0, 1, 2, 3, 4].map((index) =>
-          bucket({ scopeKey: `old${index}:instagram`, bucketStart: old, lastSeenAt: old }),
+          bucket({ scopeKey: `meta:old${index}:instagram`, bucketStart: old, lastSeenAt: old }),
         ),
       );
 
@@ -408,7 +479,7 @@ describe('meta_api_usage', () => {
       // fails loudly, so the range is a CHECK rather than a convention.
       await expect(
         db.query(
-          `INSERT INTO meta_api_usage
+          `INSERT INTO provider_api_usage
              (scope_key, meter, bucket_start, call_pct, last_seen_at)
            VALUES ('bad','app',now(),-5,now())`,
         ),
@@ -418,7 +489,7 @@ describe('meta_api_usage', () => {
     it('refuses a negative call count', async () => {
       await expect(
         db.query(
-          `INSERT INTO meta_api_usage
+          `INSERT INTO provider_api_usage
              (scope_key, meter, bucket_start, calls, last_seen_at)
            VALUES ('bad','app',now(),-1,now())`,
         ),
@@ -430,10 +501,10 @@ describe('meta_api_usage', () => {
 
       await expect(
         db.query(
-          `INSERT INTO meta_api_usage
+          `INSERT INTO provider_api_usage
              (scope_key, meter, bucket_start, last_seen_at)
            VALUES ($1,'business_use_case',$2,now())`,
-          ['IG_ACCOUNT:instagram', MINUTE],
+          ['meta:IG_ACCOUNT:instagram', MINUTE],
         ),
       ).rejects.toThrow();
     });

@@ -1,14 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import {
-  MetaApiUsageRepository,
-  type MetaUsageCurrentRow,
-} from '@/database/repositories/meta-api-usage.repository';
+  ProviderApiUsageRepository,
+  type ProviderUsageCurrentRow,
+} from '@/database/repositories/provider-api-usage.repository';
 import {
   MAX_MONITORED_POOLS,
   META_USAGE_THROTTLE_PCT,
   META_USAGE_WARN_PCT,
 } from '@/shared/constants';
-import { MetaUsageMeter, MetaUsageProduct } from '@/shared/enums';
+import { MetaUsageMeter, MetaUsageProduct, Provider } from '@/shared/enums';
 
 /**
  * How close a pool is to being refused.
@@ -18,15 +18,17 @@ import { MetaUsageMeter, MetaUsageProduct } from '@/shared/enums';
  * have called but heard nothing about is genuinely unmeasured — and showing
  * that as a healthy 0% would put a green light on the one pool nobody can see.
  */
-export type MetaPoolStatus = 'ok' | 'warning' | 'throttled' | 'unknown';
+export type PoolStatus = 'ok' | 'warning' | 'throttled' | 'unknown';
 
 /** One metered pool, as the console shows it. */
-export interface MetaPoolView {
+export interface PoolView {
+  /** Whose quota this is. `meta` today; the table holds every provider. */
+  readonly provider: Provider;
   readonly scopeKey: string;
   readonly meter: MetaUsageMeter;
   readonly product: string | null;
-  readonly metaBusinessId: string | null;
-  readonly status: MetaPoolStatus;
+  readonly providerScopeId: string | null;
+  readonly status: PoolStatus;
 
   /**
    * The highest of Meta's three percentages, which is the one that decides.
@@ -76,7 +78,7 @@ export interface MetaPoolView {
 }
 
 /** One minute of one pool, for a chart. */
-export interface MetaUsagePoint {
+export interface UsagePoint {
   readonly scopeKey: string;
   readonly at: Date;
   readonly usedPercent: number | null;
@@ -85,14 +87,14 @@ export interface MetaUsagePoint {
 }
 
 /** Every pool belonging to one business. */
-export interface MetaEnterpriseUsageView {
+export interface EnterpriseUsageView {
   readonly enterpriseRefId: string;
   readonly enterpriseName: string;
-  readonly status: MetaPoolStatus;
-  readonly pools: readonly MetaPoolView[];
+  readonly status: PoolStatus;
+  readonly pools: readonly PoolView[];
 }
 
-export interface MetaRateLimitOverview {
+export interface RateLimitOverview {
   readonly generatedAt: Date;
   /**
    * The single app-wide pool, or null if nothing has drawn on it recently.
@@ -100,8 +102,8 @@ export interface MetaRateLimitOverview {
    * Null is the ordinary state for a quiet deployment, not an error: the app
    * meter is only touched by the connect and token paths.
    */
-  readonly app: MetaPoolView | null;
-  readonly enterprises: readonly MetaEnterpriseUsageView[];
+  readonly app: PoolView | null;
+  readonly enterprises: readonly EnterpriseUsageView[];
   /**
    * Pools Meta named under an id that is not one of our channels and could not
    * be tied to exactly one business.
@@ -110,28 +112,35 @@ export interface MetaRateLimitOverview {
    * tenants — genuinely shared quota, shown separately rather than attributed
    * to whichever tenant happened to be called first.
    */
-  readonly unattributed: readonly MetaPoolView[];
+  readonly unattributed: readonly PoolView[];
   /** Pools at or past the warning line, worst first. What to look at. */
-  readonly attention: readonly MetaPoolView[];
+  readonly attention: readonly PoolView[];
 }
 
-/** Meta's rolling window per pool, in minutes. */
+/**
+ * Each pool's rolling window, in minutes, keyed by `provider:product`.
+ *
+ * KEYED BY PROVIDER, not by product alone. Product names are the provider's to
+ * choose and nothing stops two of them using the same word — a second provider
+ * with something called `instagram` would otherwise inherit Meta's 24-hour
+ * window and be reported against the wrong allowance entirely.
+ */
 const WINDOW_MINUTES: Record<string, number> = {
-  [MetaUsageProduct.Instagram]: 24 * 60,
-  [MetaUsageProduct.Messenger]: 24 * 60,
-  [MetaUsageProduct.Pages]: 24 * 60,
-  [MetaUsageProduct.LeadGen]: 24 * 60,
-  [MetaUsageProduct.AdsInsights]: 60,
-  [MetaUsageProduct.AdsManagement]: 60,
-  [MetaUsageProduct.CustomAudience]: 60,
+  [`${Provider.Meta}:${MetaUsageProduct.Instagram}`]: 24 * 60,
+  [`${Provider.Meta}:${MetaUsageProduct.Messenger}`]: 24 * 60,
+  [`${Provider.Meta}:${MetaUsageProduct.Pages}`]: 24 * 60,
+  [`${Provider.Meta}:${MetaUsageProduct.LeadGen}`]: 24 * 60,
+  [`${Provider.Meta}:${MetaUsageProduct.AdsInsights}`]: 60,
+  [`${Provider.Meta}:${MetaUsageProduct.AdsManagement}`]: 60,
+  [`${Provider.Meta}:${MetaUsageProduct.CustomAudience}`]: 60,
 };
 
-/** The published formula per pool. Shown so a percentage can be interpreted. */
+/** The published formula per pool, keyed the same way and for the same reason. */
 const ALLOWANCE_FORMULA: Record<string, string> = {
-  [MetaUsageProduct.Instagram]: '4800 × impressions, per 24 hours',
-  [MetaUsageProduct.Messenger]: '200 × engaged users, per 24 hours',
-  [MetaUsageProduct.Pages]: '4800 × engaged users, per 24 hours',
-  [MetaUsageProduct.LeadGen]: '4800 × leads generated, per 24 hours',
+  [`${Provider.Meta}:${MetaUsageProduct.Instagram}`]: '4800 × impressions, per 24 hours',
+  [`${Provider.Meta}:${MetaUsageProduct.Messenger}`]: '200 × engaged users, per 24 hours',
+  [`${Provider.Meta}:${MetaUsageProduct.Pages}`]: '4800 × engaged users, per 24 hours',
+  [`${Provider.Meta}:${MetaUsageProduct.LeadGen}`]: '4800 × leads generated, per 24 hours',
 };
 
 const APP_WINDOW_MINUTES = 60;
@@ -160,16 +169,16 @@ const MIN_PERCENT_FOR_ESTIMATE = 10;
  * spending it" — without inventing precision Meta did not give us.
  */
 @Injectable()
-export class MetaRateLimitService {
-  constructor(private readonly usage: MetaApiUsageRepository) {}
+export class RateLimitService {
+  constructor(private readonly usage: ProviderApiUsageRepository) {}
 
-  async overview(): Promise<MetaRateLimitOverview> {
+  async overview(): Promise<RateLimitOverview> {
     const rows = await this.usage.current(MAX_MONITORED_POOLS);
     const pools = rows.map((row) => this.toPool(row));
 
-    const byEnterprise = new Map<string, { name: string; pools: MetaPoolView[] }>();
-    const unattributed: MetaPoolView[] = [];
-    let app: MetaPoolView | null = null;
+    const byEnterprise = new Map<string, { name: string; pools: PoolView[] }>();
+    const unattributed: PoolView[] = [];
+    let app: PoolView | null = null;
 
     /*
      * Grouped from the ROWS, zipped with their views, because attribution lives
@@ -206,7 +215,7 @@ export class MetaRateLimitService {
       }
     }
 
-    const enterprises: MetaEnterpriseUsageView[] = [...byEnterprise.entries()]
+    const enterprises: EnterpriseUsageView[] = [...byEnterprise.entries()]
       .map(([enterpriseRefId, entry]) => ({
         enterpriseRefId,
         enterpriseName: entry.name,
@@ -242,7 +251,7 @@ export class MetaRateLimitService {
     windowMinutes: number;
     limit: number;
     scopeKey: string | null;
-  }): Promise<readonly MetaUsagePoint[]> {
+  }): Promise<readonly UsagePoint[]> {
     const rows = await this.usage.history(
       input.windowMinutes * 60 * 1000,
       input.limit,
@@ -259,7 +268,7 @@ export class MetaRateLimitService {
       .reverse();
   }
 
-  private toPool(row: MetaUsageCurrentRow): MetaPoolView {
+  private toPool(row: ProviderUsageCurrentRow): PoolView {
     const isApp = row.meter === MetaUsageMeter.App;
     /*
      * An unrecognised product falls back to the BUSINESS window, not the app
@@ -269,9 +278,10 @@ export class MetaRateLimitService {
      * would read the hour's call count beside it — understating the pool by up
      * to twenty-four times on the first day a new type appears.
      */
+    const lookup = `${row.provider}:${row.product ?? ''}`;
     const windowMinutes = isApp
       ? APP_WINDOW_MINUTES
-      : (WINDOW_MINUTES[row.product ?? ''] ?? BUSINESS_WINDOW_MINUTES);
+      : (WINDOW_MINUTES[lookup] ?? BUSINESS_WINDOW_MINUTES);
 
     // Over an hourly window the hour totals are the right ones; over a daily
     // window, the day's. Reading the wrong pair is how a daily pool comes to
@@ -284,10 +294,11 @@ export class MetaRateLimitService {
     const usedPercent = highestOf(row.callPct, row.cpuPct, row.timePct);
 
     return {
+      provider: row.provider,
       scopeKey: row.scopeKey,
       meter: row.meter,
       product: row.product,
-      metaBusinessId: row.metaBusinessId,
+      providerScopeId: row.providerScopeId,
       status: statusOf(usedPercent, row.latestThrottledCalls, row.regainMinutes),
       usedPercent,
       remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
@@ -297,7 +308,7 @@ export class MetaRateLimitService {
       windowMinutes,
       allowanceFormula: isApp
         ? APP_FORMULA
-        : (ALLOWANCE_FORMULA[row.product ?? ''] ?? 'not published by Meta'),
+        : (ALLOWANCE_FORMULA[lookup] ?? 'not published by the provider'),
       estimatedAllowanceCalls: estimateAllowance(calls, row.callPct),
       callsInWindow: calls,
       throttledCallsInWindow: throttledCalls,
@@ -351,7 +362,7 @@ function statusOf(
    */
   latestThrottledCalls: number,
   regainMinutes: number | null,
-): MetaPoolStatus {
+): PoolStatus {
   if (latestThrottledCalls > 0 || (regainMinutes !== null && regainMinutes > 0)) return 'throttled';
   if (usedPercent === null) return 'unknown';
   if (usedPercent >= META_USAGE_THROTTLE_PCT) return 'throttled';
@@ -359,21 +370,21 @@ function statusOf(
   return 'ok';
 }
 
-const STATUS_ORDER: Record<MetaPoolStatus, number> = {
+const STATUS_ORDER: Record<PoolStatus, number> = {
   throttled: 0,
   warning: 1,
   unknown: 2,
   ok: 3,
 };
 
-function worstStatus(pools: readonly MetaPoolView[]): MetaPoolStatus {
-  return pools.reduce<MetaPoolStatus>(
+function worstStatus(pools: readonly PoolView[]): PoolStatus {
+  return pools.reduce<PoolStatus>(
     (worst, pool) => (STATUS_ORDER[pool.status] < STATUS_ORDER[worst] ? pool.status : worst),
     'ok',
   );
 }
 
-function byUsedPercentDescending(a: MetaPoolView, b: MetaPoolView): number {
+function byUsedPercentDescending(a: PoolView, b: PoolView): number {
   const byStatus = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
   if (byStatus !== 0) return byStatus;
   return (b.usedPercent ?? -1) - (a.usedPercent ?? -1);

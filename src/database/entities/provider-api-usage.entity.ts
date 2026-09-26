@@ -1,11 +1,12 @@
 import { Check, Column, Entity, Index } from 'typeorm';
-import { MetaUsageMeter } from '@/shared/enums';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { BaseEntity } from './base.entity';
 import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 
 /**
- * What Meta has told us about how much of its rate limit we have spent.
+ * What an upstream provider has told us about how much of its rate limit we
+ * have spent.
  *
  * ONE ROW PER SCOPE PER MINUTE, upserted. Every Graph response carries a usage
  * header; writing a row per call would put a database round trip on the path of
@@ -33,12 +34,12 @@ import { TIMESTAMP_PRECISION } from '../timestamp-precision';
  * attribution, resolved from the ids Meta names in the header, and are NULL
  * when the id is the app meter or a business we cannot match to a channel.
  */
-@Entity('meta_api_usage')
-@Index('meta_api_usage_bucket_uniq', ['scopeKey', 'bucketStart'], { unique: true })
+@Entity('provider_api_usage')
+@Index('provider_api_usage_bucket_uniq', ['scopeKey', 'bucketStart'], { unique: true })
 // The retention sweep and the history chart. Declared here as well as in the
 // migration for the reason the CHECKs below are: an index in only one of the
 // two build paths does not exist where the tests run.
-@Index('meta_api_usage_bucket_start_idx', ['bucketStart'])
+@Index('provider_api_usage_bucket_start_idx', ['bucketStart'])
 /*
  * DECLARED HERE AS WELL AS IN THE MIGRATION, and they have to be.
  *
@@ -52,18 +53,30 @@ import { TIMESTAMP_PRECISION } from '../timestamp-precision';
  * throttling, not where it stops counting, and a pool reported at 140% is a real
  * reading we would rather store than reject.
  */
-@Check('meta_api_usage_call_pct_chk', 'call_pct IS NULL OR (call_pct BETWEEN 0 AND 1000)')
-@Check('meta_api_usage_cpu_pct_chk', 'cpu_pct IS NULL OR (cpu_pct BETWEEN 0 AND 1000)')
-@Check('meta_api_usage_time_pct_chk', 'time_pct IS NULL OR (time_pct BETWEEN 0 AND 1000)')
+@Check('provider_api_usage_call_pct_chk', 'call_pct IS NULL OR (call_pct BETWEEN 0 AND 1000)')
+@Check('provider_api_usage_cpu_pct_chk', 'cpu_pct IS NULL OR (cpu_pct BETWEEN 0 AND 1000)')
+@Check('provider_api_usage_time_pct_chk', 'time_pct IS NULL OR (time_pct BETWEEN 0 AND 1000)')
 @Check(
-  'meta_api_usage_counts_chk',
+  'provider_api_usage_counts_chk',
   'calls >= 0 AND throttled_calls >= 0 AND failed_calls >= 0',
 )
-export class MetaApiUsage extends BaseEntity {
+export class ProviderApiUsage extends BaseEntity {
+  /**
+   * Whose quota this is.
+   *
+   * `meta` today, and a column rather than something parsed out of `scopeKey`,
+   * because a value you have to split a string to learn is one that eventually
+   * gets split wrong. The console groups by it, and the allowance windows are
+   * per provider — Meta's business pools run over 24 hours, and nothing says
+   * the next provider's will.
+   */
+  @Column({ type: 'varchar', length: 30 })
+  provider!: Provider;
+
   /**
    * The identity of the pool being measured, and the conflict target.
    *
-   * `app` for the single app-wide meter; `{metaBusinessId}:{product}` for a
+   * `app` for the single app-wide meter; `{providerScopeId}:{product}` for a
    * business-use-case pool. It is a composed string rather than a set of
    * nullable columns because ON CONFLICT cannot use a unique index over columns
    * that are NULL — in Postgres two NULLs are distinct, so every flush would
@@ -94,7 +107,7 @@ export class MetaApiUsage extends BaseEntity {
    * is why this is stored verbatim and attribution is a separate question.
    */
   @Column({ type: 'varchar', length: 64, nullable: true })
-  metaBusinessId!: string | null;
+  providerScopeId!: string | null;
 
   /**
    * Which business's work drew on this pool, where we could tell.

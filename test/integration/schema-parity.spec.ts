@@ -121,7 +121,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
      * created was guaranteed to look like drift. That stayed invisible for as
      * long as the later migrations only added indexes, because indexes come
      * from `schema-objects`, which both paths share. The first later migration
-     * to create a TABLE — `1758100000000-MetaApiUsage` — is what exposed it.
+     * to create a TABLE — `1758100000000-ProviderApiUsage` — is what exposed it.
      *
      * Taking the list from the same factory the application uses also means a
      * migration nobody registered fails here, which is the mistake

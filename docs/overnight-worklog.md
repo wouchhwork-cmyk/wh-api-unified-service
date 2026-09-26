@@ -80,10 +80,10 @@ persisted so it survives a restart and resets when Meta's window resets.
 - [x] Documentation research (windows, formulas, codes, back-off advice)
 - [x] `MetaUsageMeter` / `MetaUsageProduct` enums
 - [x] Constants (bucket, flush, retention, thresholds)
-- [x] `meta_api_usage` entity + registration
-- [x] Migration `1758100000000-MetaApiUsage` + registration in `data-source.ts`
+- [x] `provider_api_usage` entity + registration
+- [x] Migration `1758100000000-ProviderApiUsage` + registration in `data-source.ts`
 - [x] `graph-usage.parser.ts` — one owner for both usage headers
-- [x] `MetaApiUsageRepository`
+- [x] `ProviderApiUsageRepository`
 - [x] `MetaUsageCollector` — buffer, flush, attribution, inference
 - [x] Hook into `GraphApiClient.request` (success, error and transport paths)
 - [x] Widen throttle detection to the whole `800xx` range (the published code

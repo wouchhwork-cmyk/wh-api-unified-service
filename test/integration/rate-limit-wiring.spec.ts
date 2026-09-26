@@ -3,8 +3,8 @@ import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
-import { MetaApiUsageRepository } from '@/database/repositories/meta-api-usage.repository';
-import type { MetaUsageBucket } from '@/database/repositories/meta-api-usage.repository';
+import { ProviderApiUsageRepository } from '@/database/repositories/provider-api-usage.repository';
+import type { ProviderUsageBucket } from '@/database/repositories/provider-api-usage.repository';
 import { Platform } from '@/shared/enums';
 
 /**
@@ -101,22 +101,22 @@ describe('the Meta rate-limit collector is wired in', () => {
         DatabaseModule: object;
       };
 
-      expect(providersOf(database.DatabaseModule)).toContain(MetaApiUsageRepository);
+      expect(providersOf(database.DatabaseModule)).toContain(ProviderApiUsageRepository);
     });
   });
 
   describe('what a wired client actually does', () => {
     const originalFetch = globalThis.fetch;
-    let written: MetaUsageBucket[];
+    let written: ProviderUsageBucket[];
     let collector: MetaUsageCollector;
 
     const repository = {
-      record: async (buckets: readonly MetaUsageBucket[]): Promise<number> => {
+      record: async (buckets: readonly ProviderUsageBucket[]): Promise<number> => {
         written.push(...buckets);
         return buckets.length;
       },
       resolveOwners: async () => [],
-    } as unknown as MetaApiUsageRepository;
+    } as unknown as ProviderApiUsageRepository;
 
     const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
 
@@ -153,7 +153,7 @@ describe('the Meta rate-limit collector is wired in', () => {
 
       expect(written).toHaveLength(1);
       expect(written[0]).toMatchObject({
-        scopeKey: '651551841371924:pages',
+        scopeKey: 'meta:651551841371924:pages',
         product: 'pages',
         callPct: 7,
         calls: 1,
@@ -172,7 +172,7 @@ describe('the Meta rate-limit collector is wired in', () => {
       await client.getChannelProfile('651551841371924', 'token', Platform.Facebook);
       await collector.flush();
 
-      expect(written.map((bucket) => bucket.scopeKey)).toEqual(['unknown']);
+      expect(written.map((bucket) => bucket.scopeKey)).toEqual(['meta:unknown']);
       expect(written[0]?.callPct).toBeNull();
     });
 

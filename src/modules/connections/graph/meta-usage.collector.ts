@@ -1,16 +1,16 @@
 import { Injectable, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
-  MetaApiUsageRepository,
-  type MetaUsageBucket,
-} from '@/database/repositories/meta-api-usage.repository';
+  ProviderApiUsageRepository,
+  type ProviderUsageBucket,
+} from '@/database/repositories/provider-api-usage.repository';
 import {
   META_USAGE_BUCKET_MS,
   META_USAGE_FLUSH_MS,
   META_USAGE_MAX_PENDING_BUCKETS,
   META_USAGE_SCOPE_CACHE_MS,
 } from '@/shared/constants';
-import { MetaUsageMeter } from '@/shared/enums';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
 import type { MetaUsageReading } from './graph-usage.parser';
 
 /** What one Graph call produced, from the monitor's point of view. */
@@ -27,7 +27,7 @@ interface PendingBucket {
   scopeKey: string;
   meter: MetaUsageMeter;
   product: string | null;
-  metaBusinessId: string | null;
+  providerScopeId: string | null;
   bucketStartMs: number;
   calls: number;
   throttledCalls: number;
@@ -55,7 +55,17 @@ interface CachedOwner {
   readonly cachedAtMs: number;
 }
 
-const APP_SCOPE_KEY = 'app';
+/*
+ * EVERY SCOPE KEY THIS COLLECTOR WRITES IS PREFIXED WITH ITS PROVIDER.
+ *
+ * The key is the upsert's conflict target, and the table holds every provider's
+ * pools — so without the prefix, Meta's `app` pool and some future provider's
+ * `app` pool would fold into the same row and silently add their percentages
+ * together. The `provider` COLUMN is what the console groups by; this prefix is
+ * what keeps the rows distinct.
+ */
+const PROVIDER = Provider.Meta;
+const APP_SCOPE_KEY = `${PROVIDER}:app`;
 
 /**
  * Where a call with NO usage header is counted.
@@ -71,7 +81,7 @@ const APP_SCOPE_KEY = 'app';
  * A call we learned nothing about is still a call we made, so it is counted —
  * just under its own name, where it cannot overwrite a real reading.
  */
-const UNKNOWN_SCOPE_KEY = 'unknown';
+const UNKNOWN_SCOPE_KEY = `${PROVIDER}:unknown`;
 
 /**
  * The widest a scope key can be, matching `scope_key VARCHAR(120)`.
@@ -86,7 +96,13 @@ const UNKNOWN_SCOPE_KEY = 'unknown';
 const MAX_SCOPE_KEY_LENGTH = 120;
 
 /**
- * Keeps a running account of how much of Meta's rate limit we have spent.
+ * Keeps a running account of how much of META's rate limit we have spent.
+ *
+ * META'S, specifically — it reads Meta's two headers and writes rows stamped
+ * `provider = meta`. The TABLE is provider-neutral; a second provider brings
+ * its own parser and its own collector and writes alongside this one. That is
+ * the seam, and it is deliberately not a plugin registry: there is one provider
+ * today, and a registry for one implementation is a guess about the second.
  *
  * WHY IT BUFFERS. Every Graph response carries a usage header, and the obvious
  * implementation — write the reading when it arrives — puts a database round
@@ -114,7 +130,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
   private dropped = 0;
 
   constructor(
-    private readonly usage: MetaApiUsageRepository,
+    private readonly usage: ProviderApiUsageRepository,
     @InjectPinoLogger(MetaUsageCollector.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -148,9 +164,9 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     const bucketStartMs = Math.floor(nowMs / META_USAGE_BUCKET_MS) * META_USAGE_BUCKET_MS;
 
     const named = observation.readings.filter(
-      (reading) => reading.meter === MetaUsageMeter.BusinessUseCase && reading.metaBusinessId,
+      (reading) => reading.meter === MetaUsageMeter.BusinessUseCase && reading.providerScopeId,
     );
-    const siblingIds = named.map((reading) => reading.metaBusinessId as string);
+    const siblingIds = named.map((reading) => reading.providerScopeId as string);
 
     if (observation.readings.length === 0) {
       /*
@@ -163,7 +179,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
           scopeKey: UNKNOWN_SCOPE_KEY,
           meter: MetaUsageMeter.Unknown,
           product: null,
-          metaBusinessId: null,
+          providerScopeId: null,
         },
         observation,
         null,
@@ -178,17 +194,16 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
       const scopeKey =
         reading.meter === MetaUsageMeter.App
           ? APP_SCOPE_KEY
-          : `${reading.metaBusinessId ?? 'unattributed'}:${reading.product ?? 'unknown'}`.slice(
-              0,
-              MAX_SCOPE_KEY_LENGTH,
-            );
+          : `${PROVIDER}:${reading.providerScopeId ?? 'unattributed'}:${
+              reading.product ?? 'unknown'
+            }`.slice(0, MAX_SCOPE_KEY_LENGTH);
 
       this.fold(
         {
           scopeKey,
           meter: reading.meter,
           product: reading.product,
-          metaBusinessId: reading.metaBusinessId,
+          providerScopeId: reading.providerScopeId,
         },
         observation,
         reading,
@@ -204,7 +219,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
       scopeKey: string;
       meter: MetaUsageMeter;
       product: string | null;
-      metaBusinessId: string | null;
+      providerScopeId: string | null;
     },
     observation: MetaUsageObservation,
     reading: MetaUsageReading | null,
@@ -263,7 +278,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     }
 
     for (const sibling of siblingIds) {
-      if (sibling !== identity.metaBusinessId) bucket.siblingIds.add(sibling);
+      if (sibling !== identity.providerScopeId) bucket.siblingIds.add(sibling);
     }
   }
 
@@ -321,7 +336,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     const nowMs = Date.now();
     const wanted = new Set<string>();
     for (const bucket of buckets) {
-      if (bucket.metaBusinessId) wanted.add(bucket.metaBusinessId);
+      if (bucket.providerScopeId) wanted.add(bucket.providerScopeId);
       for (const sibling of bucket.siblingIds) wanted.add(sibling);
     }
 
@@ -346,16 +361,17 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     return this.owners;
   }
 
-  private toRow(bucket: PendingBucket, owners: ReadonlyMap<string, CachedOwner>): MetaUsageBucket {
-    const direct = bucket.metaBusinessId ? owners.get(bucket.metaBusinessId) : undefined;
+  private toRow(bucket: PendingBucket, owners: ReadonlyMap<string, CachedOwner>): ProviderUsageBucket {
+    const direct = bucket.providerScopeId ? owners.get(bucket.providerScopeId) : undefined;
     const channelId = direct?.channelId ?? null;
     const enterpriseId = direct?.enterpriseId ?? this.inferEnterprise(bucket, owners);
 
     return {
+      provider: PROVIDER,
       scopeKey: bucket.scopeKey,
       meter: bucket.meter,
       product: bucket.product,
-      metaBusinessId: bucket.metaBusinessId,
+      providerScopeId: bucket.providerScopeId,
       enterpriseId,
       channelId,
       bucketStart: new Date(bucket.bucketStartMs),

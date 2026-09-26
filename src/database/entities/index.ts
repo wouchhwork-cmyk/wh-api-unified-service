@@ -21,7 +21,7 @@ import { Feature } from './feature.entity';
 import { Identity } from './identity.entity';
 import { InboundEvent } from './inbound-event.entity';
 import { EmployeeRole } from './employee-role.entity';
-import { MetaApiUsage } from './meta-api-usage.entity';
+import { ProviderApiUsage } from './provider-api-usage.entity';
 import { MessageAttachment } from './message-attachment.entity';
 import { Message } from './message.entity';
 import { OauthState } from './oauth-state.entity';
@@ -51,7 +51,7 @@ export { Feature } from './feature.entity';
 export { Identity } from './identity.entity';
 export { InboundEvent } from './inbound-event.entity';
 export { EmployeeRole } from './employee-role.entity';
-export { MetaApiUsage } from './meta-api-usage.entity';
+export { ProviderApiUsage } from './provider-api-usage.entity';
 export { MessageAttachment } from './message-attachment.entity';
 export { Message } from './message.entity';
 export { OauthState } from './oauth-state.entity';
@@ -82,7 +82,7 @@ export const ENTITIES = [
   Identity,
   InboundEvent,
   EmployeeRole,
-  MetaApiUsage,
+  ProviderApiUsage,
   MessageAttachment,
   Message,
   OauthState,

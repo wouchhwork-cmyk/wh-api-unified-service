@@ -34,7 +34,7 @@ export async function truncateTenantData(dataSource: DataSource): Promise<void> 
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,
              employee_roles, enterprise_employees, identities, enterprises,
-             meta_api_usage
+             provider_api_usage
     RESTART IDENTITY CASCADE
   `);
   // employee_roles cascades from enterprises, but the ROLE rows a tenant owns are

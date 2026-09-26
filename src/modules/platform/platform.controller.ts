@@ -19,10 +19,10 @@ import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import { RequestContext } from '@/shared/context';
 import { AppException, ErrorCode } from '@/shared/errors';
 import {
-  MetaRateLimitService,
-  type MetaRateLimitOverview,
-  type MetaUsagePoint,
-} from './meta-rate-limit.service';
+  RateLimitService,
+  type RateLimitOverview,
+  type UsagePoint,
+} from './rate-limit.service';
 import {
   PlatformService,
   type EnterpriseDetail,
@@ -42,7 +42,7 @@ import {
 export class PlatformController {
   constructor(
     private readonly platform: PlatformService,
-    private readonly rateLimits: MetaRateLimitService,
+    private readonly rateLimits: RateLimitService,
   ) {}
 
   @Get('rate-limits')
@@ -57,7 +57,7 @@ export class PlatformController {
       'callsInWindow is ours, for volume. A null percentage means Meta sent no header, which is ' +
       'unknown rather than zero.',
   })
-  async rateLimitOverview(): Promise<MetaRateLimitOverview> {
+  async rateLimitOverview(): Promise<RateLimitOverview> {
     return this.rateLimits.overview();
   }
 
@@ -69,7 +69,7 @@ export class PlatformController {
       'Oldest first, so it can be charted directly. Bounded by both a window and a row cap — an ' +
       'unbounded series is how a monitoring endpoint becomes the thing that needs monitoring.',
   })
-  async rateLimitHistory(@Query() query: unknown): Promise<readonly MetaUsagePoint[]> {
+  async rateLimitHistory(@Query() query: unknown): Promise<readonly UsagePoint[]> {
     const parsed = PlatformRateLimitHistoryQuerySchema.parse(query);
     return this.rateLimits.history({
       windowMinutes: parsed.windowMinutes ?? DEFAULT_RATE_LIMIT_WINDOW_MINUTES,

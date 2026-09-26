@@ -14,7 +14,7 @@ import { MillisecondTimestamps1757700000000 } from './migrations/1757700000000-M
 import { SyncJobDeadLetterIndex1757800000000 } from './migrations/1757800000000-SyncJobDeadLetterIndex';
 import { LedgerRetentionIndexes1757900000000 } from './migrations/1757900000000-LedgerRetentionIndexes';
 import { OnePageOneConnection1758000000000 } from './migrations/1758000000000-OnePageOneConnection';
-import { MetaApiUsage1758100000000 } from './migrations/1758100000000-MetaApiUsage';
+import { ProviderApiUsage1758100000000 } from './migrations/1758100000000-ProviderApiUsage';
 import { RoleLevels1758200000000 } from './migrations/1758200000000-RoleLevels';
 import { StaffRoles1758300000000 } from './migrations/1758300000000-StaffRoles';
 import { SnakeNamingStrategy } from './naming.strategy';
@@ -76,7 +76,7 @@ export function buildDataSourceOptions(
       SyncJobDeadLetterIndex1757800000000,
       LedgerRetentionIndexes1757900000000,
       OnePageOneConnection1758000000000,
-      MetaApiUsage1758100000000,
+      ProviderApiUsage1758100000000,
       RoleLevels1758200000000,
       StaffRoles1758300000000,
     ],

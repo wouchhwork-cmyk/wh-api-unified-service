@@ -4,7 +4,7 @@ import { EnterpriseEmployeeRepository } from './repositories/enterprise-employee
 import { EnterpriseFeatureRepository } from './repositories/enterprise-feature.repository';
 import { EnterpriseRepository } from './repositories/enterprise.repository';
 import { IdentityRepository } from './repositories/identity.repository';
-import { MetaApiUsageRepository } from './repositories/meta-api-usage.repository';
+import { ProviderApiUsageRepository } from './repositories/provider-api-usage.repository';
 import { OauthStateRepository } from './repositories/oauth-state.repository';
 import { PermissionRepository } from './repositories/permission.repository';
 import { PlatformAdminRepository } from './repositories/platform-admin.repository';
@@ -21,7 +21,7 @@ const PROVIDERS = [
   EnterpriseFeatureRepository,
   EnterpriseEmployeeRepository,
   IdentityRepository,
-  MetaApiUsageRepository,
+  ProviderApiUsageRepository,
   OauthStateRepository,
   PermissionRepository,
   PlatformAdminRepository,

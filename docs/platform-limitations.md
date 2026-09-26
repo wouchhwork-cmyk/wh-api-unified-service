@@ -145,7 +145,7 @@ rather than after an outage.
 
 ### What we now do with all this
 
-Every Graph response is read for both headers and folded into `meta_api_usage`,
+Every Graph response is read for both headers and folded into `provider_api_usage`,
 one row per pool per minute, and the platform console shows it per business and
 per channel. See the 22 Sep commits.
 

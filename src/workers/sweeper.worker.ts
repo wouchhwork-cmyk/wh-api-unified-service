@@ -8,7 +8,7 @@ import { VerificationRepository } from '@/database/repositories/verification.rep
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
-import { MetaApiUsageRepository } from '@/database/repositories/meta-api-usage.repository';
+import { ProviderApiUsageRepository } from '@/database/repositories/provider-api-usage.repository';
 import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
 import { META_USAGE_RETENTION_MS } from '@/shared/constants';
 
@@ -57,7 +57,7 @@ export class SweeperWorker {
     private readonly inboundEvents: InboundEventRepository,
     private readonly outboundEvents: OutboundEventRepository,
     private readonly syncJobs: SyncJobRepository,
-    private readonly metaUsage: MetaApiUsageRepository,
+    private readonly metaUsage: ProviderApiUsageRepository,
     private readonly features: EnterpriseFeatureRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,

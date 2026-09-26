@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { MetaUsageMeter } from '@/shared/enums';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 /** One minute's accumulated usage for one pool, ready to be written. */
-export interface MetaUsageBucket {
+export interface ProviderUsageBucket {
+  readonly provider: Provider;
   readonly scopeKey: string;
   readonly meter: MetaUsageMeter;
   readonly product: string | null;
-  readonly metaBusinessId: string | null;
+  readonly providerScopeId: string | null;
   readonly enterpriseId: number | null;
   readonly channelId: number | null;
   readonly bucketStart: Date;
@@ -22,18 +23,19 @@ export interface MetaUsageBucket {
 }
 
 /** Which channel, and whose, a Meta id belongs to. */
-export interface MetaScopeOwner {
+export interface ProviderScopeOwner {
   readonly platformChannelId: string;
   readonly channelId: number;
   readonly enterpriseId: number;
 }
 
 /** The newest reading for one pool, with whatever we know about whose it is. */
-export interface MetaUsageCurrentRow {
+export interface ProviderUsageCurrentRow {
+  readonly provider: Provider;
   readonly scopeKey: string;
   readonly meter: MetaUsageMeter;
   readonly product: string | null;
-  readonly metaBusinessId: string | null;
+  readonly providerScopeId: string | null;
   readonly enterpriseId: number | null;
   readonly enterpriseName: string | null;
   readonly enterpriseRefId: string | null;
@@ -74,7 +76,7 @@ export interface MetaUsageCurrentRow {
 }
 
 /** One minute of one pool, for a chart. */
-export interface MetaUsagePointRow {
+export interface ProviderUsagePointRow {
   readonly scopeKey: string;
   readonly bucketStart: Date;
   readonly callPct: number | null;
@@ -83,7 +85,7 @@ export interface MetaUsagePointRow {
 }
 
 /**
- * The rate-limit monitor's storage.
+ * The rate-limit monitor's storage, for EVERY upstream provider.
  *
  * DELIBERATELY NOT TENANT-SCOPED, and the only repository here of which that is
  * true besides the queue gauges. Two reasons it is safe: the rows contain no
@@ -93,7 +95,7 @@ export interface MetaUsagePointRow {
  * so a tenant can read its own — nothing in the tenant-facing API touches this.
  */
 @Injectable()
-export class MetaApiUsageRepository extends BaseRepository {
+export class ProviderApiUsageRepository extends BaseRepository {
   /**
    * Folds a flush into the minute's rows.
    *
@@ -109,18 +111,19 @@ export class MetaApiUsageRepository extends BaseRepository {
    * a flush that carries no reading leaves an existing percentage alone instead
    * of erasing it.
    */
-  async record(buckets: readonly MetaUsageBucket[]): Promise<number> {
+  async record(buckets: readonly ProviderUsageBucket[]): Promise<number> {
     if (buckets.length === 0) return 0;
 
-    const COLUMNS = 15;
+    const COLUMNS = 16;
     const values: unknown[] = [];
     const tuples = buckets.map((bucket, index) => {
       const at = index * COLUMNS;
       values.push(
+        bucket.provider,
         bucket.scopeKey,
         bucket.meter,
         bucket.product,
-        bucket.metaBusinessId,
+        bucket.providerScopeId,
         bucket.enterpriseId,
         bucket.channelId,
         bucket.bucketStart,
@@ -136,28 +139,29 @@ export class MetaApiUsageRepository extends BaseRepository {
       const placeholder = (offset: number): string => `$${at + offset}`;
       return (
         `(${placeholder(1)}, ${placeholder(2)}, ${placeholder(3)}, ${placeholder(4)}, ` +
-        `${placeholder(5)}::bigint, ${placeholder(6)}::bigint, ${placeholder(7)}::timestamptz, ` +
-        `${placeholder(8)}::int, ${placeholder(9)}::int, ${placeholder(10)}::int, ` +
-        `${placeholder(11)}::smallint, ${placeholder(12)}::smallint, ${placeholder(13)}::smallint, ` +
-        `${placeholder(14)}::int, ${placeholder(15)}::timestamptz)`
+        `${placeholder(5)}, ${placeholder(6)}::bigint, ${placeholder(7)}::bigint, ` +
+        `${placeholder(8)}::timestamptz, ` +
+        `${placeholder(9)}::int, ${placeholder(10)}::int, ${placeholder(11)}::int, ` +
+        `${placeholder(12)}::smallint, ${placeholder(13)}::smallint, ${placeholder(14)}::smallint, ` +
+        `${placeholder(15)}::int, ${placeholder(16)}::timestamptz)`
       );
     });
 
     const result = await this.mutate(
-      `INSERT INTO meta_api_usage
-         (scope_key, meter, product, meta_business_id, enterprise_id, channel_id,
+      `INSERT INTO provider_api_usage
+         (provider, scope_key, meter, product, provider_scope_id, enterprise_id, channel_id,
           bucket_start, calls, throttled_calls, failed_calls,
           call_pct, cpu_pct, time_pct, regain_minutes, last_seen_at)
        VALUES ${tuples.join(', ')}
        ON CONFLICT (scope_key, bucket_start) DO UPDATE SET
-         calls           = meta_api_usage.calls           + EXCLUDED.calls,
-         throttled_calls = meta_api_usage.throttled_calls + EXCLUDED.throttled_calls,
-         failed_calls    = meta_api_usage.failed_calls    + EXCLUDED.failed_calls,
-         call_pct        = GREATEST(meta_api_usage.call_pct,  EXCLUDED.call_pct),
-         cpu_pct         = GREATEST(meta_api_usage.cpu_pct,   EXCLUDED.cpu_pct),
-         time_pct        = GREATEST(meta_api_usage.time_pct,  EXCLUDED.time_pct),
-         regain_minutes  = GREATEST(meta_api_usage.regain_minutes, EXCLUDED.regain_minutes),
-         last_seen_at    = GREATEST(meta_api_usage.last_seen_at,   EXCLUDED.last_seen_at),
+         calls           = provider_api_usage.calls           + EXCLUDED.calls,
+         throttled_calls = provider_api_usage.throttled_calls + EXCLUDED.throttled_calls,
+         failed_calls    = provider_api_usage.failed_calls    + EXCLUDED.failed_calls,
+         call_pct        = GREATEST(provider_api_usage.call_pct,  EXCLUDED.call_pct),
+         cpu_pct         = GREATEST(provider_api_usage.cpu_pct,   EXCLUDED.cpu_pct),
+         time_pct        = GREATEST(provider_api_usage.time_pct,  EXCLUDED.time_pct),
+         regain_minutes  = GREATEST(provider_api_usage.regain_minutes, EXCLUDED.regain_minutes),
+         last_seen_at    = GREATEST(provider_api_usage.last_seen_at,   EXCLUDED.last_seen_at),
          /*
           * Attribution is FIRST-WINS, not last-wins, and the argument order is
           * the whole difference.
@@ -177,9 +181,9 @@ export class MetaApiUsageRepository extends BaseRepository {
           * to guess when it can see the ambiguity, and it cannot see across
           * processes.
           */
-         enterprise_id   = COALESCE(meta_api_usage.enterprise_id, EXCLUDED.enterprise_id),
-         channel_id      = COALESCE(meta_api_usage.channel_id,    EXCLUDED.channel_id),
-         product         = COALESCE(EXCLUDED.product,       meta_api_usage.product),
+         enterprise_id   = COALESCE(provider_api_usage.enterprise_id, EXCLUDED.enterprise_id),
+         channel_id      = COALESCE(provider_api_usage.channel_id,    EXCLUDED.channel_id),
+         product         = COALESCE(EXCLUDED.product,       provider_api_usage.product),
          updated_at      = now()
        RETURNING id`,
       values,
@@ -203,9 +207,9 @@ export class MetaApiUsageRepository extends BaseRepository {
    * account. An id that matches nothing is a Meta Business that owns assets we
    * touch but is not itself one of them, and stays unattributed.
    */
-  async resolveOwners(platformChannelIds: readonly string[]): Promise<MetaScopeOwner[]> {
+  async resolveOwners(platformChannelIds: readonly string[]): Promise<ProviderScopeOwner[]> {
     if (platformChannelIds.length === 0) return [];
-    return this.query<MetaScopeOwner>(
+    return this.query<ProviderScopeOwner>(
       `SELECT platform_channel_id AS "platformChannelId",
               id::int             AS "channelId",
               enterprise_id::int  AS "enterpriseId"
@@ -230,8 +234,8 @@ export class MetaApiUsageRepository extends BaseRepository {
    * `row_number()` picks the newest row per pool and the windowed `sum`s carry
    * the totals alongside it, from a single scan of the same filtered set.
    */
-  async current(limit: number): Promise<MetaUsageCurrentRow[]> {
-    return this.query<MetaUsageCurrentRow>(
+  async current(limit: number): Promise<ProviderUsageCurrentRow[]> {
+    return this.query<ProviderUsageCurrentRow>(
       `WITH ranked AS (
          SELECT u.*,
                 row_number() OVER (PARTITION BY u.scope_key ORDER BY u.bucket_start DESC) AS rn,
@@ -244,13 +248,14 @@ export class MetaApiUsageRepository extends BaseRepository {
                 sum(u.calls)           OVER (PARTITION BY u.scope_key) AS day_calls,
                 sum(u.throttled_calls) OVER (PARTITION BY u.scope_key) AS day_throttled,
                 sum(u.failed_calls)    OVER (PARTITION BY u.scope_key) AS day_failed
-           FROM meta_api_usage u
+           FROM provider_api_usage u
           WHERE u.bucket_start > now() - interval '24 hours'
        )
-       SELECT r.scope_key                       AS "scopeKey",
+       SELECT r.provider                        AS "provider",
+              r.scope_key                       AS "scopeKey",
               r.meter                           AS "meter",
               r.product                         AS "product",
-              r.meta_business_id                AS "metaBusinessId",
+              r.provider_scope_id                AS "providerScopeId",
               r.enterprise_id::int              AS "enterpriseId",
               e.name                            AS "enterpriseName",
               e.ref_id                          AS "enterpriseRefId",
@@ -298,14 +303,14 @@ export class MetaApiUsageRepository extends BaseRepository {
     windowMs: number,
     maxPoints: number,
     scopeKey: string | null,
-  ): Promise<MetaUsagePointRow[]> {
-    return this.query<MetaUsagePointRow>(
+  ): Promise<ProviderUsagePointRow[]> {
+    return this.query<ProviderUsagePointRow>(
       `SELECT scope_key        AS "scopeKey",
               bucket_start     AS "bucketStart",
               call_pct         AS "callPct",
               calls            AS "calls",
               throttled_calls  AS "throttledCalls"
-         FROM meta_api_usage
+         FROM provider_api_usage
         WHERE bucket_start > now() - $1::interval
           AND ($3::varchar IS NULL OR scope_key = $3)
         /*
@@ -323,15 +328,15 @@ export class MetaApiUsageRepository extends BaseRepository {
   /**
    * Drops history past the retention window.
    *
-   * Matches `meta_api_usage_bucket_start_idx`, which is the one index here left
+   * Matches `provider_api_usage_bucket_start_idx`, which is the one index here left
    * deliberately non-partial so this sweep can reach every row — including the
    * app-meter and unattributed ones the enterprise index excludes.
    */
   async sweep(olderThanMs: number, limit: number): Promise<number> {
     const result = await this.mutate(
-      `DELETE FROM meta_api_usage
+      `DELETE FROM provider_api_usage
         WHERE id IN (
-          SELECT id FROM meta_api_usage
+          SELECT id FROM provider_api_usage
            WHERE bucket_start < now() - $1::interval
            ORDER BY bucket_start
            LIMIT $2

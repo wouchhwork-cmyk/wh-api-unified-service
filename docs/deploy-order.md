@@ -14,7 +14,7 @@ everybody knows and "seed second" is not.
 
 ## 1. Migrations
 
-`1758100000000-MetaApiUsage`, `1758200000000-RoleLevels`, `1758300000000-StaffRoles`.
+`1758100000000-ProviderApiUsage`, `1758200000000-RoleLevels`, `1758300000000-StaffRoles`.
 
 All three are expand-only and safe to run while the **previous** release is
 still serving. That is not automatic — `RoleLevels` adds a `NOT NULL` column to

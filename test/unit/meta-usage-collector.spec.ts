@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
-  MetaApiUsageRepository,
-  MetaScopeOwner,
-  MetaUsageBucket,
-} from '@/database/repositories/meta-api-usage.repository';
+  ProviderApiUsageRepository,
+  ProviderScopeOwner,
+  ProviderUsageBucket,
+} from '@/database/repositories/provider-api-usage.repository';
 import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import type { MetaUsageReading } from '@/modules/connections/graph/graph-usage.parser';
 import { MetaUsageMeter } from '@/shared/enums';
@@ -22,8 +22,8 @@ import { MetaUsageMeter } from '@/shared/enums';
  * which is the failure nobody notices.
  */
 describe('MetaUsageCollector', () => {
-  let written: MetaUsageBucket[];
-  let owners: MetaScopeOwner[];
+  let written: ProviderUsageBucket[];
+  let owners: ProviderScopeOwner[];
   let resolveCalls: number;
   let collector: MetaUsageCollector;
 
@@ -35,20 +35,20 @@ describe('MetaUsageCollector', () => {
   };
 
   const repository = {
-    record: async (buckets: readonly MetaUsageBucket[]): Promise<number> => {
+    record: async (buckets: readonly ProviderUsageBucket[]): Promise<number> => {
       written.push(...buckets);
       return buckets.length;
     },
-    resolveOwners: async (ids: readonly string[]): Promise<MetaScopeOwner[]> => {
+    resolveOwners: async (ids: readonly string[]): Promise<ProviderScopeOwner[]> => {
       resolveCalls += 1;
       return owners.filter((owner) => ids.includes(owner.platformChannelId));
     },
-  } as unknown as MetaApiUsageRepository;
+  } as unknown as ProviderApiUsageRepository;
 
   const reading = (over: Partial<MetaUsageReading> = {}): MetaUsageReading => ({
     meter: MetaUsageMeter.BusinessUseCase,
     product: 'instagram',
-    metaBusinessId: 'IG_ACCOUNT',
+    providerScopeId: 'IG_ACCOUNT',
     callPct: 10,
     cpuPct: 1,
     timePct: 1,
@@ -67,7 +67,7 @@ describe('MetaUsageCollector', () => {
     collector = new MetaUsageCollector(repository, logger as never);
   });
 
-  const only = (scopeKey: string): MetaUsageBucket => {
+  const only = (scopeKey: string): ProviderUsageBucket => {
     const found = written.find((bucket) => bucket.scopeKey === scopeKey);
     if (!found) throw new Error(`no bucket for ${scopeKey}; got ${written.map((b) => b.scopeKey).join(', ')}`);
     return found;
@@ -81,7 +81,7 @@ describe('MetaUsageCollector', () => {
       await collector.flush();
 
       expect(written).toHaveLength(1);
-      expect(only('IG_ACCOUNT:instagram').calls).toBe(50);
+      expect(only('meta:IG_ACCOUNT:instagram').calls).toBe(50);
     });
 
     it('SUMS our counts and takes the HIGHEST of Meta percentages', async () => {
@@ -95,7 +95,7 @@ describe('MetaUsageCollector', () => {
       ok([reading({ callPct: 20 })]);
       await collector.flush();
 
-      const bucket = only('IG_ACCOUNT:instagram');
+      const bucket = only('meta:IG_ACCOUNT:instagram');
       expect(bucket.calls).toBe(3);
       expect(bucket.callPct).toBe(40);
     });
@@ -110,31 +110,31 @@ describe('MetaUsageCollector', () => {
       ok([reading({ callPct: null })]);
       await collector.flush();
 
-      expect(only('IG_ACCOUNT:instagram').callPct).toBe(80);
+      expect(only('meta:IG_ACCOUNT:instagram').callPct).toBe(80);
     });
 
     it('keeps a pool per product for the same asset', async () => {
       // A Page node read and its conversations edge draw on separate pools.
-      ok([reading({ metaBusinessId: 'PAGE', product: 'pages', callPct: 5 })]);
-      ok([reading({ metaBusinessId: 'PAGE', product: 'messenger', callPct: 60 })]);
+      ok([reading({ providerScopeId: 'PAGE', product: 'pages', callPct: 5 })]);
+      ok([reading({ providerScopeId: 'PAGE', product: 'messenger', callPct: 60 })]);
       await collector.flush();
 
-      expect(only('PAGE:pages').callPct).toBe(5);
-      expect(only('PAGE:messenger').callPct).toBe(60);
+      expect(only('meta:PAGE:pages').callPct).toBe(5);
+      expect(only('meta:PAGE:messenger').callPct).toBe(60);
     });
 
     it('counts a call against every pool the response named', async () => {
       // One Instagram read reports under the business AND the account; both
       // pools genuinely were drawn on.
       ok([
-        reading({ metaBusinessId: 'BUSINESS' }),
-        reading({ metaBusinessId: 'IG_ACCOUNT' }),
+        reading({ providerScopeId: 'BUSINESS' }),
+        reading({ providerScopeId: 'IG_ACCOUNT' }),
       ]);
       await collector.flush();
 
       expect(written).toHaveLength(2);
-      expect(only('BUSINESS:instagram').calls).toBe(1);
-      expect(only('IG_ACCOUNT:instagram').calls).toBe(1);
+      expect(only('meta:BUSINESS:instagram').calls).toBe(1);
+      expect(only('meta:IG_ACCOUNT:instagram').calls).toBe(1);
     });
   });
 
@@ -143,7 +143,7 @@ describe('MetaUsageCollector', () => {
       collector.observe({ readings: [reading()], throttled: true, failed: true });
       await collector.flush();
 
-      const bucket = only('IG_ACCOUNT:instagram');
+      const bucket = only('meta:IG_ACCOUNT:instagram');
       expect(bucket.throttledCalls).toBe(1);
       expect(bucket.failedCalls).toBe(1);
       expect(bucket.calls).toBe(1);
@@ -166,41 +166,41 @@ describe('MetaUsageCollector', () => {
       collector.observe({ readings: [], throttled: false, failed: true });
       await collector.flush();
 
-      expect(only('unknown').calls).toBe(1);
-      expect(only('unknown').failedCalls).toBe(1);
-      expect(only('unknown').callPct).toBeNull();
-      expect(written.map((bucket) => bucket.scopeKey)).not.toContain('app');
+      expect(only('meta:unknown').calls).toBe(1);
+      expect(only('meta:unknown').failedCalls).toBe(1);
+      expect(only('meta:unknown').callPct).toBeNull();
+      expect(written.map((bucket) => bucket.scopeKey)).not.toContain('meta:app');
       /*
        * THE METER, not just the scope key. Moving the key without moving the
        * meter changed nothing: the console groups the app gauge BY METER, so
        * the headerless row was still the app pool as far as it was concerned —
        * and carrying no percentage it sorted last, so it won every time.
        */
-      expect(only('unknown').meter).toBe(MetaUsageMeter.Unknown);
+      expect(only('meta:unknown').meter).toBe(MetaUsageMeter.Unknown);
     });
 
     it('leaves a real app reading alone when a headerless call happens beside it', async () => {
       // The failure above, from the console's point of view: the app gauge must
       // still read 60% after an unrelated inbox call times out.
       collector.observe({
-        readings: [reading({ meter: MetaUsageMeter.App, metaBusinessId: null, product: null, callPct: 60 })],
+        readings: [reading({ meter: MetaUsageMeter.App, providerScopeId: null, product: null, callPct: 60 })],
         throttled: false,
         failed: false,
       });
       collector.observe({ readings: [], throttled: false, failed: true });
       await collector.flush();
 
-      expect(only('app').callPct).toBe(60);
-      expect(only('unknown').callPct).toBeNull();
+      expect(only('meta:app').callPct).toBe(60);
+      expect(only('meta:unknown').callPct).toBeNull();
     });
   });
 
   describe('attributing a pool to a business', () => {
     it('resolves a channel from the id Meta named', async () => {
-      ok([reading({ metaBusinessId: 'IG_ACCOUNT' })]);
+      ok([reading({ providerScopeId: 'IG_ACCOUNT' })]);
       await collector.flush();
 
-      expect(only('IG_ACCOUNT:instagram')).toMatchObject({ channelId: 7, enterpriseId: 3 });
+      expect(only('meta:IG_ACCOUNT:instagram')).toMatchObject({ channelId: 7, enterpriseId: 3 });
     });
 
     it('infers the owner of a business pool from the account beside it', async () => {
@@ -211,10 +211,10 @@ describe('MetaUsageCollector', () => {
        * that account's business. The channel stays null, correctly: this is a
        * business-level pool, not an asset.
        */
-      ok([reading({ metaBusinessId: 'BUSINESS' }), reading({ metaBusinessId: 'IG_ACCOUNT' })]);
+      ok([reading({ providerScopeId: 'BUSINESS' }), reading({ providerScopeId: 'IG_ACCOUNT' })]);
       await collector.flush();
 
-      expect(only('BUSINESS:instagram')).toMatchObject({ enterpriseId: 3, channelId: null });
+      expect(only('meta:BUSINESS:instagram')).toMatchObject({ enterpriseId: 3, channelId: null });
     });
 
     it('refuses to guess when two businesses share the pool', async () => {
@@ -229,23 +229,23 @@ describe('MetaUsageCollector', () => {
         { platformChannelId: 'IG_B', channelId: 2, enterpriseId: 4 },
       ];
       ok([
-        reading({ metaBusinessId: 'BUSINESS' }),
-        reading({ metaBusinessId: 'IG_A' }),
-        reading({ metaBusinessId: 'IG_B' }),
+        reading({ providerScopeId: 'BUSINESS' }),
+        reading({ providerScopeId: 'IG_A' }),
+        reading({ providerScopeId: 'IG_B' }),
       ]);
       await collector.flush();
 
-      expect(only('BUSINESS:instagram').enterpriseId).toBeNull();
+      expect(only('meta:BUSINESS:instagram').enterpriseId).toBeNull();
     });
 
     it('leaves an id it cannot place unattributed rather than dropping it', async () => {
       owners = [];
-      ok([reading({ metaBusinessId: 'STRANGER' })]);
+      ok([reading({ providerScopeId: 'STRANGER' })]);
       await collector.flush();
 
-      const bucket = only('STRANGER:instagram');
+      const bucket = only('meta:STRANGER:instagram');
       expect(bucket.enterpriseId).toBeNull();
-      expect(bucket.metaBusinessId).toBe('STRANGER');
+      expect(bucket.providerScopeId).toBe('STRANGER');
       expect(bucket.calls).toBe(1);
     });
 
@@ -262,9 +262,9 @@ describe('MetaUsageCollector', () => {
 
     it('remembers that an id is NOT ours, so it stops asking', async () => {
       owners = [];
-      ok([reading({ metaBusinessId: 'STRANGER' })]);
+      ok([reading({ providerScopeId: 'STRANGER' })]);
       await collector.flush();
-      ok([reading({ metaBusinessId: 'STRANGER' })]);
+      ok([reading({ providerScopeId: 'STRANGER' })]);
       await collector.flush();
 
       expect(resolveCalls).toBe(1);
@@ -278,7 +278,7 @@ describe('MetaUsageCollector', () => {
           throw new Error('database is down');
         },
         resolveOwners: async () => [],
-      } as unknown as MetaApiUsageRepository;
+      } as unknown as ProviderApiUsageRepository;
       const fragile = new MetaUsageCollector(broken, logger as never);
 
       fragile.observe({ readings: [reading()], throttled: false, failed: false });
@@ -302,7 +302,7 @@ describe('MetaUsageCollector', () => {
           return 0;
         },
         resolveOwners: async () => [],
-      } as unknown as MetaApiUsageRepository;
+      } as unknown as ProviderApiUsageRepository;
       const collectorUnderTest = new MetaUsageCollector(flaky, logger as never);
 
       collectorUnderTest.observe({ readings: [reading()], throttled: false, failed: false });
@@ -336,7 +336,7 @@ describe('MetaUsageCollector', () => {
       ok([reading()]);
       await collector.flush();
 
-      const start = only('IG_ACCOUNT:instagram').bucketStart;
+      const start = only('meta:IG_ACCOUNT:instagram').bucketStart;
       expect(start.getSeconds()).toBe(0);
       expect(start.getMilliseconds()).toBe(0);
     });
@@ -346,7 +346,7 @@ describe('MetaUsageCollector', () => {
       ok([reading()]);
       await collector.flush();
 
-      const bucket = only('IG_ACCOUNT:instagram');
+      const bucket = only('meta:IG_ACCOUNT:instagram');
       expect(bucket.lastSeenAt.getTime()).toBeGreaterThanOrEqual(before);
       expect(bucket.lastSeenAt.getTime()).toBeGreaterThanOrEqual(bucket.bucketStart.getTime());
     });

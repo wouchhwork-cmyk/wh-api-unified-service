@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MetaRateLimitService,
-  type MetaRateLimitOverview,
-} from '@/modules/platform/meta-rate-limit.service';
+  RateLimitService,
+  type RateLimitOverview,
+} from '@/modules/platform/rate-limit.service';
 import type {
-  MetaApiUsageRepository,
-  MetaUsageCurrentRow,
-} from '@/database/repositories/meta-api-usage.repository';
-import { MetaUsageMeter } from '@/shared/enums';
+  ProviderApiUsageRepository,
+  ProviderUsageCurrentRow,
+} from '@/database/repositories/provider-api-usage.repository';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
 
 /**
  * What the platform console is shown.
@@ -22,11 +22,12 @@ import { MetaUsageMeter } from '@/shared/enums';
  * fired.
  */
 describe('the rate-limit console view', () => {
-  const row = (over: Partial<MetaUsageCurrentRow> = {}): MetaUsageCurrentRow => ({
+  const row = (over: Partial<ProviderUsageCurrentRow> = {}): ProviderUsageCurrentRow => ({
+    provider: Provider.Meta,
     scopeKey: 'IG:instagram',
     meter: MetaUsageMeter.BusinessUseCase,
     product: 'instagram',
-    metaBusinessId: 'IG',
+    providerScopeId: 'IG',
     enterpriseId: 1,
     enterpriseName: 'Acme',
     enterpriseRefId: 'acme-ref',
@@ -49,9 +50,9 @@ describe('the rate-limit console view', () => {
     ...over,
   });
 
-  const overviewOf = async (rows: MetaUsageCurrentRow[]): Promise<MetaRateLimitOverview> => {
-    const repository = { current: async () => rows } as unknown as MetaApiUsageRepository;
-    return new MetaRateLimitService(repository).overview();
+  const overviewOf = async (rows: ProviderUsageCurrentRow[]): Promise<RateLimitOverview> => {
+    const repository = { current: async () => rows } as unknown as ProviderApiUsageRepository;
+    return new RateLimitService(repository).overview();
   };
 
   describe('which row is the app pool', () => {
@@ -67,28 +68,28 @@ describe('the rate-limit console view', () => {
        * to move with it.
        */
       const view = await overviewOf([
-        row({ scopeKey: 'app', meter: MetaUsageMeter.App, callPct: 60, product: null,
-              metaBusinessId: null, enterpriseId: null, enterpriseName: null,
+        row({ scopeKey: 'meta:app', meter: MetaUsageMeter.App, callPct: 60, product: null,
+              providerScopeId: null, enterpriseId: null, enterpriseName: null,
               enterpriseRefId: null, channelId: null }),
-        row({ scopeKey: 'unknown', meter: MetaUsageMeter.Unknown, callPct: null,
-              product: null, metaBusinessId: null, enterpriseId: null,
+        row({ scopeKey: 'meta:unknown', meter: MetaUsageMeter.Unknown, callPct: null,
+              product: null, providerScopeId: null, enterpriseId: null,
               enterpriseName: null, enterpriseRefId: null, channelId: null }),
       ]);
 
       expect(view.app?.usedPercent).toBe(60);
-      expect(view.app?.scopeKey).toBe('app');
+      expect(view.app?.scopeKey).toBe('meta:app');
     });
 
     it('still shows the headerless calls, rather than hiding them', async () => {
       // They are calls we really made. They just belong to no pool.
       const view = await overviewOf([
-        row({ scopeKey: 'unknown', meter: MetaUsageMeter.Unknown, callPct: null,
-              product: null, metaBusinessId: null, enterpriseId: null,
+        row({ scopeKey: 'meta:unknown', meter: MetaUsageMeter.Unknown, callPct: null,
+              product: null, providerScopeId: null, enterpriseId: null,
               enterpriseName: null, enterpriseRefId: null, channelId: null }),
       ]);
 
       expect(view.app).toBeNull();
-      expect(view.unattributed.map((pool) => pool.scopeKey)).toEqual(['unknown']);
+      expect(view.unattributed.map((pool) => pool.scopeKey)).toEqual(['meta:unknown']);
     });
   });
 
@@ -141,8 +142,8 @@ describe('the rate-limit console view', () => {
 
     it('keeps the app pool on its hourly window', async () => {
       const view = await overviewOf([
-        row({ scopeKey: 'app', meter: MetaUsageMeter.App, product: null,
-              metaBusinessId: null, enterpriseId: null, enterpriseName: null,
+        row({ scopeKey: 'meta:app', meter: MetaUsageMeter.App, product: null,
+              providerScopeId: null, enterpriseId: null, enterpriseName: null,
               enterpriseRefId: null, channelId: null }),
       ]);
 
