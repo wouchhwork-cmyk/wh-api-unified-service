@@ -22,8 +22,23 @@ describe('meta_api_usage', () => {
   let enterpriseId: number;
   let channelId: number;
 
-  const MINUTE = new Date('2026-09-21T10:00:00.000Z');
-  const NEXT_MINUTE = new Date('2026-09-21T10:01:00.000Z');
+  /*
+   * RELATIVE TO NOW, not a fixed date. These were absolute — 2026-09-21 — and
+   * the tests using them passed for exactly as long as that date stayed inside
+   * the 24-hour window `current()` reads. Five days later the suite went red
+   * for no reason connected to the code.
+   *
+   * A fixture that expires is worse than one that is merely wrong: it goes
+   * green again if you change the window, and it sends whoever is bisecting to
+   * the wrong commit.
+   *
+   * Two minutes ago and one minute ago, so both are comfortably inside every
+   * window here (an hour and a day) and their ORDER is still fixed.
+   */
+  const minutesAgo = (minutes: number): Date =>
+    new Date(Math.floor((Date.now() - minutes * 60_000) / 60_000) * 60_000);
+  const MINUTE = minutesAgo(2);
+  const NEXT_MINUTE = minutesAgo(1);
 
   beforeAll(async () => {
     db = await createTestDataSource();
