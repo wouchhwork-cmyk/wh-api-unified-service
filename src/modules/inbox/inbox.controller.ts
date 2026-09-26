@@ -429,10 +429,7 @@ export class InboxController {
  * to rediscover that `share` means a permalink and `ig_post` does not, and get
  * it subtly wrong.
  */
-/** Every name Meta has used for "a forwarded post, not a media file". */
-const SHARE_PLATFORM_TYPES = new Set(['share', 'ig_reel', 'ig_post']);
-
-function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'audio' | 'link' {
+export function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'audio' | 'link' {
   /*
    * A share carries an instagram.com permalink, never media — whatever its
    * media kind happens to say.
@@ -448,8 +445,23 @@ function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'audio' | '
    * share is that the link is a page rather than a file. That stays true
    * whatever Meta calls it next.
    */
-  if (SHARE_PLATFORM_TYPES.has(String(attachment.metadata.platformType))) return 'link';
   if (!attachment.sourceUrl) return 'link';
+
+  /*
+   * THE LINK DECIDES, NOT THE LABEL — which is what the paragraph above always
+   * claimed and the code did not do. The label was checked FIRST and returned
+   * immediately, so the url test below could never run for the very types it
+   * was written for.
+   *
+   * What that cost: a shared ADVERT arrives as `ig_post` carrying a
+   * `lookaside.fbsbx.com` CDN image — a real file, directly renderable — and
+   * was reported as a bare link, so the thread showed a signed 400-character
+   * url instead of the advert. Observed 26 Sep on live traffic.
+   *
+   * A share whose url is an instagram.com PAGE is still a link: that is a
+   * document, not a file, and putting it in an <img> or a <video> fails. The
+   * distinction is the url all along.
+   */
   if (/^https:\/\/(www\.)?instagram\.com\//u.test(attachment.sourceUrl)) return 'link';
 
   switch (attachment.mediaKind) {

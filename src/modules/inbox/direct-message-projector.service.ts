@@ -216,6 +216,37 @@ export class DirectMessageProjectorService {
       platformFacts.contentUnavailable = true;
     }
 
+    /*
+     * AN ATTACHMENT THAT IS AN EMPTY BOX.
+     *
+     * The case above is a message with no attachments at all. This is the other
+     * shape, and it arrives on the LIVE webhook: Meta sends an attachment whose
+     * payload carries nothing usable — no url, no title, no sticker.
+     *
+     * Observed 26 Sep sharing a COMMENT on an advert into a DM. It arrived as
+     * `{"type":"template","payload":{"generic":{"elements":[]}}}` — an empty
+     * elements array — and was stored as a `document` attachment with no link,
+     * which the thread rendered as "(document, no link)". An agent reading that
+     * learns nothing; the customer did send something.
+     *
+     * Deliberately NOT keyed on `template`: what makes this unreadable is that
+     * the payload is empty, and Meta has renamed these types before (`share`
+     * became `ig_reel` mid-September). An empty box is an empty box whatever it
+     * is labelled.
+     */
+    if (
+      !message?.text &&
+      media.attachments.length > 0 &&
+      media.attachments.every(
+        (attachment) =>
+          !attachment.sourceUrl &&
+          attachment.metadata.title === undefined &&
+          attachment.metadata.stickerId === undefined,
+      )
+    ) {
+      platformFacts.contentUnavailable = true;
+    }
+
     const identifierKind =
       platform === Platform.Instagram
         ? IdentifierKind.InstagramUserId
