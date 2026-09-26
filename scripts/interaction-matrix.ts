@@ -76,6 +76,10 @@ async function main(): Promise<void> {
   console.log('\n== attachment shapes ==');
   for (const [label, fields] of ATTACHMENT_SHAPES) await get(label, mid, `id,${fields}`);
 
+  console.log('\n== the story object, expanded ==');
+  await get('story full', mid, 'id,story{mention,reply_to,link,id}');
+  await get('story.mention subfields', mid, 'id,story{mention{link,id}}');
+
   console.log('\n== the attachments EDGE directly ==');
   await get('edge, default', `${mid}/attachments`);
   await get('edge, named fields', `${mid}/attachments`, 'id,image_data,video_data,file_url,mime_type,name,size');

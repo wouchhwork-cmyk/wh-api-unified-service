@@ -390,8 +390,26 @@ mention, 6 Sep 2026.
 | `permalink` | `https://www.instagram.com/p/Dc53LpVs_06/` |
 | `username` | `alpha_series369` — the owner |
 | `media_type` / `media_product_type` | `IMAGE` / `FEED` |
-| `media_url` | a real CDN image |
+| `media_url` | a real CDN image — the COVER only, on a carousel |
 | `timestamp` | post time |
+| `children{…}` | **every slide of a carousel**, with an id, type and url each |
+
+**`children` was not asked for until 27 Sep 2026**, and that is worth a line
+because nothing looked wrong: `media_url` on a `CAROUSEL_ALBUM` returns the
+first image, so a mention on a ten-slide post rendered as a mention on one
+photo. The slides were never missing from Meta — nobody named the field. Adding
+`children{id,media_type,media_url,thumbnail_url}` to a call we already make
+returned all four slides of a live mention immediately.
+
+The field list was written out TWICE — once for a caption mention, once for a
+comment mention — and the first fix reached only one of them, leaving comment
+mentions (the common kind) still on a single cover. They are one constant now.
+A video slide carries `thumbnail_url` and no `media_url`, exactly as a reel does
+at the top level.
+
+**Contrast with a carousel SHARED into a DM (§3.7), which gives the cover and
+nothing else.** Being mentioned buys read access to the post; being shown
+something does not.
 
 **There is no share count on the media node, and no field for one** —
 `share_count`, `shares`, `reshare_count`, `saved` and `video_view_count` all
@@ -805,6 +823,74 @@ empty bubble.
 
 ---
 
+### 3.5 A shared PROFILE gives nothing at all
+
+Sharing an Instagram **account** into a DM arrives as `is_unsupported: true`
+with no attachment, no text and no id:
+
+```json
+{"mid":"aWdfZ…","is_unsupported":true}
+```
+
+Asked for by id, every field agrees — `message` is `""`, and `attachments`,
+`shares`, `story` and `sticker` are all absent. Verified 26 Sep 2026 on
+`aWdfZAG1faXRlbToxOklHTWVzc2FnZAUlE…MzM2`.
+
+**[META]**, nothing to build. The client says so and sends the agent to the app.
+
+### 3.6 A shared COMMENT gives a placeholder, which is worse than nothing
+
+A comment shared into a DM arrives as an **empty template**:
+
+```json
+{"type":"template","payload":{"generic":{"elements":[]}}}
+```
+
+The read-back looks more promising and is not. `GET /{mid}?fields=attachments`
+returns `generic_template` carrying a `title` — and the title is **identical
+across five different shares**, of different comments on different posts:
+
+```
+சமீபத்திய செயலியைப் பயன்படுத்துங்கள்   ("use the latest app")
+```
+
+It is Instagram's localized unsupported-content string, not the comment. The
+whole grid, 27 Sep 2026: `shares`, `story`, `sticker`, `reply_to`,
+`is_unsupported` and `tags` all absent; `generic_template` has no subfields at
+all (`#100` on `image_url`); and the `/attachments` **edge** returns
+`{"data":[]}`.
+
+**[META]**. Treated exactly like 3.5 — an empty box is an empty box, and the
+projector marks it `contentUnavailable` on the payload shape rather than on the
+word `template`, because Meta has renamed these types before.
+
+### 3.7 A shared CAROUSEL gives the cover only
+
+`ig_post` carries one `url`, one `title` and one `ig_post_media_id` however many
+slides the post has. The id resolves to nothing — all six field sets return
+`400 "does not exist, cannot be loaded due to missing permissions"`, because
+the post belongs to a third party. Verified 27 Sep 2026 on
+`17896771866395731`.
+
+**Contrast with a carousel we are MENTIONED in, which gives every slide** — see
+1.3. Different edge, different answer, and the difference is ownership of the
+question rather than of the post.
+
+### 3.8 A share and the message beside it cannot be linked
+
+Sending a post and then typing something arrives as **two messages**, and
+nothing in either one refers to the other. The mid decodes to
+`account:thread:sequence` — the 124-character prefix is the THREAD, shared by
+every message in it, so it identifies the conversation and never the pairing.
+
+Measured 27 Sep 2026: a mention share at +12.554s and its text at +13.004s, 450ms
+apart — while an unrelated share sat 12.5s before them. Proximity is the only
+signal and it is a guess, not a fact.
+
+**[US]**, and the answer is to do nothing: Instagram itself shows them as two
+bubbles, so rendering them in platform order is already what the customer sent.
+
+
 ## 4. Stories
 
 ### 4.1 Someone else's story id resolves to nothing
@@ -848,6 +934,61 @@ only thing worth taking from this is that `link: ""` is a definite "the story is
 gone", which is a cleaner signal than waiting for an image to fail to load. We
 do not use it, because the client already treats a failed story image as
 expected.
+
+### 4.4 What we may DO with a story mention: reply, and nothing else
+
+Three actions exist in the Instagram **app** on a story you are tagged in —
+reply, like, reshare to your own story. Only the first is reachable through the
+API. Tested live 27 Sep 2026:
+
+| action | how it would have to work | result |
+|---|---|---|
+| reply | `POST /{page-id}/messages` with `message.text` | **200** |
+| like the story | no endpoint exists | — |
+| react to the message | `sender_action: react` + `message_id` | `#2` |
+| reshare to our story | `MEDIA_SHARE` needs media we OWN | — |
+
+A heart **is** sendable (`attachment: {type: "like_heart"}`, 200) and it is a
+heart-shaped DM, not a like on the story. They are different actions and the
+sender sees different things; do not offer one as the other.
+
+`sender_action: react` fails `#2 An unexpected error has occurred` on a story
+mention AND on an ordinary text message, so it is not story-specific. Either an
+unprovisioned capability or an unsupported op — **[META]** either way.
+
+**[META]** for like and reshare: Meta does not expose them to professional
+accounts, and the story media is not even addressable (4.1).
+
+### 4.5 Instagram messaging goes through the PAGE node, not the IG user
+
+`POST /{ig-user-id}/messages` returns:
+
+```
+#3 Application does not have the capability to make this API call.
+```
+
+which reads exactly like a missing permission and is not one. The same call to
+`POST /{page-id}/messages` with the same token returns **200**. Cost an hour on
+27 Sep 2026, and nearly went into a report as a permissions gap.
+
+`GraphApiClient.sendDirectMessage` already uses the page id. Anything new that
+sends should go through it rather than rebuild the call.
+
+### 4.6 We cannot delete our own comment on somebody else's media
+
+`DELETE /{comment-id}` on a reply we posted under a mention:
+
+```
+#100 subcode 33 — Unsupported delete request.
+```
+
+Deleting works on comments on **our own** posts (1.10). On a stranger's post a
+comment we create is a one-way door: it can only be removed from the app by
+hand. Verified 27 Sep 2026 on `18631273141008816`, which had to be deleted
+manually.
+
+**Worth reading before writing anything against a third party's media.**
+
 
 ---
 
