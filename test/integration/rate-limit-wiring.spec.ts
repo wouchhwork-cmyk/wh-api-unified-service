@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { globSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { MetaApiUsageRepository } from '@/database/repositories/meta-api-usage.repository';
@@ -20,9 +22,11 @@ import { Platform } from '@/shared/enums';
  * below — so it never proved membership of the provider list at all.
  *
  * Two assertions replace it. The first reads Nest's OWN metadata, which is the
- * declaration the injector uses rather than the text a human wrote. The second
- * proves the behaviour end to end: a client holding a collector records a
- * reading from a real response.
+ * declaration the injector uses rather than the text a human wrote — over every
+ * module the source says builds a client, found rather than listed, because the
+ * hand-written list is what let the inbox ship without one. The second proves
+ * the behaviour end to end: a client holding a collector records a reading from
+ * a real response.
  *
  * IT LIVES WITH THE INTEGRATION TESTS DESPITE TOUCHING NO DATABASE. Importing
  * either module reaches `data-source.ts`, which loads configuration at module
@@ -30,54 +34,60 @@ import { Platform } from '@/shared/enums';
  * `fetch` is stubbed; nothing here opens a connection.
  */
 describe('the Meta rate-limit collector is wired in', () => {
+  /*
+   * EVERY module that provides a Graph client, DISCOVERED rather than listed.
+   *
+   * The hand-written list is what let this defect ship. It named the API and
+   * worker modules, and `InboxModule` provides its own client — to avoid a real
+   * circular import — so that instance had no collector and every Graph call the
+   * inbox made recorded nothing. Avatar refreshes, mention media, attachment
+   * recovery: on the API side, most of the Graph traffic there is.
+   *
+   * Found by making a real call against the live API and watching the monitor
+   * stay empty. A list I maintain by hand cannot catch the module I forgot to
+   * add to it, so the list is derived from the source instead.
+   */
+  const MODULE_FILES = globSync('src/**/*.module.ts', { cwd: process.cwd() });
+
+  const modulesProvidingGraphClient = async (): Promise<{ file: string; module: object }[]> => {
+    const found: { file: string; module: object }[] = [];
+    for (const file of MODULE_FILES) {
+      if (!readFileSync(file, 'utf8').includes('GraphApiClient')) continue;
+      const loaded = (await import(resolve(process.cwd(), file))) as Record<string, unknown>;
+      for (const exported of Object.values(loaded)) {
+        if (typeof exported !== 'function') continue;
+        const providers = (Reflect.getMetadata('providers', exported) as unknown[]) ?? [];
+        if (providers.includes(GraphApiClient)) found.push({ file, module: exported });
+      }
+    }
+    return found;
+  };
+
   /** What Nest will actually inject, as the decorator recorded it. */
   const providersOf = (module: object): unknown[] =>
     (Reflect.getMetadata('providers', module) as unknown[]) ?? [];
 
-  /*
-   * Imported DYNAMICALLY so that a failure to load one module reports as a
-   * failing assertion rather than as a file that never ran.
-   */
-  const modules = async (): Promise<{
-    connections: object;
-    workers: object;
-    database: object;
-  }> => {
-    const [connections, workers, database] = await Promise.all([
-      import('@/modules/connections/connections.module'),
-      import('@/workers/workers.module'),
-      import('@/database/database.module'),
-    ]);
-    return {
-      connections: connections.ConnectionsModule,
-      workers: workers.WorkersModule,
-      database: database.DatabaseModule,
-    };
-  };
-
   describe('the declaration Nest reads', () => {
-    it('provides the collector to the API process', async () => {
-      const { connections } = await modules();
-      expect(providersOf(connections)).toContain(MetaUsageCollector);
+    it('finds the modules at all, so a passing run means something', async () => {
+      // Without this the suite would pass silently if the layout ever moved.
+      const modules = await modulesProvidingGraphClient();
+
+      expect(modules.length).toBeGreaterThanOrEqual(3);
     });
 
-    it('provides the collector to the WORKER process', async () => {
+    it('gives a collector to EVERY module that provides a Graph client', async () => {
       /*
-       * The workers matter more than the API here: backfills, relays and
-       * refreshes make the overwhelming majority of Graph calls, so a monitor
-       * wired only into the API would report a fraction of the platform's
-       * traffic and present it as the whole.
+       * The assertion the hand-written list could not make. A module that
+       * builds a client without one is not a boot failure — the dependency is
+       * optional — it is a monitor that silently records nothing for whatever
+       * that module does.
        */
-      const { workers } = await modules();
-      expect(providersOf(workers)).toContain(MetaUsageCollector);
-    });
+      const modules = await modulesProvidingGraphClient();
+      const missing = modules
+        .filter(({ module }) => !providersOf(module).includes(MetaUsageCollector))
+        .map(({ file }) => file);
 
-    it('provides the Graph client alongside it, so the check means something', async () => {
-      // Without this the assertions above could pass against a module that no
-      // longer builds a Graph client at all.
-      const { connections, workers } = await modules();
-      expect(providersOf(connections)).toContain(GraphApiClient);
-      expect(providersOf(workers)).toContain(GraphApiClient);
+      expect(missing).toEqual([]);
     });
 
     it('keeps the repository in the global database module', async () => {
@@ -87,8 +97,11 @@ describe('the Meta rate-limit collector is wired in', () => {
        * today, and exactly the kind of thing that stops being harmless when one
        * of them gains a cache.
        */
-      const { database } = await modules();
-      expect(providersOf(database)).toContain(MetaApiUsageRepository);
+      const database = (await import('@/database/database.module')) as {
+        DatabaseModule: object;
+      };
+
+      expect(providersOf(database.DatabaseModule)).toContain(MetaApiUsageRepository);
     });
   });
 

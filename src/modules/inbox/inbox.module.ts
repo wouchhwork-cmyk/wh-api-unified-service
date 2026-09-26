@@ -9,6 +9,7 @@ import { PostRepository } from '@/database/repositories/post.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { AuditModule } from '@/modules/audit';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
 import { InboxController } from './inbox.controller';
@@ -36,6 +37,19 @@ const PROVIDERS = [
    * (config plus fetch), so a second instance costs nothing.
    */
   GraphApiClient,
+  /*
+   * AND ITS COLLECTOR, because a second instance costs nothing ONLY if it is
+   * wired the same way.
+   *
+   * It was not, and the client takes its collector optionally — so this
+   * instance silently had none, and every Graph call the inbox makes recorded
+   * nothing: avatar refreshes, mention media, attachment recovery. On the API
+   * side that is most of the Graph traffic there is. Found by making a real
+   * call against the live API and watching the monitor stay empty; no test
+   * caught it, because the wiring test knew about two modules and this is the
+   * third.
+   */
+  MetaUsageCollector,
 ];
 
 /**
