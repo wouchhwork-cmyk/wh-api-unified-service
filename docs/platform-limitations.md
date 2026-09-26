@@ -374,6 +374,36 @@ on our own posts, which are stored once from the webhook and never re-read.
 **Deletion, by contrast, we CAN act on** — see §1.10 — just not detect: no
 webhook announces it either.
 
+### 1.2d A CAPTION mention notifies, and an EDITED caption notifies too
+
+The `mentions` webhook carries **`media_id` and no `comment_id`** when the tag
+is in the post's caption. That absence is the only discriminator, and it decides
+which edge resolves the mention: `mentioned_media` for a caption tag,
+`mentioned_comment` for a comment tag. Sending a caption mention to the wrong
+one fails with `(#10) User is not mentioned in the caption`, which names the
+cause precisely and is easy to misread as a permissions problem.
+
+**Editing a caption to ADD a tag fires the webhook.** Verified 27 Sep 2026:
+event 1911, `{"media_id":"17909028732477843"}`, arriving seconds after the edit,
+and resolving to the edited text (`"Buy now.\n\nai_automation_demo ....."`).
+
+That is the **opposite** of a comment, where editing a tag in sends nothing at
+all (1.2b, 1.2c). So the two halves of "somebody tagged us later" behave
+differently and only one of them needs the polling workaround. Worth knowing
+before that workaround is generalised to captions, where it would be waste.
+
+### 1.2e A post's AUDIO is not exposed
+
+A photo or reel published with a music track reports as a plain `IMAGE` and
+offers no field for the audio. Every name Meta has used returns `(#100) Tried
+accessing nonexisting field`: `music`, `audio`, `audio_name`, `music_info`,
+`original_sound`, `alt_media_url`. `owner` and `thumbnail_url` are accepted and
+come back empty.
+
+Verified 27 Sep 2026 on `17911065744521471`, a caption mention the poster had
+added a track to. **[META]** — the same shape as the missing share count in 1.3:
+the field is not withheld, it does not exist.
+
 ### 1.3 What a tagged post will and will not tell us
 
 A mention is read access to the post it sits on (§3.1), so a surprising amount

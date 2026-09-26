@@ -72,6 +72,11 @@ async function main(): Promise<void> {
       'with children — the carousel slides',
       `mentioned_media.media_id(${mediaId}){id,media_type,children{id,media_type,media_url,thumbnail_url}}`,
     );
+    // Audio: a photo or reel can carry a music track. Asked for by every name
+    // Meta has used for one.
+    for (const f of ['music', 'audio', 'audio_name', 'music_info', 'original_sound', 'alt_media_url', 'thumbnail_url', 'media_product_type', 'is_shared_to_feed', 'owner', 'shortcode']) {
+      await ask(`audio? ${f}`, `mentioned_media.media_id(${mediaId}){id,${f}}`);
+    }
   }
 
   await ds.destroy();
