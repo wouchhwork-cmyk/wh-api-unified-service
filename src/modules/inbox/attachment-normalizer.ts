@@ -191,6 +191,48 @@ export function isExpiringMediaUrl(url: string | null | undefined): boolean {
   return host !== null && hostMatches(host, EXPIRING_MEDIA_HOSTS);
 }
 
+/**
+ * When a signed Meta CDN link stops working — read from the link itself.
+ *
+ * `oe` is the expiry, a Unix timestamp in HEX, and Meta puts it in every signed
+ * url it hands out. So "has this expired?" needs no network call, no stored
+ * column and no guess: the answer is in the string we already hold.
+ *
+ * WHY IT IS WORTH KNOWING. `isExpiringMediaUrl` says a link WILL expire, which
+ * is all a client needs to treat a broken image as normal. It does not say
+ * whether one already HAS, and those lead to different screens: a live link
+ * that failed is worth retrying and reporting, while an expired one is
+ * certain — no retry will fix it, and the honest move is to send the person to
+ * the permalink instead of showing them a broken picture.
+ *
+ * Observed 26 Sep: a Facebook post synced on 29 Aug was still being served with
+ * its original url, four days after that url stopped resolving. The browser
+ * showed a broken image and nothing anywhere said why.
+ *
+ * Returns null when there is no `oe` — an unsigned or foreign url, which does
+ * not expire on a schedule we can read.
+ */
+export function mediaUrlExpiresAt(url: string | null | undefined): Date | null {
+  if (!url) return null;
+  try {
+    const oe = new URL(url).searchParams.get('oe');
+    // Hex, and validated as hex: parseInt would read "12zz" as 18 and invent an
+    // expiry in 1970, which reads as "expired" for every url with a junk param.
+    if (!oe || !/^[0-9a-f]+$/iu.test(oe)) return null;
+    const seconds = Number.parseInt(oe, 16);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    return new Date(seconds * 1000);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the link has already stopped working, as of `now`. */
+export function isExpiredMediaUrl(url: string | null | undefined, now: Date = new Date()): boolean {
+  const expiry = mediaUrlExpiresAt(url);
+  return expiry !== null && expiry.getTime() <= now.getTime();
+}
+
 /** Kept as the inverse, since that is what the row and the API talk about. */
 export function isStableMediaUrl(url: string | null | undefined): boolean {
   return hostOf(url) !== null && !isExpiringMediaUrl(url);

@@ -15,6 +15,12 @@ export interface PostFeedRow {
   readonly shareCount: number;
   readonly media: { url?: string; thumbnailUrl?: string; type?: string } | null;
   readonly status: PostStatus;
+  /**
+   * Internal, and never exposed: the feed maps refIds outward. It is here so a
+   * read that notices dead preview links can queue a refresh for the channel
+   * they belong to without a second lookup per row.
+   */
+  readonly channelId: number;
   readonly channelRefId: string;
   readonly channelName: string | null;
 }
@@ -198,6 +204,7 @@ export class PostRepository extends BaseRepository {
               p.like_count         AS "likeCount",
               p.share_count        AS "shareCount",
               p.status,
+              p.channel_id         AS "channelId",
               c.ref_id             AS "channelRefId",
               c.name               AS "channelName"
          FROM posts p

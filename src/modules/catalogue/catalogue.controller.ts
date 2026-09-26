@@ -10,6 +10,10 @@ import {
 } from '@/shared/contracts/catalogue/catalogue.contract';
 import type { CustomerDirectoryRow } from '@/database/repositories/customer.repository';
 import type { PostFeedRow } from '@/database/repositories/post.repository';
+import {
+  isExpiredMediaUrl,
+  mediaUrlExpiresAt,
+} from '@/modules/inbox/attachment-normalizer';
 import { CatalogueService } from './catalogue.service';
 import { DEFAULT_PAGE_SIZE } from '@/shared/constants';
 
@@ -100,12 +104,45 @@ function toPostSummary(row: PostFeedRow): Record<string, unknown> {
     shareCount: Number(row.shareCount),
     /*
      * Null rather than an empty object when there is no preview, so a client can
-     * branch on presence. An Instagram url is signed and expires, so a client
-     * must treat a broken image as normal and fall back to the permalink.
+     * branch on presence.
+     *
+     * AND WHETHER THE LINK STILL WORKS, which the client could not previously
+     * find out except by trying it. These urls are signed and short-lived —
+     * about four days — and the advice here used to be that a client should
+     * "treat a broken image as normal and fall back to the permalink". That
+     * asks the browser to fail first, and leaves it unable to tell an expired
+     * link from a genuine fault: one is certain and permanent, the other is
+     * worth a retry.
+     *
+     * `oe` on the url is the expiry, so this costs nothing to answer honestly.
      */
-    media: row.media && Object.keys(row.media).length > 0 ? row.media : null,
+    media: mediaWithExpiry(row.media),
     channelRefId: row.channelRefId,
     channelName: row.channelName,
+  };
+}
+
+/**
+ * A post's preview, with the one fact the client cannot work out for itself.
+ *
+ * `expired` is the answer to "will this render?", decided from the url's own
+ * `oe` rather than by waiting for a 403. `expiresAt` is included so a client
+ * holding a list for a while can tell the difference between a link that is
+ * about to die and one that died weeks ago.
+ */
+function mediaWithExpiry(
+  media: { url?: string; thumbnailUrl?: string; type?: string } | null,
+): Record<string, unknown> | null {
+  if (!media || Object.keys(media).length === 0) return null;
+
+  // The thumbnail is the fallback the client reaches for, so it is no use
+  // knowing the main url died while silently handing over a dead thumbnail too.
+  const expiresAt = mediaUrlExpiresAt(media.url) ?? mediaUrlExpiresAt(media.thumbnailUrl);
+
+  return {
+    ...media,
+    expiresAt: expiresAt?.toISOString() ?? null,
+    expired: isExpiredMediaUrl(media.url) || isExpiredMediaUrl(media.thumbnailUrl),
   };
 }
 

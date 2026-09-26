@@ -391,18 +391,44 @@ export class GraphApiClient {
       'full_picture',
       'attachments{type,media}',
       /*
-       * Engagement counts, each asked for by name. Without these three,
+       * Engagement counts, each asked for by name. Without these,
        * posts.like_count and posts.share_count stayed at their column default of
        * zero for every Facebook post — columns the API sorts on and nothing ever
        * wrote. `comment_summary` is aliased because `comments` is already used
-       * above for the actual comment rows and Graph will not return one field
+       * below for the actual comment rows and Graph will not return one field
        * twice under one name.
+       *
+       * These two are safe on a plain posts walk; `reactions` is NOT, which is
+       * the whole reason it sits in the block underneath.
        */
-      'reactions.summary(total_count).limit(0)',
       'comment_summary:comments.summary(total_count).limit(0)',
       'shares',
+      /*
+       * REACTIONS COSTS A PERMISSION, and asking for it unconditionally cost us
+       * every Facebook post refresh for a month.
+       *
+       * `reactions.summary(total_count)` needs `pages_read_user_content` — the
+       * same permission as the nested comments beside it, which this method
+       * already takes care not to request on a posts-only walk. Reactions were
+       * added later, for the engagement counts, and went in outside that guard.
+       * So every RefreshPostMetrics job for a Page returned (#10) and paused —
+       * and since that job is also the only thing that renews a post's signed
+       * image url, every Facebook preview on the account expired and stayed
+       * expired, looking for all the world like an image bug.
+       *
+       * Verified field by field against the live Page on 26 Sep: core fields,
+       * full_picture, attachments, shares and comment_summary all return 200
+       * with the token we hold; reactions.summary and nested comments are the
+       * only two that return #10.
+       *
+       * Requested exactly where the comments are, because the caller asking for
+       * comments is the caller that believes it has the permission. A posts walk
+       * gives up like counts and keeps working, which is the right way round: a
+       * stale like count is one number, a failed walk is every image on the page.
+       */
       ...(options.withComments
         ? [
+            'reactions.summary(total_count).limit(0)',
             `comments.limit(${SYNC_COMMENTS_PER_POST}){id,message,created_time,from{id,name},parent{id}}`,
           ]
         : []),
