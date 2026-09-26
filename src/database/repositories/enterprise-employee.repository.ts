@@ -64,6 +64,13 @@ export interface EmployeeRecord {
   readonly identityId: number;
   readonly status: EmployeeStatus;
   readonly employeeKind: EmployeeKind;
+  /**
+   * When this person accepted and became active, by their own action. NULL
+   * means they never did — an invite still outstanding, or one that was
+   * cancelled. `mayChangeStatus` reads it to refuse reinstating an employment
+   * that never existed.
+   */
+  readonly joinedAt: Date | null;
 }
 
 @Injectable()
@@ -335,7 +342,8 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
   async findAnyByRefId(enterpriseId: number, refId: string): Promise<EmployeeRecord | null> {
     const rows = await this.query<EmployeeRecord>(
       `SELECT id AS "employeeId", identity_id AS "identityId",
-              status AS "status", employee_kind AS "employeeKind"
+              status AS "status", employee_kind AS "employeeKind",
+              joined_at AS "joinedAt"
          FROM enterprise_employees
         WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
         LIMIT 1`,
@@ -387,14 +395,21 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
     from: EmployeeStatus,
     to: EmployeeStatus,
   ): Promise<boolean> {
+    /*
+     * `joined_at` IS NOT TOUCHED HERE, deliberately.
+     *
+     * It used to be back-filled whenever this moved somebody to `active`, which
+     * quietly made this method able to mint the record of an acceptance that
+     * never happened. `activate()` — the invite-acceptance path — is the only
+     * writer, so the column means exactly one thing: this person said yes.
+     * `mayChangeStatus` depends on that being true.
+     */
     const { affected } = await this.mutate(
       `UPDATE enterprise_employees
           SET status = $4::varchar,
-              joined_at = CASE WHEN $4::varchar = $5::varchar THEN COALESCE(joined_at, now())
-                               ELSE joined_at END,
               updated_at = now()
         WHERE id = $2 AND enterprise_id = $1 AND status = $3::varchar AND is_deleted = false`,
-      [this.requireEnterprise(enterpriseId), employeeId, from, to, EmployeeStatus.Active],
+      [this.requireEnterprise(enterpriseId), employeeId, from, to],
     );
     return affected > 0;
   }

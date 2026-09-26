@@ -39,7 +39,19 @@ export class PermissionRepository extends BaseRepository {
                                       AND emp.enterprise_id = mr.enterprise_id
                                       AND emp.is_deleted = false
                                       AND emp.status = $6
+         /*
+          * THE TENANT ON BOTH SIDES, which this join did not have.
+          *
+          * Safe today without it, because employee_roles_role_fk is composite
+          * on (role_id, enterprise_id) — so a grant cannot name another
+          * tenant's role in the first place. That makes this defence in depth
+          * rather than a fix: the predicate is what the sibling query in
+          * role.repository.ts carries, and resolving a person's permissions is
+          * the last place to be relying on a foreign key surviving a future
+          * migration untouched.
+          */
          JOIN roles            r  ON r.id = mr.role_id
+                                 AND r.enterprise_id = mr.enterprise_id
                                  AND r.is_deleted = false
                                  AND r.status = $3
          JOIN role_permissions rp ON rp.role_id = mr.role_id

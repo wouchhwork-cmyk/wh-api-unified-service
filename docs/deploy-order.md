@@ -90,6 +90,30 @@ in exactly that state.
 
 ---
 
+## Check before deploying: employments with no join date
+
+Suspending an employee now revokes their sessions only if they actually
+accepted — `joined_at IS NOT NULL` — and reinstating one is refused on the same
+grounds. That closes a cross-tenant hole (a business could invent an employment
+for anybody whose email it knew, then suspend it to sign that person out of
+every OTHER business they work for), and it means an `active` row with no
+`joined_at` could not be reinstated after a suspension.
+
+There should be none: `joined_at` has always been written by both paths that
+make somebody active. Confirm rather than assume —
+
+```sql
+SELECT enterprise_id, count(*)
+  FROM enterprise_employees
+ WHERE is_deleted = false AND status = 'active' AND joined_at IS NULL
+ GROUP BY enterprise_id;
+```
+
+Anything this returns should be back-filled to `created_at` before deploying.
+Dev was clean as of 26 Sep 2026 (5 active, 0 without a join date).
+
+---
+
 ## Rolling back
 
 **Code first, then the migration.** `RoleLevels.down()` drops `roles.level`,

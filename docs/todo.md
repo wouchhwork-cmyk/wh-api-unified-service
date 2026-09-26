@@ -92,6 +92,49 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       withdrawn permission lingers on older tenants until somebody removes it
       deliberately.
 
+- [ ] **E12. No per-tenant cap on how many roles a business may create** — S
+      `limits.ts` bounds pages, bodies and SSE streams; nothing bounds roles or
+      their permission rows. `role_permissions` is joined on EVERY request by
+      `listEffectivePermissions`, so one business creating roles in bulk slows
+      authorisation for everybody — the one shared-resource path a tenant can
+      still grow without limit. Not urgent (the throttler makes it slow, and
+      nobody has done it) but it is the honest remaining answer to "can one
+      business affect another".
+- [ ] **E13. `role_permissions` has no composite foreign key** — S
+      `employee_roles` is protected by the database itself: its FK is
+      `(role_id, enterprise_id) → roles(id, enterprise_id)`, so a grant cannot
+      name another tenant's role even if a query forgot its predicate.
+      `role_permissions` has a single-column FK to `roles(id)` and carries no
+      `enterprise_id`, so isolation there rests entirely on the `enterprise_id
+      = $1` predicate at both write sites. Both are present and correct today;
+      this is the one join table where the schema is not the backstop. Closing
+      it means adding the column, backfilling and swapping the constraint.
+- [ ] **E14. A tenant you really work for can still sign you out of another** — M
+      The unilateral version of this is fixed: a business can no longer invent
+      an employment for somebody and suspend it (see the state machine in
+      `employee-lifecycle.ts`). What remains needs the victim to have genuinely
+      accepted a job at the attacking business — after which suspending them
+      revokes every session that human holds, including another employer's.
+      Sessions are keyed on the identity and `switchEnterprise` is a token
+      exchange rather than a new login, so there is nothing narrower to revoke
+      without giving sessions an enterprise and reworking the switch.
+- [ ] **E15. A tenant can permanently miss a future system role** — S
+      `reconcileTenantSystemRoles` step 1 skips a template whose NAME already
+      exists in the tenant, regardless of `is_system`. A business that creates
+      a custom role called, say, `supervisor` will never receive a system role
+      of that name later. Self-inflicted and contained to that tenant, but
+      silent.
+- [ ] **E16. Rate-limit attribution is first-wins, and the console truncates** — S
+      Platform console only, behind `@RequirePlatformAdmin`, no customer data.
+      A Meta Business shared by two tenants is attributed to whichever was
+      resolved first, and `MAX_MONITORED_POOLS = 500` ordered by usage means a
+      heavy tenant can push a quiet one off the list.
+- [ ] **E17. Meta's app-level pool is one allowance shared by every tenant** — L
+      Architectural, not RBAC, and not fixable in this codebase: `x-app-usage`
+      meters the APP. One business's connect and token traffic genuinely eats
+      into what every other business can do. Worth knowing before it is
+      diagnosed as a bug during an incident.
+
 ## Parked — recorded, do not start
 
 Work that is understood and deliberately not scheduled. **Do not pick these up

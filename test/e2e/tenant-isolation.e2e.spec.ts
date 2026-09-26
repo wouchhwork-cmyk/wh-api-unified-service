@@ -267,6 +267,139 @@ describe('one business cannot reach another', () => {
       await http().get('/api/v1/roles').set(auth(rival.agentToken)).expect(200);
     });
 
+    /*
+     * THE ATTACK THAT GOT THROUGH, and the reason the three tests above were
+     * not enough.
+     *
+     * Every one of them hands Acme a refId belonging to Rival and checks for a
+     * 404 — which is the right question for "can A address B's row?" and
+     * entirely the wrong one here. This attack never addresses Rival's row. It
+     * uses a refId that genuinely belongs to ACME, acting on an employment
+     * record Acme was allowed to create, and reaches across only at the end:
+     * identities are global, so the row points at a human who works for Rival,
+     * and suspending an employment revokes every session that HUMAN holds.
+     *
+     * Tenant isolation held perfectly and the victim was still signed out.
+     */
+    describe('inviting somebody who already works elsewhere', () => {
+      const victimEmail = 'agent@rival.test';
+
+      /*
+       * THE SESSIONS THEMSELVES, not a request made with an access token.
+       *
+       * The first version of the two tests below asserted that Rival's agent
+       * could still call the API, and they PASSED against the unfixed code —
+       * proving nothing. Revocation ends SESSIONS (the refresh side), while an
+       * access token is self-contained and stays valid for its full lifetime
+       * whatever the sessions table says. So the attack signed the victim out
+       * and the test could not see it. This counts the rows the attack destroys.
+       */
+      const liveSessions = async (email: string): Promise<number> => {
+        const rows: { count: string }[] = await db.query(
+          `SELECT count(*)::text AS count
+             FROM sessions s
+             JOIN identities i ON i.id = s.identity_id
+            WHERE i.email = $1 AND s.revoked_at IS NULL`,
+          [email],
+        );
+        return Number(rows[0]?.count ?? 0);
+      };
+
+      const inviteVictim = async (): Promise<string> => {
+        const agentRole = await roleRefId(acme, 'agent');
+        const created = await http()
+          .post('/api/v1/employees')
+          .set(auth(acme.token))
+          .send({ firstName: 'Victim', email: victimEmail, roleRefId: agentRole })
+          .expect(201);
+        return created.body.data.refId as string;
+      };
+
+      it('attaches to their existing identity, which is deliberate', async () => {
+        // Not the bug — one human, one password, however many jobs. It is the
+        // premise the rest of these tests are built on.
+        await expect(inviteVictim()).resolves.toBeTruthy();
+      });
+
+      it('cannot activate an invite on their behalf', async () => {
+        /*
+         * The direct route. Acme holds employees.manage over a row it created,
+         * so RBAC has no objection — only the state machine does.
+         */
+        const refId = await inviteVictim();
+
+        await http()
+          .post(`/api/v1/employees/${refId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'active', reason: 'on their behalf' })
+          .expect(409);
+      });
+
+      it('cannot launder an invite into an employment by suspending first', async () => {
+        /*
+         * The two-hop route, and the one a narrower fix would have missed:
+         * cancelling an invite is legitimate, so invited -> suspended is
+         * allowed, and suspended -> active would then be an ordinary
+         * reinstatement of a row that was never real.
+         */
+        const refId = await inviteVictim();
+
+        await http()
+          .post(`/api/v1/employees/${refId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'suspended', reason: 'cancel' })
+          .expect(200);
+
+        await http()
+          .post(`/api/v1/employees/${refId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'active', reason: 'reinstate' })
+          .expect(409);
+      });
+
+      it('does not sign the victim out of the business they actually work for', async () => {
+        /*
+         * THE ASSERTION THAT MATTERS. Everything above could be wrong and this
+         * would still catch the damage: Rival's agent holds a live session, and
+         * nothing Acme does to a row Acme invented may end it.
+         */
+        const refId = await inviteVictim();
+        const before = await liveSessions(victimEmail);
+        expect(before).toBeGreaterThan(0);
+
+        await http()
+          .post(`/api/v1/employees/${refId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'suspended', reason: 'sign them out' })
+          .expect(200);
+
+        expect(await liveSessions(victimEmail)).toBe(before);
+      });
+
+      it('cannot sign them out by repeating it', async () => {
+        // The denial-of-service shape: two requests per logout, as fast as the
+        // throttler allows. Each pass must be inert, not merely the first.
+        const refId = await inviteVictim();
+
+        const before = await liveSessions(victimEmail);
+
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await http()
+            .post(`/api/v1/employees/${refId}/status`)
+            .set(auth(acme.token))
+            .send({ status: 'suspended', reason: 'again' });
+          await http()
+            .post(`/api/v1/employees/${refId}/status`)
+            .set(auth(acme.token))
+            .send({ status: 'active', reason: 'again' });
+        }
+
+        expect(await liveSessions(victimEmail)).toBe(before);
+        // And they can still actually use the platform.
+        await http().get('/api/v1/roles').set(auth(rival.agentToken)).expect(200);
+      });
+    });
+
     it('sees only its own team', async () => {
       const team = await http().get('/api/v1/employees').set(auth(acme.token)).expect(200);
       const refs = (team.body.data as { refId: string }[]).map((person) => person.refId);

@@ -12,7 +12,9 @@ import { SecretHashService } from '@/shared/crypto';
 import { ROLE_LEVEL, SystemRole } from '@/shared/enums';
 import {
   explainDenial,
+  explainStatusDenial,
   mayAssignRole,
+  mayChangeStatus,
   mayModifyEmployee,
   type ActorAuthority,
 } from '@/shared/rbac';
@@ -411,9 +413,18 @@ export class EmployeesService {
     // already-suspended sole owner should say "already suspended" rather than
     // "this is the last owner" — the second is true and unhelpful.
 
-    if (employee.status === status) {
+    /*
+     * THE STATE MACHINE, which this endpoint did not have.
+     *
+     * It replaces a bare "is it already that status?" check. The rules and the
+     * reasoning live in `mayChangeStatus`; the short version is that no
+     * administrative action may move an employment INTO `active`, because that
+     * is a claim about what the person agreed to and only they can make it.
+     */
+    const transitionDenial = mayChangeStatus(employee.status, status, employee.joinedAt !== null);
+    if (transitionDenial) {
       throw new AppException(ErrorCode.InvalidStateTransition, {
-        details: [{ field: 'status', issue: `already ${status}` }],
+        details: [{ field: 'status', issue: explainStatusDenial(transitionDenial) }],
       });
     }
 
@@ -449,7 +460,23 @@ export class EmployeesService {
      * over-revoking costs a colleague one sign-in, and under-revoking leaves a
      * suspended account working.
      */
-    if (status === EmployeeStatus.Suspended) {
+    /*
+     * ...BUT ONLY SOMEBODY WHO ACTUALLY WORKED HERE.
+     *
+     * Cancelling an invite that was never accepted must not sign anybody out of
+     * anything. That row represents no employment: the person never accepted,
+     * may never have heard of this business, and holds no session that belongs
+     * to it. Revoking on it was the blast radius of the cross-tenant attack
+     * described in `mayChangeStatus` — global sessions ended from a row the
+     * attacker created unilaterally.
+     *
+     * The over-revoking that remains is the deliberate kind: a genuine employee
+     * of two businesses, suspended by one, is signed out of both. Sessions are
+     * keyed on the identity and a `switchEnterprise` is a token exchange rather
+     * than a new session, so there is no narrower thing to revoke — and the
+     * person did choose to work for the business now suspending them.
+     */
+    if (status === EmployeeStatus.Suspended && employee.joinedAt !== null) {
       const revoked = await this.sessions.revokeAllForIdentity(employee.identityId);
       this.logger.info(
         { enterpriseId, employeeId: employee.employeeId, revoked },
