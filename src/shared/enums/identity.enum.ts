@@ -17,6 +17,15 @@ export enum EmployeeStatus {
 
 /** schema.md §4 */
 export enum StaffStatus {
+  /**
+   * Created, but the address is not proven yet — they cannot sign in.
+   *
+   * Added when platform admins gained the ability to create staff. Before that
+   * the only staff came from `PLATFORM_ADMIN_*` at boot, where the operator
+   * putting an address in the deployment configuration IS the proof, so there
+   * was nothing for this state to describe.
+   */
+  Invited = 'invited',
   Active = 'active',
   Suspended = 'suspended',
 }

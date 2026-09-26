@@ -20,6 +20,15 @@ export interface StaffSummary {
   readonly hasAllEnterpriseAccess: boolean;
 }
 
+/** What a status change needs to know about the person it is acting on. */
+export interface StaffTarget {
+  readonly id: number;
+  readonly identityId: number;
+  readonly status: StaffStatus;
+  readonly hasAllEnterpriseAccess: boolean;
+  readonly everAccepted: boolean;
+}
+
 export interface StaffRecord extends StaffSummary {
   /**
    * Typed as the enum, not `string`. The column is a varchar, but every caller
@@ -67,15 +76,24 @@ export class StaffMemberRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * @param status defaults to active for provisioning, which is the older
+   *   caller: an operator putting an address in the deployment configuration is
+   *   a stronger claim than any emailed code, so that path has nothing to
+   *   prove. Somebody created from the console starts `invited` and proves the
+   *   address before the row means anything.
+   */
   async create(input: {
     identityId: number;
     hasAllEnterpriseAccess: boolean;
-  }): Promise<StaffSummary> {
-    const rows = await this.query<StaffSummary>(
+    status?: StaffStatus;
+  }): Promise<StaffSummary & { refId: string }> {
+    const rows = await this.query<StaffSummary & { refId: string }>(
       `INSERT INTO staff_members (identity_id, has_all_enterprise_access, status)
             VALUES ($1, $2, $3)
-         RETURNING id AS "staffId", has_all_enterprise_access AS "hasAllEnterpriseAccess"`,
-      [input.identityId, input.hasAllEnterpriseAccess, StaffStatus.Active],
+         RETURNING id AS "staffId", ref_id AS "refId",
+                   has_all_enterprise_access AS "hasAllEnterpriseAccess"`,
+      [input.identityId, input.hasAllEnterpriseAccess, input.status ?? StaffStatus.Active],
     );
     const created = rows[0];
     if (!created) throw new Error('staff_members insert returned no row');
@@ -126,13 +144,79 @@ export class StaffMemberRepository extends BaseRepository {
     );
   }
 
-  async findByRefId(refId: string): Promise<{ id: number; hasAllEnterpriseAccess: boolean } | null> {
-    const rows = await this.query<{ id: number; hasAllEnterpriseAccess: boolean }>(
-      `SELECT id, has_all_enterprise_access AS "hasAllEnterpriseAccess"
-         FROM staff_members WHERE ref_id = $1 AND is_deleted = false LIMIT 1`,
+  async findByRefId(refId: string): Promise<StaffTarget | null> {
+    const rows = await this.query<StaffTarget>(
+      `SELECT s.id,
+              s.identity_id AS "identityId",
+              s.status,
+              s.has_all_enterprise_access AS "hasAllEnterpriseAccess",
+              /*
+               * WHETHER THEY EVER PROVED THE ADDRESS, which is this table's
+               * stand-in for the employees' joined_at. Accepting an invite is
+               * what marks a credential verified, so a staff row whose identity
+               * has neither is one nobody has ever claimed. The status alone
+               * cannot say: an invite that was cancelled and a veteran who was
+               * switched off are both suspended.
+               */
+              (i.email_verified_at IS NOT NULL OR i.mobile_verified_at IS NOT NULL)
+                AS "everAccepted"
+         FROM staff_members s
+         JOIN identities i ON i.id = s.identity_id AND i.is_deleted = false
+        WHERE s.ref_id = $1 AND s.is_deleted = false LIMIT 1`,
       [refId],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * invited -> active, on accepting the invitation. The mirror of
+   * `EnterpriseEmployeeRepository.activate`, and the ONLY writer that puts a
+   * console-created staff member into `active`.
+   */
+  async activate(staffId: number): Promise<void> {
+    await this.mutate(
+      `UPDATE staff_members SET status = $2, updated_at = now()
+        WHERE id = $1 AND status = $3 AND is_deleted = false`,
+      [staffId, StaffStatus.Active, StaffStatus.Invited],
+    );
+  }
+
+  /** Conditional on the status they are in, so two admins cannot both win. */
+  async setStatus(staffId: number, from: StaffStatus, to: StaffStatus): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE staff_members SET status = $3::varchar, updated_at = now()
+        WHERE id = $1 AND status = $2::varchar AND is_deleted = false`,
+      [staffId, from, to],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * How many OTHER platform admins are still active.
+   *
+   * The staff equivalent of `countOtherActiveOwners`, and the stakes are higher:
+   * staff have no signup route and no self-serve recovery at all, so suspending
+   * the last platform admin leaves a console nobody on earth can enter until
+   * somebody redeploys with `PLATFORM_ADMIN_*` set.
+   */
+  async countOtherActivePlatformAdmins(excludingStaffId: number): Promise<number> {
+    const rows = await this.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM staff_members
+        WHERE id <> $1 AND is_deleted = false
+          AND status = $2 AND has_all_enterprise_access = true`,
+      [excludingStaffId, StaffStatus.Active],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  /** Taken before counting admins, so the count cannot change underneath it. */
+  async lockPlatformAdmins(): Promise<void> {
+    await this.query(
+      `SELECT id FROM staff_members
+        WHERE has_all_enterprise_access = true AND is_deleted = false
+        FOR UPDATE`,
+    );
   }
 
   /**

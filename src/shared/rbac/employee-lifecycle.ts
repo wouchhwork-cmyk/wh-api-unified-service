@@ -1,4 +1,14 @@
-import { EmployeeStatus } from '@/shared/enums';
+/**
+ * The three states shared by `enterprise_employees.status` and
+ * `staff_members.status`.
+ *
+ * Two separate enums with identical string values, deliberately: a business's
+ * employee and one of Wouchh's own people are different things and must not be
+ * interchangeable at a call site. The LIFECYCLE is the same though — created,
+ * proven, switched off — and the rule below is the one thing about it worth
+ * stating once, so this union is what both enums narrow to here.
+ */
+export type LifecycleStatus = 'invited' | 'active' | 'suspended';
 
 /**
  * Which employee-status changes the admin endpoint may make.
@@ -27,7 +37,7 @@ import { EmployeeStatus } from '@/shared/enums';
  * mailbox, and nothing an administrator can press may stand in for that.
  */
 export type StatusTransitionDenial =
-  | { readonly kind: 'already-in-status'; readonly status: EmployeeStatus }
+  | { readonly kind: 'already-in-status'; readonly status: LifecycleStatus }
   | { readonly kind: 'acceptance-required' }
   | { readonly kind: 'never-accepted' };
 
@@ -39,19 +49,19 @@ export type StatusTransitionDenial =
  *   sent, and only the first may be reinstated.
  */
 export function mayChangeStatus(
-  from: EmployeeStatus,
-  to: EmployeeStatus,
+  from: LifecycleStatus,
+  to: LifecycleStatus,
   everAccepted: boolean,
 ): StatusTransitionDenial | null {
   if (from === to) return { kind: 'already-in-status', status: to };
 
-  if (to === EmployeeStatus.Active) {
+  if (to === 'active') {
     /*
      * THE TRANSITION THAT CANNOT BE ADMINISTRATIVE. Acceptance is the only path
      * from invited to active: it proves control of the mailbox, which is the
      * entire basis for attaching a business to somebody's identity.
      */
-    if (from === EmployeeStatus.Invited) return { kind: 'acceptance-required' };
+    if (from === 'invited') return { kind: 'acceptance-required' };
 
     /*
      * And reinstating is closed the same way, or it becomes a laundry: invite →
