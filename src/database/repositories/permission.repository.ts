@@ -175,11 +175,34 @@ export class PermissionRepository extends BaseRepository {
     staffId: number,
     enterpriseId: number | null,
   ): Promise<string[]> {
-    const featurePredicate =
-      enterpriseId === null
-        ? // No business selected, so nothing feature-gated can apply yet.
-          'AND p.feature_id IS NULL'
-        : 'AND (p.feature_id IS NULL OR ef.status = $4)';
+    /*
+     * THE PARAMETER LIST IS BUILT WITH THE QUERY, not alongside it.
+     *
+     * It used to be two fixed arrays chosen by a ternary, and the no-enterprise
+     * branch passed five values to a query that referenced four: with no
+     * business selected the feature predicate collapses to a constant and `$4`
+     * disappears from the text while still being sent. Postgres answers that
+     * with `could not determine data type of parameter $4` — a 500, on the
+     * permission lookup that runs inside the auth guard.
+     *
+     * It had never fired, because a scoped staff member could not sign in at
+     * all until the same change that found this; the branch was unreachable and
+     * therefore untested. Numbering the placeholders from the array is what
+     * stops the two drifting again.
+     */
+    const params: unknown[] = [staffId, RoleStatus.Active, enterpriseId];
+
+    let featurePredicate: string;
+    if (enterpriseId === null) {
+      // No business selected, so nothing feature-gated can apply yet.
+      featurePredicate = 'AND p.feature_id IS NULL';
+    } else {
+      params.push(EnterpriseFeatureStatus.Active);
+      featurePredicate = `AND (p.feature_id IS NULL OR ef.status = $${params.length})`;
+    }
+
+    params.push(PermissionStatus.Active);
+    const permissionStatus = `$${params.length}`;
 
     const rows = await this.query<{ code: string }>(
       `SELECT DISTINCT p.code
@@ -195,17 +218,9 @@ export class PermissionRepository extends BaseRepository {
           AND r.is_deleted = false
           AND r.status = $2
           AND p.is_deleted = false
-          AND p.status = $5
+          AND p.status = ${permissionStatus}
           ${featurePredicate}`,
-      enterpriseId === null
-        ? [staffId, RoleStatus.Active, null, null, PermissionStatus.Active]
-        : [
-            staffId,
-            RoleStatus.Active,
-            enterpriseId,
-            EnterpriseFeatureStatus.Active,
-            PermissionStatus.Active,
-          ],
+      params,
     );
     return rows.map((row) => row.code);
   }

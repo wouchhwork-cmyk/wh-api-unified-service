@@ -13,6 +13,12 @@ export interface StaffListRow {
   readonly email: string | null;
   readonly lastLoginAt: Date | null;
   readonly roles: string[];
+  /**
+   * Whether they ever proved the address and became active by their own hand.
+   * The console needs it to tell a cancelled INVITATION from a suspended
+   * colleague: both are `suspended`, and only one of them can be reinstated.
+   */
+  readonly everAccepted: boolean;
 }
 
 export interface StaffSummary {
@@ -130,6 +136,8 @@ export class StaffMemberRepository extends BaseRepository {
               i.last_name  AS "lastName",
               i.email      AS "email",
               i.last_login_at AS "lastLoginAt",
+              (i.email_verified_at IS NOT NULL OR i.mobile_verified_at IS NOT NULL)
+                AS "everAccepted",
               COALESCE(
                 array_agg(r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL), '{}'
               ) AS "roles"

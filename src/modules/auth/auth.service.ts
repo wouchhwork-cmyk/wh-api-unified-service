@@ -314,10 +314,26 @@ export class AuthService {
 
     await this.identities.recordSuccessfulLogin(identity.id);
 
-    // Staff with platform-wide reach get a token with no enterprise until they
-    // pick one; they have no employments to enumerate.
+    /*
+     * ANY of our own people get a session with no enterprise — not only the
+     * full admins.
+     *
+     * This read `staffRecord?.hasAllEnterpriseAccess`, which meant a SCOPED
+     * staff member could not sign in at all: no employments, no platform flag,
+     * refused with "this account has no active business". The console could
+     * already grant them staff roles, and the screen that does it says they
+     * "could sign in and reach nothing" — they could not sign in either, and
+     * nothing said so. Creating one from the console would have produced an
+     * account that could never be used.
+     *
+     * `findActiveByIdentity` is what makes this safe: it returns nothing for an
+     * invited or suspended staff row, so this admits only somebody who is
+     * currently one of our people. What they can then REACH is decided by their
+     * staff roles, and the platform console stays shut to them because
+     * PlatformAdminGuard separately demands the flag.
+     */
     if (employments.length === 0) {
-      if (staffRecord?.hasAllEnterpriseAccess) {
+      if (staffRecord) {
         return this.issueSession(identity, null, staffRecord.staffId, meta);
       }
       throw new AppException(ErrorCode.AuthNoActiveEmployment);

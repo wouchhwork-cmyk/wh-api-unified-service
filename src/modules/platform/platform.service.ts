@@ -46,6 +46,12 @@ export interface StaffListItem {
   readonly hasAllEnterpriseAccess: boolean;
   readonly roles: readonly string[];
   readonly lastLoginAt: Date | null;
+  /**
+   * Whether they ever accepted. A cancelled invitation and a suspended
+   * colleague both read `suspended`, and only the second can be reinstated —
+   * so without this the console cannot tell which control to offer.
+   */
+  readonly everAccepted: boolean;
 }
 
 /** What a client is allowed to see about a business. No internal ids. */
@@ -345,6 +351,13 @@ export class PlatformService {
       hasAllEnterpriseAccess: row.hasAllEnterpriseAccess,
       roles: row.roles,
       lastLoginAt: row.lastLoginAt,
+      /*
+       * Lets the console distinguish a cancelled invitation from a suspended
+       * colleague. Both read `suspended`, and only the second can be
+       * reinstated — the first has to be invited again, because nobody may
+       * activate an account on somebody else's behalf.
+       */
+      everAccepted: row.everAccepted,
     }));
   }
 
