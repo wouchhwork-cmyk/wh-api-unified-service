@@ -135,6 +135,16 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       into what every other business can do. Worth knowing before it is
       diagnosed as a bug during an incident.
 
+- [ ] **E18. `session-lifecycle.e2e` fails about one run in several** — M
+      Seven tests in that one file failed in a full run on 27 Sep and all seven
+      passed alone, and the next full run was green with nothing changed. So it
+      is ordering or timing between the concurrently-running vitest projects,
+      not the code under test. The e2e project already went through one round of
+      this — a fork per file, which fixed a `socket hang up` that had been
+      misdiagnosed once before — so the next person should suspect the harness
+      rather than the auth code. A flaky suite is worse than a slow one: it
+      teaches everybody to re-run.
+
 ## Parked — recorded, do not start
 
 Work that is understood and deliberately not scheduled. **Do not pick these up

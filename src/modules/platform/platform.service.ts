@@ -15,11 +15,24 @@ import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cu
 import {
   AuditAction,
   AuditEntityType,
+  DeliveryChannel,
   ENTERPRISE_FEATURE_TRANSITIONS,
   ENTERPRISE_STATUS_TRANSITIONS,
   EnterpriseFeatureStatus,
   EnterpriseStatus,
+  StaffStatus,
+  VerificationKind,
+  VerificationSecretShape,
+  VerificationSubjectKind,
 } from '@/shared/enums';
+import { IdentityRepository } from '@/database/repositories/identity.repository';
+import { SessionRepository } from '@/database/repositories/session.repository';
+import { VerificationService } from '@/modules/auth/verification.service';
+import { SecretHashService } from '@/shared/crypto';
+import { TransactionManager } from '@/database/transaction';
+import { explainStatusDenial, mayChangeStatus } from '@/shared/rbac';
+import { normalizeEmail, normalizeMobile } from '@/shared/utils/normalize';
+import type { PlatformStaffInviteRequest } from '@/shared/contracts/platform/platform.contract';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { maskEmail, maskMobile } from '@/shared/utils/normalize';
 
@@ -77,8 +90,241 @@ export class PlatformService {
     private readonly platform: PlatformAdminRepository,
     private readonly staff: StaffMemberRepository,
     private readonly audit: AuditService,
+    private readonly identities: IdentityRepository,
+    private readonly sessions: SessionRepository,
+    private readonly verifications: VerificationService,
+    private readonly hasher: SecretHashService,
+    private readonly tx: TransactionManager,
     @InjectPinoLogger(PlatformService.name) private readonly logger: PinoLogger,
   ) {}
+
+  /**
+   * Adds one of Wouchh's own people.
+   *
+   * THE RULE THAT MAKES THIS SAFE TO EXPOSE AT ALL: an address that already
+   * belongs to somebody is refused outright.
+   *
+   * A tenant invite does the opposite on purpose — identities are global, one
+   * human has one password however many businesses they work for, so inviting
+   * an existing address attaches a new employment to it. Doing that here would
+   * mean typing a customer's email into this form and handing that customer
+   * staff reach over every business on the platform. The bootstrap refuses the
+   * same collision for the same reason, and this is the same door.
+   *
+   * So a staff account is always a NEW identity. Somebody who is genuinely both
+   * a customer and a colleague needs two addresses, which is the ordinary
+   * arrangement for a privileged internal account.
+   *
+   * Everybody created here is SCOPED staff. `has_all_enterprise_access` is not
+   * a parameter and cannot be set from this endpoint — see the contract.
+   */
+  async inviteStaff(
+    actingStaffId: number,
+    request: PlatformStaffInviteRequest,
+  ): Promise<{ refId: string; name: string; status: StaffStatus; roles: string[] }> {
+    const email = request.email ? normalizeEmail(request.email) : null;
+    const mobile = request.mobile ? normalizeMobile(request.mobile) : null;
+    if (!email && !mobile) throw new AppException(ErrorCode.CredentialRequired);
+
+    const wanted = await this.resolveStaffRoles(request.roleRefIds ?? []);
+
+    /*
+     * A placeholder nobody knows and nobody can use. The invite is the only way
+     * in, and accepting it replaces this. Generated rather than fixed so two
+     * staff created in the same minute do not share a hash.
+     */
+    const placeholderPasswordHash = await this.hasher.hashPassword(
+      this.hasher.generateSecret(VerificationSecretShape.Token, 32),
+    );
+
+    const created = await this.tx.runInTransaction(async () => {
+      const existing =
+        (email ? await this.identities.findByEmail(email) : null) ??
+        (mobile ? await this.identities.findByMobile(mobile.canonical) : null);
+
+      if (existing) {
+        /*
+         * Deliberately the same answer whether that address belongs to a
+         * customer, to an existing colleague, or to a suspended account. The
+         * caller is a platform admin and could look any of it up — but this
+         * endpoint is not the place to turn an email into a statement about
+         * who uses the product.
+         */
+        throw new AppException(ErrorCode.EmployeeAlreadyExists, {
+          details: [{ field: email ? 'email' : 'mobile', issue: 'that address is already in use' }],
+        });
+      }
+
+      const identity = await this.identities.create({
+        email,
+        mobile: mobile?.canonical ?? null,
+        mobileCountryCode: mobile?.countryCode ?? null,
+        mobileCallingCode: mobile?.callingCode ?? null,
+        mobileNationalNumber: mobile?.nationalNumber ?? null,
+        passwordHash: placeholderPasswordHash,
+        firstName: request.firstName,
+        lastName: request.lastName ?? null,
+      });
+
+      const staff = await this.staff.create({
+        identityId: identity.id,
+        // Never from this endpoint. Promotion is a deployment decision.
+        hasAllEnterpriseAccess: false,
+        // Invited, not active: they have proved nothing yet.
+        status: StaffStatus.Invited,
+      });
+
+      if (wanted.length > 0) {
+        await this.staff.replaceStaffRoles({
+          staffId: staff.staffId,
+          roleIds: wanted.map((role) => role.id),
+          grantedByStaffId: actingStaffId,
+        });
+      }
+
+      return { identity, staff };
+    });
+
+    // Outside the transaction: issuing a verification writes its own rows and
+    // holding the creation open across it would widen it for no benefit.
+    const destination = email ?? mobile?.canonical;
+    if (!destination) throw new AppException(ErrorCode.CredentialRequired);
+
+    await this.verifications.issue({
+      subjectKind: VerificationSubjectKind.Identity,
+      identityId: created.identity.id,
+      customerId: null,
+      customerIdentifierId: null,
+      /*
+       * NO ENTERPRISE. This is what makes `completeInvite` treat the acceptance
+       * as a staff one: there is no employment to activate, and the staff row
+       * is what moves instead.
+       */
+      enterpriseId: null,
+      verificationKind: VerificationKind.EmployeeInvite,
+      destination,
+      deliveryChannel: email ? DeliveryChannel.Email : DeliveryChannel.Sms,
+      requestedIp: null,
+      requestedUserAgent: null,
+    });
+
+    await this.audit.record({
+      action: AuditAction.Created,
+      entityType: AuditEntityType.StaffMember,
+      entityId: created.staff.staffId,
+      enterpriseId: null,
+      changes: { status: { from: null, to: StaffStatus.Invited } },
+      metadata: { roles: wanted.map((role) => role.name), invitedByStaffId: actingStaffId },
+    });
+
+    this.logger.info(
+      { staffId: created.staff.staffId, roleCount: wanted.length },
+      'staff member created and invited',
+    );
+
+    return {
+      refId: created.staff.refId,
+      name: [request.firstName, request.lastName].filter(Boolean).join(' '),
+      status: StaffStatus.Invited,
+      roles: wanted.map((role) => role.name),
+    };
+  }
+
+  /**
+   * Suspends or reinstates one of our own people.
+   *
+   * Three guards, and each of them is a way the console could otherwise be
+   * locked or bypassed:
+   *
+   *   - NOBODY ACTS ON THEMSELVES, as with roles. An admin who suspended
+   *     themselves would be relying on a second admin existing.
+   *   - THE LAST PLATFORM ADMIN STAYS. Staff have no signup route and no
+   *     self-serve recovery at all, so suspending the final one leaves a
+   *     console nobody on earth can enter until somebody redeploys with
+   *     PLATFORM_ADMIN_* set. Counted behind a lock, because two admins
+   *     suspending each other at once would each read "one other remains".
+   *   - NO ADMINISTRATIVE ACTIVATION. `mayChangeStatus` refuses anything that
+   *     would move a row into `active` without the person having accepted.
+   */
+  async setStaffStatus(
+    actingStaffId: number,
+    staffRefId: string,
+    status: StaffStatus,
+    reason: string | null,
+  ): Promise<{ refId: string; from: StaffStatus; to: StaffStatus }> {
+    const target = await this.staff.findByRefId(staffRefId);
+    if (!target) throw new AppException(ErrorCode.EmployeeNotFound);
+
+    if (target.id === actingStaffId) {
+      throw new AppException(ErrorCode.PermissionDenied, {
+        details: [{ field: 'refId', issue: 'you cannot change your own status' }],
+      });
+    }
+
+    const denial = mayChangeStatus(target.status, status, target.everAccepted);
+    if (denial) {
+      throw new AppException(ErrorCode.InvalidStateTransition, {
+        details: [{ field: 'status', issue: explainStatusDenial(denial) }],
+      });
+    }
+
+    const applied = await this.tx.runInTransaction(async () => {
+      if (status === StaffStatus.Suspended && target.hasAllEnterpriseAccess) {
+        await this.staff.lockPlatformAdmins();
+        const others = await this.staff.countOtherActivePlatformAdmins(target.id);
+        if (others === 0) {
+          throw new AppException(ErrorCode.ValidationFailed, {
+            details: [
+              {
+                field: 'refId',
+                issue: 'this is the last active platform admin; there would be no way back in',
+              },
+            ],
+          });
+        }
+      }
+      return this.staff.setStatus(target.id, target.status, status);
+    });
+    if (!applied) throw new AppException(ErrorCode.ConcurrentModification);
+
+    /*
+     * Suspension ends their sessions — but only somebody who actually got in.
+     *
+     * A cancelled invite has no session of ours to revoke, and unlike the
+     * tenant side there is no cross-tenant blast radius to worry about here:
+     * this endpoint refuses to attach to an existing identity, so a staff
+     * identity is only ever a staff identity.
+     */
+    if (status === StaffStatus.Suspended && target.everAccepted) {
+      const revoked = await this.sessions.revokeAllForIdentity(target.identityId);
+      this.logger.info({ staffId: target.id, revoked }, 'staff suspended — sessions revoked');
+    }
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.StaffMember,
+      entityId: target.id,
+      enterpriseId: null,
+      changes: { status: { from: target.status, to: status } },
+      metadata: reason ? { reason } : {},
+    });
+
+    return { refId: staffRefId, from: target.status, to: status };
+  }
+
+  /** Resolves role refIds against the staff templates, refusing anything else. */
+  private async resolveStaffRoles(
+    roleRefIds: readonly string[],
+  ): Promise<{ id: number; name: string }[]> {
+    if (roleRefIds.length === 0) return [];
+
+    const options = await this.staff.listStaffRoleOptions();
+    const wanted = options.filter((option) => roleRefIds.includes(option.refId));
+    // An enterprise role's refId resolves to nothing here, which is the point:
+    // the options are the NULL-enterprise staff-scoped templates and nothing else.
+    if (wanted.length !== roleRefIds.length) throw new AppException(ErrorCode.RoleNotFound);
+    return wanted;
+  }
 
   /**
    * Wouchh's own people and what each of them may do.

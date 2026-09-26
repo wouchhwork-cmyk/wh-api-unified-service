@@ -15,9 +15,10 @@ import {
   AuditAction,
   AuditEntityType,
   DeliveryChannel,
+  EmployeeKind,
   EmployeeStatus,
   IdentityStatus,
-  EmployeeKind,
+  StaffStatus,
   VerificationKind,
   VerificationSubjectKind,
 } from '@/shared/enums';
@@ -218,6 +219,24 @@ export class AuthService {
         const employment = await this.employees.findByIdentity(enterpriseId, identity.id);
         if (employment && employment.status === EmployeeStatus.Invited) {
           await this.employees.activate(employment.employeeId, enterpriseId);
+        }
+      } else {
+        /*
+         * NO ENTERPRISE MEANS ONE OF OUR OWN PEOPLE.
+         *
+         * A staff invitation is issued with `enterpriseId: null`, because there
+         * is no employment to attach — staff sit above every tenant. This
+         * branch used to do nothing at all, which was correct while the only
+         * staff came from `PLATFORM_ADMIN_*` at boot and arrived already
+         * active. A staff member created from the console starts `invited` and
+         * this is the only thing that moves them.
+         *
+         * Guarded by status inside `activate`, so accepting twice, or a person
+         * who is both invited and somehow already active, changes nothing.
+         */
+        const staffRecord = await this.staff.findAnyByIdentity(identity.id);
+        if (staffRecord && staffRecord.status === StaffStatus.Invited) {
+          await this.staff.activate(staffRecord.staffId);
         }
       }
 

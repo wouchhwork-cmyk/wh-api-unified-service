@@ -100,6 +100,26 @@ const DIALOG_HOST = 'https://www.facebook.com';
  */
 const SCHEMA_ISSUES_REPORTED = 5;
 
+/**
+ * What we ask about the post a mention sits on.
+ *
+ * ONE LIST, USED BY BOTH BRANCHES. It was written out twice — once for a
+ * caption mention and once for a comment mention — and the copies had already
+ * drifted: adding the carousel children to one of them left comment mentions,
+ * which are the common kind, still receiving a single cover image. A test
+ * caught that, which is the only reason this is a constant rather than a third
+ * copy waiting to drift.
+ *
+ * `children` is the carousel. `media_url` on a CAROUSEL_ALBUM is the cover and
+ * nothing else, so without it a mention on a ten-image post kept one picture
+ * and silently discarded the other nine — they were never missing from Meta,
+ * they were never asked for. Verified 26 Sep 2026 against a live mention.
+ */
+const MENTION_MEDIA_FIELDS =
+  'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
+  'permalink,username,timestamp,like_count,comments_count,' +
+  'children{id,media_type,media_url,thumbnail_url}';
+
 @Injectable()
 export class GraphApiClient {
   /**
@@ -627,9 +647,7 @@ export class GraphApiClient {
      * which is where the reply thread is asked for and where the rules about it
      * belong. This list serves the caption branch, which has no comment at all.
      */
-    const mediaFields =
-      'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
-      'permalink,username,timestamp,like_count,comments_count';
+    const mediaFields = MENTION_MEDIA_FIELDS;
 
     if (target.commentId) {
       /*
@@ -740,9 +758,7 @@ export class GraphApiClient {
     withReplies: boolean,
     timeoutMs?: number,
   ): Promise<GraphMentionedComment | null> {
-    const mediaFields =
-      'id,caption,media_type,media_product_type,media_url,thumbnail_url,' +
-      'permalink,username,timestamp,like_count,comments_count';
+    const mediaFields = MENTION_MEDIA_FIELDS;
     /*
      * `timestamp` and `like_count` are here because we WANT them, not to
      * appease the field expander.
@@ -1139,6 +1155,18 @@ function toResolvedMedia(
     timestamp: media.timestamp ?? null,
     likeCount: numberOrNull(media.like_count),
     commentsCount: numberOrNull(media.comments_count),
+    /*
+     * Every slide of a carousel, in Meta's order. Empty for anything else, so
+     * a caller that only wants the cover reads `mediaUrl` and ignores this.
+     */
+    children: (media.children?.data ?? [])
+      .filter((child) => Boolean(child.media_url ?? child.thumbnail_url))
+      .map((child) => ({
+        id: child.id ?? null,
+        mediaType: child.media_type ?? null,
+        mediaUrl: child.media_url ?? null,
+        thumbnailUrl: child.thumbnail_url ?? null,
+      })),
   };
 }
 

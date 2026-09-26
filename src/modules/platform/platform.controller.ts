@@ -13,7 +13,9 @@ import {
   PlatformFeatureDecisionSchema,
   PlatformFeatureKeyParamSchema,
   PlatformRateLimitHistoryQuerySchema,
+  PlatformStaffInviteSchema,
   PlatformStaffRolesSchema,
+  PlatformStaffStatusSchema,
 } from '@/shared/contracts/platform/platform.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import { RequestContext } from '@/shared/context';
@@ -97,6 +99,54 @@ export class PlatformController {
   @ApiOperation({ summary: 'The staff roles that can be granted' })
   async staffRoleOptions(): Promise<Awaited<ReturnType<PlatformService['listStaffRoleOptions']>>> {
     return this.platform.listStaffRoleOptions();
+  }
+
+  @Post('staff')
+  @RequirePlatformAdmin()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Add one of our own people',
+    description:
+      'Creates a SCOPED staff member and sends them an invitation. They set their own password ' +
+      'from the code, so nobody else ever knows it, and the account does nothing until they do. ' +
+      'An address that already belongs to somebody is refused: a tenant invite deliberately ' +
+      'reuses an existing identity, and doing that here would hand a customer staff reach over ' +
+      'every business. Promotion to full platform admin is not available here and stays in the ' +
+      'deployment configuration.',
+  })
+  async inviteStaff(
+    @Body() body: unknown,
+  ): Promise<Awaited<ReturnType<PlatformService['inviteStaff']>>> {
+    const actor = RequestContext.actor();
+    if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
+
+    return this.platform.inviteStaff(actor.staffId, PlatformStaffInviteSchema.parse(body));
+  }
+
+  @Post('staff/:refId/status')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'Suspend or reinstate a staff member',
+    description:
+      'Suspending ends every session that person holds. Nobody may change their own status, and ' +
+      'the last active platform admin cannot be suspended — staff have no signup route, so that ' +
+      'would leave a console nobody can enter without a redeploy. An invitation that was never ' +
+      'accepted can be cancelled but not activated: only the person accepting it does that.',
+  })
+  async setStaffStatus(
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<Awaited<ReturnType<PlatformService['setStaffStatus']>>> {
+    const actor = RequestContext.actor();
+    if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
+
+    const parsed = PlatformStaffStatusSchema.parse(body);
+    return this.platform.setStaffStatus(
+      actor.staffId,
+      RefIdParamSchema.parse(refId),
+      parsed.status,
+      parsed.reason ?? null,
+    );
   }
 
   @Post('staff/:refId/roles')

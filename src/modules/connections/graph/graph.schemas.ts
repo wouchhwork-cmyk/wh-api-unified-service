@@ -246,6 +246,14 @@ export const GraphInstagramTagSchema = z.object({
  * Mentions API
  * ------------------------------------------------------------------ */
 
+/** One slide of a carousel. Meta returns these only when asked for by name. */
+export const GraphMentionedMediaChildSchema = z.object({
+  id: GraphId.optional(),
+  media_type: z.string().optional(),
+  media_url: z.string().optional(),
+  thumbnail_url: z.string().optional(),
+});
+
 export const GraphMentionedMediaSchema = z.object({
   id: GraphId.optional(),
   caption: z.string().optional(),
@@ -259,6 +267,19 @@ export const GraphMentionedMediaSchema = z.object({
   timestamp: z.string().optional(),
   like_count: GraphCount.optional(),
   comments_count: GraphCount.optional(),
+  /*
+   * THE OTHER SLIDES OF A CAROUSEL.
+   *
+   * `media_url` on a CAROUSEL_ALBUM is the cover and nothing else, so a mention
+   * on a ten-image carousel was stored as one picture and the other nine were
+   * never asked for. Meta returns them readily — verified 26 Sep against a live
+   * mention: media_type CAROUSEL_ALBUM, children.data carrying an id, a type
+   * and a url per slide.
+   *
+   * Optional because only a carousel has them, and because a field Meta stops
+   * returning must not fail the whole mention.
+   */
+  children: z.object({ data: z.array(GraphMentionedMediaChildSchema) }).optional(),
 });
 
 export const GraphMentionedCommentReplySchema = z.object({

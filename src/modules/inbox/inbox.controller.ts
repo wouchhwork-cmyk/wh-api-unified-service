@@ -810,6 +810,32 @@ function toMentionContext(
     mediaUrl: asText(details.mediaUrl),
     thumbnailUrl: asText(details.thumbnailUrl),
     /*
+     * EVERY SLIDE, when the post is a carousel.
+     *
+     * `mediaUrl` on a CAROUSEL_ALBUM is the cover, so a mention on a ten-image
+     * carousel showed one picture and gave no hint there were nine more. Meta
+     * returns them for the asking and always did; nobody asked.
+     *
+     * EMPTY FOR AN ORDINARY POST, not null, so a client can render it with a
+     * loop and never branch. The cover stays in `mediaUrl` either way, so a
+     * client that ignores this is still correct.
+     */
+    carousel: (Array.isArray(details.children) ? details.children : [])
+      .map((child): Record<string, unknown> => {
+        const slide = (typeof child === 'object' && child !== null ? child : {}) as Record<
+          string,
+          unknown
+        >;
+        return {
+          mediaType: asText(slide.mediaType),
+          // Thumbnail first, for the same reason as previewUrl above: a video
+          // slide's mediaUrl is the .mp4, and an <img> cannot show it.
+          previewUrl: asText(slide.thumbnailUrl) ?? asText(slide.mediaUrl),
+          mediaUrl: asText(slide.mediaUrl),
+          thumbnailUrl: asText(slide.thumbnailUrl),
+        };
+      }),
+    /*
      * WHETHER THOSE LINKS DIE, and how fresh they are.
      *
      * Instagram serves media from signed CDN links that expire — the expiry is

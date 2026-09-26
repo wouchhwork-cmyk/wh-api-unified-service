@@ -176,6 +176,14 @@ export interface ResolvedMentionReply {
   readonly likeCount: number | null;
 }
 
+/** One slide of a carousel post we were tagged in. */
+export interface ResolvedMentionMediaChild {
+  readonly id: string | null;
+  readonly mediaType: string | null;
+  readonly mediaUrl: string | null;
+  readonly thumbnailUrl: string | null;
+}
+
 /** What the tagged post will tell us. Counts are absent, never zero, when refused. */
 export interface ResolvedMentionMedia {
   readonly id: string | null;
@@ -191,6 +199,12 @@ export interface ResolvedMentionMedia {
   readonly timestamp: string | null;
   readonly likeCount: number | null;
   readonly commentsCount: number | null;
+  /**
+   * The rest of a carousel. EMPTY for a single-image post, which is the common
+   * case — `mediaUrl` above is the cover either way, so a reader that ignores
+   * this still shows the right picture.
+   */
+  readonly children: readonly ResolvedMentionMediaChild[];
 }
 
 /**

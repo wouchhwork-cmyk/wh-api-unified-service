@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { EnterpriseFeatureStatus, EnterpriseStatus, FeatureKey } from '@/shared/enums';
+import { EnterpriseFeatureStatus, EnterpriseStatus, FeatureKey, StaffStatus } from '@/shared/enums';
 import { MAX_PAGE_SIZE } from '@/shared/constants';
+import { EmailSchema, MobileInputSchema } from '../auth/credential.contract';
 
 export const PlatformEnterpriseQuerySchema = z
   .object({
@@ -92,3 +93,61 @@ export const PlatformStaffRolesSchema = z
   .strict();
 
 export type PlatformStaffRolesRequest = z.infer<typeof PlatformStaffRolesSchema>;
+
+/** Matches the tenant-side employee name fields, so the two cannot diverge. */
+const StaffNameSchema = z.string().trim().min(1).max(100);
+
+/**
+ * Adding one of our own people.
+ *
+ * NOTE WHAT IS ABSENT, in both directions.
+ *
+ * No password — the same reasoning as a tenant invite: the person sets their
+ * own from the code that reaches them, so the admin creating the account never
+ * knows it.
+ *
+ * And no `hasAllEnterpriseAccess`. A full platform admin is the highest
+ * authority in the product, answerable to nobody and scoped to nothing, and
+ * promoting somebody to one is not a checkbox on a create form. That stays
+ * where it is — `PLATFORM_ADMIN_*` in the deployment configuration, which
+ * takes a deploy and leaves a trail in a repository. Everybody created here is
+ * scoped staff whose reach is exactly the roles they are given.
+ */
+export const PlatformStaffInviteSchema = z
+  .object({
+    firstName: StaffNameSchema,
+    lastName: StaffNameSchema.optional(),
+    email: EmailSchema.optional(),
+    mobile: MobileInputSchema.optional(),
+    /**
+     * Optional, and may be empty: somebody who works here and reaches nothing
+     * yet is a real state, and roles can be granted the moment they accept.
+     */
+    roleRefIds: z.array(z.uuid()).max(10).optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.email) || Boolean(value.mobile), {
+    message: 'give at least one of email or mobile',
+    path: ['email'],
+  });
+
+/**
+ * The moves an administrator can make on a staff member.
+ *
+ * `invited` is absent because it is where a creation starts and nothing returns
+ * to it. `active` is present but heavily guarded in the service: it reinstates
+ * somebody who genuinely worked here and cannot manufacture an acceptance.
+ */
+export const PlatformStaffStatusSchema = z
+  .object({
+    status: z.enum([StaffStatus.Active, StaffStatus.Suspended]),
+    reason: z.string().trim().min(1).max(255).optional(),
+  })
+  .strict()
+  .refine((value) => value.status !== StaffStatus.Suspended || Boolean(value.reason), {
+    message: 'a reason is required when suspending somebody',
+    path: ['reason'],
+  });
+
+export type PlatformStaffInviteRequest = z.infer<typeof PlatformStaffInviteSchema>;
+export type PlatformStaffStatusRequest = z.infer<typeof PlatformStaffStatusSchema>;
