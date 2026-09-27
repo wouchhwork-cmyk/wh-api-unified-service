@@ -307,7 +307,15 @@ export class MessageRepository extends BaseRepository {
                 WHEN $3::varchar = 'hide' THEN true
                 WHEN $3::varchar = 'unhide' THEN false
                 ELSE is_hidden_on_platform END,
-              is_deleted = CASE WHEN $3::varchar = 'delete' THEN true ELSE is_deleted END,
+              /*
+               * Marked, not erased — see applyPlatformModeration. A comment
+               * the BUSINESS deletes is still part of the record of what
+               * happened on their post, and the count must keep matching the
+               * thread.
+               */
+              platform_deleted_at = CASE
+                WHEN $3::varchar = 'delete' THEN COALESCE(platform_deleted_at, now())
+                ELSE platform_deleted_at END,
               updated_at = now()
         WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
         RETURNING id`,
@@ -830,7 +838,24 @@ export class MessageRepository extends BaseRepository {
                 WHEN $3::varchar = 'hidden' THEN true
                 WHEN $3::varchar = 'unhidden' THEN false
                 ELSE is_hidden_on_platform END,
-              is_deleted = CASE WHEN $3::varchar = 'removed' THEN true ELSE is_deleted END,
+              /*
+               * MARKED, NOT ERASED — the same rule an unsent DM already
+               * follows (markDeletedOnPlatform).
+               *
+               * This set is_deleted, our own soft-delete flag, which every
+               * read filters on. Two things went wrong at once: the comment
+               * vanished from the thread while conversations.message_count
+               * still counted it, so the summary and the thread disagreed for
+               * ever; and the business lost the record of what was said, which
+               * is the one thing it is accountable for.
+               *
+               * platform_deleted_at is the honest field: gone from the
+               * platform, still ours. The client already renders it struck
+               * through.
+               */
+              platform_deleted_at = CASE
+                WHEN $3::varchar = 'removed' THEN COALESCE(platform_deleted_at, now())
+                ELSE platform_deleted_at END,
               updated_at = now()
         WHERE enterprise_id = $1 AND platform_message_id = $2
         RETURNING id`,

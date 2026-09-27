@@ -54,8 +54,26 @@ function shapeOf(row: Row): string {
 
   if (t === 'comment') {
     const v = (p.value ?? {}) as Record<string, unknown>;
-    const bits = [v.parent_id ? 'reply' : 'top-level'];
-    if (!v.text) bits.push('no text');
+
+    /*
+     * THE TWO PLATFORMS DISAGREE ON BOTH FIELDS, and reading Instagram's names
+     * against a Facebook payload reports every Facebook comment as a reply with
+     * no text — which is what this did, silently, because the corpus happens to
+     * contain no Facebook comments yet and nothing looked wrong.
+     *
+     * Instagram: the words are `text`, and `parent_id` is present only on an
+     * actual reply.
+     * Facebook: the words are `message`, and `parent_id` is ALWAYS present —
+     * it equals `post_id` on a top-level comment. That equality is the only
+     * thing distinguishing the two, and `normalizeFacebook` uses exactly the
+     * same test.
+     */
+    const isFacebook = row.platform === 'facebook';
+    const text = isFacebook ? v.message : v.text;
+    const parentId = isFacebook && v.parent_id === v.post_id ? undefined : v.parent_id;
+
+    const bits = [parentId ? 'reply' : 'top-level'];
+    if (!text) bits.push('no text');
     return `COMMENT ${bits.join(', ')}`;
   }
 

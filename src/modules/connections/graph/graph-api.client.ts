@@ -697,9 +697,15 @@ export class GraphApiClient {
           instagramUserId,
           target.commentId,
           accessToken,
+          timeoutMs,
         ),
         parent: comment.parent_id
-          ? await this.fetchMentionThreadParent(instagramUserId, comment.parent_id, accessToken)
+          ? await this.fetchMentionThreadParent(
+              instagramUserId,
+              comment.parent_id,
+              accessToken,
+              timeoutMs,
+            )
           : null,
       };
     }
@@ -843,6 +849,8 @@ export class GraphApiClient {
     instagramUserId: string,
     parentCommentId: string,
     accessToken: string,
+    /** The caller's budget — see listMentionedPostComments. */
+    timeoutMs?: number,
   ): Promise<ResolvedMentionParent | null> {
     try {
       const parent = await this.fetchMentionedComment(
@@ -851,6 +859,7 @@ export class GraphApiClient {
         accessToken,
         // A parent is by definition top-level, so its thread is always askable.
         true,
+        timeoutMs,
       );
       if (!parent) return null;
       return {
@@ -885,11 +894,23 @@ export class GraphApiClient {
     instagramUserId: string,
     commentId: string,
     accessToken: string,
+    /*
+     * The CALLER's budget, not the 10s default.
+     *
+     * A mention refresh runs under a deadline and resolves three things: the
+     * comment, the room around it, and the parent thread. Only the first
+     * honoured the budget, so a slow post could take 10s here after the caller
+     * had already given up — and the catch in `resolveMentionMedia` throws the
+     * WHOLE refresh away, including media urls that had resolved perfectly
+     * well a second earlier. Expired links then stayed expired.
+     */
+    timeoutMs?: number,
   ): Promise<ResolvedMentionReply[]> {
     try {
       const result = await this.request('GET', instagramUserId, {
         schema: GraphMentionedCommentRepliesEnvelopeSchema,
         accessToken,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
         params: {
           fields: `mentioned_comment.comment_id(${commentId}){media{comments.limit(${MENTION_POST_COMMENTS_KEPT}){id,text,timestamp,like_count}}}`,
         },

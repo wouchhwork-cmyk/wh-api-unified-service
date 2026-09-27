@@ -989,7 +989,7 @@ export class InboxService {
                    * Meta's mentions edge needs the post it sits on as well.
                    * Resolved when the mention was projected and filed there.
                    */
-                  mediaId: mentionMediaId(conversation.contextMetadata),
+                  mediaId: requireMentionMediaId(conversation.contextMetadata),
                   commentId: stripThreadPrefix(conversation.platformThreadId),
                   message: input.body,
                 }
@@ -1330,6 +1330,32 @@ function decodeThreadCursor(cursor: string | null): { sortedAt: Date; id: number
 function mentionMediaId(contextMetadata: Record<string, unknown>): string | null {
   const mediaId = contextMetadata.mentionedMediaId;
   return typeof mediaId === 'string' && mediaId.length > 0 ? mediaId : null;
+}
+
+/**
+ * The same thing, but REFUSING rather than passing null down the queue.
+ *
+ * The paragraph above says the check is here so the agent does not discover
+ * the problem after typing — and then the null was handed to the relay anyway,
+ * which accepted the reply, answered 202, and dead-lettered it a moment later
+ * with nobody watching. A refusal the person can read at the moment they press
+ * send is the entire point, and it was one line short of happening.
+ */
+function requireMentionMediaId(contextMetadata: Record<string, unknown>): string {
+  const mediaId = mentionMediaId(contextMetadata);
+  if (mediaId === null) {
+    throw new AppException(ErrorCode.ReplyNotSupported, {
+      details: [
+        {
+          field: 'conversationRefId',
+          issue:
+            'this mention was stored before the post it sits on was recorded, so there is ' +
+            'nowhere to send a reply — open it on the platform instead',
+        },
+      ],
+    });
+  }
+  return mediaId;
 }
 
 function stripThreadPrefix(platformThreadId: string): string {
