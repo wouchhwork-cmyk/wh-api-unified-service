@@ -488,6 +488,10 @@ describe('the shared inbox', () => {
       // Added when a GIF comment turned up as a blank line: Instagram omits
       // `text` rather than sending it empty, and exposes no media field at all.
       'platformSentNoText',
+      // Added when the corpus replay showed every comment delivery carries
+      // `media.media_product_type` and we kept none of it: FEED, REELS or
+      // STORY. Null on a direct message.
+      'postProductType',
       'reaction',
       'refId',
       // Added when story replies started being surfaced: null unless the
