@@ -1383,7 +1383,7 @@ function mentionMediaId(contextMetadata: Record<string, unknown>): string | null
  * with nobody watching. A refusal the person can read at the moment they press
  * send is the entire point, and it was one line short of happening.
  */
-function requireMentionMediaId(contextMetadata: Record<string, unknown>): string {
+export function requireMentionMediaId(contextMetadata: Record<string, unknown>): string {
   const mediaId = mentionMediaId(contextMetadata);
   if (mediaId === null) {
     throw new AppException(ErrorCode.ReplyNotSupported, {
@@ -1407,7 +1407,7 @@ function requireMentionMediaId(contextMetadata: Record<string, unknown>): string
  * there is no comment anywhere. That null is meaningful rather than missing —
  * it is what tells Meta to answer the POST instead of a comment on it.
  */
-function mentionCommentId(contextMetadata: Record<string, unknown>): string | null {
+export function mentionCommentId(contextMetadata: Record<string, unknown>): string | null {
   const commentId = contextMetadata.mentionedCommentId;
   return typeof commentId === 'string' && commentId.length > 0 ? commentId : null;
 }
