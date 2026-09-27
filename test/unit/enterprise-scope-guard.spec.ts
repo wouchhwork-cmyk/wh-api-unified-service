@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
 import { EnterpriseScopeGuard } from '@/shared/guards/enterprise-scope.guard';
+import { EnterpriseActiveGuard } from '@/shared/guards/enterprise-active.guard';
+import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { RequestContext } from '@/shared/context';
 import {
   IS_PUBLIC_KEY,
   REQUIRED_ANY_PERMISSION_KEY,
   REQUIRED_PERMISSIONS_KEY,
 } from '@/shared/decorators';
-import { ActorKind } from '@/shared/enums';
+import { ActorKind, EnterpriseStatus } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 
 /**
@@ -124,5 +126,93 @@ describe('the enterprise scope guard', () => {
     it('treats an EMPTY permission list as no declaration', () => {
       expect(run(unscoped, { [REQUIRED_ANY_PERMISSION_KEY]: [] })).toBe(true);
     });
+  });
+});
+
+/**
+ * Gate 1b: is the business still allowed to be here?
+ *
+ * THE SAME BLIND SPOT, AND THIS ONE WAS EXPLOITABLE. Both guards asked "does
+ * this route declare a permission?" and both read only `@RequirePermission`.
+ * For the scope guard that was survivable — an actor with no scope resolves no
+ * permissions, so gate 2 refused them anyway. Nothing downstream checks that a
+ * business is still ACTIVE, so a suspended or not-yet-approved enterprise kept
+ * full read and reply access to its whole inbox.
+ *
+ * Both guards now ask one shared function, which is the point: a question
+ * asked in two places is eventually answered differently in each, and the
+ * second answer is the one nobody tests.
+ */
+describe('the active enterprise guard', () => {
+  const reflectorFor = (metadata: Record<string, unknown>): Reflector =>
+    ({ getAllAndOverride: (key: string) => metadata[key] }) as unknown as Reflector;
+
+  const context = {
+    getHandler: () => () => undefined,
+    getClass: () => class {},
+  } as unknown as ExecutionContext;
+
+  const enterprisesAt = (status: EnterpriseStatus | null): EnterpriseRepository =>
+    ({ statusById: () => Promise.resolve(status) }) as unknown as EnterpriseRepository;
+
+  const run = (
+    status: EnterpriseStatus | null,
+    metadata: Record<string, unknown>,
+    actorKind: ActorKind = ActorKind.Employee,
+  ): Promise<boolean> =>
+    RequestContext.run({ correlationId: 'test' }, () => {
+      RequestContext.setActor({
+        correlationId: 'test',
+        identityId: 1,
+        enterpriseId: 7,
+        employeeId: 3,
+        staffId: null,
+        actorKind,
+        isImpersonated: false,
+        permissions: new Set<string>(),
+      });
+      return new EnterpriseActiveGuard(reflectorFor(metadata), enterprisesAt(status)).canActivate(
+        context,
+      );
+    });
+
+  const anyPermission = { [REQUIRED_ANY_PERMISSION_KEY]: ['conversations.view'] };
+  const allPermissions = { [REQUIRED_PERMISSIONS_KEY]: ['inbox.view'] };
+
+  it('refuses a SUSPENDED business on an any-permission route', async () => {
+    /*
+     * THE HOLE. Before the fix this resolved true: the guard never looked at
+     * REQUIRED_ANY_PERMISSION_KEY, so every inbox route — eleven of them —
+     * served a business that had been switched off.
+     */
+    await expect(run(EnterpriseStatus.Suspended, anyPermission)).rejects.toThrow(AppException);
+  });
+
+  it('refuses one still PENDING ACTIVATION on an any-permission route', async () => {
+    await expect(run(EnterpriseStatus.PendingActivation, anyPermission)).rejects.toThrow(
+      AppException,
+    );
+  });
+
+  it('still refuses on an all-permissions route, as it always did', async () => {
+    await expect(run(EnterpriseStatus.Suspended, allPermissions)).rejects.toThrow(AppException);
+  });
+
+  it('admits an active business', async () => {
+    await expect(run(EnterpriseStatus.Active, anyPermission)).resolves.toBe(true);
+  });
+
+  it('lets staff through whatever the business status', async () => {
+    // Staff reach exists to deal with a suspended business, so refusing them
+    // would lock out the only people who can fix it.
+    await expect(run(EnterpriseStatus.Suspended, anyPermission, ActorKind.Staff)).resolves.toBe(
+      true,
+    );
+  });
+
+  it('leaves identity-scoped routes alone', async () => {
+    // /auth/me and enterprise switching must keep working for a pending
+    // business, or its owner cannot even see why they are blocked.
+    await expect(run(EnterpriseStatus.PendingActivation, {})).resolves.toBe(true);
   });
 });

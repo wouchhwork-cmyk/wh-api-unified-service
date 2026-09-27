@@ -2,7 +2,8 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { RequestContext } from '@/shared/context';
-import { IS_PUBLIC_KEY, REQUIRED_PERMISSIONS_KEY } from '@/shared/decorators';
+import { declaresPermission } from './declares-permission';
+import { IS_PUBLIC_KEY } from '@/shared/decorators';
 import { ActorKind, EnterpriseStatus } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 
@@ -39,14 +40,17 @@ export class EnterpriseActiveGuard implements CanActivate {
     ]);
     if (isPublic) return true;
 
-    // Only tenant-scoped routes declare permissions. Identity-scoped routes —
-    // /auth/me, enterprise switching — must keep working for a pending business,
-    // or its owner could not even see why they are blocked.
-    const required = this.reflector.getAllAndOverride<string[]>(REQUIRED_PERMISSIONS_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (!required || required.length === 0) return true;
+    /*
+     * Only tenant-scoped routes declare permissions. Identity-scoped routes —
+     * /auth/me, enterprise switching — must keep working for a pending
+     * business, or its owner could not even see why they are blocked.
+     *
+     * BOTH DECORATORS COUNT. This read only @RequirePermission, so every
+     * @RequireAnyPermission route skipped this gate: a suspended or
+     * not-yet-approved business kept full read and reply access to its inbox,
+     * and unlike the scope gate nothing downstream catches it.
+     */
+    if (!declaresPermission(this.reflector, context)) return true;
 
     const actor = RequestContext.actor();
     if (!actor) throw new AppException(ErrorCode.AuthTokenInvalid);
