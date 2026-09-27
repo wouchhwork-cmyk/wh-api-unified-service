@@ -1344,23 +1344,33 @@ function stripThreadPrefix(platformThreadId: string): string {
  * API gave us on the day: a thread that is absent, or an entry with no id, is
  * ordinary rather than exceptional.
  */
-function threadCommentIds(contextMetadata: Record<string, unknown>): string[] {
+export function threadCommentIds(contextMetadata: Record<string, unknown>): string[] {
   const parent =
     typeof contextMetadata.mentionParent === 'object' && contextMetadata.mentionParent !== null
       ? (contextMetadata.mentionParent as Record<string, unknown>)
       : null;
 
   /*
-   * BOTH LISTS, because a comment we know about can appear in either.
+   * ALL THREE LISTS, because a comment we know about can appear in any of them.
    *
    * The parent thread was the only one collected, so the wider comment section
    * went out entirely unnamed — including the mention itself, which is a real
    * comment on that post and comes back in the list like any other. An agent
    * saw their own tag attributed to "someone".
    *
+   * `replyThread` was still missing after that fix, and it is the one that
+   * hurts most: those are the replies directly UNDER our mention, which is
+   * where the business's own answer sits. So the reply an agent had just sent
+   * came back attributed to a stranger — the exact case this naming exists
+   * for, and the only list whose authors we can always identify.
+   *
    * One query either way: the ids simply go in together.
    */
-  return [...platformIds(parent?.replies), ...platformIds(contextMetadata.postComments)];
+  return [
+    ...platformIds(parent?.replies),
+    ...platformIds(contextMetadata.replyThread),
+    ...platformIds(contextMetadata.postComments),
+  ];
 }
 
 /** The platform comment ids in a stored, loosely-shaped comment list. */
