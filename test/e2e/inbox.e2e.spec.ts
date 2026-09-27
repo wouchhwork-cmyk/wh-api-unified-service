@@ -228,20 +228,34 @@ describe('the shared inbox', () => {
        VALUES ($1,'Grace Hopper','facebook_comment',$2) RETURNING id`,
       [enterpriseId, channel[0]?.id],
     );
+    /*
+     * A comment thread hangs off a POST of ours, and moderation refuses one
+     * that does not — hiding a comment means calling Graph about the post it
+     * sits on. Seeding the conversation without a post made every moderation
+     * test 409 on its first call.
+     */
+    const post: { id: string }[] = await db.query(
+      `INSERT INTO posts
+         (enterprise_id, channel_id, platform, platform_post_id, post_kind, status, published_at)
+       VALUES ($1,$2,'facebook',$3,'image','published', now())
+       RETURNING id`,
+      [enterpriseId, channelId, `FB_POST_${threadKey}`],
+    );
+
     const conversation: { ref_id: string; id: string }[] = await db.query(
       `INSERT INTO conversations
-         (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+         (enterprise_id, channel_id, customer_id, post_id, platform, conversation_kind,
           platform_thread_id, status, message_count, last_message_at)
-       VALUES ($1,$2,$3,'facebook','comment_thread',$4,'open',1, now())
+       VALUES ($1,$2,$3,$4,'facebook','comment_thread',$5,'open',1, now())
        RETURNING ref_id, id`,
-      [enterpriseId, channelId, customer[0]?.id, threadKey],
+      [enterpriseId, channelId, customer[0]?.id, post[0]?.id, threadKey],
     );
     await db.query(
       `INSERT INTO messages
          (enterprise_id, conversation_id, customer_id, direction, message_kind, body, status,
-          platform_sent_at)
-       VALUES ($1,$2,$3,'inbound','text','is this open on Sundays?','delivered', now())`,
-      [enterpriseId, conversation[0]?.id, customer[0]?.id],
+          platform_sent_at, platform_message_id)
+       VALUES ($1,$2,$3,'inbound','text','is this open on Sundays?','delivered', now(), $4)`,
+      [enterpriseId, conversation[0]?.id, customer[0]?.id, `FB_CM_${threadKey}`],
     );
 
     return conversation[0]?.ref_id as string;
@@ -808,5 +822,118 @@ describe('the shared inbox', () => {
         replyToMessageRefId: target,
       })
       .expect(422);
+  });
+
+  /**
+   * Hiding and deleting a comment, as a SEQUENCE.
+   *
+   * WRITTEN AFTER SIX REVIEW ROUNDS ON THIS PATH, each of which fixed one bug
+   * by introducing another, because nothing anywhere exercised it. In order:
+   * a deleted comment vanished while its conversation went on counting it; the
+   * fix for that let hide be sent on an already-deleted comment; the fix for
+   * THAT refused every retry; the fix for that reported a dropped duplicate as
+   * success; and the fix for that made a double-clicked delete queue one event
+   * per click.
+   *
+   * Every one of those would have been caught here. The assertions are about
+   * SEQUENCES rather than single calls, because each bug lived in the second
+   * or third step and a test of one action in isolation passes through all of
+   * them.
+   */
+  describe('moderating a comment', () => {
+    const moderate = (
+      token: string,
+      conversationRefId: string,
+      messageRefId: string,
+      action: string,
+    ) =>
+      http()
+        .post(`/api/v1/conversations/${conversationRefId}/messages/${messageRefId}/moderate`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ action });
+
+    /** The one comment in a freshly seeded thread. */
+    const onlyMessage = async (token: string, conversationRefId: string): Promise<string> => {
+      const thread = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .expect(200);
+      return (thread.body.data.messages as { refId: string }[])[0]?.refId as string;
+    };
+
+    it('can hide, unhide, and hide again', async () => {
+      /*
+       * THE SEQUENCE THAT WAS REFUSED FOR EVER. The outbound dedup key was the
+       * message and the action, and the unique index behind it is not partial
+       * on status — so the first hide's ledger row blocked every later hide of
+       * that comment. The third step 409'd and nothing said why.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_1');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'unhide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+    });
+
+    it('refuses a second hide while it is already hidden', async () => {
+      // The double-click. Refused on the state, which the row lock makes
+      // authoritative rather than advisory.
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_2');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+    });
+
+    it('refuses everything once the comment is deleted', async () => {
+      /*
+       * Gone is gone. A retry carve-out for a deletion WE marked was tried and
+       * removed: our own mark bumps updated_at, so a second click built a
+       * fresh dedup key and queued another delete — N clicks, N events, each
+       * refused by Graph and dead-lettered. Retrying a send that died belongs
+       * to the ledger, not to this endpoint.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_3');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(409);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+    });
+
+    it('keeps the deleted comment, and its conversation count honest', async () => {
+      /*
+       * The original defect. A deletion set our own is_deleted flag, which
+       * every read filters on, while nothing decremented message_count — so
+       * the summary counted a message the thread no longer returned, and the
+       * business lost the record of what was said on their own post.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_4');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(202);
+
+      const thread = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      const messages = thread.body.data.messages as {
+        refId: string;
+        deletedOnPlatform: boolean;
+        deletedBy: string | null;
+        body: string | null;
+      }[];
+
+      // Still there, marked, and attributed to us rather than the customer.
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.deletedOnPlatform).toBe(true);
+      expect(messages[0]?.deletedBy).toBe('business');
+      expect(messages[0]?.body).toBe('is this open on Sundays?');
+    });
   });
 });

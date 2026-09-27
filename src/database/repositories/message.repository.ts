@@ -98,6 +98,39 @@ export interface MessageRow {
   readonly sentByName: string | null;
 }
 
+/** What a moderation decision needs to know about the comment. */
+export interface ModerationTarget {
+  id: number;
+  platformMessageId: string | null;
+  isHiddenOnPlatform: boolean;
+  /**
+   * Already gone from the platform.
+   *
+   * Newly relevant: a deleted comment used to set is_deleted and so could
+   * never be returned here at all. Now that it is MARKED rather than erased
+   * it comes back like any other row, and hiding something Instagram has
+   * already removed is a call it will refuse — after the agent has been told
+   * it worked.
+   */
+  deletedOnPlatform: boolean;
+  /**
+   * Whether WE marked it, optimistically, rather than Meta reporting it.
+   * The caller needs the difference: our own mark survives a delete that
+   * dead-lettered, and must not block the retry.
+   */
+  deletedByBusiness: boolean;
+  /**
+   * When the row last changed, to the millisecond.
+   *
+   * Part of the outbound dedup key for a moderation action. Two requests
+   * racing see the SAME value and collide, which is the double-click this
+   * protects against; a later, legitimate repeat — hide, unhide, hide again
+   * — sees a different one and is allowed through. Without it the key is
+   * permanent and the third step of that sequence is refused for ever.
+   */
+  updatedAt: Date;
+}
+
 @Injectable()
 export class MessageRepository extends BaseRepository {
   /**
@@ -262,41 +295,46 @@ export class MessageRepository extends BaseRepository {
    * to know the target still EXISTS on the platform, while moderation needs its
    * current hidden state so an already-hidden comment is not hidden again.
    */
+  /**
+   * The same row, LOCKED for the length of the caller's transaction.
+   *
+   * Moderation reads a state, decides on it, and writes it back. Doing that
+   * outside a transaction means two requests can both read "visible" and both
+   * send a hide; the state checks that look authoritative are then advisory,
+   * and no dedup key composed afterwards can repair it — the two callers have
+   * already diverged by the time the key is built.
+   *
+   * With the row held, the second request waits, re-reads what the first
+   * wrote, and is refused by the ordinary already-in-that-state check. That is
+   * what makes those checks mean what they say.
+   */
+  async lockModerationTarget(
+    enterpriseId: number,
+    conversationId: number,
+    refId: string,
+  ): Promise<ModerationTarget | null> {
+    const rows = await this.query<ModerationTarget>(
+      `SELECT id, platform_message_id AS "platformMessageId",
+              is_hidden_on_platform AS "isHiddenOnPlatform",
+              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform",
+              COALESCE((metadata->>'deletedByBusiness')::boolean, false)
+                AS "deletedByBusiness",
+              updated_at AS "updatedAt"
+         FROM messages
+        WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
+          AND is_deleted = false
+        LIMIT 1
+          FOR UPDATE`,
+      [this.requireEnterprise(enterpriseId), conversationId, refId],
+    );
+    return rows[0] ?? null;
+  }
+
   async findModerationTarget(
     enterpriseId: number,
     conversationId: number,
     refId: string,
-  ): Promise<{
-    id: number;
-    platformMessageId: string | null;
-    isHiddenOnPlatform: boolean;
-    /**
-     * Already gone from the platform.
-     *
-     * Newly relevant: a deleted comment used to set is_deleted and so could
-     * never be returned here at all. Now that it is MARKED rather than erased
-     * it comes back like any other row, and hiding something Instagram has
-     * already removed is a call it will refuse — after the agent has been told
-     * it worked.
-     */
-    deletedOnPlatform: boolean;
-    /**
-     * Whether WE marked it, optimistically, rather than Meta reporting it.
-     * The caller needs the difference: our own mark survives a delete that
-     * dead-lettered, and must not block the retry.
-     */
-    deletedByBusiness: boolean;
-    /**
-     * When the row last changed, to the millisecond.
-     *
-     * Part of the outbound dedup key for a moderation action. Two requests
-     * racing see the SAME value and collide, which is the double-click this
-     * protects against; a later, legitimate repeat — hide, unhide, hide again
-     * — sees a different one and is allowed through. Without it the key is
-     * permanent and the third step of that sequence is refused for ever.
-     */
-    updatedAt: Date;
-  } | null> {
+  ): Promise<ModerationTarget | null> {
     const rows = await this.query<{
       id: number;
       platformMessageId: string | null;

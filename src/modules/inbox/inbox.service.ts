@@ -1203,73 +1203,75 @@ export class InboxService {
       });
     }
 
-    const target = await this.messages.findModerationTarget(
-      enterpriseId,
-      conversation.id,
-      messageRefId,
-    );
-    if (!target) throw new AppException(ErrorCode.MessageNotFound);
-
-    // A comment the platform never gave an id — an internal note — has nothing
-    // to moderate there.
-    if (!target.platformMessageId) {
-      throw new AppException(ErrorCode.ReplyNotSupported, {
-        details: [{ field: 'action', issue: 'this message does not exist on the platform' }],
-      });
-    }
-
-    /*
-     * ALREADY GONE FROM THE PLATFORM — but only when the PLATFORM said so.
-     *
-     * A deleted comment used to set our own is_deleted flag and so could never
-     * be found here. Now that a deletion is MARKED rather than erased, the row
-     * comes back like any other, and hiding or deleting something Instagram has
-     * already removed is a call it refuses after the agent was told it worked.
-     *
-     * OUR OWN MARK IS NOT EVIDENCE OF THAT. It is written optimistically, in
-     * the same transaction as the outbound event, because Instagram sends no
-     * webhook when a comment is hidden or deleted. So a delete that then
-     * dead-letters leaves the comment live on Instagram and marked here — and
-     * refusing on that would make every retry impossible, which is the one
-     * moment a retry is what the agent needs.
-     *
-     * `deletedByBusiness` is exactly that distinction: set when we asked,
-     * absent when Meta told us.
-     */
-    if (target.deletedOnPlatform && (action !== 'delete' || !target.deletedByBusiness)) {
-      /*
-       * HIDING SOMETHING DELETED IS ALWAYS WRONG, however it got that way.
-       *
-       * The previous shape relaxed this for all three actions, so hide and
-       * unhide sailed through on a comment the business had already deleted —
-       * and unlike delete, hide has its own dedup key, so the call really was
-       * sent, refused by Graph, and dead-lettered after the agent had been
-       * told 2xx.
-       *
-       * Only a DELETE we marked ourselves may be retried, because that mark is
-       * optimistic and the underlying call may have failed.
-       */
-      throw new AppException(ErrorCode.InvalidStateTransition, {
-        details: [
-          { field: 'action', issue: 'this comment is already gone from the platform' },
-        ],
-      });
-    }
-
-    // Already in the asked-for state: a conflict rather than a wasted call.
-    if (
-      (action === 'hide' && target.isHiddenOnPlatform) ||
-      (action === 'unhide' && !target.isHiddenOnPlatform)
-    ) {
-      throw new AppException(ErrorCode.InvalidStateTransition, {
-        details: [{ field: 'action', issue: `already ${action === 'hide' ? 'hidden' : 'visible'}` }],
-      });
-    }
-
     const eventType =
       action === 'delete' ? OutboundEventType.CommentDelete : OutboundEventType.CommentHide;
 
+    /*
+     * READ, DECIDE AND WRITE IN ONE TRANSACTION, holding the row.
+     *
+     * Moderation reads a state, decides on it, and writes it back. With the
+     * read outside the transaction two requests could both see "visible" and
+     * both send a hide — so the checks below, which read as authoritative,
+     * were advisory, and no dedup key composed afterwards could repair it:
+     * the two callers had already diverged before the key was built.
+     *
+     * Held, the second request waits, re-reads what the first wrote, and is
+     * refused by the ordinary already-in-that-state check. That is what makes
+     * these checks mean what they say, and it is why the key below no longer
+     * has to carry the burden of preventing a race as well.
+     */
     return this.tx.runInTransaction(async () => {
+      const target = await this.messages.lockModerationTarget(
+        enterpriseId,
+        conversation.id,
+        messageRefId,
+      );
+      if (!target) throw new AppException(ErrorCode.MessageNotFound);
+
+      // A comment the platform never gave an id — an internal note — has
+      // nothing to moderate there.
+      if (!target.platformMessageId) {
+        throw new AppException(ErrorCode.ReplyNotSupported, {
+          details: [{ field: 'action', issue: 'this message does not exist on the platform' }],
+        });
+      }
+
+      /*
+       * GONE IS GONE, whoever removed it.
+       *
+       * An earlier version carved out a retry for a deletion WE had marked,
+       * on the grounds that our mark is optimistic and the call may have
+       * failed. That opened a worse hole than it closed: our own mark bumps
+       * updated_at, so a second click read a changed row, built a fresh key
+       * and queued another delete — N clicks, N events, each refused by Graph
+       * and dead-lettered.
+       *
+       * Retrying a send that died is a LEDGER operation, on a ledger row, with
+       * the ledger's own attempt accounting. It is not something this endpoint
+       * can express, and four attempts to make it fit produced four different
+       * bugs.
+       */
+      if (target.deletedOnPlatform) {
+        throw new AppException(ErrorCode.InvalidStateTransition, {
+          details: [
+            { field: 'action', issue: 'this comment is already gone from the platform' },
+          ],
+        });
+      }
+
+      // Already in the asked-for state: a conflict rather than a wasted call.
+      // With the row held, this now catches a double-click outright.
+      if (
+        (action === 'hide' && target.isHiddenOnPlatform) ||
+        (action === 'unhide' && !target.isHiddenOnPlatform)
+      ) {
+        throw new AppException(ErrorCode.InvalidStateTransition, {
+          details: [
+            { field: 'action', issue: `already ${action === 'hide' ? 'hidden' : 'visible'}` },
+          ],
+        });
+      }
+
       const queued = await this.outbound.enqueue({
         enterpriseId,
         channelId: conversation.channelId,
@@ -1285,21 +1287,29 @@ export class InboxService {
          * colliding with the first and being dropped.
          */
         /*
-         * THE ROW'S STATE IS PART OF THE KEY, and it has to be.
+         * THE ROW'S STATE IS PART OF THE KEY, so a legitimate repeat is not
+         * mistaken for a duplicate.
          *
-         * Keyed on the message and the action alone, the key was permanent:
-         * hide, unhide, then hide again was refused on the third step for
-         * ever, because the first hide's row still sat in the ledger. Same for
-         * retrying a delete that dead-lettered.
+         * Keyed on the message and the action alone it was PERMANENT — the
+         * unique index behind it is not partial on status — so the first
+         * hide's ledger row refused every later hide of that comment for ever:
+         * hide, unhide, hide again failed on the third step.
          *
-         * `updatedAt` gives two racing requests the SAME key — which is the
-         * double-click this exists to stop — while a later, legitimate repeat
-         * sees a row that has since changed and is let through.
+         * `updatedAt` distinguishes one legitimate attempt from the next. It
+         * is no longer carrying the race as well: the row is held for this
+         * whole transaction, so concurrent callers are serialised and refused
+         * by the state checks above before they ever reach this key. That
+         * separation is the point — the lock stops races, the key stops
+         * confusing a repeat with a retry, and neither has to do both badly.
+         *
+         * ISO to the microsecond, not epoch millis: TIMESTAMPTZ has more
+         * resolution than a JS Date, and two transactions inside one
+         * millisecond would otherwise rebuild a key already used.
          */
         dedupKey: outboundDedupKey(
           conversation.platform,
           eventType,
-          `messages:${action}:${target.updatedAt.getTime()}`,
+          `messages:${action}:${target.updatedAt.toISOString()}`,
           target.id,
         ),
         correlationId: RequestContext.correlationId() ?? null,
