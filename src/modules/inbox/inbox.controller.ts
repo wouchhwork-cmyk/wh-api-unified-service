@@ -515,6 +515,20 @@ function toMessage(
      * client shows it with a marker rather than hiding it.
      */
     deletedOnPlatform: row.platformDeletedAt !== null,
+    /*
+     * WHO removed it. Both a customer unsending their own message and an agent
+     * deleting a comment set `deletedOnPlatform`, and until this they were
+     * indistinguishable — the field's own description says "the customer
+     * unsent it", which was then true of only half the rows carrying it.
+     *
+     * Null when nothing was deleted.
+     */
+    deletedBy:
+      row.platformDeletedAt === null
+        ? null
+        : row.metadata.deletedByBusiness === true
+          ? 'business'
+          : 'customer',
     deletedOnPlatformAt: row.platformDeletedAt,
     /** The customer's emoji on this message, when they put one there. */
     reaction:

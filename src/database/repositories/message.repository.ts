@@ -270,14 +270,26 @@ export class MessageRepository extends BaseRepository {
     id: number;
     platformMessageId: string | null;
     isHiddenOnPlatform: boolean;
+    /**
+     * Already gone from the platform.
+     *
+     * Newly relevant: a deleted comment used to set is_deleted and so could
+     * never be returned here at all. Now that it is MARKED rather than erased
+     * it comes back like any other row, and hiding something Instagram has
+     * already removed is a call it will refuse — after the agent has been told
+     * it worked.
+     */
+    deletedOnPlatform: boolean;
   } | null> {
     const rows = await this.query<{
       id: number;
       platformMessageId: string | null;
       isHiddenOnPlatform: boolean;
+      deletedOnPlatform: boolean;
     }>(
       `SELECT id, platform_message_id AS "platformMessageId",
-              is_hidden_on_platform AS "isHiddenOnPlatform"
+              is_hidden_on_platform AS "isHiddenOnPlatform",
+              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform"
          FROM messages
         WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
           AND is_deleted = false
@@ -316,6 +328,20 @@ export class MessageRepository extends BaseRepository {
               platform_deleted_at = CASE
                 WHEN $3::varchar = 'delete' THEN COALESCE(platform_deleted_at, now())
                 ELSE platform_deleted_at END,
+              /*
+               * WHO DID IT, because the column alone can no longer say.
+               *
+               * A customer unsending their own message and an agent deleting
+               * it both write platform_deleted_at now, and the thread renders
+               * both the same way. They are not the same event: one is the
+               * customer withdrawing their words, the other is the business
+               * removing them, and only the second is an action somebody here
+               * has to answer for.
+               */
+              metadata = CASE
+                WHEN $3::varchar = 'delete'
+                  THEN metadata || jsonb_build_object('deletedByBusiness', true)
+                ELSE metadata END,
               updated_at = now()
         WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
         RETURNING id`,
@@ -816,10 +842,15 @@ export class MessageRepository extends BaseRepository {
    * one of them was ingested and then discarded — so a comment the customer had
    * deleted went on sitting in the inbox, and an agent who hid one saw no change.
    *
-   * A removal is a SOFT delete: the thread query filters is_deleted, so the
-   * message disappears from the inbox while the record of it having existed —
-   * and of us having answered it — survives. Hard-deleting would take the
-   * agent's own reply thread with it.
+   * A removal is MARKED, not erased: it sets platform_deleted_at and leaves
+   * is_deleted alone. The two mean different things — "gone from Instagram"
+   * against "gone from this product" — and only the first one happened.
+   *
+   * This paragraph used to say the opposite, and described what the code did
+   * before: it set is_deleted, which every read filters on, so the comment
+   * vanished from the thread while conversations.message_count went on
+   * counting it. The summary and the thread then disagreed for ever, and the
+   * business lost the record of what was said on their own post.
    *
    * Returns false when we hold no such message, which is not an error: it may
    * predate the connection, or have been the business's own, or have been skipped

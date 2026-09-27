@@ -467,6 +467,10 @@ describe('the shared inbox', () => {
       'canBeRepliedTo',
       'contentUnavailable',
       'createdAt',
+      // Added when a deleted comment stopped being erased: both a customer
+      // unsend and an agent delete set deletedOnPlatform, and until this they
+      // could not be told apart.
+      'deletedBy',
       'deletedOnPlatform',
       'deletedOnPlatformAt',
       'direction',

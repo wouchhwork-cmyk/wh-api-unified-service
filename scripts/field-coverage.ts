@@ -52,6 +52,9 @@ async function main(): Promise<void> {
     for (const r of metas) for (const p of leaves(r.m)) stored.add(p);
   }
 
+  /** The same set, reduced to final segments — what the comparison needs. */
+  const storedLeaves = new Set([...stored].map((path) => path.split('.').pop() ?? path));
+
   const byType = new Map<string, Map<string, number>>();
   for (const row of rows) {
     const m = byType.get(row.event_type) ?? new Map<string, number>();
@@ -70,9 +73,18 @@ async function main(): Promise<void> {
     const missing = [...fields.entries()]
       .filter(([path]) => !ROUTING.test(path))
       .filter(([path]) => {
+        /*
+         * COMPARE THE FINAL SEGMENT, not the tail of the whole path.
+         *
+         * `endsWith` over full stored paths reported dropped fields as kept:
+         * `from.name` looked captured because some stored path happened to end
+         * in `...authorUsername`, which ends with neither but shares a suffix
+         * with something that does. That defeats the entire purpose of a tool
+         * whose only job is to find fields nobody kept.
+         */
         const leaf = path.split('.').pop() ?? path;
         const camel = leaf.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
-        return ![...stored].some((s) => s.endsWith(leaf) || s.endsWith(camel));
+        return !storedLeaves.has(leaf) && !storedLeaves.has(camel);
       })
       .sort((a, b) => b[1] - a[1]);
     if (missing.length === 0) continue;

@@ -990,7 +990,23 @@ export class InboxService {
                    * Resolved when the mention was projected and filed there.
                    */
                   mediaId: requireMentionMediaId(conversation.contextMetadata),
-                  commentId: stripThreadPrefix(conversation.platformThreadId),
+                  /*
+                   * FROM THE METADATA, NOT THE THREAD KEY.
+                   *
+                   * For a COMMENT mention the thread key is the comment that
+                   * named us, so stripping its prefix happened to give the
+                   * right answer. For a CAPTION mention there is no comment at
+                   * all and the key is `mention:<mediaId>` — so the media id
+                   * was being sent to Meta as a comment id, and the reply
+                   * dead-lettered after the agent had been told 202.
+                   *
+                   * Null is the correct value for a caption mention, not a
+                   * missing one: `replyToMention` omits `comment_id` when it is
+                   * absent, and that is exactly the shape that posts a
+                   * top-level comment on the tagged post
+                   * (platform-limitations 1.7b).
+                   */
+                  commentId: mentionCommentId(conversation.contextMetadata),
                   message: input.body,
                 }
               : eventType === OutboundEventType.CommentReply
@@ -1202,6 +1218,23 @@ export class InboxService {
       });
     }
 
+    /*
+     * ALREADY GONE FROM THE PLATFORM.
+     *
+     * A deleted comment used to set our own is_deleted flag and so could never
+     * be found here. Now that a deletion is MARKED rather than erased, the row
+     * comes back like any other — and hiding or deleting something Instagram
+     * has already removed is a call it refuses, after the agent has been told
+     * it worked.
+     */
+    if (target.deletedOnPlatform) {
+      throw new AppException(ErrorCode.InvalidStateTransition, {
+        details: [
+          { field: 'action', issue: 'this comment is already gone from the platform' },
+        ],
+      });
+    }
+
     // Already in the asked-for state: a conflict rather than a wasted call.
     if (
       (action === 'hide' && target.isHiddenOnPlatform) ||
@@ -1356,6 +1389,18 @@ function requireMentionMediaId(contextMetadata: Record<string, unknown>): string
     });
   }
   return mediaId;
+}
+
+/**
+ * The comment that named us, when one did.
+ *
+ * Null for a caption mention, where the tag is in the post's own caption and
+ * there is no comment anywhere. That null is meaningful rather than missing —
+ * it is what tells Meta to answer the POST instead of a comment on it.
+ */
+function mentionCommentId(contextMetadata: Record<string, unknown>): string | null {
+  const commentId = contextMetadata.mentionedCommentId;
+  return typeof commentId === 'string' && commentId.length > 0 ? commentId : null;
 }
 
 function stripThreadPrefix(platformThreadId: string): string {

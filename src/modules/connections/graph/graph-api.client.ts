@@ -633,9 +633,28 @@ export class GraphApiClient {
     instagramUserId: string,
     target: { readonly commentId?: string | null; readonly mediaId?: string | null },
     accessToken: string,
-    /** For a caller nobody is waiting on. Defaults to the ordinary timeout. */
+    /**
+     * A BUDGET FOR THE WHOLE RESOLUTION, not for each call inside it.
+     *
+     * This resolves up to four things in sequence — the comment, the room
+     * around it, the parent thread — and handing the same `timeoutMs` to each
+     * would turn a 30-second budget into a two-minute worst case while the
+     * per-conversation lock is held. So it is converted to a DEADLINE once,
+     * here, and every call below gets whatever is left.
+     *
+     * Undefined means "no deadline": the ordinary per-call timeout applies to
+     * each, which is right for a caller nobody is waiting on.
+     */
     timeoutMs?: number,
   ): Promise<ResolvedMention | null> {
+    const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+    /*
+     * What is left of the budget. Floored at 1ms rather than 0 so an exhausted
+     * budget produces an immediate abort with a real timeout, instead of
+     * `AbortSignal.timeout(0)`, whose behaviour is not worth relying on.
+     */
+    const remaining = (): number | undefined =>
+      deadline === null ? undefined : Math.max(1, deadline - Date.now());
     /*
      * WHY THESE FIELDS AND NOT MORE. Every one was probed individually against
      * live traffic; the omissions are deliberate, not oversights:
@@ -671,14 +690,16 @@ export class GraphApiClient {
           target.commentId,
           accessToken,
           true,
-          timeoutMs,
+          remaining(),
         )) ??
+        // The retry without replies shares the SAME budget: two attempts at a
+        // nested comment must not cost twice the deadline.
         (await this.fetchMentionedComment(
           instagramUserId,
           target.commentId,
           accessToken,
           false,
-          timeoutMs,
+          remaining(),
         ));
 
       if (!comment?.username) return null;
@@ -697,14 +718,14 @@ export class GraphApiClient {
           instagramUserId,
           target.commentId,
           accessToken,
-          timeoutMs,
+          remaining(),
         ),
         parent: comment.parent_id
           ? await this.fetchMentionThreadParent(
               instagramUserId,
               comment.parent_id,
               accessToken,
-              timeoutMs,
+              remaining(),
             )
           : null,
       };
@@ -712,12 +733,22 @@ export class GraphApiClient {
 
     if (!target.mediaId) return null;
 
+    // Captured once: calling remaining() inside the spread defeats narrowing
+    // under exactOptionalPropertyTypes, and would also read the clock twice.
+    const budget = remaining();
     const result = await this.request(
       'GET',
       instagramUserId,
       {
         schema: GraphMentionedMediaEnvelopeSchema,
         accessToken,
+        /*
+         * The caller's budget. This branch was missed when the two helpers
+         * below were given one, and it is the call that matters most: the
+         * others swallow their own failures, while a throw here takes the
+         * whole mention with it.
+         */
+        ...(budget === undefined ? {} : { timeoutMs: budget }),
         params: { fields: `mentioned_media.media_id(${target.mediaId}){${mediaFields}}` },
       },
     );
