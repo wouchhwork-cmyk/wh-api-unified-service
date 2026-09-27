@@ -668,6 +668,23 @@ Documented limits: **mentions on Stories cannot be replied to**, and
 is delivered at all when the media belongs to a **private account** — so a
 mention from a private account is invisible from the start. **[META]**
 
+### 1.5c A comment on OUR post names its author; a mention never does
+
+The `comments` webhook on our own media carries the author outright:
+
+```json
+{"field":"comments","value":{"id":"18135906259723822",
+ "from":{"id":"2067184747505731","username":"testrestaurant_sd"},
+ "text":"Coming soon wait for me","media":{"id":"18030931424448554"}}}
+```
+
+Compare 1.2: the `mentions` webhook carries a media id and a comment id and
+NOTHING else — no author, no text — which is why a mention needs a Graph call
+before it can be projected at all and a comment does not.
+
+So the two inbox surfaces are not symmetrical, and the asymmetry is ownership
+again (1.6b). Verified 27 Sep 2026.
+
 ### 1.6b Our OWN media answers everything a third party's refuses
 
 The same account, the same token, minutes apart — the difference is ownership.
@@ -1104,6 +1121,50 @@ manually.
 
 
 ---
+
+## 4b. Sending: what Instagram accepts, and what it silently discards
+
+All measured against the live account on 27 Sep 2026, through
+`POST /{page-id}/messages` (4.5).
+
+### 4b.1 What sends
+
+| message | result |
+|---|---|
+| `text` | **200** |
+| `attachment` image, **JPEG** | **200** |
+| `attachment` image, **HEIC** | `#100/2534080` this attachment format is not supported |
+| `attachment` audio (`.mp4`) | **200** |
+| `attachment` image, a Giphy `.gif` | **200** |
+| `attachment` video (`.mp4`) | **200** |
+| `attachments: [image, image]` | **200**, and BOTH arrive — the echo carries two |
+
+**HEIC is the trap, and it is ours.** Instagram serves the media on its OWN
+posts as `image/heic`, so the obvious move — take a link we already hold and
+send it back — fails on exactly the images that came from Instagram. A Facebook
+post's `.jpg` sends fine. Anything re-sent from an Instagram CDN link needs
+converting first.
+
+An audio-only `.mp4` sends as `audio` and is REFUSED as `video`
+(`#100/2018047 Upload attachment failure`), so the container is not enough —
+the type has to match what is inside it.
+
+### 4b.2 Two things that answer 200 and throw your content away
+
+**`message: { text, attachment }` sends the TEXT ONLY.** Verified on the echo:
+a message with both came back with `text: "with a picture"` and zero
+attachments. To send both, send two messages — or use the `attachments` ARRAY,
+which does deliver everything in it.
+
+**A comment reply cannot carry media.** `POST /{comment-id}/replies` with
+`attachment_url` alone fails `#1 An unknown error has occurred`; with a
+`message` beside it, it answers **200** and posts a text-only comment. Read
+back, the reply held `"here"` and nothing else.
+
+Both are worse than a refusal: an agent attaches a screenshot, the API says
+yes, and the customer receives words about a picture that is not there. **Never
+report either as sent.**
+
 
 ## 5. Undocumented payload shapes
 

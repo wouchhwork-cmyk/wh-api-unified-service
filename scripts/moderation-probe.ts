@@ -52,12 +52,16 @@ async function main(): Promise<void> {
     return out.id ?? null;
   };
 
-  console.log(`\ncomment ${commentId} (on our own media)`);
-  await call('read it', 'GET', `${commentId}?fields=id,text,timestamp,like_count,hidden`);
-  await call('hide', 'POST', commentId, { hide: 'true' });
-  await call('unhide', 'POST', commentId, { hide: 'false' });
-  const replyId = await call('reply to it', 'POST', `${commentId}/replies`, { message: 'Thanks for reaching out!' });
-  if (replyId) await call('delete OUR reply', 'DELETE', replyId);
+  if (process.argv.includes('--delete-only')) {
+    await call('delete', 'DELETE', commentId);
+  } else {
+    console.log(`\ncomment ${commentId} (on our own media)`);
+    await call('read it', 'GET', `${commentId}?fields=id,text,timestamp,like_count,hidden`);
+    await call('hide', 'POST', commentId, { hide: 'true' });
+    await call('unhide', 'POST', commentId, { hide: 'false' });
+    const replyId = await call('reply to it', 'POST', `${commentId}/replies`, { message: 'Thanks for reaching out!' });
+    if (replyId) await call('delete OUR reply', 'DELETE', replyId);
+  }
 
   await ds.destroy();
 }
