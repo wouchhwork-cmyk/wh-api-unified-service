@@ -101,6 +101,15 @@ const DIALOG_HOST = 'https://www.facebook.com';
 const SCHEMA_ISSUES_REPORTED = 5;
 
 /**
+ * The least time worth giving a call inside a mention resolution.
+ *
+ * Below this an abort is certain, and an abort in the comment branch takes the
+ * whole mention with it — so a floor of a few seconds is the difference
+ * between a late answer and no answer.
+ */
+const MIN_MENTION_CALL_MS = 3_000;
+
+/**
  * What we ask about the post a mention sits on.
  *
  * ONE LIST, USED BY BOTH BRANCHES. It was written out twice — once for a
@@ -649,12 +658,20 @@ export class GraphApiClient {
   ): Promise<ResolvedMention | null> {
     const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs;
     /*
-     * What is left of the budget. Floored at 1ms rather than 0 so an exhausted
-     * budget produces an immediate abort with a real timeout, instead of
-     * `AbortSignal.timeout(0)`, whose behaviour is not worth relying on.
+     * What is left of the budget, with a FLOOR that leaves room to succeed.
+     *
+     * A 1ms floor was worse than no budget at all. The call that matters here
+     * — the comment, and its retry without replies — rethrows rather than
+     * returning null, so handing it a millisecond aborts the whole mention and
+     * the stale CDN links survive. That is the exact outcome the background
+     * ceiling exists to prevent, arrived at by way of trying to respect it.
+     *
+     * So a nearly-spent budget gives the next call a real chance instead. The
+     * ceiling stops four calls costing four times the budget, which was the
+     * point; it was never meant to make the last one fail on purpose.
      */
     const remaining = (): number | undefined =>
-      deadline === null ? undefined : Math.max(1, deadline - Date.now());
+      deadline === null ? undefined : Math.max(MIN_MENTION_CALL_MS, deadline - Date.now());
     /*
      * WHY THESE FIELDS AND NOT MORE. Every one was probed individually against
      * live traffic; the omissions are deliberate, not oversights:

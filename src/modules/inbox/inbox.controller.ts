@@ -516,10 +516,16 @@ function toMessage(
      */
     deletedOnPlatform: row.platformDeletedAt !== null,
     /*
-     * WHO removed it. Both a customer unsending their own message and an agent
-     * deleting a comment set `deletedOnPlatform`, and until this they were
-     * indistinguishable — the field's own description says "the customer
-     * unsent it", which was then true of only half the rows carrying it.
+     * WHO removed it, as far as we can honestly say.
+     *
+     * `business` is the only case we KNOW: it is set when an agent deleted the
+     * comment through this product. Everything else arrives as a platform-side
+     * removal that names no actor — a customer unsending their own message, a
+     * Page admin deleting in the Meta app, a policy takedown — so it is
+     * reported as `platform` rather than guessed at.
+     *
+     * An earlier version said `customer` for all of those, which is a claim
+     * about a person and was wrong for at least two of the three.
      *
      * Null when nothing was deleted.
      */
@@ -528,7 +534,7 @@ function toMessage(
         ? null
         : row.metadata.deletedByBusiness === true
           ? 'business'
-          : 'customer',
+          : 'platform',
     deletedOnPlatformAt: row.platformDeletedAt,
     /** The customer's emoji on this message, when they put one there. */
     reaction:

@@ -1219,15 +1219,24 @@ export class InboxService {
     }
 
     /*
-     * ALREADY GONE FROM THE PLATFORM.
+     * ALREADY GONE FROM THE PLATFORM — but only when the PLATFORM said so.
      *
      * A deleted comment used to set our own is_deleted flag and so could never
      * be found here. Now that a deletion is MARKED rather than erased, the row
-     * comes back like any other — and hiding or deleting something Instagram
-     * has already removed is a call it refuses, after the agent has been told
-     * it worked.
+     * comes back like any other, and hiding or deleting something Instagram has
+     * already removed is a call it refuses after the agent was told it worked.
+     *
+     * OUR OWN MARK IS NOT EVIDENCE OF THAT. It is written optimistically, in
+     * the same transaction as the outbound event, because Instagram sends no
+     * webhook when a comment is hidden or deleted. So a delete that then
+     * dead-letters leaves the comment live on Instagram and marked here — and
+     * refusing on that would make every retry impossible, which is the one
+     * moment a retry is what the agent needs.
+     *
+     * `deletedByBusiness` is exactly that distinction: set when we asked,
+     * absent when Meta told us.
      */
-    if (target.deletedOnPlatform) {
+    if (target.deletedOnPlatform && !target.deletedByBusiness) {
       throw new AppException(ErrorCode.InvalidStateTransition, {
         details: [
           { field: 'action', issue: 'this comment is already gone from the platform' },

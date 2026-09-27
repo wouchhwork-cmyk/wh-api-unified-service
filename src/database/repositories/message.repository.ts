@@ -280,16 +280,24 @@ export class MessageRepository extends BaseRepository {
      * it worked.
      */
     deletedOnPlatform: boolean;
+    /**
+     * Whether WE marked it, optimistically, rather than Meta reporting it.
+     * The caller needs the difference: our own mark survives a delete that
+     * dead-lettered, and must not block the retry.
+     */
+    deletedByBusiness: boolean;
   } | null> {
     const rows = await this.query<{
       id: number;
       platformMessageId: string | null;
       isHiddenOnPlatform: boolean;
       deletedOnPlatform: boolean;
+      deletedByBusiness: boolean;
     }>(
       `SELECT id, platform_message_id AS "platformMessageId",
               is_hidden_on_platform AS "isHiddenOnPlatform",
-              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform"
+              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform",
+              (metadata->>'deletedByBusiness' = 'true') AS "deletedByBusiness"
          FROM messages
         WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
           AND is_deleted = false
