@@ -28,6 +28,8 @@ import {
   GraphMeResponseSchema,
   GraphMentionedCommentEnvelopeSchema,
   GraphMentionedCommentRepliesEnvelopeSchema,
+  GraphMentionedMediaCommentsEnvelopeSchema,
+  GraphCommentRepliesSchema,
   GraphMentionedMediaEnvelopeSchema,
   GraphPageDetailSchema,
   GraphSendResponseSchema,
@@ -987,6 +989,60 @@ export class GraphApiClient {
        * here must not fail a projection or send it back for another attempt
        * against Meta.
        */
+      return [];
+    }
+  }
+
+  /**
+   * The comments on a post that mentioned us in its caption.
+   *
+   * The caption-mention counterpart of `listMentionedPostComments`. Our reply
+   * to a caption mention is posted as a TOP-LEVEL comment on the tagged post,
+   * so that is where a read-back has to look for it.
+   */
+  async listMentionedMediaComments(
+    instagramUserId: string,
+    mediaId: string,
+    accessToken: string,
+    timeoutMs?: number,
+  ): Promise<ResolvedMentionReply[]> {
+    try {
+      const result = await this.request('GET', instagramUserId, {
+        schema: GraphMentionedMediaCommentsEnvelopeSchema,
+        accessToken,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        params: {
+          fields: `mentioned_media.media_id(${mediaId}){comments.limit(${MENTION_POST_COMMENTS_KEPT}){id,text,timestamp,like_count}}`,
+        },
+      });
+      return toResolvedReplies(result.mentioned_media?.comments?.data);
+    } catch {
+      // Context, not the mention itself — see listMentionedPostComments.
+      return [];
+    }
+  }
+
+  /**
+   * The replies under a comment on media we own.
+   *
+   * `{comment-id}/replies`, which is where a CommentReply lands — a different
+   * edge from either mention path, because a mention lives on somebody else's
+   * post and this does not.
+   */
+  async listCommentReplies(
+    commentId: string,
+    accessToken: string,
+    timeoutMs?: number,
+  ): Promise<ResolvedMentionReply[]> {
+    try {
+      const result = await this.request('GET', `${commentId}/replies`, {
+        schema: GraphCommentRepliesSchema,
+        accessToken,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        params: { fields: 'id,text,timestamp,like_count' },
+      });
+      return toResolvedReplies(result.data);
+    } catch {
       return [];
     }
   }

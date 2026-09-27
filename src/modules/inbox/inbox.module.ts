@@ -9,6 +9,7 @@ import { PostRepository } from '@/database/repositories/post.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { AuditModule } from '@/modules/audit';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { SendReconciliationService } from './send-reconciliation.service';
 import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
@@ -19,6 +20,7 @@ import { PostProjectorService } from './post-projector.service';
 
 const PROVIDERS = [
   InboxService,
+  SendReconciliationService,
   InboxEventsService,
   CommentProjectorService,
   DirectMessageProjectorService,
@@ -65,6 +67,7 @@ const PROVIDERS = [
   providers: PROVIDERS,
   exports: [
     InboxService,
+    SendReconciliationService,
     CommentProjectorService,
     DirectMessageProjectorService,
     PostProjectorService,

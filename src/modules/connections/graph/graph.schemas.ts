@@ -347,6 +347,26 @@ export const GraphMentionedCommentRepliesEnvelopeSchema = z.object({
     .optional(),
 });
 
+/**
+ * The comments on a post that mentioned us in its CAPTION.
+ *
+ * A caption mention has no comment id, so the `mentioned_comment` envelope
+ * cannot address it — the reply we are looking for is a top-level comment on
+ * the post itself (platform-limitations 1.7b).
+ */
+export const GraphMentionedMediaCommentsEnvelopeSchema = z.object({
+  mentioned_media: z
+    .object({
+      comments: z.object({ data: z.array(GraphMentionedCommentReplySchema).optional() }).optional(),
+    })
+    .optional(),
+});
+
+/** `{comment-id}/replies` — the replies under a comment on our OWN media. */
+export const GraphCommentRepliesSchema = z.object({
+  data: z.array(GraphMentionedCommentReplySchema).optional(),
+});
+
 export const GraphSubscribedAppsSchema = z.object({
   data: z.array(z.object({ subscribed_fields: z.array(z.string()).optional() })).optional(),
 });

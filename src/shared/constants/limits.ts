@@ -466,3 +466,42 @@ export const DEFAULT_RATE_LIMIT_POINTS = 2000;
  * limit by falling over it.
  */
 export const MAX_MONITORED_POOLS = 500;
+
+/**
+ * How long an ambiguous send is left alone before the read-back looks for it.
+ *
+ * A comment Meta accepted is not necessarily on the comments edge the instant
+ * the HTTP call dies. Reading back too early would find nothing and conclude
+ * the send was lost — the one conclusion that invites an agent to post the
+ * same reply twice, which is the exact duplicate the ambiguous branch exists
+ * to prevent. Two minutes costs an agent nothing: the reply already shows as
+ * failed, and the correction is what is being bought.
+ */
+export const SEND_READ_BACK_DELAY_MS = 2 * 60 * 1000;
+
+/**
+ * How long a read-back keeps trying before giving up as `unknown`.
+ *
+ * Bounded by Instagram, not by us: the comments edge returns a recent window,
+ * so past it "not found" stops being evidence of anything. A send that ages out
+ * is recorded as UNKNOWN rather than lost, because the two are different facts
+ * and only one of them is safe to act on.
+ */
+export const SEND_READ_BACK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How far a candidate comment's timestamp may sit from the failed attempt.
+ *
+ * The match is text plus time, because text alone is not unique — an agent who
+ * sends "Thanks!" twice in a day would otherwise have the second send matched
+ * against the first one's comment. Ten minutes is wide enough for clock skew
+ * between Meta's timestamp and ours and narrow enough that two genuinely
+ * separate sends of the same words do not collide.
+ */
+export const SEND_READ_BACK_MATCH_WINDOW_MS = 10 * 60 * 1000;
+
+/** How often ambiguous sends are read back. */
+export const SEND_RECONCILE_CRON = '*/10 * * * *';
+
+/** A ceiling per run, so one sweep costs a bounded number of Graph calls. */
+export const SEND_RECONCILE_BATCH = 25;

@@ -30,6 +30,7 @@ import { QueueListenerService } from './queue-listener.service';
 import { RefreshSchedulerWorker } from './refresh-scheduler.worker';
 import { SweeperWorker } from './sweeper.worker';
 import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reconciler.worker';
+import { SendReconcilerWorker } from './send-reconciler.worker';
 
 /**
  * The worker process.
@@ -93,6 +94,7 @@ import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reco
      */
     WebhookSubscriptionService,
     WebhookSubscriptionReconcilerWorker,
+    SendReconcilerWorker,
   ],
 })
 export class WorkersModule {}

@@ -261,6 +261,13 @@ export class OutboundRelayWorker extends BasePoller {
     enterpriseId: number | null,
     eventId: number,
     reason: string,
+    /*
+     * AMBIGUOUS settles the ledger row the same way, but records WHY as a fact
+     * on the row rather than only in the error prose — the read-back has to
+     * find these again, and no reconciler should depend on the wording of a log
+     * message staying the same.
+     */
+    ambiguous = false,
   ): Promise<void> {
     /*
      * ONE TRANSACTION, because this method's own contract is that the two writes
@@ -268,15 +275,19 @@ export class OutboundRelayWorker extends BasePoller {
      * whose message still reads 'pending' leaves an agent watching a reply that
      * will never be delivered and never be marked failed.
      */
-    await this.tx.runInTransaction(() => this.settle(enterpriseId, eventId, reason));
+    await this.tx.runInTransaction(() => this.settle(enterpriseId, eventId, reason, ambiguous));
   }
 
   private async settle(
     enterpriseId: number | null,
     eventId: number,
     reason: string,
+    ambiguous: boolean,
   ): Promise<void> {
-    if (!(await this.outbound.cancel(eventId, this.leaseOwner, reason))) {
+    const cancelled = ambiguous
+      ? await this.outbound.cancelAmbiguous(eventId, this.leaseOwner, reason)
+      : await this.outbound.cancel(eventId, this.leaseOwner, reason);
+    if (!cancelled) {
       // Either the row is already sent or the lease moved on. Writing the
       // message as failed anyway would tell an agent a delivered reply failed.
       this.logger.warn(
@@ -444,11 +455,15 @@ export class OutboundRelayWorker extends BasePoller {
      * created the comment. Meta offers no idempotency token on these endpoints,
      * so blindly retrying may post twice.
      *
-     * Until the read-back is implemented, the row is CANCELLED rather than
-     * retried: a missing reply an agent can see and resend is recoverable, a
-     * duplicate reply to a customer is not. This is a deliberate choice of the
-     * cheaper failure, and it is why this branch is explicit rather than folded
-     * into the generic retry.
+     * The row is CANCELLED rather than retried: a missing reply an agent can
+     * see and resend is recoverable, a duplicate reply to a customer is not.
+     * This is a deliberate choice of the cheaper failure, and it is why this
+     * branch is explicit rather than folded into the generic retry.
+     *
+     * It is also not the end of the story. The row is marked `ambiguous`, and
+     * SendReconciliationService reads the platform back a few minutes later and
+     * either promotes it to sent with the real id or confirms it never landed
+     * — without which the inbox says `failed` about a comment that is live.
      */
     if (isAmbiguousFailure(error)) {
       this.logger.warn(
@@ -459,6 +474,7 @@ export class OutboundRelayWorker extends BasePoller {
         event.enterpriseId,
         event.id,
         'the outcome was ambiguous; a read-back is required before any retry',
+        true,
       );
       return;
     }

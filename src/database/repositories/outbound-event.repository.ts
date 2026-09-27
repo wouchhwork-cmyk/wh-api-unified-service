@@ -14,6 +14,28 @@ import {
   SENDING_REAP_GRACE_MS,
 } from '@/shared/constants';
 
+/**
+ * What a read-back concluded about a send whose outcome Meta never confirmed.
+ *
+ * `unknown` is NOT a synonym for `lost`. A send that aged past the comments
+ * edge cannot be found and cannot be disproven either, and calling that "lost"
+ * would invite an agent to resend something that may well be live.
+ */
+export type ReadBackOutcome = 'landed' | 'lost' | 'unknown';
+
+/** An ambiguous send waiting to be read back. */
+export interface AmbiguousSend {
+  readonly id: number;
+  readonly enterpriseId: number;
+  readonly channelId: number;
+  readonly eventType: OutboundEventType;
+  /** The comment or media the reply was addressed to. */
+  readonly destinationId: string | null;
+  readonly payload: Record<string, unknown>;
+  /** When the ambiguous failure was settled — the anchor for the time match. */
+  readonly lastErrorAt: Date;
+}
+
 export interface EnqueueOutboundInput {
   readonly enterpriseId: number | null;
   readonly channelId: number | null;
@@ -333,6 +355,112 @@ export class OutboundEventRepository extends BaseRepository {
    * A 'leased' row has no request in flight, so it needs no grace. See
    * SENDING_REAP_GRACE_MS for why twice the platform timeout is the right margin.
    */
+  /**
+   * Settles an AMBIGUOUS send — one where the call failed in a way that does
+   * not say whether Meta accepted it.
+   *
+   * Identical to `cancel` except that it records WHY in the metadata rather
+   * than only in prose. The reconciler has to find these rows again, and
+   * matching on the text of an error message is a promise nobody can keep: the
+   * first person to reword that sentence silently switches reconciliation off
+   * for every send after it. `metadata.ambiguous` is a fact about the row.
+   */
+  async cancelAmbiguous(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $2, last_error = $3, last_error_at = now(),
+              metadata = metadata || $6::jsonb,
+              lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+        WHERE id = $1 AND lease_owner = $4 AND status <> $5`,
+      [
+        id,
+        OutboundEventStatus.Cancelled,
+        reason.slice(0, 2000),
+        leaseOwner,
+        OutboundEventStatus.Sent,
+        JSON.stringify({ ambiguous: true }),
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Ambiguous sends that are old enough to read back and young enough to still
+   * be findable.
+   *
+   * BOTH BOUNDS ARE LOAD-BEARING. Too early and the comment may not be visible
+   * on the edge yet, which would read as "never landed" and mark a live comment
+   * lost. Too late and Instagram's comments edge no longer returns it, so the
+   * read-back cannot tell "never sent" from "scrolled out of range" — which is
+   * why a row past the window is settled as unknown rather than as lost.
+   *
+   * `FOR UPDATE SKIP LOCKED` so two runs never read back the same send.
+   */
+  async listAmbiguousAwaitingReadBack(input: {
+    readonly limit: number;
+    readonly settledBeforeMs: number;
+  }): Promise<AmbiguousSend[]> {
+    const rows = await this.query<AmbiguousSend>(
+      `SELECT id, enterprise_id AS "enterpriseId", channel_id AS "channelId",
+              event_type AS "eventType", destination_id AS "destinationId",
+              payload, last_error_at AS "lastErrorAt"
+         FROM outbound_events
+        WHERE status = $1
+          AND platform = $2
+          AND event_type = ANY($3::varchar[])
+          AND COALESCE((metadata->>'ambiguous')::boolean, false) = true
+          AND metadata->>'readBack' IS NULL
+          AND enterprise_id IS NOT NULL
+          AND channel_id IS NOT NULL
+          AND last_error_at < now() - ($4::bigint * interval '1 millisecond')
+        ORDER BY last_error_at
+        LIMIT $5
+        FOR UPDATE SKIP LOCKED`,
+      [
+        OutboundEventStatus.Cancelled,
+        Platform.Instagram,
+        [OutboundEventType.CommentReply, OutboundEventType.MentionReply],
+        input.settledBeforeMs,
+        input.limit,
+      ],
+    );
+    return rows;
+  }
+
+  /**
+   * Records what the read-back found, so the same send is never read back
+   * twice.
+   *
+   * A send that LANDED is promoted to `sent` and given the platform's own id:
+   * the row was only ever cancelled because we could not see the outcome, and
+   * now we can. `lost` and `unknown` stay cancelled — the distinction is for
+   * whoever reads the ledger, and `unknown` is deliberately not `lost` because
+   * a send that aged out of the comments edge was never actually disproven.
+   */
+  async markReadBackResolved(input: {
+    readonly id: number;
+    readonly outcome: ReadBackOutcome;
+    readonly platformEventId: string | null;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET metadata = metadata || $2::jsonb,
+              status = CASE WHEN $3::varchar = 'landed' THEN $4 ELSE status END,
+              platform_event_id = COALESCE($5, platform_event_id),
+              updated_at = now()
+        WHERE id = $1
+          AND metadata->>'readBack' IS NULL`,
+      [
+        input.id,
+        JSON.stringify({ readBack: input.outcome, readBackAt: new Date().toISOString() }),
+        input.outcome,
+        OutboundEventStatus.Sent,
+        input.platformEventId,
+      ],
+    );
+    return affected > 0;
+  }
+
   async reclaimExpiredLeases(limit: number): Promise<number> {
     const { affected } = await this.mutate(
       `UPDATE outbound_events

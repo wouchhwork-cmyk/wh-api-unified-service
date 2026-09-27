@@ -163,7 +163,7 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       Until then the disagreement is visible where it should be — the event
       sits in `dead_letter` with its error — and clearing it is manual.
 
-- [ ] **E20. An ambiguous send is never reconciled, and the inbox lies about it** — M
+- [x] **E20. An ambiguous send is never reconciled, and the inbox lies about it** — DONE 27 Sep 2026
       Observed live on 27 Sep 2026, not theorised. A mention reply was sent,
       Meta accepted it, and the HTTP response was lost in transit
       (`httpStatus: 0`). The relay did exactly the right thing — *"send failed
@@ -182,6 +182,27 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       performs one.
       Same family as E19 — a send whose outcome is unknown needs a ledger-side
       resolution — and the two should probably be built together.
+
+      **Done.** `SendReconciliationService` reads the platform back ten minutes
+      after an ambiguous settle and either promotes the row to `sent` with the
+      real comment id or records that it never landed. Ambiguity is now a FACT
+      on the ledger row (`metadata.ambiguous`) rather than a sentence in
+      `last_error`, because a reconciler that greps an error message stops
+      working the first time somebody rewords it.
+
+      Three edges, because the right one depends on how we were reached: a
+      comment reply reads `{comment-id}/replies`, a comment mention reads the
+      mentioned post's comments, and a CAPTION mention reads the media's
+      comments — a caption mention has no comment id at all and our reply to one
+      is a top-level comment on the tagged post.
+
+      Matching is text AND time. Text alone would match an agent's second
+      "Thanks!" of the day against the first one's comment and mark a genuinely
+      missing reply delivered.
+
+      `unknown` is deliberately not `lost`: past Instagram's comments window,
+      and for any send we could not look up at all, "not found" stops being
+      evidence — and only `lost` invites a resend.
 
 ## Parked — recorded, do not start
 
