@@ -668,6 +668,33 @@ Documented limits: **mentions on Stories cannot be replied to**, and
 is delivered at all when the media belongs to a **private account** — so a
 mention from a private account is invisible from the start. **[META]**
 
+### 1.7b Only a CAPTION mention lets us comment on the post
+
+`POST /{ig-user-id}/mentions` with a `media_id` and no `comment_id` posts a
+top-level comment on the tagged post. Whether it is allowed depends entirely on
+HOW we were tagged. Measured against live posts, 27 Sep 2026:
+
+| tagged how | comment on the post | like it |
+|---|---|---|
+| caption mention, feed post | **200** | `#100` |
+| caption mention, reel | **200** | `#100` |
+| collaborator / photo tag | `#200 Permissions error` | `#100` |
+| comment mention | `#200 Permissions error` | `#100` |
+
+So the right to comment tracks `mentioned_media` access exactly: a caption tag
+grants read access to the post (1.3) and the right to answer it publicly; the
+other two grant neither. A comment mention can still be answered — but only as a
+reply BENEATH that comment (1.6), never as a comment on the post.
+
+**Liking is not available at all.** `POST /{media-id}/likes` returns `#100
+Unsupported post request` on every media we do not own, as does
+`POST /{media-id}/comments`. The mentions edge is the only door, and it opens
+only for a caption tag.
+
+**`#200 Permissions error` is the refusal to expect here**, and it says nothing
+about scopes: the token holds `instagram_manage_comments` throughout, and the
+same call against a caption mention succeeds seconds later.
+
 ### 1.8 A reply to a mention can never be deleted, or even read back
 
 **Expected:** having authored a comment, we could delete it.
