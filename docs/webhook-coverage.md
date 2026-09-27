@@ -87,6 +87,39 @@ the media type is a guess.
 | reply (`parent_id`) | 7 | 3 — the rest are duplicates and our own | OK |
 | no text at all | 1 | 1, flagged `platformSentNoText` | OK — a GIF or sticker, §1.4 |
 
+## 4b. Subscribed, but never received
+
+The replay can only verify what has arrived. These four are subscribed and have
+produced **no delivery on this account**, so nothing had ever exercised them.
+
+| field / shape | seen | handling | status |
+|---|---|---|---|
+| `messaging_postbacks` | 0 | was **dropped in silence** | **FIXED** — projected as a message |
+| `messaging_optins` | 0 | was dropped as "no message id" | **FIXED** — skipped, and says why |
+| `mention` (Facebook, singular) | 0 | routed to `InboundEventType.Mention` | untested |
+| `message.read` (read receipts) | 0 | `handleRead` exists | untested |
+| `referral` | 0 | captured to metadata | untested |
+| `quick_reply` | 0 | captured to metadata | untested |
+
+**The postback was the real find.** A customer tapping an ice breaker or a
+template button sends `postback.mid`, not `message.mid` — so it fell through
+the "carries no message id" guard, was skipped, and the agent saw nothing. We
+subscribe to it deliberately; it had simply never been exercised.
+
+It is projected as an ordinary inbound message now, because from the inbox's
+side that is what it is: the customer said the words on the button. The title
+becomes the body and the payload goes to metadata — an agent should read
+"See menu", never `MENU_V2_EN`.
+
+An opt-in is still skipped, which is right: consent is not conversation, and a
+thread nobody spoke in helps no one. It now says so, instead of reporting
+itself as a malformed event.
+
+**Payloads for these are Meta's DOCUMENTED shapes, not captured traffic** —
+the only fixtures in this codebase that are. Everywhere else an invented
+payload proves nothing but that the author and the code agree; here there is
+nothing to capture until a customer taps something.
+
 ## 5. Post updates
 
 | shape | seen | projected | status |

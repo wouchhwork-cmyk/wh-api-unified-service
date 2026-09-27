@@ -88,6 +88,29 @@ interface MessagingEvent {
    * which is the only evidence we ever get that a delivery was lost.
    */
   readonly message_edit?: { readonly mid?: string; readonly num_edit?: number };
+  /**
+   * The customer TAPPED something — an ice breaker, or a button on a template.
+   *
+   * We subscribe to `messaging_postbacks` and were dropping every one of them:
+   * a postback carries its id at `postback.mid`, not `message.mid`, so it fell
+   * through the "carries no message id" guard and was skipped in silence. The
+   * customer had acted, the ledger recorded the delivery, and the inbox showed
+   * nothing.
+   */
+  readonly postback?: {
+    readonly mid?: string;
+    /** What the button SAID — the customer's side of the exchange. */
+    readonly title?: string;
+    /** What it MEANT — ours, set when the button was defined. */
+    readonly payload?: string;
+  };
+  /**
+   * The customer opted in to something. Subscribed via `messaging_optins` and
+   * likewise dropped; kept distinct from a postback because it is a consent
+   * event rather than a message, and conflating them would put a row in the
+   * inbox that nobody said anything in.
+   */
+  readonly optin?: { readonly type?: string; readonly payload?: string; readonly notification_messages_token?: string };
   /** How the customer arrived — an ad, an ig link, a ref parameter. */
   readonly referral?: {
     readonly ref?: string;
@@ -95,6 +118,23 @@ interface MessagingEvent {
     readonly type?: string;
     readonly ad_id?: string;
   };
+}
+
+/**
+ * A postback, in the shape the rest of this projector expects.
+ *
+ * The TITLE is the customer's side of it — the words they tapped — so it
+ * becomes the body. The PAYLOAD is ours, set when the button was defined, and
+ * travels in metadata instead: an agent reading the thread should see
+ * "See menu", not `MENU_V2_EN`.
+ */
+function postbackAsMessage(
+  postback:
+    | { readonly mid?: string; readonly title?: string; readonly payload?: string }
+    | undefined,
+): MessagingEvent['message'] {
+  if (!postback?.mid) return undefined;
+  return { mid: postback.mid, ...(postback.title ? { text: postback.title } : {}) };
 }
 
 @Injectable()
@@ -123,7 +163,22 @@ export class DirectMessageProjectorService {
     attemptCount = 1,
   ): Promise<ProjectionOutcome> {
     const event = payload as MessagingEvent;
-    const message = event.message;
+    /*
+     * A TAP IS A MESSAGE, and every one of them was being thrown away.
+     *
+     * An ice breaker or a template button sends a `postback`, whose id lives
+     * at `postback.mid` rather than `message.mid` — so it fell through the
+     * "carries no message id" guard below and was skipped in silence. A
+     * customer action, subscribed to deliberately, ingested, and never shown
+     * to anybody.
+     *
+     * Mapped onto a message rather than projected by a path of its own,
+     * because from the inbox's side that is exactly what it is: the customer
+     * said the words on the button. Everything downstream — resolving them,
+     * opening the thread, the reply window — then applies unchanged, which is
+     * the whole reason not to write a second projector for it.
+     */
+    const message = event.message ?? postbackAsMessage(event.postback);
 
     if (event.message_edit?.mid) {
       return this.handleMessageEdit(enterpriseId, channelId, event, attemptCount);
@@ -138,6 +193,29 @@ export class DirectMessageProjectorService {
     if (event.read?.mid) return this.handleRead(enterpriseId, event);
     if (message?.mid && message.is_deleted === true) {
       return this.handleUnsend(enterpriseId, message.mid, event);
+    }
+
+    /*
+     * A TAP IS A MESSAGE, and it was being thrown away.
+     *
+     * An ice breaker or a template button sends a `postback`, whose id lives at
+     * `postback.mid`. The guard below reads `message.mid`, so every one of them
+     * was skipped as "carries no message id" — a customer action, subscribed
+     * for deliberately, ingested, and never shown to anybody.
+     *
+     * Projected as what it is: the customer said the words on the button. The
+     * PAYLOAD behind it is ours rather than theirs, so it goes in the metadata
+     * where an automation can read it without an agent seeing an opaque token
+     * in the thread.
+     */
+    /*
+     * An opt-in is consent, not conversation. Named in the skip so it is
+     * visible as a decision rather than lost among malformed events — we
+     * subscribe to these, and "no message id" said nothing about why one was
+     * here.
+     */
+    if (!message?.mid && event.optin) {
+      return { projected: false, reason: 'a messaging opt-in, which is consent rather than a message' };
     }
 
     if (!message?.mid) return { projected: false, reason: 'the event carries no message id' };
@@ -196,6 +274,12 @@ export class DirectMessageProjectorService {
     if (message.reply_to?.story?.id) platformFacts.replyToStoryId = message.reply_to.story.id;
     if (message.reply_to?.story?.url) platformFacts.replyToStoryUrl = message.reply_to.story.url;
     if (message.quick_reply?.payload) platformFacts.quickReplyPayload = message.quick_reply.payload;
+    /*
+     * What the tapped button MEANT, as distinct from what it said. An
+     * automation routes on this; an agent should never have to read it.
+     */
+    if (event.postback?.payload) platformFacts.postbackPayload = event.postback.payload;
+    if (event.postback?.mid) platformFacts.isPostback = true;
     if (message.is_unsupported === true) platformFacts.isUnsupported = true;
     if (event.referral) platformFacts.referral = event.referral;
 

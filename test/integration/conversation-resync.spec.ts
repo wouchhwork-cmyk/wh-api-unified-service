@@ -1426,3 +1426,172 @@ describe('an echo reconciling an ambiguous send', () => {
     expect((await read(id)).status).toBe('delivered');
   });
 });
+
+/**
+ * Webhook shapes we SUBSCRIBE to and had never received.
+ *
+ * The corpus replay can only verify what has actually arrived. Four subscribed
+ * fields had never produced a single delivery on this account —
+ * `messaging_postbacks`, `messaging_optins`, Facebook's singular `mention`, and
+ * read receipts — so nothing had ever exercised their handling and a defect
+ * there was invisible by construction.
+ *
+ * Two of them were being dropped in silence.
+ *
+ * THE PAYLOADS HERE ARE META'S DOCUMENTED SHAPES, not captured traffic, and
+ * that distinction is worth stating: everywhere else in this codebase a
+ * fixture is a real delivery, because an invented one only proves the author
+ * and the code agree. These are the exception — there is nothing to capture
+ * until a customer taps a button — and they are written to Meta's published
+ * schema rather than to what the code happens to read.
+ */
+describe('subscribed webhooks nobody had ever sent us', () => {
+  let db: DataSource;
+  let enterpriseId: number;
+  let channelId: number;
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+  });
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    enterpriseId = await seedEnterprise(db, 'Acme', 'acme');
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    channelId = Number(channel[0]?.id);
+  });
+
+  const projectorFor = (): DirectMessageProjectorService =>
+    new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      new SyncJobRepository(db),
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+    );
+
+  const ledgerRow = async (dedupKey: string): Promise<number> => {
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}')
+       RETURNING id`,
+      [enterpriseId, channelId, dedupKey],
+    );
+    return Number(rows[0]?.id);
+  };
+
+  describe('a postback — the customer tapped a button', () => {
+    /** Meta's documented shape: the id is on the POSTBACK, not on a message. */
+    const postbackEvent = {
+      sender: { id: '1774658693722714' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1790470374585,
+      postback: { mid: 'POSTBACK_MID_1', title: 'See menu', payload: 'MENU_V2_EN' },
+    };
+
+    it('is projected, where it used to be dropped in silence', async () => {
+      /*
+       * THE DEFECT. `postback.mid` is not `message.mid`, so this fell through
+       * the "carries no message id" guard — subscribed to deliberately,
+       * ingested, skipped, and never shown to anybody. The customer had acted
+       * and the inbox showed nothing.
+       */
+      const outcome = await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:pb1'),
+        postbackEvent,
+      );
+
+      expect(outcome.projected).toBe(true);
+    });
+
+    it('shows the words on the button, not the payload behind it', async () => {
+      /*
+       * The title is the customer's side of it. The payload is OURS, set when
+       * the button was defined — an agent reading the thread should see
+       * "See menu", never MENU_V2_EN.
+       */
+      await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:pb2'),
+        postbackEvent,
+      );
+
+      const rows: { body: string; metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT body, metadata FROM messages WHERE platform_message_id = $1`,
+        ['POSTBACK_MID_1'],
+      );
+      expect(rows[0]?.body).toBe('See menu');
+      expect(rows[0]?.metadata).toMatchObject({
+        postbackPayload: 'MENU_V2_EN',
+        isPostback: true,
+      });
+    });
+
+    it('opens a thread, so the customer can be answered', async () => {
+      // The point of projecting it at all: a tap starts a conversation, and
+      // the reply window opens from it like any other inbound message.
+      await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:pb3'),
+        postbackEvent,
+      );
+
+      const conversations: { conversation_kind: string }[] = await db.query(
+        `SELECT conversation_kind FROM conversations WHERE enterprise_id = $1`,
+        [enterpriseId],
+      );
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0]?.conversation_kind).toBe('direct_message');
+    });
+  });
+
+  describe('an opt-in — consent, not conversation', () => {
+    it('is skipped, and says WHY', async () => {
+      /*
+       * Also dropped, but correctly: an opt-in is a consent record and putting
+       * it in the inbox would create a thread nobody said anything in. What
+       * was wrong is that it skipped as "carries no message id", which told
+       * nobody it was a decision rather than a malformed event.
+       */
+      const outcome = await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:optin1'),
+        {
+          sender: { id: '1774658693722714' },
+          recipient: { id: 'IG_1' },
+          timestamp: 1790470374585,
+          optin: { type: 'notification_messages', payload: 'WEEKLY' },
+        },
+      );
+
+      expect(outcome.projected).toBe(false);
+      expect(outcome.reason).toContain('consent');
+    });
+  });
+});
