@@ -341,6 +341,20 @@ export class ChannelRepository extends BaseRepository {
     username: string | null;
     followerCount: number | null;
     profilePictureUrl: string | null;
+    /** The bio, from Instagram's `biography` or a Page's `about`. */
+    description: string | null;
+    /** Posts published, as the platform counts them. */
+    postCount: number | null;
+    /**
+     * Everything else the node gave us that has no column: the Page's public
+     * link, its star rating and review count, verification, the website, and
+     * whichever contact details the business has filled in.
+     *
+     * A bag rather than fifteen migrations, because the shape is Meta's and
+     * changes with the API version. Anything here that somebody starts
+     * branching on should be promoted to a column first.
+     */
+    platformProfile: Record<string, unknown>;
   }): Promise<void> {
     await this.mutate(
       `UPDATE channels
@@ -348,6 +362,14 @@ export class ChannelRepository extends BaseRepository {
               username            = COALESCE($4, username),
               follower_count      = COALESCE($5, follower_count),
               profile_picture_url = COALESCE($6, profile_picture_url),
+              description         = COALESCE($7, description),
+              post_count          = COALESCE($8, post_count),
+              /*
+               * MERGED, not replaced. A refresh that came back thinner than
+               * the last one — a field Meta stopped returning, a permission
+               * withdrawn — must not erase what we already knew.
+               */
+              metadata            = metadata || $9::jsonb,
               profile_synced_at   = now(),
               updated_at          = now()
         WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
@@ -358,6 +380,9 @@ export class ChannelRepository extends BaseRepository {
         input.username,
         input.followerCount,
         input.profilePictureUrl,
+        input.description,
+        input.postCount,
+        JSON.stringify(input.platformProfile),
       ],
     );
   }

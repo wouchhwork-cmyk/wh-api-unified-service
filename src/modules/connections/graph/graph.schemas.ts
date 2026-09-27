@@ -351,12 +351,56 @@ export const GraphSubscribedAppsSchema = z.object({
   data: z.array(z.object({ subscribed_fields: z.array(z.string()).optional() })).optional(),
 });
 
+/**
+ * Everything a channel node will tell us about itself.
+ *
+ * Wider than it was because a field-by-field sweep on 27 Sep 2026 found the
+ * Page refusing NOTHING of twenty-six tried while we asked for four. Each is
+ * optional: the two platforms answer different subsets, and an account that
+ * has not filled in its bio returns the field empty rather than omitting it.
+ */
 export const GraphChannelProfileSchema = z.object({
   name: z.string().optional(),
   username: z.string().optional(),
   followers_count: GraphCount.optional(),
+  /** A Page's likes. Distinct from followers_count, which it also reports. */
   fan_count: GraphCount.optional(),
   profile_picture_url: z.string().optional(),
+
+  /* --- the fields we were leaving on the table ------------------------ */
+
+  /** Instagram's bio; the Page equivalent is `about` or `description`. */
+  biography: z.string().optional(),
+  about: z.string().optional(),
+  description: z.string().optional(),
+  website: z.string().optional(),
+  /** How many accounts this one follows. Instagram only. */
+  follows_count: GraphCount.optional(),
+  /** Posts published. Cheaper than counting our own rows, and authoritative. */
+  media_count: GraphCount.optional(),
+  /** Instagram's other id for the same account — not the app-scoped one. */
+  ig_id: z.union([z.string(), z.number()]).optional(),
+  has_profile_pic: z.boolean().optional(),
+  is_published: z.boolean().optional(),
+
+  /* --- Page only ------------------------------------------------------- */
+
+  category: z.string().optional(),
+  /** The Page's public URL. */
+  link: z.string().optional(),
+  /** `not_verified`, `blue_verified`, `business_verified`. */
+  verification_status: z.string().optional(),
+  /** Reviews. Zero is a real answer and must survive as one. */
+  rating_count: GraphCount.optional(),
+  overall_star_rating: z.number().optional(),
+  talking_about_count: GraphCount.optional(),
+  phone: z.string().optional(),
+  emails: z.array(z.string()).optional(),
+  single_line_address: z.string().optional(),
+  /** A Page's picture arrives nested, unlike Instagram's flat url. */
+  picture: z
+    .object({ data: z.object({ url: z.string().optional() }).optional() })
+    .optional(),
 });
 
 export const GraphPageDetailSchema = z.object({

@@ -239,6 +239,48 @@ even on our own media, is refused today. That one is **[APP]**.
 
 ---
 
+## 0.6 What the token can already reach, and what needs App Review
+
+Swept field by field on 27 Sep 2026, because "we do not have that" and "nobody
+asked for it" look identical from the outside and only one of them is true.
+
+**Open to the token we already hold — no review, no new scope:**
+
+| surface | verdict |
+|---|---|
+| Page node, 26 fields tried | **all 26 readable** — we were asking for four |
+| Instagram node | all but `shopping_product_tag_eligibility` |
+| `messenger_profile` (ice breakers, persistent menu, greeting) | readable |
+| `/{page}/conversations` | readable |
+| `/{page}/roles`, `/{page}/blocked` | readable |
+| `/{ig}/stories`, `/{ig}/live_media` | readable |
+
+The Page fields we had been discarding include its public `link`, its
+`overall_star_rating` and `rating_count` (its reviews), `verification_status`,
+`picture`, and whichever of phone, email and address the business has filled
+in. All of it arrives on a request the daily profile refresh already makes.
+
+**Refused, and what each would cost:**
+
+| surface | refusal | needs |
+|---|---|---|
+| account + post insights | `#10` | `instagram_manage_insights` |
+| `business_discovery` | `#10` | Instagram Public Content Access |
+| hashtag search | `#10` | Instagram Public Content Access |
+| `content_publishing_limit` | `#10` | `instagram_content_publish` |
+| page ratings (the reviews themselves) | `#283` | `pages_read_user_content` |
+
+Note the split on reviews: the COUNT and the average star rating are readable
+now, and the review TEXT is not. So "you have 12 reviews averaging 4.3" is
+available today and "here is what they said" is an App Review away.
+
+`pages_read_user_content` appears twice in this table and also gates
+`reactions.summary` (1.3), so it is the single permission that would unlock the
+most.
+
+**Re-run with** `scripts/capability-sweep.ts` and `scripts/field-sweep.ts`. Both
+are read-only, and a refusal is the useful half of the output.
+
 ## 1. Mentions
 
 ### 1.1 An @mention inside a story reply produces no `mentions` webhook

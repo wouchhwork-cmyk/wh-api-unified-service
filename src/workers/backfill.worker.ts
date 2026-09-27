@@ -1063,6 +1063,41 @@ export class BackfillWorker extends BasePoller {
       channel.platform,
     );
 
+    /*
+     * EVERYTHING THE CALL RETURNED, not the four fields we happened to need.
+     *
+     * A field-by-field sweep found the Page refusing nothing of twenty-six
+     * tried while this stored four of them. All of it arrives on a request we
+     * already make daily, and none of it can be recovered later for a day we
+     * did not ask — which is the whole argument for taking it now.
+     *
+     * Written only when present: a refresh is not a reason to blank a bio
+     * because this particular response omitted it.
+     */
+    const extra: Record<string, unknown> = {};
+    const keep = (key: string, value: unknown): void => {
+      if (value !== undefined && value !== null && value !== '') extra[key] = value;
+    };
+    keep('website', profile.website);
+    keep('category', profile.category);
+    keep('pageLink', profile.link);
+    keep('verificationStatus', profile.verification_status);
+    keep('followsCount', profile.follows_count);
+    keep('igId', profile.ig_id);
+    keep('phone', profile.phone);
+    keep('address', profile.single_line_address);
+    keep('emails', profile.emails);
+    // Zero is a real rating and a real review count — `keep` would drop it, so
+    // these are written whenever the platform sent a number at all.
+    if (typeof profile.overall_star_rating === 'number') {
+      extra.starRating = profile.overall_star_rating;
+    }
+    if (typeof profile.rating_count === 'number') extra.ratingCount = profile.rating_count;
+    if (typeof profile.talking_about_count === 'number') {
+      extra.talkingAboutCount = profile.talking_about_count;
+    }
+    if (typeof profile.is_published === 'boolean') extra.isPublished = profile.is_published;
+
     await this.channels.updateProfile({
       enterpriseId: job.enterpriseId,
       channelId: job.channelId,
@@ -1070,7 +1105,12 @@ export class BackfillWorker extends BasePoller {
       username: profile.username ?? null,
       // A Page reports fan_count, an Instagram account followers_count.
       followerCount: profile.followers_count ?? profile.fan_count ?? null,
-      profilePictureUrl: profile.profile_picture_url ?? null,
+      // Instagram gives a flat url; a Page nests it under picture.data.
+      profilePictureUrl: profile.profile_picture_url ?? profile.picture?.data?.url ?? null,
+      // Instagram calls it biography, a Page about or description.
+      description: profile.biography ?? profile.about ?? profile.description ?? null,
+      postCount: profile.media_count ?? null,
+      platformProfile: extra,
     });
 
     this.logger.info(

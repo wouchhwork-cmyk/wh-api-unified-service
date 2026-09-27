@@ -1041,10 +1041,32 @@ export class GraphApiClient {
     accessToken: string,
     platform: Platform,
   ): Promise<z.infer<typeof GraphChannelProfileSchema>> {
+    /*
+     * EVERYTHING THE NODE WILL GIVE US, not the three we happened to need.
+     *
+     * Swept field by field against the live account on 27 Sep 2026 — singly,
+     * because Graph fails a whole request on one unknown field and a batch
+     * then tells you only that something in it was wrong. Every field here
+     * answered 200 with the token we already hold; none needs App Review.
+     *
+     * The Page refused NOTHING of the twenty-six tried. We were asking for
+     * four. `link` is the page's public URL, `overall_star_rating` and
+     * `rating_count` are its reviews, `verification_status` says whether it is
+     * a verified business — all of it free on a call we already make once a
+     * day, and none of it recoverable later for a day we did not ask.
+     *
+     * Deliberately NOT here: insights, business_discovery and hashtag search,
+     * which all refuse with #10 — they need permissions this app has not been
+     * granted, and asking would fail the whole request.
+     */
     const fields =
       platform === Platform.Instagram
-        ? 'username,followers_count,profile_picture_url'
-        : 'name,username,followers_count,fan_count';
+        ? 'username,name,biography,website,profile_picture_url,followers_count,' +
+          'follows_count,media_count,ig_id,has_profile_pic,is_published'
+        : 'name,username,about,description,category,link,website,fan_count,' +
+          'followers_count,picture,verification_status,rating_count,' +
+          'overall_star_rating,talking_about_count,is_published,phone,emails,' +
+          'single_line_address';
 
     return this.request('GET', platformChannelId, {
       schema: GraphChannelProfileSchema,
