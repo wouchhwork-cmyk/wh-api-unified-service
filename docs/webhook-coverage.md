@@ -145,6 +145,36 @@ the only fixtures in this codebase that are. Everywhere else an invented
 payload proves nothing but that the author and the code agree; here there is
 nothing to capture until a customer taps something.
 
+## 4c. What changed on 27 Sep 2026, after the subscription fix
+
+Subscribing the ten fields made six handlers reachable for the first time.
+Reachable-but-never-executed is the riskiest state code has — the postback bug
+lived there for months, in a handler that read correctly and dropped everything
+— so each was checked against its tests rather than assumed.
+
+| handler | covered by | state |
+|---|---|---|
+| reactions (`react` / `unreact`) | `conversation-resync.spec.ts` | tested |
+| read receipts | same, "marks a read receipt against every earlier message we sent" | tested |
+| echoes | same, four tests incl. a reply typed in the Instagram app | tested |
+| postbacks | same, three tests | tested |
+| opt-ins | same, skipped-and-says-why | tested |
+| **referrals** | **nothing** | **added 27 Sep** |
+
+Referral was the only one with no coverage at all, which follows: it could never
+arrive, because the field name we asked for (`messaging_referral`) does not
+exist and failed the whole subscribe call. It is captured on the opening event
+and nowhere else, so a referral not taken on arrival cannot be taken later.
+
+It is now rendered too. It had been stored and never shown, which made it
+worthless — an agent who knows a customer arrived from a particular ad is
+answering a different question from one who does not.
+
+Also now shown, from data we already held: whether a message was a **tap**
+rather than something typed, and whether a hide or delete **never reached
+Instagram** (see todo E19 — the comment stays public while the inbox says it is
+gone, and the ordinary Hide is refused from then on).
+
 ## 5. Post updates
 
 | shape | seen | projected | status |

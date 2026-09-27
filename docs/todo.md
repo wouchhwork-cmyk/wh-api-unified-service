@@ -67,7 +67,13 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       refused count is still shown beside it — but the status alone is not
       sufficient during a partial throttle.
 
-- [ ] **E7. The inbox SSE stream is not filtered by conversation kind** — S
+- [x] **E7. The inbox SSE stream is not filtered by conversation kind** — DONE
+      (`a60f26f`, 13 tests in `inbox-stream-filter.spec.ts`). This entry was
+      stale: the NOTIFY payload carries `conversationKind` and the subscriber
+      drops a kind it may not see. Found still open on 27 Sep during a sweep for
+      exactly this — a backlog that lies about what is done misleads whoever
+      picks it up. The description below is kept for the reasoning.
+- [x] ~~**E7 (original entry)**~~ — S
       `GET /conversations/stream` emits a refId whenever anything in the tenant
       changes. The payload is ids only and the detail read now refuses a kind
       the actor may not see (404), so nothing readable leaks — but somebody
