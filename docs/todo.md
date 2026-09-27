@@ -163,6 +163,26 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       Until then the disagreement is visible where it should be — the event
       sits in `dead_letter` with its error — and clearing it is manual.
 
+- [ ] **E20. An ambiguous send is never reconciled, and the inbox lies about it** — M
+      Observed live on 27 Sep 2026, not theorised. A mention reply was sent,
+      Meta accepted it, and the HTTP response was lost in transit
+      (`httpStatus: 0`). The relay did exactly the right thing — *"send failed
+      ambiguously — not retrying, because the platform may have accepted it"* —
+      and that is what stopped a duplicate comment.
+      What follows is the problem. The outbound event is `cancelled`, the
+      message row reads `failed`, and **the comment is live on Instagram**
+      (`18115614217814583`, "Thanks for the mention!"). An agent looking at a
+      failed reply will send it again, and post the same comment twice.
+      Instagram sends no echo for a comment, so nothing will ever correct it on
+      its own.
+      A reconciliation IS possible for this case: `mentioned_media{comments}`
+      lists the post's comments, so a read-back can match on text and timestamp
+      and either fill in `platform_message_id` or confirm the send never
+      landed. The relay's own error says a read-back is required; nothing
+      performs one.
+      Same family as E19 — a send whose outcome is unknown needs a ledger-side
+      resolution — and the two should probably be built together.
+
 ## Parked — recorded, do not start
 
 Work that is understood and deliberately not scheduled. **Do not pick these up
