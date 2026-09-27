@@ -87,19 +87,44 @@ the media type is a guess.
 | reply (`parent_id`) | 7 | 3 — the rest are duplicates and our own | OK |
 | no text at all | 1 | 1, flagged `platformSentNoText` | OK — a GIF or sticker, §1.4 |
 
-## 4b. Subscribed, but never received
+## 4b. Never received — and most of them *could not have been*
 
-The replay can only verify what has arrived. These four are subscribed and have
-produced **no delivery on this account**, so nothing had ever exercised them.
+> **Corrected 27 Sep 2026.** This section used to say these were "subscribed and
+> have produced no delivery", and treated that as "nobody has triggered one
+> yet". That was wrong, and the error was mine: I had verified what *arrives*
+> and what our constant *asks for*, and never once asked Meta what it had
+> actually accepted. It had accepted almost none of it.
 
-| field / shape | seen | handling | status |
-|---|---|---|---|
-| `messaging_postbacks` | 0 | was **dropped in silence** | **FIXED** — projected as a message |
-| `messaging_optins` | 0 | was dropped as "no message id" | **FIXED** — skipped, and says why |
-| `mention` (Facebook, singular) | 0 | routed to `InboundEventType.Mention` | untested |
-| `message.read` (read receipts) | 0 | `handleRead` exists | untested |
-| `referral` | 0 | captured to metadata | untested |
-| `quick_reply` | 0 | captured to metadata | untested |
+The Page was subscribed to **four** fields — `feed`, `mention`, `messages`,
+`messaging_postbacks` — because `SUBSCRIBED_FIELDS` also named `comments` and
+`mentions`, which are Instagram names Meta rejects on a Page. The edge validates
+the set as a whole, so **every** subscribe call failed with `#100` and nothing
+took. Full account in platform-limitations §7.4.
+
+So "no delivery" was never evidence about customer behaviour. For most of these
+the event was unreachable by construction.
+
+| field / shape | why there was no delivery | now |
+|---|---|---|
+| `messaging_postbacks` | genuinely subscribed; **dropped in silence** | **FIXED** — projected as a message |
+| `messaging_optins` | **never subscribed** — the POST always failed | **subscribed**; skipped, and says why |
+| `message_reads` (read receipts) | **never subscribed**, and we had the name wrong (`messaging_seen`) | **subscribed**; `handleRead` reachable |
+| `messaging_referrals` | **never subscribed**, name wrong (`messaging_referral`) | **subscribed**; captured to metadata |
+| `message_reactions` (Facebook) | **never subscribed** | **subscribed** |
+| `message_edits` (Facebook) | **never subscribed**, name wrong (`message_edit`) | **subscribed** |
+| `message_echoes` | **never subscribed** — never even asked for | **subscribed** — see below |
+| `mention` (Facebook, singular) | genuinely subscribed; nobody has mentioned the Page | untested |
+| `quick_reply` | not a field — rides inside `messages` | reachable whenever one is sent |
+
+**`message_echoes` is the substantive gain.** A reply sent from Meta's own inbox,
+or any other connected tool, produced no event here at all — so a thread could
+show a customer waiting on a message somebody had already answered elsewhere.
+The projector has handled `is_echo` all along; nothing could ever deliver one.
+
+**Still genuinely untested:** Facebook singular `mention` (needs someone to
+mention the Page) and `quick_reply` (needs a template send). Everything else in
+this table is now merely *unexercised*, not *unreachable* — a distinction this
+document previously collapsed.
 
 **The postback was the real find.** A customer tapping an ice breaker or a
 template button sends `postback.mid`, not `message.mid` — so it fell through

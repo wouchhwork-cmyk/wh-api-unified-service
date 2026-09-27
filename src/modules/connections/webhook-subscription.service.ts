@@ -18,7 +18,13 @@ import { mapGraphError } from './graph/graph-error.mapper';
  * boolean, because "correct", "repaired" and "could not be repaired" need
  * different reactions from whoever reads the logs, and "skipped" needs none.
  */
-export type SubscriptionReconcileOutcome = 'verified' | 'repaired' | 'unrepairable' | 'skipped';
+export type SubscriptionReconcileOutcome =
+  | 'verified'
+  | 'repaired'
+  /** The platform refused a field our own policy names. A bug here, not drift. */
+  | 'refused'
+  | 'unrepairable'
+  | 'skipped';
 
 export interface SubscriptionReconcileSummary {
   /** Correlates every per-channel line of one run with the run's own line. */
@@ -26,6 +32,7 @@ export interface SubscriptionReconcileSummary {
   readonly considered: number;
   readonly verified: number;
   readonly repaired: number;
+  readonly refused: number;
   readonly unrepairable: number;
   readonly skipped: number;
 }
@@ -87,6 +94,7 @@ export class WebhookSubscriptionService {
     const tally: Record<SubscriptionReconcileOutcome, number> = {
       verified: 0,
       repaired: 0,
+      refused: 0,
       unrepairable: 0,
       skipped: 0,
     };
@@ -236,6 +244,31 @@ export class WebhookSubscriptionService {
     }
 
     await this.graph.subscribePageToApp(pageId, token);
+
+    /*
+     * READ BACK AND PROVE IT. A 2xx on the subscribe edge means the request was
+     * accepted, not that the policy now holds, and the difference is a failure
+     * mode this service actually shipped: SUBSCRIBED_FIELDS named two Instagram
+     * fields Meta does not accept on a Page, so every POST failed and the sweep
+     * reported the same channels forever. Whether it loops silently or throws,
+     * an unsatisfiable policy is a BUG IN US, and it has to read as one instead
+     * of hiding among ordinary drift.
+     */
+    const after = await this.graph.listSubscribedFields(pageId, token);
+    const refused = SUBSCRIBED_FIELDS.filter((field) => !after.includes(field));
+
+    if (refused.length > 0) {
+      /*
+       * ERROR, and deliberately NOT stamped: webhook_subscribed_at means "we
+       * confirmed this Page is subscribed", and nothing was confirmed here.
+       */
+      this.logger.error(
+        { runId, enterpriseId, channelId, pageId, refused },
+        'the platform will not subscribe these webhook fields — SUBSCRIBED_FIELDS names something it rejects',
+      );
+      return 'refused';
+    }
+
     await this.channels.markWebhookSubscribed(enterpriseId, channelId);
 
     /*

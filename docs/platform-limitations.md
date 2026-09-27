@@ -1426,6 +1426,61 @@ id at the relay is worth considering.
 Observed 6 Sep 2026: three deliveries for IG `17841419871844792`, an account with
 no channel here, all correctly dropped.
 
+
+### 7.4 One bad field name fails the whole subscription — and ours had two
+
+`POST {page-id}/subscribed_apps` validates `subscribed_fields` as a **set**. One
+name Meta does not accept fails the entire call with `#100`, and *nothing* is
+subscribed — there is no partial success.
+
+`SUBSCRIBED_FIELDS` named `comments` and `mentions`. Those are **Instagram**
+field names, and Instagram is subscribed on the app-level `instagram` object,
+not through the Page. So:
+
+* every reconciliation POST this service has ever made failed outright;
+* `messaging_optins` was never subscribed despite being valid *and* handled;
+* the six-hourly sweep — the thing built to catch "the worst failure this
+  product has" — returned `unrepairable` on every run since it was written.
+
+Confirmed live 27 Sep 2026 by subscribing one field at a time and reading back.
+
+**What the Page actually had:** `feed`, `mention`, `messages`,
+`messaging_postbacks`. Four. Everything else the projector handles was dead code
+that no event could reach.
+
+**Corrected spellings.** Several names we used do not exist; Meta's own error
+lists the valid set:
+
+| We had / assumed | Meta's name |
+| --- | --- |
+| `messaging_seen` | `message_reads` |
+| `messaging_referral` | `messaging_referrals` |
+| `message_edit` | `message_edits` |
+| `comments`, `mentions` | *(Instagram only — app-level)* |
+
+**Now subscribed (10), each with a handler:** `messages`, `message_echoes`,
+`message_edits`, `message_reactions`, `message_reads`, `messaging_postbacks`,
+`messaging_optins`, `messaging_referrals`, `feed`, `mention`.
+
+`message_echoes` is the notable gain: a reply an agent sends from Meta's own
+inbox or any other tool was previously invisible here, so the thread could show
+a customer waiting on a message that had already been answered elsewhere.
+
+**Available and deliberately not taken**, because subscribing to an event
+nothing projects only adds traffic and dead ledger rows — each is a feature, not
+a fix: `message_mention`, `ratings`, `conversations`, `message_deliveries`,
+`message_context`, `messaging_optouts`, `user_action`, `standby`,
+`messaging_handovers`, `messaging_policy_enforcement`.
+
+`story_share`, `follow`, `comment_poll_response` and `story_poll_response` are
+accepted by the edge but **silently dropped** — `success: true`, absent from the
+read-back. Do not trust a 2xx here.
+
+**The guard.** `compareAndRepair` now reads the subscription back after the
+repair and reports `refused` — an `error`, and no `webhook_subscribed_at` stamp
+— when a field our own policy names does not stick. An unsatisfiable policy is a
+bug in us and now reads as one instead of hiding among ordinary drift.
+
 ---
 
 ## 8. Known-wrong

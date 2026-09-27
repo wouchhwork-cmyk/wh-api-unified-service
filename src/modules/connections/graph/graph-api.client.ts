@@ -58,23 +58,34 @@ import type {
 /**
  * The webhook fields this app subscribes a Page to.
  *
- * INSTAGRAM'S OWN FIELDS ARE HERE TOO, and were missing. A Page subscription
- * covers the Instagram account linked to it, but only for the fields named — so
- * `comments`, `mentions` and `messaging_postbacks` for Instagram were never
- * subscribed, and Instagram comments arrived only through whatever the `feed`
- * field happened to carry. Named as a constant rather than inline because it is
- * a policy, and because the read-back in listSubscribedFields compares against
- * it.
+ * EVERY NAME HERE MUST BE ONE META ACCEPTS FOR A PAGE, because the edge
+ * validates the whole set: one bad name fails the entire POST with #100 and
+ * nothing is subscribed. This list previously carried `comments` and `mentions`
+ * — Instagram's names, which are NOT Page fields — so every reconciliation POST
+ * this service ever made failed outright, and `messaging_optins` went
+ * unsubscribed for months despite being both valid and handled.
+ *
+ * INSTAGRAM IS SUBSCRIBED SEPARATELY, on the app-level `instagram` object, and
+ * not through the Page at all. The old comment here claimed the opposite.
+ *
+ * Everything named here has a handler in DirectMessageProjector. Meta offers
+ * more that we deliberately do not take (message_mention, ratings,
+ * conversations, message_deliveries, standby, messaging_handovers,
+ * messaging_policy_enforcement) — see docs/platform-limitations.md §7.4 — on the
+ * grounds that subscribing to an event nobody projects only adds traffic and
+ * dead ledger rows.
  */
 export const SUBSCRIBED_FIELDS = [
   'messages',
+  'message_echoes',
+  'message_edits',
+  'message_reactions',
+  'message_reads',
   'messaging_postbacks',
   'messaging_optins',
+  'messaging_referrals',
   'feed',
   'mention',
-  // Instagram, delivered through the linked Page.
-  'comments',
-  'mentions',
 ] as const;
 
 const GRAPH_HOST = 'https://graph.facebook.com';

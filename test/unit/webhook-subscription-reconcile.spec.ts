@@ -137,11 +137,41 @@ describe('WebhookSubscriptionService.reconcileAll', () => {
     expect(summary.verified).toBe(1);
   });
 
-  it('re-subscribes when a required field has gone missing', async () => {
-    const missing = 'mentions';
-    graph.listSubscribedFields.mockResolvedValue(
-      SUBSCRIBED_FIELDS.filter((field) => field !== missing),
+  /*
+   * THE BUG THIS SHIPPED WITH. SUBSCRIBED_FIELDS named `comments` and
+   * `mentions` — Instagram field names, which Meta rejects on a Page with #100
+   * and which fail the WHOLE POST, so nothing was ever subscribed and the sweep
+   * reported the same channels every six hours for months. A 2xx from the
+   * subscribe edge proves only that the request was accepted, so the repair is
+   * read back and an unsatisfiable policy is reported as OUR bug.
+   */
+  it('reports refused when the platform will not take a field our policy names', async () => {
+    const refused = 'messaging_referrals';
+    const withoutIt = SUBSCRIBED_FIELDS.filter((field) => field !== refused);
+    // Missing before the repair, and still missing after it: Meta said no.
+    graph.listSubscribedFields.mockResolvedValue(withoutIt);
+
+    const summary = await service.reconcileAll();
+
+    expect(graph.subscribePageToApp).toHaveBeenCalledWith(PAGE_ID, PAGE_TOKEN);
+    expect(summary).toMatchObject({ considered: 1, verified: 0, repaired: 0, refused: 1 });
+
+    // Not stamped: webhook_subscribed_at means "confirmed", and nothing was.
+    expect(channels.markWebhookSubscribed).not.toHaveBeenCalled();
+
+    // ERROR, naming the field, because no amount of retrying will fix it.
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ pageId: PAGE_ID, refused: [refused] }),
+      expect.stringContaining('will not subscribe'),
     );
+  });
+
+  it('re-subscribes when a required field has gone missing', async () => {
+    const missing = 'message_reads';
+    // The gap on the first read; the repaired set on the read-back that proves it.
+    graph.listSubscribedFields
+      .mockResolvedValueOnce(SUBSCRIBED_FIELDS.filter((field) => field !== missing))
+      .mockResolvedValue([...SUBSCRIBED_FIELDS]);
 
     const summary = await service.reconcileAll();
 
@@ -160,7 +190,10 @@ describe('WebhookSubscriptionService.reconcileAll', () => {
   it('re-subscribes a page that was never subscribed at all', async () => {
     // What Meta returns for a Page with no subscription — and also the state left
     // behind by a subscribe call that failed at connect and was never retried.
-    graph.listSubscribedFields.mockResolvedValue([]);
+    // Nothing on the first read; the full policy on the read-back.
+    graph.listSubscribedFields
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([...SUBSCRIBED_FIELDS]);
 
     const summary = await service.reconcileAll();
 
