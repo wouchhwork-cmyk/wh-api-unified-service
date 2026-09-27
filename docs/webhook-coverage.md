@@ -198,3 +198,36 @@ client at all.
 (§probe-message). One live case decides whether this is a bug or a non-event.
 
 `num_edit` itself is dropped and should be kept either way.
+
+---
+
+## Review rounds — 27 Sep 2026
+
+Seven rounds over the replay work and the fixes it prompted. Twenty-nine
+findings, all fixed or recorded. Two things are worth keeping from the shape of
+them.
+
+**Most findings were caused by the previous round's fix.** Rounds 2 to 7 were
+almost entirely repairs of repairs. The comment-moderation path alone went:
+a deleted comment vanished while its conversation counted it → the fix let hide
+be sent on a deleted comment → that fix refused every retry → that fix reported
+a dropped duplicate as success → that fix made a double-clicked delete queue one
+event per click. Five bugs, each introduced by the fix for the last.
+
+The cause was not carelessness in any one round. The path read a state, decided
+on it, and wrote it back across three steps outside a transaction, so every
+check that read as authoritative was advisory — and each round tried to repair
+that with a cleverer dedup key, which is the wrong layer. Once the row was
+locked for the whole operation the churn stopped. **When fixes keep breeding
+fixes, the layer is wrong.**
+
+**Two guards had the same blind spot, and only one was survivable.** Both asked
+"does this route declare a permission?" and both read only `@RequirePermission`,
+missing `@RequireAnyPermission` — the whole inbox controller. For the scope
+guard nothing came of it, because an actor with no scope resolves no
+permissions and gate 2 refused them anyway. For the active guard nothing else
+checks that a business is still switched on, so a **suspended enterprise kept
+full read and reply access to its inbox**. Found only by reviewing the fix to
+the first one. They now share a single function, because a question asked in two
+places is eventually answered differently in each, and the second answer is the
+one nobody tests.

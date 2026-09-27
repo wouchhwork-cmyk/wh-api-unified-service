@@ -145,6 +145,24 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       rather than the auth code. A flaky suite is worse than a slow one: it
       teaches everybody to re-run.
 
+- [ ] **E19. A dead-lettered moderation send cannot be retried** — M
+      Hiding or deleting a comment marks the row OPTIMISTICALLY, because
+      Instagram sends no webhook for either and waiting to be told would mean
+      the inbox never updated. When the send then dead-letters, the comment is
+      still public and the inbox says it is gone — and there is no way back:
+      every later attempt is refused by the already-in-that-state check, and
+      nothing in the repository replays a dead `outbound_events` row (only the
+      relay, the lease reaper and the sweeper touch it at all).
+      A carve-out that let a delete through on our own mark was tried in review
+      and withdrawn: our mark bumps `updated_at`, so a second click built a
+      fresh dedup key and queued another delete — N clicks, N events, each
+      refused by Graph. The right shape is a ledger operation on the ledger
+      row, with the ledger's own attempt accounting, not a special case in
+      `moderateComment`. Four attempts to make it fit there produced four
+      different bugs.
+      Until then the disagreement is visible where it should be — the event
+      sits in `dead_letter` with its error — and clearing it is manual.
+
 ## Parked — recorded, do not start
 
 Work that is understood and deliberately not scheduled. **Do not pick these up
