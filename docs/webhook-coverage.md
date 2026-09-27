@@ -97,3 +97,34 @@ losing, with a §reference into `platform-limitations.md` where one exists.
 Filled in by each replay run. Kept as a log rather than overwritten, so a
 regression is visible as a change between runs.
 
+### Run 1 — 27 Sep 2026, full corpus against current code
+
+**1,102 processed, 52 skipped, 0 failed.** Rebuilt 49 conversations, 164
+messages, 159 posts, 43 attachments and 7 customers from 1,154 events.
+
+Every shape projects. The rows showing `made a message = 0` are correct rather
+than broken, and it is worth saying which and why, because "nothing was
+created" is what a silent failure looks like too:
+
+- **`DM message_edit` (35)** — an edit UPDATES the message it names. Eleven of
+  these failed on the first pass with *"a message_edit arrived before the
+  message it names"* and all eleven succeeded on retry. That is the intended
+  behaviour meeting the one condition it was written for: a replay claims
+  events concurrently, so an edit really can be processed before its message,
+  where live traffic arrives in order. It self-healed with no intervention.
+- **`DM reaction` (1)** — applies an emoji to an existing message.
+- **`DM unsend` (1)** — marks the existing message deleted; the record is kept
+  deliberately (the business is accountable for the conversation).
+- **`POST_UPDATE` (949)** — makes posts, not messages. Confirmed to make NO
+  Graph calls: the payload carries everything, which is why 949 of them replay
+  without touching the rate limit.
+- **`COMMENT reply` (7 seen, 3 messages)** — the rest are duplicate deliveries
+  and the business's own replies, both skipped on purpose.
+
+**Attachments went UP, 39 to 43**, because the carousel-children fix (1.3) now
+keeps slides that the previous run discarded. That is the replay earning its
+keep: a fix landing on history, visible as a number.
+
+**Rate limit cost of a full replay:** app pool peaked at 4%, ~205 calls. A
+replay is cheap because only mentions resolve through Graph.
+
