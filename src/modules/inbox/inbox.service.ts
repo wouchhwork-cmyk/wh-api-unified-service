@@ -1302,9 +1302,14 @@ export class InboxService {
          * separation is the point — the lock stops races, the key stops
          * confusing a repeat with a retry, and neither has to do both badly.
          *
-         * ISO to the microsecond, not epoch millis: TIMESTAMPTZ has more
-         * resolution than a JS Date, and two transactions inside one
-         * millisecond would otherwise rebuild a key already used.
+         * ISO rather than epoch millis for legibility only — node-postgres
+         * parses timestamptz into a JS Date, so both carry the same
+         * millisecond resolution and neither is finer than the other.
+         *
+         * Two transactions inside one millisecond would therefore rebuild a
+         * used key. The row lock is what stops that mattering: they cannot be
+         * concurrent, and a sequential repeat that fast is a double-click,
+         * which the state checks above refuse first.
          */
         dedupKey: outboundDedupKey(
           conversation.platform,

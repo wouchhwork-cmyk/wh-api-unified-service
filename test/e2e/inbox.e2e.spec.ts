@@ -934,6 +934,47 @@ describe('the shared inbox', () => {
       expect(messages[0]?.deletedOnPlatform).toBe(true);
       expect(messages[0]?.deletedBy).toBe('business');
       expect(messages[0]?.body).toBe('is this open on Sundays?');
+
+      /*
+       * AND THE COUNT STILL MATCHES, which is the half the original defect
+       * broke: erasing the row left message_count counting a message the
+       * thread no longer returned, permanently, with nothing to reconcile it.
+       */
+      expect(thread.body.data.conversation.messageCount).toBe(messages.length);
+    });
+
+    it('lets only ONE of two simultaneous hides through', async () => {
+      /*
+       * TWO AT ONCE MUST SEND ONE CALL. Sequential tests cannot ask this.
+       *
+       * WHAT THIS DOES NOT PROVE, stated because it would be easy to assume
+       * otherwise: it is not a test of the row lock. Removing `FOR UPDATE`
+       * leaves it green, because two requests racing read the same
+       * `updated_at`, build the same dedup key, and the loser is refused by
+       * the unique index instead. Both mechanisms produce one 202, which is
+       * why the assertion is on the OUTCOME rather than on which one fired.
+       *
+       * The lock still earns its place — it is what makes the state checks
+       * above authoritative rather than advisory, and what keeps the
+       * read-decide-write sequence from interleaving at all. Proving that
+       * needs a test that can pause a transaction mid-flight, which is worth
+       * more than it costs only if this ever regresses.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_5');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      const results = await Promise.all([
+        moderate(ownerToken, conversationRefId, messageRefId, 'hide'),
+        moderate(ownerToken, conversationRefId, messageRefId, 'hide'),
+      ]);
+      const codes = results.map((r) => r.status).sort();
+
+      expect(codes).toHaveLength(2);
+      expect(codes.filter((c) => c === 202)).toHaveLength(1);
+      // The loser is refused, not silently accepted — by the state check if it
+      // waited for the lock, or by the dedup key if it raced inside it.
+      expect(codes.filter((c) => c === 409)).toHaveLength(1);
     });
   });
 });

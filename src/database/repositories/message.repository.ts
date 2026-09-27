@@ -330,36 +330,6 @@ export class MessageRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-  async findModerationTarget(
-    enterpriseId: number,
-    conversationId: number,
-    refId: string,
-  ): Promise<ModerationTarget | null> {
-    const rows = await this.query<{
-      id: number;
-      platformMessageId: string | null;
-      isHiddenOnPlatform: boolean;
-      deletedOnPlatform: boolean;
-      deletedByBusiness: boolean;
-      updatedAt: Date;
-    }>(
-      `SELECT id, platform_message_id AS "platformMessageId",
-              is_hidden_on_platform AS "isHiddenOnPlatform",
-              (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform",
-              -- COALESCE because the key is absent on almost every row, and
-              -- a bare comparison is SQL NULL there, not false — which would
-              -- make the declared boolean type a lie.
-              COALESCE((metadata->>'deletedByBusiness')::boolean, false)
-                AS "deletedByBusiness",
-              updated_at AS "updatedAt"
-         FROM messages
-        WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
-          AND is_deleted = false
-        LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), conversationId, refId],
-    );
-    return rows[0] ?? null;
-  }
 
   /**
    * Records moderation WE performed, rather than moderation the platform told
