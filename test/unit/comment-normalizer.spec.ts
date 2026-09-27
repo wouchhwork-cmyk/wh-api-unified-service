@@ -454,7 +454,17 @@ describe('normalizeComment — a media comment', () => {
     expect('comment' in result).toBe(true);
     if (!('comment' in result)) return;
     expect(result.comment.text).toBeNull();
-    expect(result.comment.metadata).toEqual({ platformSentNoText: true });
+    /*
+     * `postProductType` rides along because the fixture is a REAL payload and
+     * every comment delivery carries `media.media_product_type`. Asserted
+     * exactly rather than loosely: the point of this test is what we keep from
+     * a media comment, and a field silently appearing or vanishing here is the
+     * thing it exists to catch.
+     */
+    expect(result.comment.metadata).toEqual({
+      platformSentNoText: true,
+      postProductType: 'FEED',
+    });
   });
 
   it('does NOT mark a comment somebody genuinely left empty', () => {
@@ -470,7 +480,10 @@ describe('normalizeComment — a media comment', () => {
 
     expect('comment' in result).toBe(true);
     if (!('comment' in result)) return;
-    expect(result.comment.metadata).toBeUndefined();
+    // Not "no metadata" — no `platformSentNoText`. An empty string is a comment
+    // that exists and says nothing, which is a different fact from one Meta
+    // declined to describe.
+    expect(result.comment.metadata).toEqual({ postProductType: 'FEED' });
   });
 
   it('does not mark an ordinary comment', () => {
@@ -482,6 +495,44 @@ describe('normalizeComment — a media comment', () => {
     expect('comment' in result).toBe(true);
     if (!('comment' in result)) return;
     expect(result.comment.text).toBe('nice one');
-    expect(result.comment.metadata).toBeUndefined();
+    expect(result.comment.metadata).toEqual({ postProductType: 'FEED' });
+  });
+
+  it('keeps what KIND of post the comment sits on', () => {
+    /*
+     * FEED, REELS or STORY. Meta sends it on every comment delivery and it was
+     * being dropped — so "somebody commented on your reel" and "somebody
+     * commented on your photo" arrived as the same event. They are not the same
+     * event to whoever answers them: a reel comment is usually a stranger
+     * passing through, a feed comment usually somebody who already follows.
+     */
+    const result = normalizeComment(Platform.Instagram, {
+      field: 'comments',
+      value: { ...base, text: 'love this', media: { id: 'MEDIA_2', media_product_type: 'REELS' } },
+    });
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+    expect(result.comment.metadata).toEqual({ postProductType: 'REELS' });
+  });
+
+  it('keeps our own scoped id when Meta says the comment is ours', () => {
+    /*
+     * `self_ig_scoped_id` appears ONLY on a comment the connected account
+     * itself left — verified on a live reply we posted. Free, unambiguous, and
+     * a field not captured on arrival cannot be captured later.
+     */
+    const result = normalizeComment(Platform.Instagram, {
+      field: 'comments',
+      value: {
+        ...base,
+        text: 'Thanks for reaching out!',
+        from: { id: 'IG_US', username: 'ai_automation_demo', self_ig_scoped_id: '1623436959518312' },
+      },
+    });
+
+    expect('comment' in result).toBe(true);
+    if (!('comment' in result)) return;
+    expect(result.comment.metadata).toMatchObject({ authorSelfScopedId: '1623436959518312' });
   });
 });

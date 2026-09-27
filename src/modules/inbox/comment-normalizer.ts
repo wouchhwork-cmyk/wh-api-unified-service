@@ -33,8 +33,17 @@ interface InstagramCommentChange {
     readonly text?: string;
     readonly parent_id?: string;
     readonly timestamp?: string | number;
-    readonly media?: { readonly id?: string };
-    readonly from?: { readonly id?: string; readonly username?: string };
+    readonly media?: {
+      readonly id?: string;
+      /** FEED, REELS or STORY — what kind of thing the comment sits on. */
+      readonly media_product_type?: string;
+    };
+    readonly from?: {
+      readonly id?: string;
+      readonly username?: string;
+      /** Present only on OUR OWN comments: our id as that account sees us. */
+      readonly self_ig_scoped_id?: string;
+    };
     /** Present on the read edge, absent on the webhook. */
     readonly username?: string;
     readonly verb?: string;
@@ -245,9 +254,32 @@ function normalizeInstagram(change: InstagramCommentChange): NormalizedComment {
   // no empty bag — the same shape the mention path and `store` already expect.
   const noText = !('text' in value);
 
+  /*
+   * WHAT KIND OF THING THE COMMENT IS ON, which Meta sends and we dropped.
+   *
+   * `media.media_product_type` is FEED, REELS or STORY. An agent answering
+   * "somebody commented on your reel" behaves differently from one answering a
+   * comment on a photo — a reel comment is usually a stranger passing through,
+   * a feed comment usually somebody who already follows. It costs nothing: it
+   * arrives on every comment delivery and was being thrown away.
+   *
+   * `self_ig_scoped_id` appears only when the comment is OUR OWN, and is our
+   * id as that account sees us. Kept for the same reason: it is free, it is
+   * only ever present when it means something, and a field not captured on
+   * arrival cannot be captured later.
+   */
+  const platformFacts: Record<string, unknown> = {};
+  if (noText) platformFacts.platformSentNoText = true;
+  if (value.media?.media_product_type) {
+    platformFacts.postProductType = value.media.media_product_type;
+  }
+  if (value.from.self_ig_scoped_id) {
+    platformFacts.authorSelfScopedId = value.from.self_ig_scoped_id;
+  }
+
   return {
     comment: {
-      ...(noText ? { metadata: { platformSentNoText: true } } : {}),
+      ...(Object.keys(platformFacts).length > 0 ? { metadata: platformFacts } : {}),
       commentId: value.id,
       rootCommentId: value.parent_id ?? value.id,
       parentId: value.parent_id ?? null,

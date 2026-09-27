@@ -540,6 +540,18 @@ function toMessage(
     contentUnavailable:
       row.metadata.contentUnavailable === true || row.metadata.isUnsupported === true,
     /*
+     * WHAT KIND OF POST A COMMENT SITS ON — `FEED`, `REELS` or `STORY`.
+     *
+     * Promoted out of the bag below because an agent acts on it: answering a
+     * comment on a reel is usually answering a stranger who found the business
+     * through the algorithm, and answering one on a feed post is usually
+     * answering somebody who already follows it. Meta sends it on every comment
+     * delivery and it was being discarded. Null on a DM, and on rows projected
+     * before it was kept.
+     */
+    postProductType:
+      typeof row.metadata.postProductType === 'string' ? row.metadata.postProductType : null,
+    /*
      * EVERYTHING ELSE WE HOLD, for looking at rather than for building on.
      *
      * The fields above are the contract: named, stable, and chosen because an
