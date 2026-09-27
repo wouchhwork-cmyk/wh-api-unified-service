@@ -461,6 +461,93 @@ export class OutboundEventRepository extends BaseRepository {
     return affected > 0;
   }
 
+  /**
+   * The dead-lettered moderation send for a comment, if there is one.
+   *
+   * Matched on the COMMENT rather than on a link column, because moderation
+   * does not create a message of its own — it changes one that already exists,
+   * so there is nothing for `linkOutboundEvent` to have linked. The comment id
+   * in the payload is what ties the dead row to the row an agent is looking at.
+   *
+   * Newest first: a comment hidden, unhidden and hidden again has more than one
+   * settled row, and the one worth replaying is the last.
+   */
+  async findDeadModerationEvent(
+    enterpriseId: number,
+    commentId: string,
+  ): Promise<{ id: number; eventType: OutboundEventType; replays: number } | null> {
+    const rows = await this.query<{ id: number; eventType: OutboundEventType; replays: number }>(
+      `SELECT id, event_type AS "eventType",
+              COALESCE((metadata->>'replays')::int, 0) AS replays
+         FROM outbound_events
+        WHERE enterprise_id = $1
+          AND status = $2
+          AND event_type = ANY($3::varchar[])
+          AND payload->>'commentId' = $4
+        ORDER BY id DESC
+        LIMIT 1`,
+      [
+        this.requireEnterprise(enterpriseId),
+        OutboundEventStatus.DeadLetter,
+        [OutboundEventType.CommentHide, OutboundEventType.CommentDelete],
+        commentId,
+      ],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Puts a dead-lettered row back on the queue.
+   *
+   * A LEDGER OPERATION ON THE LEDGER ROW, which is the whole point. Hiding or
+   * deleting a comment marks our copy optimistically — Instagram sends no
+   * webhook for either — so when the send dead-letters the comment is still
+   * public and the inbox says it is gone, with no way back: every later attempt
+   * is refused by the already-in-that-state check.
+   *
+   * The obvious fix, letting a second click through, was tried and withdrawn.
+   * The moderation dedup key carries the row's `updated_at`, and our own
+   * optimistic mark bumps it — so each click built a FRESH key and queued
+   * another send. N clicks, N events, every one of them refused by Graph.
+   *
+   * Replaying the existing row has no such failure mode: same row, same dedup
+   * key, nothing new to collide with. The attempt count is reset because this
+   * is a new decision by a human rather than a continuation of the automatic
+   * backoff that gave up, and `replays` records that it happened — without
+   * which "why did this send six times" has no answer in the data.
+   */
+  async requeueDeadLettered(input: {
+    readonly enterpriseId: number;
+    readonly id: number;
+    readonly maxReplays: number;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $3,
+              attempt_count = 0,
+              next_attempt_at = now(),
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              metadata = metadata || jsonb_build_object(
+                'replays', COALESCE((metadata->>'replays')::int, 0) + 1,
+                'lastReplayAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SSZ')
+              ),
+              updated_at = now()
+        WHERE id = $2
+          AND enterprise_id = $1
+          AND status = $4
+          AND COALESCE((metadata->>'replays')::int, 0) < $5`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.id,
+        OutboundEventStatus.Pending,
+        OutboundEventStatus.DeadLetter,
+        input.maxReplays,
+      ],
+    );
+    return affected > 0;
+  }
+
   async reclaimExpiredLeases(limit: number): Promise<number> {
     const { affected } = await this.mutate(
       `UPDATE outbound_events

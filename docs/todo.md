@@ -145,7 +145,7 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       rather than the auth code. A flaky suite is worse than a slow one: it
       teaches everybody to re-run.
 
-- [ ] **E19. A dead-lettered moderation send cannot be retried** — M
+- [x] **E19. A dead-lettered moderation send cannot be retried** — DONE 27 Sep 2026
       Hiding or deleting a comment marks the row OPTIMISTICALLY, because
       Instagram sends no webhook for either and waiting to be told would mean
       the inbox never updated. When the send then dead-letters, the comment is
@@ -160,8 +160,21 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       row, with the ledger's own attempt accounting, not a special case in
       `moderateComment`. Four attempts to make it fit there produced four
       different bugs.
-      Until then the disagreement is visible where it should be — the event
-      sits in `dead_letter` with its error — and clearing it is manual.
+      **Done.** `requeueDeadLettered` replays the existing ledger row: same
+      row, same dedup key, so pressing the button twice cannot produce two
+      sends — which is exactly what the withdrawn carve-out did. The attempt
+      count resets because a human decision is not a continuation of the backoff
+      that gave up, and `metadata.replays` records it, bounded by
+      MAX_MODERATION_REPLAYS so a button nobody can fix cannot be held down.
+
+      `POST /conversations/:refId/messages/:messageRefId/moderate/retry`
+      requires the permission the ORIGINAL action needed, not the retry — a
+      replayed delete removes a customer's comment as surely as the first
+      attempt would have.
+
+      Noted while building it: moderation had no direct test coverage at all,
+      despite producing five consecutive bugs. It has four now, and the two that
+      matter are mutation-verified.
 
 - [x] **E20. An ambiguous send is never reconciled, and the inbox lies about it** — DONE 27 Sep 2026
       Observed live on 27 Sep 2026, not theorised. A mention reply was sent,

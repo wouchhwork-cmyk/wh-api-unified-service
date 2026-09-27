@@ -26,6 +26,7 @@ import {
 import { clampLimit } from '@/shared/utils/page-limit';
 import { isExpiringMediaUrl, toWebhookAttachments } from './attachment-normalizer';
 import {
+  MAX_MODERATION_REPLAYS,
   BACKGROUND_PLATFORM_TIMEOUT_MS,
   CUSTOMER_AVATAR_TTL_MS,
   READ_PATH_PLATFORM_BUDGET_MS,
@@ -1352,6 +1353,88 @@ export class InboxService {
        * the ledger, which is where the disagreement surfaces.
        */
       await this.messages.applyOwnModeration({ enterpriseId, messageId: target.id, action });
+
+      return { messageRefId, action };
+    });
+  }
+
+  /**
+   * Sends a dead-lettered hide or delete again.
+   *
+   * WHY THIS IS NOT JUST ANOTHER CLICK ON MODERATE. Hiding or deleting marks
+   * our copy optimistically, because Instagram sends no webhook for either and
+   * waiting to be told would mean the inbox never updated. When the send then
+   * dead-letters, the comment is still public, the inbox says it is gone, and
+   * the ordinary path is closed: the already-in-that-state check refuses every
+   * later attempt, correctly, because our copy really does say hidden.
+   *
+   * Letting that check through was tried and withdrawn. The moderation dedup
+   * key carries the row's `updated_at` and our own optimistic mark bumps it, so
+   * each click built a fresh key and queued another send — N clicks, N events,
+   * all refused by Graph. Replaying the dead row has no such failure mode.
+   */
+  async retryModeration(
+    enterpriseId: number,
+    conversationRefId: string,
+    messageRefId: string,
+  ): Promise<{ messageRefId: string; action: string }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'manage');
+
+    return this.tx.runInTransaction(async () => {
+      const target = await this.messages.lockModerationTarget(
+        enterpriseId,
+        conversation.id,
+        messageRefId,
+      );
+      if (!target) throw new AppException(ErrorCode.MessageNotFound);
+      if (!target.platformMessageId) {
+        throw new AppException(ErrorCode.ReplyNotSupported, {
+          details: [{ field: 'action', issue: 'this message does not exist on the platform' }],
+        });
+      }
+
+      const dead = await this.outbound.findDeadModerationEvent(
+        enterpriseId,
+        target.platformMessageId,
+      );
+      if (!dead) {
+        throw new AppException(ErrorCode.ReplyNotSupported, {
+          details: [{ field: 'action', issue: 'there is no failed moderation to send again' }],
+        });
+      }
+
+      /*
+       * THE PERMISSION OF THE ORIGINAL ACTION, not of retrying. Replaying a
+       * delete deletes a customer's comment from a public post as surely as the
+       * first attempt would have, so somebody who may only hide must not be
+       * able to complete a delete that somebody else started.
+       */
+      const action = dead.eventType === OutboundEventType.CommentDelete ? 'delete' : 'hide';
+      const needed = action === 'delete' ? Permission.CommentsDelete : Permission.CommentsHide;
+      if (!RequestContext.actor()?.permissions.has(needed)) {
+        throw new AppException(ErrorCode.PermissionDenied, {
+          details: [{ field: 'permission', issue: needed }],
+        });
+      }
+
+      const requeued = await this.outbound.requeueDeadLettered({
+        enterpriseId,
+        id: dead.id,
+        maxReplays: MAX_MODERATION_REPLAYS,
+      });
+      if (!requeued) {
+        /*
+         * Either somebody else replayed it first or it is out of replays. Both
+         * are "this attempt did nothing", and saying so is the honest answer —
+         * the alternative is the failure this path keeps producing in different
+         * disguises: telling an agent it worked when no call was made.
+         */
+        throw new AppException(ErrorCode.ReplyNotSupported, {
+          details: [
+            { field: 'action', issue: 'this moderation has been sent again too many times' },
+          ],
+        });
+      }
 
       return { messageRefId, action };
     });

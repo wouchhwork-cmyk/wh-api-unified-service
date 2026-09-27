@@ -9,6 +9,7 @@ import {
   resetTenantData,
   type TestApp,
 } from './app.harness';
+import { MAX_MODERATION_REPLAYS } from '@/shared/constants';
 
 /**
  * The shared inbox over HTTP: who has a conversation, and whether it is done.
@@ -886,6 +887,106 @@ describe('the shared inbox', () => {
 
       await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
       await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+    });
+
+    const retry = (token: string, conversationRefId: string, messageRefId: string) =>
+      http()
+        .post(`/api/v1/conversations/${conversationRefId}/messages/${messageRefId}/moderate/retry`)
+        .set({ Authorization: `Bearer ${token}` });
+
+    /** Forces the queued moderation send to the state the relay leaves after giving up. */
+    const killTheSend = async (enterpriseRefId: string): Promise<void> => {
+      await db.query(
+        `UPDATE outbound_events SET status = 'dead_letter', attempt_count = 5
+          WHERE event_type IN ('comment_hide', 'comment_delete')
+            AND enterprise_id = (SELECT id FROM enterprises WHERE ref_id = $1)`,
+        [enterpriseRefId],
+      );
+    };
+
+    const moderationRows = async (
+      enterpriseRefId: string,
+    ): Promise<{ status: string; replays: string | null }[]> =>
+      db.query(
+        `SELECT status, metadata->>'replays' AS replays FROM outbound_events
+          WHERE event_type IN ('comment_hide', 'comment_delete')
+            AND enterprise_id = (SELECT id FROM enterprises WHERE ref_id = $1)
+          ORDER BY id`,
+        [enterpriseRefId],
+      );
+
+    /*
+     * E19. Hiding marks our copy optimistically — Instagram sends no webhook
+     * for it — so when the send dies the comment is still public and the inbox
+     * says it is gone. The ordinary moderate call is refused, correctly,
+     * because our copy really does read hidden. Without a replay there is no
+     * way back at all.
+     */
+    it('sends a dead-lettered hide again', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_1');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      // The ordinary path is closed once our own mark is in place.
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+
+      const rows = await moderationRows(enterpriseRefId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: 'pending', replays: '1' });
+    });
+
+    /*
+     * THE BUG THE WITHDRAWN CARVE-OUT CAUSED. Letting a second click through
+     * moderateComment queued a whole new send each time, because the dedup key
+     * carries updated_at and our own optimistic mark bumps it. N clicks, N
+     * events, every one refused by Graph. Replaying the row cannot do that.
+     */
+    it('replays the same ledger row rather than queueing another send', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_2');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+
+      const rows = await moderationRows(enterpriseRefId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.replays).toBe('2');
+    });
+
+    it('refuses a retry when nothing has failed', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_3');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      // Queued and alive: there is nothing dead to send again.
+      await retry(ownerToken, conversationRefId, messageRefId).expect(409);
+    });
+
+    /*
+     * A replay is a button somebody can keep pressing, and a hide Graph refuses
+     * will refuse every time. Bounded so it cannot be held down.
+     */
+    it('stops replaying after the cap', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_4');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      for (let attempt = 0; attempt < MAX_MODERATION_REPLAYS; attempt += 1) {
+        await killTheSend(enterpriseRefId);
+        await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+      }
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(409);
     });
 
     it('refuses everything once the comment is deleted', async () => {

@@ -505,3 +505,13 @@ export const SEND_RECONCILE_CRON = '*/10 * * * *';
 
 /** A ceiling per run, so one sweep costs a bounded number of Graph calls. */
 export const SEND_RECONCILE_BATCH = 25;
+
+/**
+ * How many times a dead-lettered moderation send may be replayed by hand.
+ *
+ * A replay is a human decision, so this is not the automatic retry budget —
+ * that one already gave up. It is a stop on a button somebody can keep
+ * pressing: a hide that Graph refuses will refuse every time, and the tenth
+ * attempt tells nobody anything the third did not.
+ */
+export const MAX_MODERATION_REPLAYS = 3;

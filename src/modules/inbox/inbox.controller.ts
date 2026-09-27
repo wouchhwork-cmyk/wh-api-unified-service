@@ -288,6 +288,31 @@ export class InboxController {
     );
   }
 
+  @Post(':refId/messages/:messageRefId/moderate/retry')
+  @RequireAnyPermission(...anyPermissionFor('manage'))
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Send a failed hide or delete again',
+    description:
+      'Hiding and deleting mark the local copy optimistically, because Instagram sends no webhook ' +
+      'for either. When the send then fails terminally the comment is still public while the inbox ' +
+      'says it is gone, and the ordinary moderate call is refused — correctly — because the local ' +
+      'copy already reads hidden. This replays the dead ledger row rather than queueing a new send, ' +
+      'so pressing it twice cannot produce two calls. The permission required is the one the ' +
+      'ORIGINAL action needed, not this endpoint.',
+  })
+  async retryModeration(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+    @Param('messageRefId') messageRefId: string,
+  ): Promise<unknown> {
+    return this.inbox.retryModeration(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      RefIdParamSchema.parse(messageRefId),
+    );
+  }
+
   @Post(':refId/reply')
   @RequireAnyPermission(...anyPermissionFor('reply'))
   @HttpCode(HttpStatus.ACCEPTED)
