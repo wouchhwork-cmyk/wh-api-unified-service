@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { ConversationRepository } from '@/database/repositories/conversation.repository';
+import { MessageRepository } from '@/database/repositories/message.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { ConversationKind, Platform } from '@/shared/enums';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
@@ -171,5 +172,168 @@ describe('conversation counters', () => {
     );
     expect(rows[0]?.conversation_count).toBe(1);
     expect(rows[0]?.outbound_message_count).toBe(1);
+  });
+});
+
+/**
+ * Deleting a comment must not make the thread and its own counter disagree.
+ *
+ * WRITTEN BECAUSE BOTH DELETE PATHS ERASED THE ROW. They set `is_deleted` —
+ * our own soft-delete flag, which every read filters on — while nothing
+ * decremented `conversations.message_count`. The summary went on saying three
+ * over a thread showing two, for ever, with nothing to reconcile them. The
+ * business also lost the record of what was said on their own post, which is
+ * the one thing they are accountable for.
+ *
+ * A DM unsend has always done this correctly: mark it, keep it. These two now
+ * follow the same rule, and the distinction is not pedantic —
+ * `platform_deleted_at` means "gone from Instagram", `is_deleted` means "gone
+ * from this product", and only the first one happened.
+ */
+describe('deleting a comment', () => {
+  let db: DataSource;
+  let messages: MessageRepository;
+  let enterpriseId: number;
+  let channelId: number;
+  let customerId: number;
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+    messages = new MessageRepository(db);
+  });
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  let conversationId: number;
+  let messageId: number;
+  const PLATFORM_ID = 'IG_COMMENT_DELETED';
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    enterpriseId = await seedEnterprise(db, 'Acme', 'acme');
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    channelId = Number(channel[0]?.id);
+
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'someone','instagram_comment',$2) RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    customerId = Number(customer[0]?.id);
+
+    const conversation: { id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, platform, conversation_kind,
+          platform_thread_id, status, message_count)
+       VALUES ($1,$2,$3,'instagram','comment_thread','comment:ROOT','open',1)
+       RETURNING id`,
+      [enterpriseId, channelId, customerId],
+    );
+    conversationId = Number(conversation[0]?.id);
+
+    const message: { id: string }[] = await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, customer_id, direction, message_kind,
+          body, platform_message_id, status)
+       VALUES ($1,$2,$3,'inbound','text','what they said',$4,'delivered')
+       RETURNING id`,
+      [enterpriseId, conversationId, customerId, PLATFORM_ID],
+    );
+    messageId = Number(message[0]?.id);
+  });
+
+  const stored = async (): Promise<{
+    isDeleted: boolean;
+    platformDeletedAt: Date | null;
+    body: string | null;
+  }> => {
+    const rows: { is_deleted: boolean; platform_deleted_at: Date | null; body: string | null }[] =
+      await db.query(
+        `SELECT is_deleted, platform_deleted_at, body FROM messages WHERE id = $1`,
+        [messageId],
+      );
+    const row = rows[0];
+    return {
+      isDeleted: row?.is_deleted ?? false,
+      platformDeletedAt: row?.platform_deleted_at ?? null,
+      body: row?.body ?? null,
+    };
+  };
+
+  /** What a thread read would return: the counter's promise, checked. */
+  const stillVisible = async (): Promise<number> => {
+    const rows: { n: string }[] = await db.query(
+      `SELECT count(*)::text AS n FROM messages
+        WHERE conversation_id = $1 AND is_deleted = false`,
+      [conversationId],
+    );
+    return Number(rows[0]?.n ?? 0);
+  };
+
+  it('marks a platform removal without erasing the row', async () => {
+    await messages.applyPlatformModeration({
+      enterpriseId,
+      platformMessageId: PLATFORM_ID,
+      action: 'removed',
+      text: null,
+    });
+
+    const after = await stored();
+    expect(after.platformDeletedAt).not.toBeNull();
+    // The flag every read filters on must NOT move.
+    expect(after.isDeleted).toBe(false);
+    // And the words stay: the business is accountable for the conversation.
+    expect(after.body).toBe('what they said');
+  });
+
+  it('leaves the thread and its counter agreeing', async () => {
+    /*
+     * THE ASSERTION THAT CAUGHT IT. Erasing the row left message_count
+     * counting a message the thread no longer returned.
+     */
+    await messages.applyPlatformModeration({
+      enterpriseId,
+      platformMessageId: PLATFORM_ID,
+      action: 'removed',
+      text: null,
+    });
+
+    const counter: { message_count: number }[] = await db.query(
+      `SELECT message_count FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(await stillVisible()).toBe(Number(counter[0]?.message_count));
+  });
+
+  it('does the same when the BUSINESS deletes it', async () => {
+    await messages.applyOwnModeration({ enterpriseId, messageId, action: 'delete' });
+
+    const after = await stored();
+    expect(after.platformDeletedAt).not.toBeNull();
+    expect(after.isDeleted).toBe(false);
+    expect(await stillVisible()).toBe(1);
+  });
+
+  it('does not confuse HIDING with deleting', async () => {
+    // Hidden means the public cannot see it. It is still there and it comes
+    // back — conflating the two would make unhide impossible.
+    await messages.applyOwnModeration({ enterpriseId, messageId, action: 'hide' });
+
+    const after = await stored();
+    expect(after.platformDeletedAt).toBeNull();
+    expect(after.isDeleted).toBe(false);
   });
 });
