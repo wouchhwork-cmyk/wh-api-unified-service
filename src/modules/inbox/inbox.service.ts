@@ -1284,7 +1284,24 @@ export class InboxService {
          * unhiding the same comment are two events rather than the second
          * colliding with the first and being dropped.
          */
-        dedupKey: outboundDedupKey(conversation.platform, eventType, `messages:${action}`, target.id),
+        /*
+         * THE ROW'S STATE IS PART OF THE KEY, and it has to be.
+         *
+         * Keyed on the message and the action alone, the key was permanent:
+         * hide, unhide, then hide again was refused on the third step for
+         * ever, because the first hide's row still sat in the ledger. Same for
+         * retrying a delete that dead-lettered.
+         *
+         * `updatedAt` gives two racing requests the SAME key — which is the
+         * double-click this exists to stop — while a later, legitimate repeat
+         * sees a row that has since changed and is let through.
+         */
+        dedupKey: outboundDedupKey(
+          conversation.platform,
+          eventType,
+          `messages:${action}:${target.updatedAt.getTime()}`,
+          target.id,
+        ),
         correlationId: RequestContext.correlationId() ?? null,
         payload: {
           commentId: target.platformMessageId,
@@ -1294,27 +1311,21 @@ export class InboxService {
       });
 
       /*
-       * A REPEAT OF AN ACTION ALREADY QUEUED IS NOT A SUCCESS.
+       * NOTHING WAS QUEUED, SO DO NOT SAY IT WAS.
        *
-       * The dedup key is the message and the action, so asking twice inserts
-       * nothing the second time. That is right for a double-click, and wrong
-       * for the case the guard above deliberately allows: retrying a delete
-       * that dead-lettered. The ledger row still exists under the same key, so
-       * the retry is silently dropped and the agent is told it worked while the
-       * comment stays live on Instagram.
+       * With the row's state in the key, a duplicate now means only one thing:
+       * an identical request racing this one. That is a double-click, and the
+       * honest answer is that this attempt did nothing — the other one is
+       * doing it.
        *
-       * Requeueing a dead row is a ledger decision rather than one to make
-       * here, so this says plainly that nothing new was sent.
+       * Reported rather than swallowed because the alternative is telling an
+       * agent their action succeeded when no call was made, which is the
+       * failure this whole path keeps producing in different disguises.
        */
       if (queued.duplicate) {
         throw new AppException(ErrorCode.InvalidStateTransition, {
           details: [
-            {
-              field: 'action',
-              issue:
-                'this action is already queued for that comment — if it failed, it needs ' +
-                'retrying from the ledger rather than asking again',
-            },
+            { field: 'action', issue: 'that action is already in flight for this comment' },
           ],
         });
       }

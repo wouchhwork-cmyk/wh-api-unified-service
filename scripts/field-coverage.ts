@@ -201,7 +201,20 @@ async function main(): Promise<void> {
       continue;
     }
     console.log(`${type}:`);
-    for (const [path, n] of ranked.slice(0, 14)) console.log(`  ${String(n).padStart(5)}  ${path}`);
+    /*
+     * Array paths are indexed, so one logical field fragments into a row per
+     * position — and ranking by count then truncating buried a loss in a
+     * later carousel slide beneath the same field's first slide. Collapsed
+     * back for the report, having been kept distinct for the comparison.
+     */
+    const collapsed = new Map<string, number>();
+    for (const [path, n] of ranked) {
+      const logical = path.replace(/\[\d+\]/g, '[]');
+      collapsed.set(logical, (collapsed.get(logical) ?? 0) + n);
+    }
+    for (const [path, n] of [...collapsed.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${String(n).padStart(5)}  ${path}`);
+    }
     console.log('');
   }
 

@@ -286,6 +286,16 @@ export class MessageRepository extends BaseRepository {
      * dead-lettered, and must not block the retry.
      */
     deletedByBusiness: boolean;
+    /**
+     * When the row last changed, to the millisecond.
+     *
+     * Part of the outbound dedup key for a moderation action. Two requests
+     * racing see the SAME value and collide, which is the double-click this
+     * protects against; a later, legitimate repeat — hide, unhide, hide again
+     * — sees a different one and is allowed through. Without it the key is
+     * permanent and the third step of that sequence is refused for ever.
+     */
+    updatedAt: Date;
   } | null> {
     const rows = await this.query<{
       id: number;
@@ -293,6 +303,7 @@ export class MessageRepository extends BaseRepository {
       isHiddenOnPlatform: boolean;
       deletedOnPlatform: boolean;
       deletedByBusiness: boolean;
+      updatedAt: Date;
     }>(
       `SELECT id, platform_message_id AS "platformMessageId",
               is_hidden_on_platform AS "isHiddenOnPlatform",
@@ -301,7 +312,8 @@ export class MessageRepository extends BaseRepository {
               -- a bare comparison is SQL NULL there, not false — which would
               -- make the declared boolean type a lie.
               COALESCE((metadata->>'deletedByBusiness')::boolean, false)
-                AS "deletedByBusiness"
+                AS "deletedByBusiness",
+              updated_at AS "updatedAt"
          FROM messages
         WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
           AND is_deleted = false
