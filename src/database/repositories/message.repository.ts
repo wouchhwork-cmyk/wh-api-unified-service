@@ -297,7 +297,11 @@ export class MessageRepository extends BaseRepository {
       `SELECT id, platform_message_id AS "platformMessageId",
               is_hidden_on_platform AS "isHiddenOnPlatform",
               (platform_deleted_at IS NOT NULL) AS "deletedOnPlatform",
-              (metadata->>'deletedByBusiness' = 'true') AS "deletedByBusiness"
+              -- COALESCE because the key is absent on almost every row, and
+              -- a bare comparison is SQL NULL there, not false — which would
+              -- make the declared boolean type a lie.
+              COALESCE((metadata->>'deletedByBusiness')::boolean, false)
+                AS "deletedByBusiness"
          FROM messages
         WHERE enterprise_id = $1 AND conversation_id = $2 AND ref_id = $3
           AND is_deleted = false

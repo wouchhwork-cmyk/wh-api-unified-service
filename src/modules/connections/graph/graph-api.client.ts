@@ -669,9 +669,15 @@ export class GraphApiClient {
      * So a nearly-spent budget gives the next call a real chance instead. The
      * ceiling stops four calls costing four times the budget, which was the
      * point; it was never meant to make the last one fail on purpose.
+     *
+     * The floor is CLAMPED to the caller's own budget. Applied flat it would
+     * silently ignore any timeout under three seconds — a caller asking for
+     * one second would get three — and let the four-call branch overrun the
+     * ceiling it is supposed to respect.
      */
+    const floor = timeoutMs === undefined ? 0 : Math.min(MIN_MENTION_CALL_MS, timeoutMs);
     const remaining = (): number | undefined =>
-      deadline === null ? undefined : Math.max(MIN_MENTION_CALL_MS, deadline - Date.now());
+      deadline === null ? undefined : Math.max(floor, deadline - Date.now());
     /*
      * WHY THESE FIELDS AND NOT MORE. Every one was probed individually against
      * live traffic; the omissions are deliberate, not oversights:

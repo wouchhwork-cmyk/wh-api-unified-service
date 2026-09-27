@@ -1236,7 +1236,19 @@ export class InboxService {
      * `deletedByBusiness` is exactly that distinction: set when we asked,
      * absent when Meta told us.
      */
-    if (target.deletedOnPlatform && !target.deletedByBusiness) {
+    if (target.deletedOnPlatform && (action !== 'delete' || !target.deletedByBusiness)) {
+      /*
+       * HIDING SOMETHING DELETED IS ALWAYS WRONG, however it got that way.
+       *
+       * The previous shape relaxed this for all three actions, so hide and
+       * unhide sailed through on a comment the business had already deleted —
+       * and unlike delete, hide has its own dedup key, so the call really was
+       * sent, refused by Graph, and dead-lettered after the agent had been
+       * told 2xx.
+       *
+       * Only a DELETE we marked ourselves may be retried, because that mark is
+       * optimistic and the underlying call may have failed.
+       */
       throw new AppException(ErrorCode.InvalidStateTransition, {
         details: [
           { field: 'action', issue: 'this comment is already gone from the platform' },
@@ -1258,7 +1270,7 @@ export class InboxService {
       action === 'delete' ? OutboundEventType.CommentDelete : OutboundEventType.CommentHide;
 
     return this.tx.runInTransaction(async () => {
-      await this.outbound.enqueue({
+      const queued = await this.outbound.enqueue({
         enterpriseId,
         channelId: conversation.channelId,
         destinationKind: DestinationKind.Channel,
@@ -1280,6 +1292,32 @@ export class InboxService {
         },
         scheduledAt: null,
       });
+
+      /*
+       * A REPEAT OF AN ACTION ALREADY QUEUED IS NOT A SUCCESS.
+       *
+       * The dedup key is the message and the action, so asking twice inserts
+       * nothing the second time. That is right for a double-click, and wrong
+       * for the case the guard above deliberately allows: retrying a delete
+       * that dead-lettered. The ledger row still exists under the same key, so
+       * the retry is silently dropped and the agent is told it worked while the
+       * comment stays live on Instagram.
+       *
+       * Requeueing a dead row is a ledger decision rather than one to make
+       * here, so this says plainly that nothing new was sent.
+       */
+      if (queued.duplicate) {
+        throw new AppException(ErrorCode.InvalidStateTransition, {
+          details: [
+            {
+              field: 'action',
+              issue:
+                'this action is already queued for that comment — if it failed, it needs ' +
+                'retrying from the ledger rather than asking again',
+            },
+          ],
+        });
+      }
 
       /*
        * Applied locally in the same transaction, OPTIMISTICALLY. Instagram
