@@ -128,3 +128,66 @@ keep: a fix landing on history, visible as a number.
 **Rate limit cost of a full replay:** app pool peaked at 4%, ~205 calls. A
 replay is cheap because only mentions resolve through Graph.
 
+
+---
+
+## Field-level audit — 27 Sep 2026
+
+The shape audit asks "did this project?". This asks the harder question: **of
+everything Meta sent, what did we keep?** Done by comparing every leaf key in
+the real corpus against what reached a row.
+
+### Attachments: nothing is lost
+
+Every payload key Meta sends on an attachment is captured:
+
+| Meta sends | we store |
+|---|---|
+| `ig_post.ig_post_media_id` | `postMediaId` |
+| `ig_post.title` | `title` — the caption, often the whole message |
+| `ig_reel.reel_video_id` | `reelVideoId` |
+| `ig_story.story_media_id` | `storyMediaId` |
+| `ig_story.story_media_url` | `source_url` |
+| `*.url` | `source_url` |
+| `template.generic` | nothing — it is always an empty array (§3.6) |
+
+Plus `assetId`, `stableUrl` and `kindIsGuessed`, which are ours rather than
+Meta's. **No gap.**
+
+### Comments: two fields were being discarded — now fixed
+
+- **`media.media_product_type`** (FEED / REELS / STORY) arrives on every
+  comment delivery and reached nothing. Now kept as `postProductType` and
+  promoted to a named DTO field, because an agent acts on it: a reel comment is
+  usually a stranger the algorithm delivered, a feed comment usually somebody
+  who already follows.
+- **`from.self_ig_scoped_id`** appears only on the connected account's OWN
+  comments. Now kept as `authorSelfScopedId`.
+
+All 13 comments in the corpus link correctly to the post row they belong to, so
+`media.id` was already being used.
+
+### `message_edit`: detected, and then ignored — UNRESOLVED
+
+35 deliveries. The payload carries **`mid` and `num_edit` only — no text**:
+
+```json
+{"message_edit":{"mid":"aWdfZAG1f…","num_edit":0}}
+```
+
+The handler looks the message up and, when we already hold it, **skips**. So
+nothing ever refreshes the body. If an edit changes the words, the inbox shows
+the old ones for ever.
+
+**What cannot be settled from the corpus.** All 35 events carry `num_edit: 0`,
+and the one message checked against Meta still reads exactly what we stored
+(`"Hmm"`). So either these are not content edits at all, or no text has ever
+actually changed in this account's history. Building a Graph re-read on that
+guess would be speculative work on the DM projector, which today has no Graph
+client at all.
+
+**To settle it:** edit a DM that we already hold, then compare
+`messages.body` against `GET /{mid}?fields=message`. That call is known to work
+(§probe-message). One live case decides whether this is a bug or a non-event.
+
+`num_edit` itself is dropped and should be kept either way.
