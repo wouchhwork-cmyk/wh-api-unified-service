@@ -668,6 +668,31 @@ Documented limits: **mentions on Stories cannot be replied to**, and
 is delivered at all when the media belongs to a **private account** — so a
 mention from a private account is invisible from the start. **[META]**
 
+### 1.6b Our OWN media answers everything a third party's refuses
+
+The same account, the same token, minutes apart — the difference is ownership.
+Re-verified 27 Sep 2026 against a live comment on our own post
+(`18146332678480621`), every action reversed afterwards:
+
+| action | our post | a post we are TAGGED in |
+|---|---|---|
+| read the comment | **200** | **200** (text, time, likes) |
+| the commenter's **username** | **returned** | **silently omitted** (1.4) |
+| hide / unhide | **200** | no such operation |
+| reply to the comment | **200** | `#100` — /replies is owner-only (1.6) |
+| delete OUR reply | **200** | `#100` subcode 33 (4.6) |
+| like the post | — | `#100` |
+
+So moderation is whole on our own media and essentially absent off it. The one
+asymmetry worth remembering is the **username**: the field exists, and Meta
+withholds it precisely when the post is somebody else's. An inbox that shows
+"who said this" on one screen and cannot on another is not inconsistent — it is
+reporting a real boundary.
+
+**A reply we post on OUR post can be deleted; the same reply under a stranger's
+post cannot.** That is the whole of 4.6, and it is worth knowing before a
+"retract" button is offered anywhere.
+
 ### 1.7b Only a CAPTION mention lets us comment on the post
 
 `POST /{ig-user-id}/mentions` with a `media_id` and no `comment_id` posts a
