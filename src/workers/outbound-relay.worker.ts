@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
@@ -9,10 +9,15 @@ import {
 } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
 import { parkFor, scheduleRetry } from '@/modules/ledger/backoff.util';
-import { OUTBOUND_RATE_LIMIT_MAX_WAIT_MS, OUTBOUND_RATE_LIMIT_PARK_MS } from '@/shared/constants';
+import {
+  META_USAGE_SOFT_LIMIT_PCT,
+  OUTBOUND_RATE_LIMIT_MAX_WAIT_MS,
+  OUTBOUND_RATE_LIMIT_PARK_MS,
+} from '@/shared/constants';
 import { TransactionManager } from '@/database/transaction';
 import { TokenCipherService } from '@/shared/crypto';
 import { ConnectionStatus, MessageStatus, OutboundEventType, Platform } from '@/shared/enums';
@@ -60,11 +65,40 @@ export class OutboundRelayWorker extends BasePoller {
     private readonly tx: TransactionManager,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(OutboundRelayWorker.name) protected readonly logger: PinoLogger,
+    @Optional() private readonly usage?: MetaUsageCollector,
   ) {
     super();
   }
 
   protected async pollOnce(): Promise<number> {
+    /*
+     * SLOW DOWN BEFORE META SAYS NO.
+     *
+     * Every Graph response carries the share of the budget already spent, and
+     * nothing used to read it on the way past — so the first sign of trouble
+     * was a `(#4)`, which is the point at which a business's sending has
+     * already stopped. Worse, Meta is explicit that calling while throttled
+     * EXTENDS the block, so the calls made after the first refusal cost more
+     * than the ones that caused it.
+     *
+     * The queue is the right place to give way. Nothing here has a person
+     * waiting on it — a reply is already accepted and durable, and arriving a
+     * minute later is invisible next to a pool that has locked everyone out.
+     * Read paths are deliberately NOT braked.
+     *
+     * Claiming nothing rather than sleeping: rows stay unleased and the next
+     * poll reconsiders, so a pool that recovers is used again immediately and a
+     * second relay is free to take the work if this one is holding off.
+     */
+    const pressure = this.usage?.pressure() ?? 0;
+    if (pressure >= META_USAGE_SOFT_LIMIT_PCT) {
+      this.logger.warn(
+        { pressure, softLimit: META_USAGE_SOFT_LIMIT_PCT },
+        'holding off sending — a Meta pool is close to its limit',
+      );
+      return 0;
+    }
+
     const { batchSize, leaseSeconds } = this.config.worker;
     const claimed = await this.outbound.claimDueBatch(this.leaseOwner, batchSize, leaseSeconds);
 

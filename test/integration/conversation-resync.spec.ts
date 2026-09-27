@@ -1569,6 +1569,65 @@ describe('subscribed webhooks nobody had ever sent us', () => {
     });
   });
 
+  describe('a referral — how the customer got here', () => {
+    /*
+     * Meta's documented shape. `messaging_referrals` was never subscribed —
+     * the name in SUBSCRIBED_FIELDS was the singular `messaging_referral`,
+     * which Meta does not accept, and the whole POST failed on it — so no
+     * referral has ever reached this projector however many ads ran.
+     */
+    const referralEvent = {
+      sender: { id: '1774658693722714' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1790470374585,
+      message: { mid: 'REFERRAL_MID_1', text: 'Is this still available?' },
+      referral: { ref: 'SPRING_SALE', source: 'ADS', type: 'OPEN_THREAD', ad_id: '23851234567890123' },
+    };
+
+    it('keeps the referral on the message it arrived with', async () => {
+      /*
+       * Captured, because it cannot be captured later: the referral is on the
+       * opening event and nowhere else. An agent who knows this customer came
+       * from a particular ad is answering a different question from one who
+       * does not.
+       */
+      await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:ref1'),
+        referralEvent,
+      );
+
+      const rows: { metadata: Record<string, unknown> }[] = await db.query(
+        `SELECT metadata FROM messages WHERE platform_message_id = $1`,
+        ['REFERRAL_MID_1'],
+      );
+      expect(rows[0]?.metadata).toMatchObject({
+        referral: { ref: 'SPRING_SALE', source: 'ADS', ad_id: '23851234567890123' },
+      });
+    });
+
+    it('is still an ordinary message, not an event about one', async () => {
+      // A referral rides ALONG with a message rather than replacing it — unlike
+      // a reaction or a read receipt, which are facts about a message and must
+      // never become one.
+      await projectorFor().project(
+        enterpriseId,
+        channelId,
+        Platform.Instagram,
+        await ledgerRow('instagram:direct_message:ref2'),
+        referralEvent,
+      );
+
+      const rows: { body: string }[] = await db.query(
+        `SELECT body FROM messages WHERE platform_message_id = $1`,
+        ['REFERRAL_MID_1'],
+      );
+      expect(rows[0]?.body).toBe('Is this still available?');
+    });
+  });
+
   describe('an opt-in — consent, not conversation', () => {
     it('is skipped, and says WHY', async () => {
       /*

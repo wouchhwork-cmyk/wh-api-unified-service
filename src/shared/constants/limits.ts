@@ -515,3 +515,25 @@ export const SEND_RECONCILE_BATCH = 25;
  * attempt tells nobody anything the third did not.
  */
 export const MAX_MODERATION_REPLAYS = 3;
+
+/**
+ * How long a usage reading still says something about now.
+ *
+ * Meta's percentages are of a rolling hourly budget, so a reading does not stop
+ * being true the moment it is taken — but it does go stale, and an old figure
+ * held forever would brake a system that has long since recovered. Five minutes
+ * is short enough to follow a recovery and long enough to survive a quiet
+ * patch with no calls in it.
+ */
+export const META_USAGE_PRESSURE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * The percentage of a Meta pool at which non-urgent sending pauses.
+ *
+ * BELOW Meta's own limit on purpose. Being refused is not the failure we are
+ * avoiding — Meta is explicit that calling while throttled EXTENDS the block,
+ * so the first `(#4)` costs more than the calls that caused it. Eighty leaves
+ * room for the interactive paths, which are never braked: a person waiting on a
+ * reply must not be slowed down to protect a backfill.
+ */
+export const META_USAGE_SOFT_LIMIT_PCT = 80;

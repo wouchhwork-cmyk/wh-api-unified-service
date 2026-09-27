@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import {
@@ -20,10 +20,12 @@ import type {
   GraphInstagramComment,
   GraphInstagramMedia,
 } from '@/modules/connections/graph/graph.types';
+import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { TokenCipherService } from '@/shared/crypto/token-cipher.service';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { inboundDedupKey } from '@/modules/ledger/dedup-key.util';
 import {
+  META_USAGE_SOFT_LIMIT_PCT,
   SYNC_COMMENTS_PER_POST,
   SYNC_MESSAGES_PER_CONVERSATION,
   SYNC_MAX_ATTEMPTS,
@@ -115,11 +117,29 @@ export class BackfillWorker extends BasePoller {
     private readonly cipher: TokenCipherService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(BackfillWorker.name) protected readonly logger: PinoLogger,
+    @Optional() private readonly usage?: MetaUsageCollector,
   ) {
     super();
   }
 
   protected async pollOnce(): Promise<number> {
+    /*
+     * GIVE WAY WHEN A META POOL IS NEARLY SPENT, the same brake the relay has
+     * and with an easier case to make: this is recovery work, catching up on
+     * history nobody is waiting for. Spending the last of an allowance on it
+     * and leaving a live reply to be refused has the priorities backwards —
+     * and Meta EXTENDS a block for calls made during it, so the backfill would
+     * be lengthening the outage it is competing with.
+     */
+    const pressure = this.usage?.pressure() ?? 0;
+    if (pressure >= META_USAGE_SOFT_LIMIT_PCT) {
+      this.logger.warn(
+        { pressure, softLimit: META_USAGE_SOFT_LIMIT_PCT },
+        'holding off backfill — a Meta pool is close to its limit',
+      );
+      return 0;
+    }
+
     const { batchSize, leaseSeconds } = this.config.worker;
     const claimed = await this.syncJobs.claimBatch(this.leaseOwner, batchSize, leaseSeconds);
 

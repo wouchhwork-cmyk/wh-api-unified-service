@@ -6,6 +6,7 @@ import {
 } from '@/database/repositories/provider-api-usage.repository';
 import {
   META_USAGE_BUCKET_MS,
+  META_USAGE_PRESSURE_WINDOW_MS,
   META_USAGE_FLUSH_MS,
   META_USAGE_MAX_PENDING_BUCKETS,
   META_USAGE_SCOPE_CACHE_MS,
@@ -124,6 +125,16 @@ const MAX_SCOPE_KEY_LENGTH = 120;
 @Injectable()
 export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
   private readonly pending = new Map<string, PendingBucket>();
+  /*
+   * THE LATEST PERCENTAGE PER POOL, kept apart from `pending` on purpose.
+   *
+   * `pending` is emptied every flush, so reading pressure from it would report
+   * "nothing spent" for the moment after each flush and the brake would
+   * flicker on and off with the flush timer rather than with Meta's budget.
+   * This is a small retained view with its own expiry, and it is the only state
+   * here that anything outside this class reads.
+   */
+  private readonly recentPressure = new Map<string, { pct: number; atMs: number }>();
   private readonly owners = new Map<string, CachedOwner>();
   private timer: NodeJS.Timeout | null = null;
   /** Buckets dropped because the buffer was full, reported once per flush. */
@@ -198,6 +209,13 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
               reading.product ?? 'unknown'
             }`.slice(0, MAX_SCOPE_KEY_LENGTH);
 
+      /*
+       * The WORST of the three meters, because any one of them being full
+       * refuses the call — Meta throttles on whichever runs out first.
+       */
+      const worst = Math.max(reading.callPct ?? 0, reading.cpuPct ?? 0, reading.timePct ?? 0);
+      this.recentPressure.set(scopeKey, { pct: worst, atMs: nowMs });
+
       this.fold(
         {
           scopeKey,
@@ -212,6 +230,30 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
         siblingIds,
       );
     }
+  }
+
+  /**
+   * The highest share of any Meta pool we have seen recently, 0-100.
+   *
+   * FAIL OPEN, and deliberately. No readings means zero, which brakes nothing:
+   * a fresh process, a quiet hour, or Meta omitting the headers must never look
+   * like an exhausted budget and stop a business's sending. The cost of being
+   * wrong in this direction is a call that gets refused; the cost of being
+   * wrong in the other is an inbox that silently stops.
+   */
+  pressure(): number {
+    const cutoff = Date.now() - META_USAGE_PRESSURE_WINDOW_MS;
+    let worst = 0;
+    for (const [scopeKey, seen] of this.recentPressure) {
+      // Pruned on read: this map is touched on every Graph response and would
+      // otherwise keep a row for every pool this process ever spoke to.
+      if (seen.atMs < cutoff) {
+        this.recentPressure.delete(scopeKey);
+        continue;
+      }
+      if (seen.pct > worst) worst = seen.pct;
+    }
+    return worst;
   }
 
   private fold(

@@ -145,6 +145,29 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       rather than the auth code. A flaky suite is worse than a slow one: it
       teaches everybody to re-run.
 
+      **27 Sep 2026: not reproduced, and NOT fixed.** Nine full runs were green.
+      So nothing here is a diagnosis of the original failure and the item stays
+      open.
+
+      One neighbouring mechanism WAS proved, by accident, while hunting it: two
+      full runs of this suite at the same time destroy each other. Both share
+      `wouchh_test` and `wouchh_e2e` and both truncate in `beforeEach`, so the
+      second run's fixtures vanish mid-test. It presents exactly as described
+      above — a handful of failures that pass alone.
+
+      That is worth knowing for two reasons. A watch process left running beside
+      a full run reproduces it, which is an ordinary thing to do and may well be
+      what happened on 27 Sep. And the wreckage OUTLIVES the run: killing a run
+      mid-provision left orphaned `role_permissions` rows behind, after which
+      every later run failed in `globalSetup` on a foreign key, with an error
+      that names the constraint and nothing a reader could act on. Recovery was
+      manual.
+
+      `fileParallelism: false` cannot help here — it serialises files within one
+      vitest process and says nothing about a second one. A database per RUN
+      would close it; the cost is provisioning per run and orphaned databases to
+      reap, which is why it is written down rather than done.
+
 - [x] **E19. A dead-lettered moderation send cannot be retried** — DONE 27 Sep 2026
       Hiding or deleting a comment marks the row OPTIMISTICALLY, because
       Instagram sends no webhook for either and waiting to be told would mean
@@ -241,7 +264,7 @@ about where secrets live.
 
 ### Other parked work
 
-- [ ] **P1. Back off on Meta's rate-limit headers BEFORE being refused** —
+- [~] **P1. Back off on Meta's rate-limit headers BEFORE being refused** — PARTLY DONE 27 Sep 2026 —
       researched 21 Sep, see platform-limitations §0.4. The research found and
       fixed a live defect (BUC throttle codes were unmapped and dead-lettering
       retryable work). What remains is the proactive half: nothing reads the
@@ -251,6 +274,31 @@ about where secrets live.
       currently read none of it — so the first sign of trouble is a `(#4)` or
       `(#17)` error, which is the point at which a business's inbox has already
       stopped updating.
+      **Done: the brake.** `MetaUsageCollector.pressure()` reports the worst
+      share of any pool seen in the last five minutes, and both queue workers —
+      the outbound relay and the backfill — claim NOTHING while it is at or
+      above META_USAGE_SOFT_LIMIT_PCT (80). Nothing sleeps: rows stay unleased,
+      so a pool that recovers is used on the next poll and a second worker is
+      free to take the work.
+
+      The threshold is below Meta's own limit deliberately. Being refused is not
+      the failure being avoided — Meta EXTENDS a block for calls made during it,
+      so the first `(#4)` costs more than the calls that caused it.
+
+      Read paths are NOT braked, and should not be: a person waiting on a thread
+      must never be slowed to protect a backfill. The queues are where giving
+      way is free.
+
+      It FAILS OPEN throughout — no readings, no collector, or headers Meta
+      omitted all read as zero. A brake that engages wrongly is an inbox that
+      silently stops sending, which is worse than the problem it solves, so the
+      three fail-open paths each have their own test.
+
+      **Still open:** per-pool backoff. `pressure()` collapses every pool to one
+      number, so one busy tenant brakes the queue for all of them. The readings
+      are keyed by scope already, so this is a filter at the claim, not new
+      plumbing — but it needs the claim to know which channel a row will use.
+
       The headers to read: `X-App-Usage` (call volume, CPU and total time, each
       a percentage of the app's hourly budget),
       `X-Business-Use-Case-Usage` (the same per business, keyed by business id,
