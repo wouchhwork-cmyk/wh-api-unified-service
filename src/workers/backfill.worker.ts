@@ -34,6 +34,7 @@ import {
   EventPriority,
   IdentifierKind,
   InboundEventType,
+  MentionKind,
   Platform,
   SourceKind,
   SyncJobKind,
@@ -288,7 +289,14 @@ export class BackfillWorker extends BasePoller {
       // Guarded when the job was claimed.
       const pageId = channel.parentPlatformChannelId as string;
       if (job.jobKind === SyncJobKind.BackfillMentions) {
-        return this.instagramTagPage(job, channel.platformChannelId, token, correlationId, cursor);
+        return this.instagramTagPage(
+          job,
+          channel.platformChannelId,
+          token,
+          correlationId,
+          cursor,
+          channel.username,
+        );
       }
       if (CONVERSATION_KINDS.has(job.jobKind)) {
         return this.instagramConversationPage(
@@ -340,12 +348,34 @@ export class BackfillWorker extends BasePoller {
     token: string,
     correlationId: string,
     cursor: string | null,
+    /** Our own handle, for telling a caption mention from a silent tag. */
+    channelUsername: string | null = null,
   ): Promise<SliceResult> {
     const edge = await this.graph.listInstagramTags(instagramUserId, token, cursor ?? undefined);
 
     let added = 0;
     for (const tag of edge.data ?? []) {
       if (!tag.id || !tag.username) continue;
+
+      /*
+       * WHICH KIND OF TAG THIS IS, decided here because only this walk can.
+       *
+       * `/tags` returns BOTH kinds: a post whose caption @tags us, and a post
+       * that merely lists us in its tagged-people (a collaborator or a photo
+       * tag). The webhook distinguishes them for free — a caption mention
+       * delivers, a collaborator tag delivers NOTHING — but by the time a row
+       * reaches this walk that signal is gone, and the caption is the only
+       * evidence left.
+       *
+       * Meta strips the `@` from a caption it returns, so the handle is matched
+       * bare. That makes this a heuristic and not a fact: a caption that names
+       * us in prose without tagging reads as a caption mention. It errs toward
+       * `caption`, which is the harmless direction — the alternative is calling
+       * a real mention a silent tag and under-reporting it.
+       */
+      const ourHandle = channelUsername?.toLowerCase() ?? null;
+      const captionTagsUs =
+        ourHandle !== null && (tag.caption ?? '').toLowerCase().includes(ourHandle);
 
       const payload = {
         field: 'mentions',
@@ -355,6 +385,30 @@ export class BackfillWorker extends BasePoller {
           caption: tag.caption,
           permalink: tag.permalink,
           timestamp: tag.timestamp,
+          mention_kind: captionTagsUs ? MentionKind.Caption : MentionKind.Tagged,
+          /*
+           * The post itself, from fields this walk ALREADY asks for.
+           *
+           * Without this a backfilled tag arrived with a permalink and nothing
+           * else — no media, no type, no owner — while the same walk had all of
+           * it in hand and dropped it on the floor. A collaborator tag has no
+           * other route in (it never webhooks), so this was the whole of what
+           * that case could ever show.
+           */
+          mention_media: {
+            id: tag.id,
+            caption: tag.caption ?? null,
+            permalink: tag.permalink ?? null,
+            ownerUsername: tag.username ?? null,
+            mediaType: tag.media_type ?? null,
+            mediaUrl: tag.media_url ?? null,
+            thumbnailUrl: null,
+            productType: null,
+            timestamp: tag.timestamp ?? null,
+            likeCount: typeof tag.like_count === 'number' ? tag.like_count : null,
+            commentsCount: typeof tag.comments_count === 'number' ? tag.comments_count : null,
+            children: [],
+          },
         },
       };
 

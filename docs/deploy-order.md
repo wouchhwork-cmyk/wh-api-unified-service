@@ -114,6 +114,26 @@ Dev was clean as of 26 Sep 2026 (5 active, 0 without a join date).
 
 ---
 
+## One-off after this release: classify existing mentions
+
+`node --env-file=<env> --import tsx scripts/backfill-mention-kind.ts --apply`
+
+Mention threads now record `mentionKind` — `caption`, `comment` or `tagged` —
+and the field is set when the event is projected. Threads that already exist
+never get it, and **replaying the mentions backfill does not fix them**: the
+ledger dedups a mention on its media id, so a re-run re-reads every tag from
+Meta and inserts nothing.
+
+The script derives the kind from what each row already holds and re-fetches
+nothing. Idempotent, and a dry run by default — run it without `--apply` first
+and check the tally is the shape you expect. Dev, 27 Sep 2026: 21 comment,
+7 tagged, 3 caption.
+
+Skipping it is not harmful: those threads simply show no tag kind, exactly as
+they do today.
+
+---
+
 ## Rolling back
 
 **Code first, then the migration.** `RoleLevels.down()` drops `roles.level`,

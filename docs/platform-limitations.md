@@ -404,6 +404,37 @@ Verified 27 Sep 2026 on `17911065744521471`, a caption mention the poster had
 added a track to. **[META]** — the same shape as the missing share count in 1.3:
 the field is not withheld, it does not exist.
 
+### 1.2f A COLLABORATOR or photo tag sends no webhook at all
+
+The third way to be tagged, and the only one that notifies nobody. Being added
+as a collaborator, or listed in a post's tagged-people, produces **no `mentions`
+delivery**. Verified 27 Sep 2026: the tag went up at 23:44:45 and the ledger
+recorded nothing; the only event in that window was the poster sharing the post
+into a DM by hand.
+
+It IS readable. `GET /{ig-user-id}/tags` listed it within seconds, with the same
+media id, a permalink and the owner's handle. `BackfillMentions` walks that
+edge, and re-running it projected the tag as an ordinary mention thread.
+
+**So the customer sees a tag the inbox does not**, until a backfill runs. That
+is a gap in NOTIFICATION, not in reach — worth stating plainly because the
+symptom is a mention appearing hours late and reading as a slow inbox.
+
+**Telling the three apart**, now recorded on the thread as `mentionKind`:
+
+| kind | webhook | discriminator |
+|---|---|---|
+| `caption` | yes | `media_id`, no `comment_id` |
+| `comment` | yes | `comment_id` present |
+| `tagged` | **none** | only ever from the `/tags` walk |
+
+The `/tags` edge returns BOTH captions and silent tags, so a backfilled row has
+to be classified from its caption — matched **bare**, because Meta strips the
+`@`. That makes the backfill's answer a heuristic where the webhook's is a
+fact, and it errs toward `caption`: over-reporting shows an agent a post that
+names the business, where the other way round would quietly downgrade a real
+mention to a tag nobody is told about.
+
 ### 1.3 What a tagged post will and will not tell us
 
 A mention is read access to the post it sits on (§3.1), so a surprising amount

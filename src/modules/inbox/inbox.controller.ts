@@ -853,6 +853,16 @@ function toMentionContext(
       asText(details.thumbnailUrl) ?? asText(details.mediaUrl),
     ),
     mediaRefreshedAt: asText(metadata.postDetailsRefreshedAt),
+    /*
+     * HOW they tagged us: `caption`, `comment`, or `tagged`.
+     *
+     * All three arrive as a mention and they are not the same event. A
+     * `tagged` — a collaborator or photo tag — sends NO webhook at all and is
+     * found only by the mentions backfill, so it can surface hours after the
+     * fact; without this the thread gives no hint why. Null on rows projected
+     * before the field existed.
+     */
+    mentionKind: asText(metadata.mentionKind),
     /** `FEED`, `REELS`, `STORY` — lets a client say "Reel" rather than "post". */
     productType: asText(details.productType),
     postedAt: asText(details.timestamp),

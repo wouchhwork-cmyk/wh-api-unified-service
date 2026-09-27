@@ -29,7 +29,8 @@ async function main(): Promise<void> {
 
   // Does the co-tagged account appear anywhere at all?
   console.log('story.mention.id  :', mention.id);
-  console.log('asset_id in link  :', String(mention.link ?? '').match(/asset_id=(\d+)/)?.[1]);
+  const link = typeof mention.link === 'string' ? mention.link : '';
+  console.log('asset_id in link  :', link.match(/asset_id=(\d+)/)?.[1]);
   await ds.destroy();
 }
 void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });

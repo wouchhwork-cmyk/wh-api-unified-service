@@ -72,6 +72,12 @@ export interface ChannelBackfillContext {
   readonly channelId: number;
   readonly platform: Platform;
   readonly platformChannelId: string;
+  /**
+   * OUR handle on this channel. The `/tags` edge returns the POSTER's username,
+   * never ours, so classifying a tagged post — is the tag in the caption, or is
+   * it a collaborator/photo tag? — needs this to compare against.
+   */
+  readonly username: string | null;
   readonly parentPlatformChannelId: string | null;
   readonly effectiveAccessToken: string | null;
   readonly reauthRequired: boolean;
@@ -264,6 +270,7 @@ export class ChannelRepository extends BaseRepository {
     const rows = await this.query<ChannelBackfillContext>(
       `SELECT c.id                                            AS "channelId",
               c.platform,
+              c.username,
               c.platform_channel_id                           AS "platformChannelId",
               parent.platform_channel_id                      AS "parentPlatformChannelId",
               COALESCE(c.access_token, parent.access_token)    AS "effectiveAccessToken",

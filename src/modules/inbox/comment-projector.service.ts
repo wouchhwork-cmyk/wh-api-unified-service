@@ -19,6 +19,7 @@ import {
   IdentifierKind,
   IdentifierSource,
   IdentifierVerificationStatus,
+  MentionKind,
   MessageKind,
   Platform,
 } from '@/shared/enums';
@@ -300,6 +301,16 @@ export class CommentProjectorService {
             permalink: resolution.permalink ?? undefined,
             media_owner_username: resolution.mediaOwnerUsername ?? undefined,
             media_id: resolution.mediaId ?? value.media_id,
+            /*
+             * AUTHORITATIVE HERE, unlike the backfill's guess.
+             *
+             * `comment_id` on the delivery is Meta telling us where the tag
+             * sits, so this needs no heuristic: with it the tag is inside a
+             * comment, without it the tag is in the caption. A collaborator or
+             * photo tag never reaches this path at all — it sends no webhook —
+             * so `tagged` can only ever come from the /tags walk.
+             */
+            mention_kind: value.comment_id ? MentionKind.Comment : MentionKind.Caption,
             mention_media: resolution.media ?? undefined,
             mention_replies: resolution.replies?.length ? resolution.replies : undefined,
             mention_parent: resolution.parent ?? undefined,

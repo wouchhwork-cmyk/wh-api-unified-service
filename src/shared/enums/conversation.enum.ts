@@ -81,3 +81,35 @@ export const THREAD_KEY_PREFIX: Readonly<Record<ConversationKind, string>> = {
   [ConversationKind.Mention]: 'mention',
   [ConversationKind.Review]: 'review',
 } as const;
+
+/**
+ * HOW somebody tagged us, which the inbox could not previously tell.
+ *
+ * All three land as `ConversationKind.Mention` and they are not the same event:
+ * they arrive by different routes, resolve through different edges, and one of
+ * them does not notify at all. An agent seeing "you were mentioned" deserves to
+ * know which, and so does anything deciding what to do about it.
+ */
+export enum MentionKind {
+  /**
+   * The @tag is in the post's CAPTION. Webhook carries `media_id` and no
+   * `comment_id`; resolves through `mentioned_media`. Editing a caption to add
+   * a tag fires this too (platform-limitations 1.2d).
+   */
+  Caption = 'caption',
+  /**
+   * The @tag is inside a COMMENT. Webhook carries `comment_id` as well;
+   * resolves through `mentioned_comment`. Editing a tag INTO a comment fires
+   * nothing (platform-limitations 1.2b, 1.2c).
+   */
+  Comment = 'comment',
+  /**
+   * A collaborator or a photo tag — the tagged-people list, not any text.
+   *
+   * SENDS NO WEBHOOK AT ALL. It exists only on the `/{ig-user-id}/tags` edge,
+   * so the customer can see a tag the inbox never hears about, and only the
+   * mentions backfill recovers it. Verified 27 Sep 2026: a collaborator tag
+   * produced no `mentions` delivery and appeared on `/tags` within seconds.
+   */
+  Tagged = 'tagged',
+}

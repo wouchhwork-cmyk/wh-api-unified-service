@@ -324,6 +324,12 @@ interface InstagramMentionChange {
      * not the mention, and the projector files them on the conversation.
      */
     readonly mention_media?: Record<string, unknown>;
+    /**
+     * WHICH kind of tag this is — caption, comment, or a silent collaborator
+     * tag. Set by whoever produced the event, because only they can tell:
+     * the webhook has `comment_id`, and the /tags walk has the caption.
+     */
+    readonly mention_kind?: string;
     readonly mention_replies?: readonly Record<string, unknown>[];
     /**
      * The comment our mention was answering, when it was itself a reply.
@@ -396,6 +402,13 @@ export function normalizeMention(platform: Platform, payload: unknown): Normaliz
     if (value.permalink) metadata.postPermalink = value.permalink;
     if (value.media_owner_username) metadata.postOwnerUsername = value.media_owner_username;
     if (value.mention_media) metadata.postDetails = value.mention_media;
+    /*
+     * Kept on the thread because it changes what the mention MEANS. A
+     * collaborator tag notifies nobody and is only ever found by a backfill, so
+     * "why did this appear hours late" has an answer on the row rather than in
+     * somebody's memory.
+     */
+    if (value.mention_kind) metadata.mentionKind = value.mention_kind;
     /*
      * The replies under our mention. Kept on the MESSAGE as well as the thread
      * because they are a snapshot: Meta gives no webhook when somebody replies
