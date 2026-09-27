@@ -497,6 +497,40 @@ export class OutboundEventRepository extends BaseRepository {
   }
 
   /**
+   * Which of these comments have a hide or delete that died.
+   *
+   * ONE QUERY FOR THE WHOLE THREAD PAGE, not one per message. The inbox asks
+   * this for every comment it renders, and asking per message would be an N+1
+   * on a read path — the shape this codebase keeps out of hot queries.
+   *
+   * Served by `outbound_events_dead_moderation_idx`, whose predicate this
+   * repeats exactly: a partial index serves only a query that asks the same
+   * way.
+   */
+  async findFailedModerationCommentIds(
+    enterpriseId: number,
+    commentIds: readonly string[],
+  ): Promise<Set<string>> {
+    if (commentIds.length === 0) return new Set();
+    const rows = await this.query<{ commentId: string }>(
+      `SELECT DISTINCT payload->>'commentId' AS "commentId"
+         FROM outbound_events
+        WHERE enterprise_id = $1
+          AND status = $2
+          AND event_type IN ($3, $4)
+          AND payload->>'commentId' = ANY($5::varchar[])`,
+      [
+        this.requireEnterprise(enterpriseId),
+        OutboundEventStatus.DeadLetter,
+        OutboundEventType.CommentHide,
+        OutboundEventType.CommentDelete,
+        [...commentIds],
+      ],
+    );
+    return new Set(rows.map((row) => row.commentId));
+  }
+
+  /**
    * Puts a dead-lettered row back on the queue.
    *
    * A LEDGER OPERATION ON THE LEDGER ROW, which is the whole point. Hiding or

@@ -69,6 +69,8 @@ export interface MessageRow {
   readonly canBeRepliedTo: boolean;
   /** Hidden by us on the platform. Instagram never announces it, so this is ours. */
   readonly isHiddenOnPlatform: boolean;
+  /** Null for an internal note, and for a send still in the relay. */
+  readonly platformMessageId: string | null;
   /**
    * When the customer unsent it. The row and its body are KEPT — this says the
    * platform no longer shows it, not that we have forgotten it.
@@ -798,6 +800,10 @@ export class MessageRepository extends BaseRepository {
                  AND m.platform_deleted_at IS NULL)
                 AS "canBeRepliedTo",
               m.is_hidden_on_platform AS "isHiddenOnPlatform",
+              -- The platform's own id, which is how a dead moderation send is
+              -- matched back to the comment it was for: moderation creates no
+              -- message of its own, so there is no link column to join on.
+              m.platform_message_id AS "platformMessageId",
               m.platform_deleted_at AS "platformDeletedAt",
               m.platform_sent_at AS "platformSentAt", m.created_at AS "createdAt",
               m.customer_id AS "customerId", m.sent_by_employee_id AS "sentByEmployeeId",

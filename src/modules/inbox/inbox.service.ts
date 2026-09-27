@@ -240,6 +240,8 @@ export class InboxService {
      * recover from our own records.
      */
     knownAuthors: ReadonlyMap<string, { authorName: string | null; direction: MessageDirection }>;
+    /** Comments whose hide or delete dead-lettered, and can be sent again. */
+    failedModerationCommentIds: ReadonlySet<string>;
     /**
      * The mention this one was replying to, when that comment tagged us too and
      * is therefore already a conversation of ours. Null in the ordinary case.
@@ -334,12 +336,31 @@ export class InboxService {
         ? await this.conversations.findMentionByCommentId(enterpriseId, parentCommentId)
         : null;
 
+    /*
+     * WHICH COMMENTS HAVE A HIDE OR DELETE THAT DIED.
+     *
+     * The inbox offers a retry only where there is something to retry (todo
+     * E19), so it has to be told. One query for the whole page, keyed on the
+     * platform ids actually on it — and none at all for a thread that is not
+     * comments, which is most of them.
+     */
+    const failedModerationCommentIds =
+      conversation.conversationKind === ConversationKind.CommentThread
+        ? await this.outbound.findFailedModerationCommentIds(
+            enterpriseId,
+            messages
+              .map((message) => message.platformMessageId)
+              .filter((id): id is string => id !== null),
+          )
+        : new Set<string>();
+
     return {
       conversation,
       messages,
       attachmentsByMessageId,
       knownAuthors,
       parentMention,
+      failedModerationCommentIds,
       nextCursor:
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,

@@ -496,6 +496,13 @@ describe('the shared inbox', () => {
       'isRead',
       'messageKind',
       /*
+       * Our mark and the platform disagree: a hide or delete whose send died,
+       * leaving the comment public while this thread says it is gone. Exposed
+       * so the client can offer the replay — the ordinary hide is refused from
+       * here on, because our own copy really does read hidden.
+       */
+      'moderationFailed',
+      /*
        * The whole stored metadata bag, added so nothing is captured unseen —
        * we hold far more than the thread shows and none of it was visible
        * anywhere, which is how a captured field gets dropped for looking
@@ -932,11 +939,38 @@ describe('the shared inbox', () => {
       await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
 
       await killTheSend(enterpriseRefId);
+
+      /*
+       * The client cannot offer a retry it is never told about. This flag is
+       * the only thing separating "hidden" from "we said hidden and the
+       * platform never heard".
+       */
+      const failed = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      expect(
+        (failed.body.data.messages as { refId: string; moderationFailed: boolean }[]).find(
+          (m) => m.refId === messageRefId,
+        )?.moderationFailed,
+      ).toBe(true);
+
       await retry(ownerToken, conversationRefId, messageRefId).expect(202);
 
       const rows = await moderationRows(enterpriseRefId);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ status: 'pending', replays: '1' });
+
+      // Queued again, so there is nothing failed to show.
+      const repaired = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      expect(
+        (repaired.body.data.messages as { refId: string; moderationFailed: boolean }[]).find(
+          (m) => m.refId === messageRefId,
+        )?.moderationFailed,
+      ).toBe(false);
     });
 
     /*

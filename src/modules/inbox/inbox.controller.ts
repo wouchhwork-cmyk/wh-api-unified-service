@@ -245,7 +245,12 @@ export class InboxController {
         result.parentMention,
       ),
       messages: result.messages.map((row) =>
-        toMessage(row, result.attachmentsByMessageId.get(row.id) ?? []),
+        toMessage(
+          row,
+          result.attachmentsByMessageId.get(row.id) ?? [],
+          row.platformMessageId !== null &&
+            result.failedModerationCommentIds.has(row.platformMessageId),
+        ),
       ),
       /*
        * Lifted into meta.pagination by the envelope interceptor, so this reads
@@ -506,6 +511,7 @@ export function renderAsFor(attachment: AttachmentRow): 'image' | 'video' | 'aud
 function toMessage(
   row: MessageRow,
   attachments: readonly AttachmentRow[],
+  moderationFailed: boolean,
 ): Record<string, unknown> {
   return {
     refId: row.refId,
@@ -533,6 +539,15 @@ function toMessage(
     platformSentNoText: row.metadata.platformSentNoText === true,
     /** Hidden by us on the platform. Ours to set; Instagram never tells us. */
     hiddenOnPlatform: row.isHiddenOnPlatform === true,
+    /*
+     * OUR MARK AND THE PLATFORM DISAGREE. Hiding and deleting are recorded
+     * optimistically — Instagram sends no webhook for either — so a send that
+     * died leaves the comment public while this thread says it is gone. The
+     * client needs to know, because the ordinary hide is refused from here on
+     * (our copy really does read hidden) and only a replay of the dead ledger
+     * row can put it right.
+     */
+    moderationFailed,
     /*
      * The customer unsent it on Instagram. The body is still here on purpose —
      * the business is accountable for the conversation, and a record that

@@ -789,6 +789,20 @@ export async function applyPostTableObjects(
       WHERE status = 'dead_letter'
     `);
   /*
+   * "Did this comment's hide or delete die?", asked once per thread page for
+   * every comment on it. The index above cannot answer it — that one is ordered
+   * for the gauge's count, keyed by neither tenant nor comment.
+   *
+   * Keyed on the payload's comment id because moderation creates no message of
+   * its own: it changes one that already exists, so there is no link column.
+   */
+  await run(`
+      CREATE INDEX outbound_events_dead_moderation_idx
+      ON outbound_events (enterprise_id, (payload->>'commentId'))
+      WHERE status = 'dead_letter'
+        AND event_type IN ('comment_hide', 'comment_delete')
+    `);
+  /*
    * RETENTION, one per ledger.
    *
    * Without these the nightly sweep is three sequential scans of the three

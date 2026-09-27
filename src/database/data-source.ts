@@ -17,6 +17,7 @@ import { OnePageOneConnection1758000000000 } from './migrations/1758000000000-On
 import { ProviderApiUsage1758100000000 } from './migrations/1758100000000-ProviderApiUsage';
 import { RoleLevels1758200000000 } from './migrations/1758200000000-RoleLevels';
 import { StaffRoles1758300000000 } from './migrations/1758300000000-StaffRoles';
+import { ModerationDeadLetterLookup1758400000000 } from './migrations/1758400000000-ModerationDeadLetterLookup';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -79,6 +80,7 @@ export function buildDataSourceOptions(
       ProviderApiUsage1758100000000,
       RoleLevels1758200000000,
       StaffRoles1758300000000,
+      ModerationDeadLetterLookup1758400000000,
     ],
     migrationsTableName: 'schema_migrations',
 
