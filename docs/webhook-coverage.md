@@ -39,56 +39,63 @@ losing, with a §reference into `platform-limitations.md` where one exists.
 
 ## 1. Direct messages
 
-| # | shape | seen | projected | status |
-|---|---|---|---|---|
-| 1.1 | `text` | 51 | | |
-| 1.2 | `echo+text` (our own send, echoed back) | 8 | | |
-| 1.3 | `text+reply_to:{mid,is_self_reply}` | 7 | | |
-| 1.4 | `echo+text+reply_to:{mid,is_self_reply}` | 2 | | |
-| 1.5 | `echo+text+reply_to:{story}` | 1 | | |
-| 1.6 | `message_edit` | 35 | | |
-| 1.7 | `message.is_deleted` (an unsend) | 1 | | |
-| 1.8 | `reaction` | 1 | | |
-| 1.9 | `is_unsupported` (a shared profile) | 2 | | |
+| shape | seen | projected | status |
+|---|---|---|---|
+| `text` | 54 | 54 messages | OK |
+| `echo+text` (our own send, echoed back) | 11 | 11 | OK |
+| `text+reply_to:{mid}` | 7 | 7, threaded under the parent | OK |
+| `echo+text+reply_to:{mid}` | 2 | 2 | OK |
+| `echo+text+reply_to:{story}` | 1 | 1, marked as a story reply | OK |
+| `message_edit` | 35 | 0 — updates an existing message | **UNRESOLVED**, see the field audit |
+| `message.is_deleted` (an unsend) | 1 | 0 — marks the held message deleted | OK, record kept on purpose |
+| `reaction` | 1 | 0 — applies an emoji to a held message | OK |
+| `is_unsupported` (a shared profile) | 2 | 2, flagged `contentUnavailable` | OK, §3.5 |
 
 ## 2. Direct message attachments
 
-| # | shape | seen | projected | status |
-|---|---|---|---|---|
-| 2.1 | `att:image` | 5 | | |
-| 2.2 | `att:video` | 1 | | |
-| 2.3 | `att:audio` | 2 | | |
-| 2.4 | `att:ig_post` (a shared post or advert) | 7 | | |
-| 2.5 | `att:ig_reel` | 1 | | |
-| 2.6 | `att:ig_story` | 3 | | |
-| 2.7 | `att:share` | 3 | | |
-| 2.8 | `att:story_mention` | 5 | | |
-| 2.9 | `att:template` (a shared comment — always empty) | 7 | | |
-| 2.10 | `text+att:*` (words and media together) | 3 | | |
-| 2.11 | `echo+att:image+att:image` (two in one message) | 1 | | |
+Every shape projects 1:1 and every payload key is captured (see the field
+audit). `stableUrl` and `kindIsGuessed` are recorded where the link expires or
+the media type is a guess.
+
+| shape | seen | projected | status |
+|---|---|---|---|
+| `att:image` | 5 | 5 | OK |
+| `att:video` | 1 | 1 | OK |
+| `att:audio` | 2 | 2 | OK |
+| `att:ig_post` (a shared post or advert) | 7 | 7, with `title` and `postMediaId` | OK |
+| `att:ig_reel` | 1 | 1, with `reelVideoId` | OK |
+| `att:ig_story` | 3 | 3, with `storyMediaId` | OK |
+| `att:share` | 3 | 3 | OK |
+| `att:story_mention` | 5 | 5, `kindIsGuessed` set | OK |
+| `att:template` (a shared comment) | 7 | 7, flagged `contentUnavailable` | OK — Meta sends an empty box, §3.6 |
+| `text+att:*` | 3 | 3 | OK |
+| `echo+att:image+att:image` | 2 | 2, both attachments kept | OK |
 
 ## 3. Mentions
 
-| # | shape | seen | projected | status |
-|---|---|---|---|---|
-| 3.1 | `media_id` + `comment_id` — tagged in a comment | 22 | | |
-| 3.2 | `media_id` only — tagged in a caption | 3 | | |
-| 3.3 | `media_id` + enriched fields — from the /tags backfill | 7 | | |
+| shape | seen | projected | status |
+|---|---|---|---|
+| in a comment (`media_id`+`comment_id`) | 22 | 22, `mentionKind=comment` | OK |
+| in a caption (`media_id` only) | 3 | 3, `mentionKind=caption` | OK |
+| from the /tags backfill | 7 | 7, `mentionKind` inferred | OK — the only route for a collaborator tag, §1.2f |
 
 ## 4. Comments on our own posts
 
-| # | shape | seen | projected | status |
-|---|---|---|---|---|
-| 4.1 | `from,media,text` — a top-level comment | 9 | | |
-| 4.2 | `from,media,parent_id,text` — a reply | 7 | | |
-| 4.3 | `from,media` — no text at all | 1 | | |
+| shape | seen | projected | status |
+|---|---|---|---|
+| top-level | 9 | 9, author resolved from `from` | OK |
+| reply (`parent_id`) | 7 | 3 — the rest are duplicates and our own | OK |
+| no text at all | 1 | 1, flagged `platformSentNoText` | OK — a GIF or sticker, §1.4 |
 
 ## 5. Post updates
 
-| # | shape | seen | projected | status |
-|---|---|---|---|---|
-| 5.1 | instagram | 539 | | |
-| 5.2 | facebook | 410 | | |
+| shape | seen | projected | status |
+|---|---|---|---|
+| instagram | 539 | 159 post rows | OK — makes posts, not messages |
+| facebook | 410 | (same set) | OK |
+
+Post updates make **no Graph calls** — everything needed is in the payload,
+which is why 949 of them replay without touching the rate limit.
 
 ---
 
