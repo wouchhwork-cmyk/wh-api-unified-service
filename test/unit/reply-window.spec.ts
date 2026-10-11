@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateReplyWindow, replyEventTypeFor } from '@/modules/inbox/reply-window';
-import { ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
+import { MentionKind, ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
 
 /**
  * Meta's 24-hour messaging window, decided before a reply is accepted.
@@ -119,6 +119,51 @@ describe('evaluateReplyWindow', () => {
 
     expect(result.canReply).toBe(false);
     expect(result.reason).toContain('does not accept replies');
+  });
+
+  /*
+   * HOW WE WERE TAGGED decides whether a mention can be answered at all, and
+   * this was documented for a fortnight before anything enforced it.
+   *
+   * Measured against live posts (platform-limitations 1.7b): a caption tag
+   * takes a top-level comment with a 200, a comment mention takes a reply
+   * beneath that comment, and a collaborator or photo tag refuses both with
+   * `#200 Permissions error` — same token, seconds apart.
+   */
+  describe('a mention, by how it was made', () => {
+    const mention = (mentionKind?: string) =>
+      evaluateReplyWindow({
+        conversationKind: ConversationKind.Mention,
+        lastInboundAt: null,
+        ...(mentionKind === undefined ? {} : { mentionKind }),
+      });
+
+    it('refuses a post we were only TAGGED in', () => {
+      const window = mention(MentionKind.Tagged);
+
+      expect(window.canReply).toBe(false);
+      // The reason has to name the distinction, because an agent looking at two
+      // mentions cannot otherwise tell why one takes a reply and one does not.
+      expect(window.reason).toContain('tagged in');
+      expect(window.reason).toContain('internal note');
+    });
+
+    it('allows a caption mention — the one that CAN be commented on', () => {
+      expect(mention(MentionKind.Caption).canReply).toBe(true);
+    });
+
+    it('allows a comment mention, answerable beneath the comment', () => {
+      expect(mention(MentionKind.Comment).canReply).toBe(true);
+    });
+
+    /*
+     * Everything mentioned before mention_kind was recorded has no kind at all.
+     * Those stay repliable: refusing them would silently close replies on real
+     * mentions, and the send path still refuses a tagged post if it is wrong.
+     */
+    it('allows a mention whose kind was never recorded', () => {
+      expect(mention(undefined).canReply).toBe(true);
+    });
   });
 
   describe('a conversation that is no longer open', () => {

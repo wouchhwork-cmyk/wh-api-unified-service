@@ -1124,6 +1124,9 @@ function toConversationSummary(row: {
   const window = evaluateReplyWindow({
     conversationKind: row.conversationKind as ConversationKind,
     lastInboundAt: row.lastInboundAt,
+    // So the reply box is disabled on a tagged post rather than accepting text
+    // the platform will refuse (platform-limitations 1.7b).
+    mentionKind: (row.contextMetadata ?? {}).mentionKind,
     // Included so a resolved thread reads as "reopen it to reply" rather than
     // offering a reply box that answers 409.
     status: row.status as ConversationStatus,

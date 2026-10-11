@@ -1,5 +1,10 @@
 import { MESSAGING_WINDOW_MS } from '@/shared/constants';
-import { ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
+import {
+  ConversationKind,
+  ConversationStatus,
+  MentionKind,
+  OutboundEventType,
+} from '@/shared/enums';
 
 /**
  * Statuses that refuse a customer-facing reply.
@@ -75,6 +80,11 @@ export interface ReplyWindow {
  * untestable once it reads the clock itself.
  */
 export function evaluateReplyWindow(input: {
+  /**
+   * HOW we were tagged, for a mention. Read from `context_metadata`, where the
+   * projector and the /tags backfill both file it.
+   */
+  mentionKind?: unknown;
   conversationKind: ConversationKind;
   lastInboundAt: Date | null;
   /** Omitted by callers that only care about the platform's own rules. */
@@ -103,6 +113,34 @@ export function evaluateReplyWindow(input: {
       canReply: false,
       reason:
         'The platform does not accept replies to this kind of item. You can still add an internal note.',
+    };
+  }
+
+  /*
+   * A COLLABORATOR OR PHOTO TAG CANNOT BE ANSWERED AT ALL.
+   *
+   * The right to comment on somebody else's post tracks `mentioned_media`
+   * access exactly, and only a CAPTION tag grants it. Measured against live
+   * posts (platform-limitations 1.7b): a caption tag takes a top-level comment
+   * with a 200, a comment mention takes a reply beneath that comment, and a
+   * collaborator or photo tag refuses both with `#200 Permissions error` —
+   * every time, with the same token, seconds apart.
+   *
+   * This was documented and not enforced, which is the worst of both: an agent
+   * was offered a reply box on a tagged post, and the send went 202, queued,
+   * spent its attempts and dead-lettered — telling them it had failed long
+   * after they had moved on. The platform's answer is knowable here, so it is
+   * given here.
+   */
+  if (
+    input.conversationKind === ConversationKind.Mention &&
+    input.mentionKind === MentionKind.Tagged
+  ) {
+    return {
+      canReply: false,
+      reason:
+        'Instagram does not allow replying to a post you were tagged in — only to one that ' +
+        '@mentions you in its caption or in a comment. You can still add an internal note.',
     };
   }
 

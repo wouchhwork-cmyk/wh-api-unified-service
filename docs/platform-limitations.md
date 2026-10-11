@@ -779,6 +779,15 @@ only for a caption tag.
 about scopes: the token holds `instagram_manage_comments` throughout, and the
 same call against a caption mention succeeds seconds later.
 
+**Enforced since 11 Oct 2026**, and not before — for a fortnight this table was
+written down and nothing acted on it. `evaluateReplyWindow` reads `mentionKind`
+and refuses a `tagged` mention outright, in the API and in the reply box both.
+Until then an agent was offered a reply on a collaborator tag, the send went
+202, queued, spent its attempts and dead-lettered: they were told it failed long
+after they had moved on. A mention whose kind predates `mention_kind` being
+recorded stays repliable, because refusing those would close replies on real
+mentions to avoid a refusal the send path already handles.
+
 ### 1.8 A reply to a mention can never be deleted, or even read back
 
 **Expected:** having authored a comment, we could delete it.

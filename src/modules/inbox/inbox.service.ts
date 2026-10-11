@@ -911,6 +911,7 @@ export class InboxService {
       const window = evaluateReplyWindow({
         conversationKind: conversation.conversationKind,
         lastInboundAt: conversation.lastInboundAt,
+        mentionKind: conversation.contextMetadata?.mentionKind,
       });
       if (!window.canReply) {
         throw new AppException(
