@@ -39,8 +39,21 @@ function load(file: string, required: boolean): void {
       .trim();
     const value = raw.replace(/^["']|["']$/g, '');
 
-    // Earlier files lose to later ones, and a real environment variable wins
-    // over both — the same precedence the running service has.
+    /*
+     * Earlier files lose to later ones, and THE FILES WIN OVER THE REAL
+     * ENVIRONMENT — which is the opposite of the running service, and
+     * deliberate.
+     *
+     * The comment here used to claim a real environment variable won. Making
+     * that true broke the whole suite instantly: vitest exports
+     * `NODE_ENV=test`, the config schema accepts only dev/qa/prod, and every
+     * file failed before a single test ran. The test environment is not the
+     * ambient one and must not inherit it.
+     *
+     * To override something for a run, add it to `.env.local`, which is loaded
+     * after `.env.dev` and wins — the same way a developer does it, and the
+     * same way CI switches Meta on.
+     */
     process.env[key] = value;
   }
 }
