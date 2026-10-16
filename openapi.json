@@ -267,6 +267,31 @@
         ]
       }
     },
+    "/api/v1/connections/{refId}/disconnect": {
+      "post": {
+        "description": "Withdraws our authority over the account: the Page is unsubscribed from our app, the stored channel tokens are cleared, and nothing will send, backfill or project for it again — a webhook that still arrives is attributed to nothing and dropped. NOTHING IS DELETED: every conversation, message, customer and post stays exactly as it is, because disconnecting means \"stop acting for me\", not \"forget what happened\". Reconnecting the same Page afterwards is allowed and reactivates these channels.",
+        "operationId": "ConnectionsController_disconnect_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Stop acting on this connection, and keep everything it produced",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/api/v1/connections/channels": {
       "get": {
         "description": "Facebook Pages and the Instagram profiles linked to them. An Instagram channel names its parent Page, because the Page token is what authorises Instagram calls.",
@@ -285,7 +310,7 @@
     },
     "/api/v1/employees": {
       "get": {
-        "description": "The business's own people, with their roles and whether they have accepted their invitation. Contact details are masked. Pass includeSupport=true to also see the Wouchh people assigned to this business — who are not its employees.",
+        "description": "The business's own people, with their roles and whether they have accepted their invitation. Oldest first, keyset-paginated on (createdAt, id). Contact details are masked. Pass includeSupport=true to also see the Wouchh people assigned to this business — who are not its employees.",
         "operationId": "EmployeesController_list_v1",
         "parameters": [],
         "responses": {
@@ -347,7 +372,7 @@
     },
     "/api/v1/employees/roles": {
       "get": {
-        "description": "Its OWN copies of the role templates, created at signup. Needed before anybody can be invited, since a role is required.",
+        "description": "Its OWN copies of the role templates, created at signup. Needed before anybody can be invited, since a role is required. Each carries `assignable`, which is a fact about THIS caller rather than the role: a manager may grant `agent` and not `manager`. Roles the caller cannot grant are still listed, so a form can disable them instead of hiding a role and implying it does not exist.",
         "operationId": "EmployeesController_roleOptions_v1",
         "parameters": [],
         "responses": {
@@ -383,6 +408,127 @@
         "summary": "Suspend or reinstate somebody",
         "tags": [
           "employees"
+        ]
+      }
+    },
+    "/api/v1/roles/permissions": {
+      "get": {
+        "description": "Grouped by area — direct messages, comments, mentions, team, and so on — in reading order rather than alphabetically. Each entry says whether the business has the feature behind it (available) and whether the person looking holds it themselves (grantable). Both are reported rather than filtered out: hiding an unavailable permission makes a role that already grants it look corrupt, and hides what buying the feature back would restore.",
+        "operationId": "RolesController_permissions_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Everything a role can grant, grouped for a person",
+        "tags": [
+          "roles"
+        ]
+      }
+    },
+    "/api/v1/roles": {
+      "get": {
+        "description": "Most senior first. Each carries its level, its permissions, how many people hold it, and whether THIS caller may edit or assign it — so a client does not offer a button the server will refuse.",
+        "operationId": "RolesController_list_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The roles this business has",
+        "tags": [
+          "roles"
+        ]
+      },
+      "post": {
+        "description": "The level must be strictly below your own, and the permissions must be ones you hold yourself. The owner level is reserved and cannot be created.",
+        "operationId": "RolesController_create_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create a role",
+        "tags": [
+          "roles"
+        ]
+      }
+    },
+    "/api/v1/roles/{refId}": {
+      "patch": {
+        "description": "Wholesale, not a patch: a partial update of a permission SET is ambiguous — an absent list could mean \"leave it alone\" or \"grant nothing\", and the difference between those is a silent total revocation. Built-in roles cannot be edited.",
+        "operationId": "RolesController_update_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Replace a role",
+        "tags": [
+          "roles"
+        ]
+      }
+    },
+    "/api/v1/roles/{refId}/archive": {
+      "post": {
+        "description": "Stops it being assigned; it is not deleted and the people who hold it keep it, so the record of who had what survives. A role somebody still holds is refused — archiving it would quietly leave them holding something the business believes it has retired.",
+        "operationId": "RolesController_archive_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Retire a role",
+        "tags": [
+          "roles"
+        ]
+      }
+    },
+    "/api/v1/roles/employees/{refId}": {
+      "post": {
+        "description": "The gap this fills: a role was set once, at invitation, and could never be changed — a promotion meant deleting the person and inviting them again, which loses their history. You may only re-role somebody below your own level, and only into roles below it.",
+        "operationId": "RolesController_setEmployeeRoles_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Replace somebody's roles",
+        "tags": [
+          "roles"
         ]
       }
     },
@@ -472,6 +618,47 @@
         ]
       }
     },
+    "/api/v1/features": {
+      "get": {
+        "description": "Every feature we sell, with this business’s standing on each. A feature never requested has no row and reports a null status, which reads the same as not enabled — and is the interesting case, because it is the one somebody might want to ask for.",
+        "operationId": "FeaturesController_list_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What this business has, and what it could have",
+        "tags": [
+          "features"
+        ]
+      }
+    },
+    "/api/v1/features/{featureKey}/request": {
+      "post": {
+        "description": "Legal only from \"never requested\" and from \"declined\" — a declined business may ask again. It deliberately cannot move a REVOKED feature, which is withdrawn by us and is not self-serve re-enableable, and it cannot move an active one, where the request would mean nothing. Repeating a request that is already pending changes nothing and still succeeds, so a double-click is not an error.",
+        "operationId": "FeaturesController_request_v1",
+        "parameters": [
+          {
+            "name": "featureKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Ask for a feature",
+        "tags": [
+          "features"
+        ]
+      }
+    },
     "/api/v1/conversations": {
       "get": {
         "description": "Cursor-paginated, newest activity first. The cursor carries the sort key and the row id, so a page can neither skip nor repeat a conversation.",
@@ -556,6 +743,39 @@
           }
         },
         "summary": "Hide, unhide or delete a comment on a post you own",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/api/v1/conversations/{refId}/messages/{messageRefId}/moderate/retry": {
+      "post": {
+        "description": "Hiding and deleting mark the local copy optimistically, because Instagram sends no webhook for either. When the send then fails terminally the comment is still public while the inbox says it is gone, and the ordinary moderate call is refused — correctly — because the local copy already reads hidden. This replays the dead ledger row rather than queueing a new send, so pressing it twice cannot produce two calls. The permission required is the one the ORIGINAL action needed, not this endpoint.",
+        "operationId": "InboxController_retryModeration_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageRefId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "summary": "Send a failed hide or delete again",
         "tags": [
           "inbox"
         ]
@@ -659,6 +879,31 @@
         ]
       }
     },
+    "/api/v1/conversations/{refId}/attachments/refresh": {
+      "post": {
+        "description": "For the client to call when an attachment fails to load. Meta serves message media from links that expire and carry no expiry in the URL, so the browser is the only party that discovers a dead one — nothing on the server can predict it. Re-reads the thread and replaces the links it can. Meta returns only the ~20 most recent messages, so `beyondReach` counts the attachments whose message is older than that: those are permanently unrecoverable, and a client that sees a non-zero count should stop asking and offer the permalink instead. Safe to call repeatedly, and cheap when there is nothing to do.",
+        "operationId": "InboxController_refreshAttachments_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Replace expired media links in this thread",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
     "/api/v1/conversations/{refId}/read": {
       "post": {
         "description": "An explicit write, rather than a side effect of reading the thread.",
@@ -713,6 +958,133 @@
         "summary": "The customer directory",
         "tags": [
           "catalogue"
+        ]
+      }
+    },
+    "/api/v1/platform/rate-limits": {
+      "get": {
+        "description": "Two meters, because Meta runs two. The app pool is one allowance for the whole developer app, drained by the connect and token paths; the business pools are per business per product and carry the inbox. Every figure Meta gives is a PERCENTAGE of an allowance it never states, so usedPercent is authoritative for how close a pool is to refusal and callsInWindow is ours, for volume. A null percentage means Meta sent no header, which is unknown rather than zero.",
+        "operationId": "PlatformController_rateLimitOverview_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "How much of the Meta API allowance is spent, and by whom",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/rate-limits/history": {
+      "get": {
+        "description": "Oldest first, so it can be charted directly. Bounded by both a window and a row cap — an unbounded series is how a monitoring endpoint becomes the thing that needs monitoring.",
+        "operationId": "PlatformController_rateLimitHistory_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Minute-by-minute rate-limit history",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/staff": {
+      "get": {
+        "description": "Until staff roles existed there was nothing to show here: every platform admin had identical authority over every business, and the support and ops roles were two seeded rows nothing could point at. A person marked hasAllEnterpriseAccess is a full admin and their roles are ignored.",
+        "operationId": "PlatformController_listStaff_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Wouchh's own people, and what each of them may do",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "description": "Creates a SCOPED staff member and sends them an invitation. They set their own password from the code, so nobody else ever knows it, and the account does nothing until they do. An address that already belongs to somebody is refused: a tenant invite deliberately reuses an existing identity, and doing that here would hand a customer staff reach over every business. Promotion to full platform admin is not available here and stays in the deployment configuration.",
+        "operationId": "PlatformController_inviteStaff_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Add one of our own people",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/staff/roles": {
+      "get": {
+        "operationId": "PlatformController_staffRoleOptions_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The staff roles that can be granted",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/staff/{refId}/status": {
+      "post": {
+        "description": "Suspending ends every session that person holds. Nobody may change their own status, and the last active platform admin cannot be suspended — staff have no signup route, so that would leave a console nobody can enter without a redeploy. An invitation that was never accepted can be cancelled but not activated: only the person accepting it does that.",
+        "operationId": "PlatformController_setStaffStatus_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Suspend or reinstate a staff member",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/staff/{refId}/roles": {
+      "post": {
+        "description": "Only for scoped staff. A full platform admin is refused, because their permissions come from the flag and roles would be recorded while doing nothing. Nobody may change their own — staff have no signup route, so an admin who narrowed themselves out of the console would have no way back.",
+        "operationId": "PlatformController_setStaffRoles_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Replace a staff member's roles",
+        "tags": [
+          "platform"
         ]
       }
     },
