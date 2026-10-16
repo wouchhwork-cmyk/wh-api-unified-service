@@ -105,7 +105,21 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       mentions would go dark until an admin granted it business by business.
       Splitting it out is a feature insert plus a backfill for everyone holding
       `unified_inbox`. That is a commercial decision, not a side effect.
-- [ ] **E9. `GET /employees/roles` does not say what is assignable** — S
+- [x] **E9. `GET /employees/roles` does not say what is assignable** — DONE 17 Oct 2026
+      The endpoint carries `assignable` now, computed per CALLER through the
+      same `mayAssignRole` the submit path uses — a manager may grant `agent`
+      and not `manager`. The invite form disables what it cannot grant rather
+      than offering everything and failing on submit, which is a poor moment to
+      learn: a colleague and a role have already been chosen.
+
+      Non-assignable roles are listed, not filtered. Hiding `manager` would
+      tell a manager the role does not exist instead of that it is not theirs
+      to give. The form also selects the first grantable option, so it never
+      opens on something that cannot be submitted.
+
+      `/roles` keeps its own richer `assignable` for the role editor; the form
+      stays on the light endpoint built for it.
+- [ ] ~~E9 (original entry)~~ — S
       The invite form offers every role; the server then refuses one above the
       inviter's level with a clear message. `GET /roles` carries `assignable`
       and is the endpoint to move that form to.

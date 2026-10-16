@@ -76,6 +76,68 @@ describe('a business builds its team', () => {
     return match.refId;
   }
 
+  /*
+   * E9. The invite form offered every role and let the server refuse on
+   * submit — correct, and a poor way to find out, because by then somebody has
+   * chosen a colleague and a role. Assignability is a fact about the CALLER,
+   * not the role, so it has to come from the endpoint the form reads.
+   */
+  describe('which roles the caller may actually hand out', () => {
+    const rolesFor = async (token: string) => {
+      const response = await http()
+        .get('/api/v1/employees/roles')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      return response.body.data as { name: string; assignable: boolean }[];
+    };
+
+    it('lets an owner grant everything, including owner', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const roles = await rolesFor(ownerToken);
+
+      expect(roles.length).toBeGreaterThan(0);
+      expect(roles.every((role) => role.assignable)).toBe(true);
+    });
+
+    it('stops a manager handing out their own level, while still listing it', async () => {
+      /*
+       * The escalation the whole mechanism exists to stop: invite an address
+       * you control, grant it your own role, and now there are two of you. The
+       * role stays VISIBLE though — hiding it would tell a manager the role
+       * does not exist, rather than that it is not theirs to give.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const managerRole = await roleRefId(ownerToken, 'manager');
+
+      await http()
+        .post('/api/v1/employees')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ firstName: 'Priya', email: 'priya@bluebottle.test', roleRefId: managerRole })
+        .expect(201);
+      const accepted = await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({
+          email: 'priya@bluebottle.test',
+          code: code(),
+          password: 'a-password-only-priya-knows',
+        })
+        .expect(200);
+
+      const roles = await rolesFor(accepted.body.data.accessToken as string);
+
+      const manager = roles.find((role) => role.name === 'manager');
+      const agent = roles.find((role) => role.name === 'agent');
+      const owner = roles.find((role) => role.name === 'owner');
+
+      expect(manager).toBeDefined();
+      expect(manager?.assignable).toBe(false);
+      expect(owner?.assignable).toBe(false);
+      // And the ones genuinely below them still are, or the flag is useless.
+      expect(agent?.assignable).toBe(true);
+    });
+  });
+
   it('refuses a second signup for the same business', async () => {
     await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
 

@@ -8,6 +8,7 @@ import { SessionRepository } from '@/database/repositories/session.repository';
 import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
 import { VerificationService, type PendingOtpDelivery } from '@/modules/auth/verification.service';
+import { RequestContext } from '@/shared/context';
 import { SecretHashService } from '@/shared/crypto';
 import { ROLE_LEVEL, SystemRole } from '@/shared/enums';
 import {
@@ -141,9 +142,34 @@ export class EmployeesService {
    * Its OWN copies of the templates, made at signup — which is why this is
    * scoped rather than a catalogue read.
    */
-  async listRoleOptions(enterpriseId: number): Promise<{ refId: string; name: string }[]> {
-    const roles = await this.roles.listForEnterprise(enterpriseId);
-    return roles.map((role) => ({ refId: role.refId, name: role.name }));
+  /**
+   * The roles an invite form should offer, and which of them this person may
+   * actually hand out.
+   *
+   * ASSIGNABILITY IS PER ACTOR, which is why it cannot be a property of the
+   * role. A manager may grant `agent` and not `manager`; an owner may grant
+   * both. The form used to offer every role to everybody and let the server
+   * refuse on submit — correct, and a poor way to find out, because the person
+   * has already chosen a colleague and a role by then.
+   *
+   * Non-assignable roles are still RETURNED rather than filtered out. A form
+   * that silently omits `manager` tells somebody the role does not exist; one
+   * that shows it disabled tells them who to ask.
+   */
+  async listRoleOptions(
+    enterpriseId: number,
+    actingEmployeeId: number | null,
+  ): Promise<{ refId: string; name: string; assignable: boolean }[]> {
+    const [roles, authority] = await Promise.all([
+      this.roles.listForEnterprise(enterpriseId),
+      this.authorityOf(enterpriseId, actingEmployeeId),
+    ]);
+
+    return roles.map((role) => ({
+      refId: role.refId,
+      name: role.name,
+      assignable: mayAssignRole(authority, role) === null,
+    }));
   }
 
   /**
@@ -187,7 +213,26 @@ export class EmployeesService {
     });
   }
 
-  private async authorityOf(enterpriseId: number, employeeId: number): Promise<ActorAuthority> {
+  private async authorityOf(
+    enterpriseId: number,
+    employeeId: number | null,
+  ): Promise<ActorAuthority> {
+    /*
+     * A PLATFORM STAFF ACTOR holds no employment here, so there is no row to
+     * resolve. They act with owner-level authority over the tenant, which is
+     * what every other staff path already assumes — and with their OWN
+     * permissions rather than the whole catalogue, so a support agent cannot
+     * hand out more than the platform gave them.
+     */
+    if (employeeId === null) {
+      return {
+        employeeId: -1,
+        level: ROLE_LEVEL.Owner,
+        roleNames: [],
+        permissionCodes: new Set(RequestContext.actor()?.permissions ?? []),
+      };
+    }
+
     const authority = await this.roles.authorityOfEmployee(enterpriseId, employeeId);
     return {
       employeeId,

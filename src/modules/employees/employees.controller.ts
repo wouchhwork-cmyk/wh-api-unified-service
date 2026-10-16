@@ -92,12 +92,15 @@ export class EmployeesController {
     summary: 'The roles this business can assign',
     description:
       'Its OWN copies of the role templates, created at signup. Needed before anybody can be ' +
-      'invited, since a role is required.',
+      'invited, since a role is required. Each carries `assignable`, which is a fact about THIS ' +
+      'caller rather than the role: a manager may grant `agent` and not `manager`. Roles the ' +
+      'caller cannot grant are still listed, so a form can disable them instead of hiding a ' +
+      'role and implying it does not exist.',
   })
   async roleOptions(
     @CurrentScopedActor() actor: ScopedActor,
-  ): Promise<{ refId: string; name: string }[]> {
-    return this.employees.listRoleOptions(actor.enterpriseId);
+  ): Promise<{ refId: string; name: string; assignable: boolean }[]> {
+    return this.employees.listRoleOptions(actor.enterpriseId, actor.employeeId);
   }
 
   @Post()
