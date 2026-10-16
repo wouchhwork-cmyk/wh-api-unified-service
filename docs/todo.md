@@ -65,8 +65,15 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 - [ ] **C1. Throttler keys grow without bound** — M
   In-memory store never evicts; per-process limits also multiply by replica
   count. Needs Redis, or a sweep and a cap.
-- [ ] **C2. Backfill holds one lease for a serial batch** — M
-  The tail of a large batch is guaranteed to overrun its lease.
+- [x] **C2. Backfill holds one lease for a serial batch** — DONE 17 Oct 2026
+  Each job's lease is pushed out immediately before it runs, so the tail of a
+  batch starts with a full lease rather than one spent while the earlier jobs
+  walked. A refusal means the lease moved on, and the job is left to whoever
+  holds it now.
+
+  Worth stating what the bug actually cost: `saveProgress` already refuses a
+  write from a worker that no longer owns the job, so two workers on one Page
+  produced wasted Graph calls against a shared rate limit, not bad data.
 
 ## D. Structure
 
@@ -76,7 +83,14 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## E. Found during the RBAC and rate-limit work, not fixed
 
-- [ ] **E11. A pool being refused on one endpoint can report `ok`** — S
+- [x] **E11. A pool being refused on one endpoint can report `ok`** — DONE 17 Oct 2026
+      Status now also reads a FIFTEEN-MINUTE window of refusals, between the
+      newest bucket and the day total. The newest bucket alone let a pool still
+      being refused on one endpoint read healthy the moment another endpoint
+      succeeded; the day total painted a pool red from breakfast until the next
+      morning. Both failure modes have a test, so neither can be reintroduced
+      as a fix for the other.
+- [ ] ~~E11 (original entry)~~ — S
       Status reads the NEWEST minute's refusals, which is the fix for a single
       refusal painting a pool red for 24 hours. The residual: a later successful
       call to the same pool opens a fresh bucket with no refusals, so a pool
@@ -98,7 +112,13 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       holding only `mentions.view` still learns that a DM thread exists and
       when it changed, and could count activity. Fixing it means carrying the
       conversation kind on the NOTIFY payload so the stream can filter.
-- [ ] **E8. A separate `mention_monitoring` feature** — S
+- [ ] **E8. A separate `mention_monitoring` feature** — S — **NOT STARTED, deliberately**
+      Left alone on 17 Oct 2026 while the rest of this group was done. This is
+      a commercial decision — whether mentions become a separately granted
+      feature — and the entry says so itself. Shipping the split would take
+      mentions dark for every existing tenant until an admin granted the new
+      key business by business, which is not a side effect to choose on
+      somebody's behalf.
       Mentions are deliberately gated on `unified_inbox` rather than a feature
       of their own, because a new feature key breaks every existing tenant the
       moment it ships — nobody holds a feature that did not exist yesterday, so

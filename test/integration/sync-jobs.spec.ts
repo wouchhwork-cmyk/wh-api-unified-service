@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
+import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { createTestDataSource, returningRows, truncateTenantData } from './db.harness';
 
 /**
@@ -146,6 +147,49 @@ describe('sync job queue', () => {
     expect(reclaimed).toHaveLength(1);
     expect(await statusOf(id)).toBe('pending');
     expect(await claim('worker-b')).toHaveLength(1);
+  });
+
+  /*
+   * C2. A batch is leased all at once and then run one job after another, so
+   * the tail of any sizeable batch is guaranteed to overrun its lease — the
+   * reaper hands those jobs away while the worker is still about to reach
+   * them, and two workers walk the same Page against a shared rate limit.
+   */
+  it('pushes a claimed job’s lease out without touching its progress', async () => {
+    const id = await enqueue('backfill_conversations');
+    await claim('worker-a');
+
+    // The tail of the batch: this job's lease is nearly spent before the
+    // worker gets to it.
+    await db.query(
+      `UPDATE sync_jobs SET lease_expires_at = now() + interval '1 second',
+              page_cursor = 'page-2', synced_item_count = 7
+        WHERE id = $1`,
+      [id],
+    );
+
+    const jobs = new SyncJobRepository(db);
+    expect(await jobs.extendLease(Number(id), 'worker-a', 300)).toBe(true);
+
+    const after: { lease_expires_at: Date; page_cursor: string; synced_item_count: number }[] =
+      await db.query(
+        `SELECT lease_expires_at, page_cursor, synced_item_count FROM sync_jobs WHERE id = $1`,
+        [id],
+      );
+    // Further out than it was, and the walk's own state untouched — this
+    // renews a claim, it does not record work.
+    expect(after[0]!.lease_expires_at.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    expect(after[0]).toMatchObject({ page_cursor: 'page-2', synced_item_count: 7 });
+  });
+
+  it('refuses to extend a lease that has already moved on', async () => {
+    // The signal to leave the job alone rather than spend Graph calls that
+    // cannot be banked.
+    const id = await enqueue('backfill_comments');
+    await claim('worker-a');
+
+    const jobs = new SyncJobRepository(db);
+    expect(await jobs.extendLease(Number(id), 'worker-b', 300)).toBe(false);
   });
 
   it('refuses a progress write from a worker that no longer holds the lease', async () => {

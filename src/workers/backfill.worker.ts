@@ -144,6 +144,28 @@ export class BackfillWorker extends BasePoller {
     const claimed = await this.syncJobs.claimBatch(this.leaseOwner, batchSize, leaseSeconds);
 
     for (const job of claimed) {
+      /*
+       * FRESH LEASE PER JOB, because the batch was leased all at once.
+       *
+       * Every job here had its lease set at the same moment and they run one
+       * after another, so the tail of any sizeable batch is guaranteed to
+       * overrun it (todo C2). The reaper then hands those jobs to another
+       * worker while this one is still about to reach them, and both walk the
+       * same Page — the loser's writes are refused by the ownership check, so
+       * the cost is wasted Graph calls against a shared rate limit rather than
+       * bad data. Expensive enough to be worth one cheap UPDATE.
+       *
+       * A refusal means the lease has already moved on, and the right response
+       * is to leave that job to whoever holds it now.
+       */
+      if (!(await this.syncJobs.extendLease(job.id, this.leaseOwner, leaseSeconds))) {
+        this.logger.debug(
+          { jobId: job.id, jobKind: job.jobKind },
+          'lease lapsed before this job was reached — leaving it to its new owner',
+        );
+        continue;
+      }
+
       await this.runJob(job, leaseSeconds);
     }
     return claimed.length;

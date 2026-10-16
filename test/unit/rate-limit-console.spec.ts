@@ -41,6 +41,7 @@ describe('the rate-limit console view', () => {
     regainMinutes: null,
     lastSeenAt: new Date(),
     latestThrottledCalls: 0,
+    recentThrottledCalls: 0,
     hourCalls: 3,
     hourThrottledCalls: 0,
     hourFailedCalls: 0,
@@ -95,10 +96,43 @@ describe('the rate-limit console view', () => {
 
   describe('when a pool counts as throttled', () => {
     it('is throttled while it is STILL being refused', async () => {
-      const view = await overviewOf([row({ latestThrottledCalls: 2, dayThrottledCalls: 2 })]);
+      const view = await overviewOf([row({ latestThrottledCalls: 2, recentThrottledCalls: 2, dayThrottledCalls: 2 })]);
 
       expect(view.enterprises[0]?.pools[0]?.status).toBe('throttled');
     });
+
+  /*
+   * E11. Status read the NEWEST bucket alone, so a pool still being refused on
+   * one endpoint while another succeeded opened a fresh bucket with no
+   * refusals and went back to reading healthy — mid-throttle, on the screen
+   * whose only job is to say whether a pool is in trouble.
+   *
+   * The day total cannot replace it: one refusal at breakfast painted a pool
+   * red until the next morning, which is alarm fatigue by construction.
+   */
+  it('still reads throttled when refusals were minutes ago, not seconds', async () => {
+    const view = await overviewOf([
+      row({
+        // The newest minute succeeded — a different endpoint, same pool.
+        latestThrottledCalls: 0,
+        recentThrottledCalls: 3,
+        callPct: 4,
+      }),
+    ]);
+
+    expect(view.attention).toHaveLength(1);
+    expect(view.attention[0]?.status).toBe('throttled');
+  });
+
+  it('reads healthy once the refusals have aged out of the short window', async () => {
+    // The control. Without it this is just "always red", which is the failure
+    // the newest-minute rule was introduced to fix.
+    const view = await overviewOf([
+      row({ latestThrottledCalls: 0, recentThrottledCalls: 0, dayThrottledCalls: 9, callPct: 4 }),
+    ]);
+
+    expect(view.attention).toHaveLength(0);
+  });
 
     it('is NOT throttled because of a refusal earlier in the day', async () => {
       /*

@@ -164,6 +164,34 @@ export class SyncJobRepository extends BaseRepository {
    * reclaimed and possibly re-claimed elsewhere; writing its cursor then would
    * rewind the worker that now owns the job. Returns false so the caller stops.
    */
+  /**
+   * Pushes a claimed job's lease out, without touching its progress.
+   *
+   * WHY A BATCH NEEDS THIS. `claimBatch` leases every job in the batch at the
+   * same moment and the worker then runs them one after another, so the lease
+   * on the LAST job is already being spent while the first is still walking.
+   * On a batch of any size the tail is guaranteed to overrun it (todo C2), the
+   * reaper hands those jobs to somebody else, and two workers walk the same
+   * Page — the second one's writes are refused by the ownership check, so the
+   * cost is wasted Graph calls against a rate limit rather than bad data.
+   *
+   * Returns false when the lease has already moved on, which is the signal to
+   * leave that job alone rather than spend calls we cannot bank.
+   */
+  async extendLease(id: number, leaseOwner: string, leaseSeconds: number): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE sync_jobs
+          SET lease_expires_at = now() + ($3::int * interval '1 second'),
+              updated_at = now()
+        WHERE id = $1
+          AND lease_owner = $2
+          AND is_deleted = false
+          AND status = $4`,
+      [id, leaseOwner, leaseSeconds, SyncJobStatus.Running],
+    );
+    return affected > 0;
+  }
+
   async saveProgress(
     id: number,
     leaseOwner: string,

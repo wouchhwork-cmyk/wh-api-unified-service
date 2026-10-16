@@ -314,7 +314,12 @@ export class RateLimitService {
       meter: row.meter,
       product: row.product,
       providerScopeId: row.providerScopeId,
-      status: statusOf(usedPercent, row.latestThrottledCalls, row.regainMinutes),
+      status: statusOf(
+        usedPercent,
+        row.latestThrottledCalls,
+        row.recentThrottledCalls,
+        row.regainMinutes,
+      ),
       usedPercent,
       remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
       callPercent: row.callPct,
@@ -376,9 +381,25 @@ function statusOf(
    * already said no", and "still" is the part the day-wide count cannot express.
    */
   latestThrottledCalls: number,
+  /**
+   * Refusals in the last fifteen minutes.
+   *
+   * THE NEWEST MINUTE IS NOT ENOUGH ON ITS OWN. A pool refused on one endpoint
+   * while another succeeds opens a fresh bucket with no refusals, so the
+   * status flipped back to healthy while Meta was still refusing (todo E11).
+   * This is the middle ground between that and the day total, which painted a
+   * pool red from breakfast until the next morning.
+   */
+  recentThrottledCalls: number,
   regainMinutes: number | null,
 ): PoolStatus {
-  if (latestThrottledCalls > 0 || (regainMinutes !== null && regainMinutes > 0)) return 'throttled';
+  if (
+    latestThrottledCalls > 0 ||
+    recentThrottledCalls > 0 ||
+    (regainMinutes !== null && regainMinutes > 0)
+  ) {
+    return 'throttled';
+  }
   if (usedPercent === null) return 'unknown';
   if (usedPercent >= META_USAGE_THROTTLE_PCT) return 'throttled';
   if (usedPercent >= META_USAGE_WARN_PCT) return 'warning';

@@ -73,6 +73,14 @@ export interface ProviderUsageCurrentRow {
    * is to be believed stops being believed.
    */
   readonly latestThrottledCalls: number;
+  /**
+   * Refusals in the last fifteen minutes.
+   *
+   * What `latestThrottledCalls` cannot say: a pool refused on one endpoint
+   * while another succeeds opens a fresh bucket with no refusals and reads
+   * healthy mid-throttle (todo E11).
+   */
+  readonly recentThrottledCalls: number;
 }
 
 /** One minute of one pool, for a chart. */
@@ -243,6 +251,19 @@ export class ProviderApiUsageRepository extends BaseRepository {
                   OVER (PARTITION BY u.scope_key) AS hour_calls,
                 sum(u.throttled_calls) FILTER (WHERE u.bucket_start > now() - interval '1 hour')
                   OVER (PARTITION BY u.scope_key) AS hour_throttled,
+                /*
+                 * A SHORT window, between the newest minute and the whole day.
+                 *
+                 * Status read the newest bucket alone, so a pool refused on one
+                 * endpoint while another succeeded opened a fresh bucket with
+                 * no refusals and went back to reading healthy mid-throttle
+                 * (todo E11). The day total cannot replace it — one refusal at
+                 * breakfast painted a pool red until the next morning. Fifteen
+                 * minutes is recent enough not to be yesterday and wide enough
+                 * to survive a success landing between two refusals.
+                 */
+                sum(u.throttled_calls) FILTER (WHERE u.bucket_start > now() - interval '15 minutes')
+                  OVER (PARTITION BY u.scope_key) AS recent_throttled,
                 sum(u.failed_calls) FILTER (WHERE u.bucket_start > now() - interval '1 hour')
                   OVER (PARTITION BY u.scope_key) AS hour_failed,
                 sum(u.calls)           OVER (PARTITION BY u.scope_key) AS day_calls,
@@ -270,6 +291,7 @@ export class ProviderApiUsageRepository extends BaseRepository {
               r.last_seen_at                    AS "lastSeenAt",
               r.throttled_calls                 AS "latestThrottledCalls",
               COALESCE(r.hour_calls, 0)::int    AS "hourCalls",
+              COALESCE(r.recent_throttled, 0)::int AS "recentThrottledCalls",
               COALESCE(r.hour_throttled, 0)::int AS "hourThrottledCalls",
               COALESCE(r.hour_failed, 0)::int   AS "hourFailedCalls",
               COALESCE(r.day_calls, 0)::int     AS "dayCalls",
