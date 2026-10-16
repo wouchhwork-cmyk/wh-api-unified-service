@@ -620,9 +620,15 @@ async function seedRolePermissions(
 
   const inserted = await run<{ role_id: number }>(
     manager,
-    `INSERT INTO role_permissions (role_id, permission_id)
-     SELECT s.role_id, s.permission_id
+    /*
+     * enterprise_id is READ BACK FROM THE ROLE rather than passed in. The seed
+     * writes template grants (tenant null) and tenant grants through the same
+     * statement, and the role is the only thing that knows which it is.
+     */
+    `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+     SELECT s.role_id, r.enterprise_id, s.permission_id
        FROM unnest($1::bigint[], $2::bigint[]) AS s(role_id, permission_id)
+       JOIN roles r ON r.id = s.role_id
      ON CONFLICT (role_id, permission_id) WHERE is_deleted = false
      DO NOTHING
      RETURNING role_id`,
@@ -754,8 +760,9 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
   // 2. A grant the template has and the tenant's copy does not.
   const grants = await run<{ role_id: number }>(
     manager,
-    `INSERT INTO role_permissions (role_id, permission_id)
-     SELECT r.id, trp.permission_id
+    // From the TENANT's role (r), never the template (t) whose tenant is null.
+    `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+     SELECT r.id, r.enterprise_id, trp.permission_id
        FROM roles r
        JOIN roles t
          ON t.enterprise_id IS NULL

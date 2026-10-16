@@ -368,7 +368,13 @@ export async function applyPostTableObjects(
     `);
   await run(`
       ALTER TABLE role_permissions
-        ADD CONSTRAINT role_permissions_role_fk FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE CASCADE,
+        ADD CONSTRAINT role_permissions_enterprise_fk
+            FOREIGN KEY (enterprise_id) REFERENCES enterprises (id),
+        -- COMPOSITE, like employee_roles beside it: a grant cannot name another
+        -- tenant's role even if a query forgets its predicate.
+        ADD CONSTRAINT role_permissions_role_fk
+            FOREIGN KEY (role_id, enterprise_id) REFERENCES roles (id, enterprise_id)
+            ON DELETE CASCADE,
         ADD CONSTRAINT role_permissions_permission_fk FOREIGN KEY (permission_id) REFERENCES permissions (id) ON DELETE CASCADE
     `);
   // THE table where cross-tenant privilege escalation would happen. Both
@@ -554,6 +560,7 @@ export async function applyPostTableObjects(
   await run(
     `CREATE INDEX role_permissions_role_idx ON role_permissions (role_id) WHERE is_deleted = false`,
   );
+  await run(`CREATE INDEX role_permissions_enterprise_idx ON role_permissions (enterprise_id)`);
   await run(
     `CREATE INDEX employee_roles_employee_idx ON employee_roles (employee_id) WHERE is_deleted = false`,
   );

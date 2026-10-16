@@ -178,6 +178,10 @@ export class InitialSchema1756000000000 implements MigrationInterface {
       CREATE TABLE role_permissions (
         id            BIGSERIAL   PRIMARY KEY,
         role_id       BIGINT      NOT NULL,
+        -- Denormalized from the role so the composite FK can exist. NULL for a
+        -- template's grants, whose role has no tenant either. See
+        -- 1758500000000-RolePermissionsTenantKey.
+        enterprise_id BIGINT,
         permission_id BIGINT      NOT NULL,
         is_deleted    BOOLEAN     NOT NULL DEFAULT false,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -76,8 +76,11 @@ export class RoleRepository extends BaseRepository {
     if (created.length > 0) {
       // Copy each template's grants onto the new role of the same name.
       await this.query(
-        `INSERT INTO role_permissions (role_id, permission_id)
-         SELECT new_role.id, trp.permission_id
+        // enterprise_id comes from the NEW role, never from the template —
+        // the template's is null, and copying that would write a tenant's
+        // grant with no tenant on it and skip the composite FK entirely.
+        `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+         SELECT new_role.id, new_role.enterprise_id, trp.permission_id
            FROM roles new_role
            JOIN roles template
              ON template.enterprise_id IS NULL

@@ -51,6 +51,80 @@ describe('schema guarantees', () => {
       ).rejects.toThrow(/employee_roles_role_fk|foreign key/i);
     });
 
+    /*
+     * E13. `employee_roles` has been protected by its own schema from the
+     * start; `role_permissions` beside it had a single-column FK and no tenant
+     * column, so isolation there rested ENTIRELY on the `enterprise_id = $1`
+     * predicate at the write sites. Both were correct — but correct by habit is
+     * a different guarantee from correct by construction, and this is the join
+     * table a future refactor would get wrong silently.
+     */
+    it('REJECTS granting one business’s role a permission filed under another', async () => {
+      const acme = await seedEnterprise(db, 'Acme', 'acme');
+      const zenith = await seedEnterprise(db, 'Zenith', 'zenith');
+
+      const role: { id: string }[] = await db.query(
+        `INSERT INTO roles (enterprise_id, name, level) VALUES ($1, 'agent', 10) RETURNING id`,
+        [zenith],
+      );
+      // Reused from the catalogue, which owns every real code.
+      const permission: { id: string }[] = await db.query(
+        `SELECT id FROM permissions LIMIT 1`,
+      );
+
+      // Zenith's role, filed under Acme: unrepresentable.
+      await expect(
+        db.query(
+          `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+           VALUES ($1, $2, $3)`,
+          [role[0]?.id, acme, permission[0]?.id],
+        ),
+      ).rejects.toThrow(/role_permissions_role_fk|foreign key/i);
+
+      // The same grant filed correctly is accepted, so the constraint is
+      // refusing the tenant mismatch rather than the shape of the row.
+      await expect(
+        db.query(
+          `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+           VALUES ($1, $2, $3)`,
+          [role[0]?.id, zenith, permission[0]?.id],
+        ),
+      ).resolves.not.toThrow();
+    });
+
+    /*
+     * A TEMPLATE'S GRANTS HAVE NO TENANT, and must stay insertable: the
+     * catalogue seed writes them on every boot. This is why the column is
+     * nullable, and the case a NOT NULL would have broken on the first deploy.
+     */
+    it('allows a template’s grant, whose role has no tenant either', async () => {
+      // A SEEDED template, not a new one: templates are global and the
+      // catalogue already owns every name, which is itself the point — these
+      // rows are written on every boot and must keep being insertable.
+      const role: { id: string }[] = await db.query(
+        `SELECT id FROM roles WHERE enterprise_id IS NULL AND is_system = true LIMIT 1`,
+      );
+      // A permission the template does not already hold, so the insert below
+      // is testing the constraint rather than colliding with a seeded grant.
+      const permission: { id: string }[] = await db.query(
+        `SELECT p.id FROM permissions p
+          WHERE NOT EXISTS (
+            SELECT 1 FROM role_permissions rp
+             WHERE rp.permission_id = p.id AND rp.role_id = $1
+          )
+          LIMIT 1`,
+        [role[0]?.id],
+      );
+
+      await expect(
+        db.query(
+          `INSERT INTO role_permissions (role_id, enterprise_id, permission_id)
+           VALUES ($1, NULL, $2)`,
+          [role[0]?.id, permission[0]?.id],
+        ),
+      ).resolves.not.toThrow();
+    });
+
     it('REJECTS a conversation pointing at another tenant’s channel', async () => {
       const acme = await seedEnterprise(db, 'Acme', 'acme');
       const zenith = await seedEnterprise(db, 'Zenith', 'zenith');

@@ -124,7 +124,23 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       still grow without limit. Not urgent (the throttler makes it slow, and
       nobody has done it) but it is the honest remaining answer to "can one
       business affect another".
-- [ ] **E13. `role_permissions` has no composite foreign key** — S
+- [x] **E13. `role_permissions` has no composite foreign key** — DONE 17 Oct 2026
+      Migration `1758500000000`. `enterprise_id` added, backfilled from the
+      parent role, and the single-column FK replaced with
+      `(role_id, enterprise_id) → roles (id, enterprise_id)` — the same
+      backstop `employee_roles` has always had. A grant naming another tenant's
+      role is now unrepresentable rather than merely prevented by a predicate.
+
+      THE COLUMN IS NULLABLE, deliberately: template roles live with
+      `enterprise_id IS NULL` (six of them), so a NOT NULL would have had no
+      legal value to write for their grants and would have broken the catalogue
+      seed on the first boot after deploy. Caught before shipping, not after.
+
+      What that leaves open, stated rather than glossed: a FK with a NULL
+      column is satisfied without being checked, so a write that omits
+      `enterprise_id` entirely still escapes it. All three write sites set it
+      from the role. The predicate still earns its place.
+- [ ] ~~E13 (original entry)~~ — S
       `employee_roles` is protected by the database itself: its FK is
       `(role_id, enterprise_id) → roles(id, enterprise_id)`, so a grant cannot
       name another tenant's role even if a query forgot its predicate.
