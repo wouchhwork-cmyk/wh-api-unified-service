@@ -115,6 +115,15 @@ export interface RateLimitOverview {
   readonly unattributed: readonly PoolView[];
   /** Pools at or past the warning line, worst first. What to look at. */
   readonly attention: readonly PoolView[];
+  /**
+   * Whether the listing hit `MAX_MONITORED_POOLS` and left pools out.
+   *
+   * SAID OUT LOUD, because the list is ordered by usage: the pools that fall
+   * off are the quiet ones, and a quiet pool and a missing pool look identical
+   * on a console (todo E16). Somebody checking whether a tenant is being
+   * throttled would otherwise read "not listed" as "fine".
+   */
+  readonly truncated: boolean;
 }
 
 /**
@@ -236,6 +245,12 @@ export class RateLimitService {
       enterprises,
       unattributed: unattributed.sort(byUsedPercentDescending),
       attention,
+      /*
+       * `current` was asked for MAX_MONITORED_POOLS; getting exactly that many
+       * back means there were at least that many, and almost certainly more.
+       * Reported rather than inferred by whoever is reading.
+       */
+      truncated: rows.length >= MAX_MONITORED_POOLS,
     };
   }
 

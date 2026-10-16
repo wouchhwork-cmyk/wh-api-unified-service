@@ -134,7 +134,10 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
    * This is a small retained view with its own expiry, and it is the only state
    * here that anything outside this class reads.
    */
-  private readonly recentPressure = new Map<string, { pct: number; atMs: number }>();
+  private readonly recentPressure = new Map<
+    string,
+    { pct: number; atMs: number; meter: MetaUsageMeter; providerScopeId: string | null }
+  >();
   private readonly owners = new Map<string, CachedOwner>();
   private timer: NodeJS.Timeout | null = null;
   /** Buckets dropped because the buffer was full, reported once per flush. */
@@ -214,7 +217,12 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
        * refuses the call — Meta throttles on whichever runs out first.
        */
       const worst = Math.max(reading.callPct ?? 0, reading.cpuPct ?? 0, reading.timePct ?? 0);
-      this.recentPressure.set(scopeKey, { pct: worst, atMs: nowMs });
+      this.recentPressure.set(scopeKey, {
+        pct: worst,
+        atMs: nowMs,
+        meter: reading.meter,
+        providerScopeId: reading.providerScopeId,
+      });
 
       this.fold(
         {
@@ -242,6 +250,43 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
    * wrong in the other is an inbox that silently stops.
    */
   pressure(): number {
+    return this.worstWhere(() => true);
+  }
+
+  /**
+   * The APP pool alone — one allowance shared by every tenant on this
+   * deployment (todo E17).
+   *
+   * This is the only pressure worth stopping the whole queue for. A business
+   * pool being spent says something about ONE business; the app pool being
+   * spent says the next call from anybody will be refused, and Meta extends a
+   * block for calls made during it.
+   */
+  appPressure(): number {
+    return this.worstWhere((seen) => seen.meter === MetaUsageMeter.App);
+  }
+
+  /**
+   * One business's own pools.
+   *
+   * WHY THIS EXISTS. `pressure()` collapses every pool into one number, so a
+   * single busy tenant braked sending for everybody — the queue is shared and
+   * their exhausted allowance is not. Asked per channel, the quiet tenants
+   * keep moving while only the loud one waits.
+   *
+   * Matched on the Meta id in the readings rather than our channel id: the
+   * headers are keyed by whatever Meta attributed the call to, which is the
+   * business or the Instagram account, not our row.
+   */
+  pressureFor(providerScopeId: string | null): number {
+    if (!providerScopeId) return 0;
+    return this.worstWhere((seen) => seen.providerScopeId === providerScopeId);
+  }
+
+  /** Shared walk, pruning as it goes. */
+  private worstWhere(
+    matches: (seen: { meter: MetaUsageMeter; providerScopeId: string | null }) => boolean,
+  ): number {
     const cutoff = Date.now() - META_USAGE_PRESSURE_WINDOW_MS;
     let worst = 0;
     for (const [scopeKey, seen] of this.recentPressure) {
@@ -251,6 +296,7 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
         this.recentPressure.delete(scopeKey);
         continue;
       }
+      if (!matches(seen)) continue;
       if (seen.pct > worst) worst = seen.pct;
     }
     return worst;
@@ -389,12 +435,43 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
 
     if (stale.length > 0) {
       const rows = await this.usage.resolveOwners(stale);
-      const found = new Map(rows.map((row) => [row.platformChannelId, row]));
+
+      /*
+       * A POOL CAN BELONG TO MORE THAN ONE TENANT, and naming the wrong one is
+       * worse than naming none (todo E16).
+       *
+       * The same Page is legitimately connected by an agency and by the brand
+       * it manages, so this lookup returns a row each. Collapsing them into a
+       * map kept whichever came last and reported that business as the owner
+       * of usage both of them caused — on a console somebody reads during an
+       * incident to decide who to call.
+       *
+       * Shared pools are left UNATTRIBUTED instead. The usage is still counted
+       * and still shown; it simply does not claim to know whose it is.
+       */
+      const byId = new Map<string, { channelId: number; enterpriseId: number }[]>();
+      for (const row of rows) {
+        const existing = byId.get(row.platformChannelId) ?? [];
+        existing.push({ channelId: row.channelId, enterpriseId: row.enterpriseId });
+        byId.set(row.platformChannelId, existing);
+      }
+
       for (const id of stale) {
-        const row = found.get(id);
+        const matches = byId.get(id) ?? [];
+        const tenants = new Set(matches.map((match) => match.enterpriseId));
+        const shared = tenants.size > 1;
+
+        if (shared) {
+          this.logger.info(
+            { providerScopeId: id, tenants: tenants.size },
+            'a Meta pool is shared by several businesses — usage recorded without an owner',
+          );
+        }
+
+        const only = shared ? undefined : matches[0];
         this.owners.set(id, {
-          channelId: row?.channelId ?? null,
-          enterpriseId: row?.enterpriseId ?? null,
+          channelId: only?.channelId ?? null,
+          enterpriseId: only?.enterpriseId ?? null,
           cachedAtMs: nowMs,
         });
       }

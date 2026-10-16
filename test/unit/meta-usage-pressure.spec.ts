@@ -13,6 +13,7 @@ import type { TransactionManager } from '@/database/transaction/transaction.mana
 import type { TokenCipherService } from '@/shared/crypto';
 import { MetaUsageMeter } from '@/shared/enums';
 import { META_USAGE_PRESSURE_WINDOW_MS, META_USAGE_SOFT_LIMIT_PCT } from '@/shared/constants';
+import { MetaUsageMeter as Meter } from '@/shared/enums';
 
 /**
  * Slowing down BEFORE Meta refuses us.
@@ -95,6 +96,114 @@ describe('MetaUsageCollector.pressure', () => {
   });
 });
 
+describe('MetaUsageCollector, per pool', () => {
+  /*
+   * The P1 remainder. `pressure()` collapsed every pool into one number, so a
+   * single busy tenant braked the shared queue for everybody — their allowance
+   * is spent, the queue is not theirs.
+   */
+  it('reports one account’s own pools, not everybody’s', () => {
+    const usage = collector();
+    usage.observe({
+      readings: [reading({ providerScopeId: 'loud', callPct: 95 })],
+      throttled: false,
+      failed: false,
+    });
+    usage.observe({
+      readings: [reading({ providerScopeId: 'quiet', callPct: 3, cpuPct: 1, timePct: 2 })],
+      throttled: false,
+      failed: false,
+    });
+
+    expect(usage.pressureFor('loud')).toBe(95);
+    expect(usage.pressureFor('quiet')).toBe(3);
+    // An account we have never called for is not under pressure.
+    expect(usage.pressureFor('unknown')).toBe(0);
+    expect(usage.pressureFor(null)).toBe(0);
+  });
+
+  /*
+   * The APP pool is the one that means stop: it is shared by every tenant, so
+   * spending it refuses the next call from anybody (todo E17).
+   */
+  it('separates the shared app pool from one business’s', () => {
+    const usage = collector();
+    usage.observe({
+      readings: [reading({ providerScopeId: 'loud', callPct: 99 })],
+      throttled: false,
+      failed: false,
+    });
+
+    // A business at 99% must NOT read as the app pool being spent, or one
+    // tenant stops the whole deployment again by another route.
+    expect(usage.appPressure()).toBe(0);
+
+    usage.observe({
+      readings: [reading({ meter: Meter.App, providerScopeId: null, callPct: 88 })],
+      throttled: false,
+      failed: false,
+    });
+    expect(usage.appPressure()).toBe(88);
+  });
+});
+
+describe('MetaUsageCollector attribution', () => {
+  /*
+   * E16. The same Page is legitimately connected by an agency and by the brand
+   * it manages, so resolving its id returns a row each. Collapsing them into a
+   * map kept whichever came last and reported that business as the owner of
+   * usage both of them caused — on a console somebody reads during an incident
+   * to decide who to call. A wrong name is worse than no name.
+   */
+  it('leaves a pool shared by two businesses unattributed', async () => {
+    const record = vi.fn().mockResolvedValue(undefined);
+    const usage = new MetaUsageCollector(
+      {
+        record,
+        resolveOwners: vi.fn().mockResolvedValue([
+          { platformChannelId: 'SHARED', channelId: 1, enterpriseId: 10 },
+          { platformChannelId: 'SHARED', channelId: 2, enterpriseId: 20 },
+        ]),
+      } as unknown as ProviderApiUsageRepository,
+      silentLogger(),
+    );
+
+    usage.observe({
+      readings: [reading({ providerScopeId: 'SHARED' })],
+      throttled: false,
+      failed: false,
+    });
+    await usage.flush();
+
+    const written = record.mock.calls[0]?.[0] as { enterpriseId: number | null }[];
+    expect(written[0]?.enterpriseId).toBeNull();
+  });
+
+  it('still attributes a pool only one business holds', async () => {
+    // The control: unattributing everything would be no better than guessing.
+    const record = vi.fn().mockResolvedValue(undefined);
+    const usage = new MetaUsageCollector(
+      {
+        record,
+        resolveOwners: vi
+          .fn()
+          .mockResolvedValue([{ platformChannelId: 'MINE', channelId: 1, enterpriseId: 10 }]),
+      } as unknown as ProviderApiUsageRepository,
+      silentLogger(),
+    );
+
+    usage.observe({
+      readings: [reading({ providerScopeId: 'MINE' })],
+      throttled: false,
+      failed: false,
+    });
+    await usage.flush();
+
+    const written = record.mock.calls[0]?.[0] as { enterpriseId: number | null }[];
+    expect(written[0]?.enterpriseId).toBe(10);
+  });
+});
+
 describe('OutboundRelayWorker under pressure', () => {
   let outbound: { claimDueBatch: ReturnType<typeof vi.fn> };
   let logger: PinoLogger;
@@ -122,10 +231,16 @@ describe('OutboundRelayWorker under pressure', () => {
     logger = silentLogger();
   });
 
-  it('claims nothing while a pool is close to its limit', async () => {
+  it('claims nothing while the SHARED app pool is close to its limit', async () => {
     const usage = collector();
     usage.observe({
-      readings: [reading({ callPct: META_USAGE_SOFT_LIMIT_PCT + 5 })],
+      readings: [
+        reading({
+          meter: Meter.App,
+          providerScopeId: null,
+          callPct: META_USAGE_SOFT_LIMIT_PCT + 5,
+        }),
+      ],
       throttled: false,
       failed: false,
     });
@@ -143,7 +258,30 @@ describe('OutboundRelayWorker under pressure', () => {
   it('sends normally below the limit', async () => {
     const usage = collector();
     usage.observe({
-      readings: [reading({ callPct: META_USAGE_SOFT_LIMIT_PCT - 5 })],
+      readings: [
+        reading({
+          meter: Meter.App,
+          providerScopeId: null,
+          callPct: META_USAGE_SOFT_LIMIT_PCT - 5,
+        }),
+      ],
+      throttled: false,
+      failed: false,
+    });
+
+    await poll(buildWorker(usage));
+
+    expect(outbound.claimDueBatch).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * THE WHOLE POINT OF THE NARROWING. One business spending its own allowance
+   * must not stop the queue, because the queue carries everybody's replies.
+   */
+  it('keeps claiming while only ONE business is near its limit', async () => {
+    const usage = collector();
+    usage.observe({
+      readings: [reading({ providerScopeId: 'loud', callPct: 99 })],
       throttled: false,
       failed: false,
     });

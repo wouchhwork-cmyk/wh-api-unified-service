@@ -237,12 +237,41 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       a custom role called, say, `supervisor` will never receive a system role
       of that name later. Self-inflicted and contained to that tenant, but
       silent.
-- [ ] **E16. Rate-limit attribution is first-wins, and the console truncates** — S
+- [x] **E16. Rate-limit attribution is first-wins, and the console truncates** — DONE 17 Oct 2026
+      Both halves. A pool resolving to more than one tenant is now left
+      UNATTRIBUTED rather than named after whichever row came back last — which
+      is what the `unattributed` field's own documentation already claimed
+      happened. A wrong name on a console somebody reads during an incident is
+      worse than no name.
+
+      Note the repository's first-wins is deliberate and stays: it stops a
+      pool's owner flickering between replicas. The fix is one layer up, in
+      what the collector offers it.
+
+      The overview now carries `truncated`. The listing is ordered by usage, so
+      the pools that fall off `MAX_MONITORED_POOLS` are the quiet ones — and a
+      quiet pool and a missing pool look identical, so "not listed" read as
+      "fine".
+- [ ] ~~E16 (original entry)~~ — S
       Platform console only, behind `@RequirePlatformAdmin`, no customer data.
       A Meta Business shared by two tenants is attributed to whichever was
       resolved first, and `MAX_MONITORED_POOLS = 500` ordered by usage means a
       heavy tenant can push a quiet one off the list.
-- [ ] **E17. Meta's app-level pool is one allowance shared by every tenant** — L
+- [~] **E17. Meta's app-level pool is one allowance shared by every tenant** — MITIGATED 17 Oct 2026
+      Still architectural and still true: `x-app-usage` meters the APP, and no
+      code here can give one business its own allowance.
+
+      What changed is that we no longer make it worse. The queue brake reads
+      the app pool specifically, so hitting it stops sending BEFORE Meta
+      refuses — and Meta extends a block for calls made during one, so the
+      calls after the first refusal used to cost more than the ones that caused
+      it. Per-business pools are handled separately (P1), so one tenant's own
+      exhaustion no longer brakes the shared queue.
+
+      The residue is unchanged and worth knowing before it is diagnosed as a
+      bug during an incident: one business's connect and token traffic eats
+      into what every other business can do.
+- [ ] ~~E17 (original entry)~~ — L
       Architectural, not RBAC, and not fixable in this codebase: `x-app-usage`
       meters the APP. One business's connect and token traffic genuinely eats
       into what every other business can do. Worth knowing before it is
@@ -377,7 +406,7 @@ about where secrets live.
 
 ### Other parked work
 
-- [~] **P1. Back off on Meta's rate-limit headers BEFORE being refused** — PARTLY DONE 27 Sep 2026 —
+- [x] **P1. Back off on Meta's rate-limit headers BEFORE being refused** — DONE 17 Oct 2026 —
       researched 21 Sep, see platform-limitations §0.4. The research found and
       fixed a live defect (BUC throttle codes were unmapped and dead-lettering
       retryable work). What remains is the proactive half: nothing reads the
@@ -407,10 +436,12 @@ about where secrets live.
       silently stops sending, which is worse than the problem it solves, so the
       three fail-open paths each have their own test.
 
-      **Still open:** per-pool backoff. `pressure()` collapses every pool to one
-      number, so one busy tenant brakes the queue for all of them. The readings
-      are keyed by scope already, so this is a filter at the claim, not new
-      plumbing — but it needs the claim to know which channel a row will use.
+      **Per-pool backoff done 17 Oct 2026.** The queue-wide brake now reads
+      `appPressure()` — the ONE allowance genuinely shared by every tenant, so
+      spending it means the next call from anybody is refused. A single
+      business's pool is checked per EVENT instead, once its channel is known,
+      and parks only that event without spending an attempt. One loud tenant no
+      longer stops everybody else's replies.
 
       The headers to read: `X-App-Usage` (call volume, CPU and total time, each
       a percentage of the app's hourly budget),

@@ -90,11 +90,21 @@ export class OutboundRelayWorker extends BasePoller {
      * poll reconsiders, so a pool that recovers is used again immediately and a
      * second relay is free to take the work if this one is holding off.
      */
-    const pressure = this.usage?.pressure() ?? 0;
+    /*
+     * THE APP POOL ONLY, now that pressure can be asked per pool.
+     *
+     * This brake stops the whole queue, so it has to be a condition that means
+     * the whole queue. The app allowance is shared by every tenant on this
+     * deployment (todo E17), so spending it means the next call from ANYBODY
+     * is refused. A single business's pool being spent means nothing of the
+     * kind, and braking everyone for it let one loud tenant stop the others —
+     * which is handled per event in `deliver`.
+     */
+    const pressure = this.usage?.appPressure() ?? 0;
     if (pressure >= META_USAGE_SOFT_LIMIT_PCT) {
       this.logger.warn(
         { pressure, softLimit: META_USAGE_SOFT_LIMIT_PCT },
-        'holding off sending — a Meta pool is close to its limit',
+        'holding off sending — the shared app pool is close to its limit',
       );
       return 0;
     }
@@ -162,6 +172,39 @@ export class OutboundRelayWorker extends BasePoller {
         event.enterpriseId,
         event.id,
         'no usable access token for the channel',
+      );
+      return;
+    }
+
+    /*
+     * THIS BUSINESS'S OWN POOL, checked per event rather than per poll.
+     *
+     * `pressure()` collapsed every pool into one number, so one tenant
+     * spending their allowance braked sending for everybody — and the queue is
+     * shared while the allowance is not. Asked per channel, the quiet tenants
+     * keep moving and only the loud one waits.
+     *
+     * PARKED, NOT FAILED, and without spending an attempt: nothing is wrong
+     * with this reply, and the pool refills on Meta's rolling hour. Both ids
+     * are checked because Meta attributes a call to whichever it considers the
+     * owner — the Instagram account or the Page behind it — and we do not get
+     * to choose which appears in the headers.
+     */
+    const ownPressure = Math.max(
+      this.usage?.pressureFor(channel.platformChannelId) ?? 0,
+      this.usage?.pressureFor(channel.parentPlatformChannelId) ?? 0,
+    );
+    if (ownPressure >= META_USAGE_SOFT_LIMIT_PCT) {
+      await this.outbound.markRateLimited({
+        id: event.id,
+        leaseOwner: this.leaseOwner,
+        retryAt: parkFor(OUTBOUND_RATE_LIMIT_PARK_MS),
+        error: `this account's Meta allowance is ${Math.round(ownPressure)}% spent`,
+        maxWaitMs: OUTBOUND_RATE_LIMIT_MAX_WAIT_MS,
+      });
+      this.logger.warn(
+        { eventId: event.id, channelId: event.channelId, pressure: ownPressure },
+        'parked — this account is close to its own Meta limit, other accounts keep sending',
       );
       return;
     }
