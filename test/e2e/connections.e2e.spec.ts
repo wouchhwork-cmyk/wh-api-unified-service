@@ -380,6 +380,211 @@ describe('connecting a Meta account', () => {
     });
   });
 
+  /*
+   * A3. Until this existed, A2's refusal was a LOCKOUT: one Page, one
+   * connection, and no way to release one — so a business that had lost its
+   * original Facebook login could neither use its Page here nor reconnect it.
+   *
+   * The contract is narrow and worth stating: authority is withdrawn, history
+   * is kept. Each half is asserted separately below, because getting one right
+   * and the other wrong is the likely failure.
+   */
+  describe('disconnecting', () => {
+    const seedConnected = async (
+      refId: string,
+    ): Promise<{ connectionRefId: string; channelId: string }> => {
+      const connection: { id: string; ref_id: string }[] = await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social',
+                 'META_DISC', 'v1:k1:n:c', 'active')
+         RETURNING id, ref_id`,
+        [refId],
+      );
+      const channel: { id: string }[] = await db.query(
+        `INSERT INTO channels
+           (enterprise_id, provider_connection_id, platform, channel_kind,
+            platform_channel_id, name, access_token, status, is_managed, webhook_subscribed_at)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'facebook', 'page',
+                 'PAGE_DISCONNECT_1', 'Ai automation', 'v1:k1:n:c', 'active', true, now())
+         RETURNING id`,
+        [refId, connection[0]?.id],
+      );
+      return {
+        connectionRefId: connection[0]?.ref_id as string,
+        channelId: channel[0]?.id as string,
+      };
+    };
+
+    it('withdraws authority: status, token and subscription all go', async () => {
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const rows: {
+        status: string;
+        access_token: string | null;
+        webhook_subscribed_at: string | null;
+      }[] = await db.query(
+        `SELECT status, access_token, webhook_subscribed_at FROM channels
+          WHERE platform_channel_id = 'PAGE_DISCONNECT_1'`,
+      );
+      expect(rows[0]?.status).toBe('disconnected');
+      // Cleared, not just flagged: a send that somehow reached the relay must
+      // fail even if a future query forgets to filter on status.
+      expect(rows[0]?.access_token).toBeNull();
+      expect(rows[0]?.webhook_subscribed_at).toBeNull();
+
+      const connections: { status: string; token_status: string }[] = await db.query(
+        `SELECT status, token_status FROM provider_connections WHERE ref_id = $1`,
+        [connectionRefId],
+      );
+      expect(connections[0]).toMatchObject({ status: 'revoked', token_status: 'revoked' });
+    });
+
+    /*
+     * THE HALF THAT IS EASY TO GET WRONG. "Disconnect" reads like "delete" and
+     * is not: a business disconnecting is often moving the account elsewhere
+     * and still owns everything that happened while it was connected.
+     */
+    it('keeps every conversation and message exactly as they were', async () => {
+      const { token, refId } = await business();
+      const { connectionRefId, channelId } = await seedConnected(refId);
+
+      const customer: { id: string }[] = await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'A customer', 'facebook')
+         RETURNING id`,
+        [refId],
+      );
+      const conversation: { id: string }[] = await db.query(
+        `INSERT INTO conversations
+           (enterprise_id, channel_id, customer_id, conversation_kind, platform,
+            platform_thread_id, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, $3, 'direct_message',
+                 'facebook', 'THREAD_KEEP_1', 'open')
+         RETURNING id`,
+        [refId, channelId, customer[0]?.id],
+      );
+      await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, message_kind, body,
+            platform_message_id, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'inbound',
+                 'direct_message', 'keep me', 'MID_KEEP_1', 'delivered')`,
+        [refId, conversation[0]?.id],
+      );
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const kept: { body: string; is_deleted: boolean }[] = await db.query(
+        `SELECT body, is_deleted FROM messages WHERE platform_message_id = 'MID_KEEP_1'`,
+      );
+      expect(kept).toHaveLength(1);
+      expect(kept[0]).toMatchObject({ body: 'keep me', is_deleted: false });
+
+      const threads: { status: string; is_deleted: boolean }[] = await db.query(
+        `SELECT status, is_deleted FROM conversations WHERE platform_thread_id = 'THREAD_KEEP_1'`,
+      );
+      expect(threads[0]).toMatchObject({ status: 'open', is_deleted: false });
+    });
+
+    it('still lists the channel, so the history remains reachable', async () => {
+      // Hiding it would strand every conversation under it in the UI.
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const channels = await http()
+        .get('/api/v1/connections/channels')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const [channel] = channels.body.data as { status: string }[];
+      expect(channel?.status).toBe('disconnected');
+    });
+
+    it('is refused for somebody without authority over channels', async () => {
+      // An agent answers messages. Releasing the business's account is not
+      // theirs to do — and it would silence every thread they work in.
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      const roles = await http()
+        .get('/api/v1/employees/roles')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const agentRole = (roles.body.data as { refId: string; name: string }[]).find(
+        (role) => role.name === 'agent',
+      );
+      await http()
+        .post('/api/v1/employees')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ firstName: 'Nadia', email: 'nadia@bluebottle.test', roleRefId: agentRole?.refId })
+        .expect(201);
+      const accepted = await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({
+          email: 'nadia@bluebottle.test',
+          code: code(),
+          password: 'a-password-only-nadia-knows',
+        })
+        .expect(200);
+
+      const refused = await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${accepted.body.data.accessToken}`)
+        .expect(403);
+      expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    });
+
+    it('404s on a connection this business does not own', async () => {
+      /*
+       * Tenant scoping, asserted through a refId that exists but belongs
+       * elsewhere — the case a global `WHERE ref_id = $1` would get wrong, and
+       * the one a non-existent id cannot catch.
+       */
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      const otherEnterprise: { ref_id: string }[] = await db.query(
+        `INSERT INTO enterprises (name, slug, email, status)
+         VALUES ('Someone Else Ltd', 'someone-else-ltd', 'someone@else.test', 'active')
+         RETURNING ref_id`,
+      );
+      const stranger: { ref_id: string }[] = await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social',
+                 'META_STRANGER', 'v1:k1:n:c', 'active')
+         RETURNING ref_id`,
+        [otherEnterprise[0]?.ref_id],
+      );
+
+      await http()
+        .post(`/api/v1/connections/${stranger[0]?.ref_id}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      // And ours is untouched by the attempt.
+      const mine: { status: string }[] = await db.query(
+        `SELECT status FROM provider_connections WHERE ref_id = $1`,
+        [connectionRefId],
+      );
+      expect(mine[0]?.status).toBe('active');
+    });
+  });
+
   it('gives an agent no authority to connect an account', async () => {
     const { token } = await business();
 

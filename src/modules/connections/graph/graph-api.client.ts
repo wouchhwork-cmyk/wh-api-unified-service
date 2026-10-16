@@ -288,6 +288,22 @@ export class GraphApiClient {
   }
 
   /**
+   * Stops Meta sending us this Page's events.
+   *
+   * THE FIRST HALF OF A DISCONNECT, and only the first. Meta can keep
+   * delivering for a short while after this returns, and the published app
+   * relays traffic for accounts that were never ours (7.3) — so the local
+   * guards, not this call, are what actually stop a disconnected channel being
+   * processed. This is the courtesy of not being sent what we will throw away.
+   */
+  async unsubscribePageFromApp(pageId: string, pageAccessToken: string): Promise<void> {
+    await this.request('DELETE', `${pageId}/subscribed_apps`, {
+      schema: GraphAckSchema,
+      accessToken: pageAccessToken,
+    });
+  }
+
+  /**
    * Replies to a comment.
    *
    * THE EDGE DIFFERS BY PLATFORM, and using the wrong one fails in a way that

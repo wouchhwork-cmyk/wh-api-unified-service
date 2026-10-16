@@ -192,9 +192,15 @@ export class ChannelRepository extends BaseRepository {
          LEFT JOIN channels parent
                 ON parent.id = c.parent_channel_id
                AND parent.enterprise_id = c.enterprise_id
+        -- A DISCONNECTED CHANNEL ACTS FOR NOBODY. Both contexts this shape
+        -- serves — sending and backfilling — reach Meta on the business's
+        -- behalf, which is precisely the authority a disconnect withdraws. The
+        -- token is cleared as well, so this is the readable half of a guard the
+        -- data already enforces.
         WHERE c.enterprise_id = $1 AND c.id = $2 AND c.is_deleted = false
+          AND c.status <> $3
         LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), channelId],
+      [this.requireEnterprise(enterpriseId), channelId, ChannelStatus.Disconnected],
     );
     return rows[0] ?? null;
   }
@@ -218,10 +224,19 @@ export class ChannelRepository extends BaseRepository {
     platformChannelId: string,
   ): Promise<{ id: number; enterpriseId: number }[]> {
     return this.query<{ id: number; enterpriseId: number }>(
+      /*
+       * ACTIVE ONLY. A disconnected channel must attribute nothing: Meta can
+       * keep delivering for a while after we unsubscribe, and the published app
+       * relays traffic for accounts that are not ours at all (7.3). Excluding
+       * it here makes those deliveries `unmatched`, which is an already-handled
+       * path that stores nothing — rather than projecting into an inbox the
+       * business has told us to stop watching.
+       */
       `SELECT id, enterprise_id AS "enterpriseId" FROM channels
         WHERE platform = $1 AND platform_channel_id = $2 AND is_deleted = false
+          AND status <> $3
         ORDER BY id`,
-      [platform, platformChannelId],
+      [platform, platformChannelId, ChannelStatus.Disconnected],
     );
   }
 
@@ -285,6 +300,49 @@ export class ChannelRepository extends BaseRepository {
    * Separate from findSendContext rather than widening it, because the send path
    * is the hot path and has no use for the parent's platform id.
    */
+  /**
+   * Disconnects every channel under a connection, and clears their tokens.
+   *
+   * THE TOKEN IS THE POINT. Status alone would be a rule the code has to keep
+   * remembering; a cleared token means a send that somehow reached the relay
+   * cannot succeed even if some future query forgets to filter. Defence in
+   * depth, because the guards below are easy to add a query beside.
+   *
+   * Messages, conversations, customers and posts are untouched. Disconnecting
+   * withdraws authority; it does not erase history.
+   */
+  async disconnectForConnection(enterpriseId: number, connectionId: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE channels
+          SET status = $3, access_token = NULL, token_status = $4,
+              reauth_required = false, webhook_subscribed_at = NULL, updated_at = now()
+        WHERE enterprise_id = $1 AND provider_connection_id = $2
+          AND is_deleted = false AND status <> $3`,
+      [
+        this.requireEnterprise(enterpriseId),
+        connectionId,
+        ChannelStatus.Disconnected,
+        TokenStatus.Revoked,
+      ],
+    );
+    return affected;
+  }
+
+  /** The Pages under a connection, for unsubscribing them before we let go. */
+  async listForConnection(
+    enterpriseId: number,
+    connectionId: number,
+  ): Promise<{ id: number; platform: Platform; platformChannelId: string; accessToken: string | null }[]> {
+    return this.query(
+      `SELECT id, platform, platform_channel_id AS "platformChannelId",
+              access_token AS "accessToken"
+         FROM channels
+        WHERE enterprise_id = $1 AND provider_connection_id = $2 AND is_deleted = false
+        ORDER BY id`,
+      [this.requireEnterprise(enterpriseId), connectionId],
+    );
+  }
+
   async findBackfillContext(
     enterpriseId: number,
     channelId: number,
@@ -301,9 +359,15 @@ export class ChannelRepository extends BaseRepository {
          LEFT JOIN channels parent
                 ON parent.id = c.parent_channel_id
                AND parent.enterprise_id = c.enterprise_id
+        -- A DISCONNECTED CHANNEL ACTS FOR NOBODY. Both contexts this shape
+        -- serves — sending and backfilling — reach Meta on the business's
+        -- behalf, which is precisely the authority a disconnect withdraws. The
+        -- token is cleared as well, so this is the readable half of a guard the
+        -- data already enforces.
         WHERE c.enterprise_id = $1 AND c.id = $2 AND c.is_deleted = false
+          AND c.status <> $3
         LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), channelId],
+      [this.requireEnterprise(enterpriseId), channelId, ChannelStatus.Disconnected],
     );
     return rows[0] ?? null;
   }

@@ -112,6 +112,34 @@ export class ProviderConnectionRepository extends BaseRepository {
    * waiting for the expiry sweep. Flagging the parent CASCADES to its channels,
    * because channel tokens derive from this grant.
    */
+  /**
+   * Disconnects a connection: the credential half.
+   *
+   * NOTHING IS DELETED. The business keeps every conversation, message,
+   * customer and post it has — disconnecting says "stop acting on my behalf",
+   * not "forget what happened". Only the authority to act is withdrawn.
+   *
+   * The ciphertext is left in place because `access_token` is NOT NULL and a
+   * tombstone there would fail to decrypt in a way that reads like key loss.
+   * `token_status` and `status` are what every caller checks, and the channel
+   * tokens — the ones the send path actually uses — ARE cleared, by
+   * `ChannelRepository.disconnectForConnection`.
+   */
+  async revoke(enterpriseId: number, connectionId: number): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE provider_connections
+          SET status = $3, token_status = $4, reauth_required = false, updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false AND status <> $3`,
+      [
+        this.requireEnterprise(enterpriseId),
+        connectionId,
+        ConnectionStatus.Revoked,
+        TokenStatus.Revoked,
+      ],
+    );
+    return affected > 0;
+  }
+
   async markReauthRequired(
     enterpriseId: number,
     connectionId: number,

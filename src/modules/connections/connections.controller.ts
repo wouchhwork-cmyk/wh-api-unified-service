@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiBody, ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
@@ -8,11 +18,13 @@ import { CurrentScopedActor, Public, RequirePermission, SkipTimeout } from '@/sh
 import { Permission } from '@/shared/enums';
 import { AppException } from '@/shared/errors';
 import type { ActorContext } from '@/shared/context';
+import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import {
   StartConnectionRequestSchema,
   type StartConnectionRequest,
 } from '@/shared/contracts/connections/connect.contract';
 import {
+  type DisconnectResult,
   ConnectionsService,
   type ChannelDto,
   type ConnectionDto,
@@ -180,6 +192,25 @@ export class ConnectionsController {
   @ApiOperation({ summary: 'The provider connections this business holds' })
   async list(@CurrentScopedActor() actor: ScopedActor): Promise<ConnectionDto[]> {
     return this.connectionsService.listConnections(actor.enterpriseId);
+  }
+
+  @Post(':refId/disconnect')
+  @RequirePermission(Permission.ChannelsManage)
+  @ApiOperation({
+    summary: 'Stop acting on this connection, and keep everything it produced',
+    description:
+      'Withdraws our authority over the account: the Page is unsubscribed from our app, the ' +
+      'stored channel tokens are cleared, and nothing will send, backfill or project for it ' +
+      'again — a webhook that still arrives is attributed to nothing and dropped. ' +
+      'NOTHING IS DELETED: every conversation, message, customer and post stays exactly as it ' +
+      'is, because disconnecting means "stop acting for me", not "forget what happened". ' +
+      'Reconnecting the same Page afterwards is allowed and reactivates these channels.',
+  })
+  async disconnect(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+  ): Promise<DisconnectResult> {
+    return this.connectionsService.disconnect(actor.enterpriseId, RefIdParamSchema.parse(refId));
   }
 
   @Get('channels')

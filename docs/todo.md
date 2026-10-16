@@ -22,11 +22,29 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
   `RefreshPostMetrics` does 200 channels per daily tick, so above 200 active
   channels a channel is reached every `ceil(N/200)` days — longer than the ~35h
   link life. Fine today, silent at scale.
-- [ ] **A3. Disconnect a connection** — S — **A2 depends on this**
-  There is no disconnect endpoint. None. It is not even listed in backlog §3
-  as a missing one. Until it exists, A2's refusal is a **lockout**: a business
-  that has lost the original Facebook login cannot release the Page and cannot
-  reconnect. Decided 19 Sep to ship the refusal first and this after.
+- [x] **A3. Disconnect a connection** — DONE 17 Oct 2026
+  `POST /connections/:refId/disconnect`, behind `channels.manage` — the
+  permission the catalogue already described as "Reconnect, disconnect, and
+  administer sync for a channel".
+
+  AUTHORITY GOES, HISTORY STAYS. The Page is unsubscribed from our app, channel
+  tokens are CLEARED (not merely flagged), the connection is revoked, and the
+  three queries that resolve a channel before acting — the webhook fan-out, the
+  send path and the backfill — all exclude a disconnected one. A delivery that
+  still arrives attributes to nothing and lands on the existing `unmatched`
+  path. Not one conversation, message, customer or post is touched.
+
+  Meta is told FIRST, while a usable token still exists; the local write clears
+  it. A failure out there is logged and does not block the disconnect, because
+  the local guards are what actually make the channel inert and a business
+  asking us to let go must not be held up by Meta being unreachable.
+
+  Another tenant holding the same Page is unaffected — an agency and the brand
+  it manages both connect it, and one letting go must not silence the other.
+
+  Six integration tests assert the guards at the repository, where they live,
+  and all are mutation-verified. The lockout A2 created is closed: reconnecting
+  reactivates the channels.
 
 ## B. Safety and correctness of the integration
 
