@@ -186,7 +186,26 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       = $1` predicate at both write sites. Both are present and correct today;
       this is the one join table where the schema is not the backstop. Closing
       it means adding the column, backfilling and swapping the constraint.
-- [ ] **E14. A tenant you really work for can still sign you out of another** — M
+- [x] **E14. A tenant you really work for can still sign you out of another** — DONE 17 Oct 2026
+      The premise turned out to be wrong, which is why this looked harder than
+      it was. Revoking was accepted as the lesser evil against "a suspended
+      account keeps working" — but refresh ALREADY re-checks employment per
+      business: `?enterpriseRefId=A` is refused the moment that employment
+      stops being active, and a refresh naming no business mints a token with
+      `enterpriseId: null`, which reaches no tenant data at all.
+
+      So the suspending business was already protected, and revocation bought
+      them nothing — a stateless access token outlives it either way — while
+      costing another employer a colleague's sign-in.
+
+      Suspension now revokes only when this was the person's LAST active
+      employment, where nothing is reached into and "suspended" should plainly
+      mean "signed out". Both halves tested and mutation-verified.
+
+      No schema change was needed. Giving sessions an enterprise and reworking
+      the switch, which this entry proposed, would have been a large change to
+      buy something the refresh path already enforced.
+- [ ] ~~E14 (original entry)~~ — M
       The unilateral version of this is fixed: a business can no longer invent
       an employment for somebody and suspend it (see the state machine in
       `employee-lifecycle.ts`). What remains needs the victim to have genuinely

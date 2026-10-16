@@ -128,6 +128,31 @@ export class EnterpriseEmployeeRepository extends BaseRepository {
   }
 
   /**
+   * Whether this person still works somewhere ELSE.
+   *
+   * Asked when a business suspends somebody, to decide whether ending their
+   * sessions is proportionate. A session belongs to the human, not to the
+   * business, so revoking one on A's instruction reaches into B.
+   */
+  async hasActiveEmploymentElsewhere(
+    identityId: number,
+    excludingEnterpriseId: number,
+  ): Promise<boolean> {
+    const rows = await this.query<{ one: number }>(
+      `SELECT 1 AS one
+         FROM enterprise_employees m
+         JOIN enterprises e ON e.id = m.enterprise_id AND e.is_deleted = false
+        WHERE m.identity_id = $1
+          AND m.enterprise_id <> $2
+          AND m.is_deleted = false
+          AND m.status = $3
+        LIMIT 1`,
+      [identityId, excludingEnterpriseId, EmployeeStatus.Active],
+    );
+    return rows.length > 0;
+  }
+
+  /**
    * The two counts refresh needs, in one round trip rather than two.
    *
    * `active` matches listActiveByIdentity exactly — status active, in an

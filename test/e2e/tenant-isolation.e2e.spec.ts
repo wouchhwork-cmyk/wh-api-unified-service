@@ -376,6 +376,98 @@ describe('one business cannot reach another', () => {
         expect(await liveSessions(victimEmail)).toBe(before);
       });
 
+      /*
+       * E14, THE RESIDUAL — and the only version of this attack that required
+       * the victim's own consent. Everything above is Acme acting
+       * unilaterally; here the victim genuinely accepted a job at Acme, so
+       * Acme is entitled to suspend THAT employment. What it is not entitled
+       * to do is end the sessions the person uses at Rival.
+       *
+       * It used to. Sessions are keyed on the identity, so revoking "every
+       * session for this identity" reached into an employer that had done
+       * nothing. That was accepted while the alternative looked like a
+       * suspended account still working — which it never was: refresh
+       * re-checks employment per business, so Acme is protected without the
+       * session being touched at all.
+       */
+      it('does not sign them out of their OTHER job, even having employed them', async () => {
+        const victimRefId = await inviteVictim();
+        await http()
+          .post('/api/v1/auth/accept-invite')
+          .send({ email: victimEmail, code: code(), password: 'a-password-only-they-know' })
+          .expect(200);
+
+        /*
+         * Signed in to RIVAL after accepting, deliberately. Accepting an
+         * invite sets a password and ends the identity's existing sessions —
+         * correct, and it would otherwise leave nothing for this attack to
+         * destroy. Two employments also mean login answers with a selection
+         * token rather than a session, so the business has to be named: the
+         * session being protected here is specifically Rival's.
+         */
+        const login = await http()
+          .post('/api/v1/auth/login')
+          .send({ email: victimEmail, password: 'a-password-only-they-know' })
+          .expect(200);
+        // Taken from the response rather than assumed, so the session created
+        // is unambiguously the one at the OTHER employer.
+        const choices = login.body.data.enterprises as { enterpriseRefId: string }[];
+        const rivalChoice = choices.find((choice) => choice.enterpriseRefId !== acme.refId);
+        await http()
+          .post('/api/v1/auth/select-enterprise')
+          .send({
+            selectionToken: login.body.data.selectionToken as string,
+            enterpriseRefId: rivalChoice?.enterpriseRefId,
+          })
+          .expect(200);
+
+        const before = await liveSessions(victimEmail);
+        expect(before).toBeGreaterThan(0);
+
+        await http()
+          .post(`/api/v1/employees/${victimRefId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'suspended', reason: 'no longer with us' })
+          .expect(200);
+
+        // Rival's sessions survive. Acme suspended an employment, not a person.
+        expect(await liveSessions(victimEmail)).toBe(before);
+      });
+
+      /*
+       * The other half, so the narrowing is not just "revoke less". Somebody
+       * whose ONLY job is suspended should be signed out — otherwise
+       * "suspended" means "cannot sign in again" rather than "is signed out",
+       * which is not what anybody pressing that button believes.
+       */
+      it('DOES sign out somebody whose only employment is suspended', async () => {
+        const solo = 'solo@acme.test';
+        const agentRole = await roleRefId(acme, 'agent');
+        const created = await http()
+          .post('/api/v1/employees')
+          .set(auth(acme.token))
+          .send({ firstName: 'Solo', email: solo, roleRefId: agentRole })
+          .expect(201);
+        await http()
+          .post('/api/v1/auth/accept-invite')
+          .send({ email: solo, code: code(), password: 'a-password-only-solo-knows' })
+          .expect(200);
+        await http()
+          .post('/api/v1/auth/login')
+          .send({ email: solo, password: 'a-password-only-solo-knows' })
+          .expect(200);
+
+        expect(await liveSessions(solo)).toBeGreaterThan(0);
+
+        await http()
+          .post(`/api/v1/employees/${created.body.data.refId}/status`)
+          .set(auth(acme.token))
+          .send({ status: 'suspended', reason: 'no longer with us' })
+          .expect(200);
+
+        expect(await liveSessions(solo)).toBe(0);
+      });
+
       it('cannot sign them out by repeating it', async () => {
         // The denial-of-service shape: two requests per logout, as fast as the
         // throttler allows. Each pass must be inert, not merely the first.

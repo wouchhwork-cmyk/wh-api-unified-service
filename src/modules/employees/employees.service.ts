@@ -515,18 +515,42 @@ export class EmployeesService {
      * described in `mayChangeStatus` — global sessions ended from a row the
      * attacker created unilaterally.
      *
-     * The over-revoking that remains is the deliberate kind: a genuine employee
-     * of two businesses, suspended by one, is signed out of both. Sessions are
-     * keyed on the identity and a `switchEnterprise` is a token exchange rather
-     * than a new session, so there is no narrower thing to revoke — and the
-     * person did choose to work for the business now suspending them.
+     * The over-revoking that remained was accepted as the lesser evil while
+     * the alternative looked like "a suspended account keeps working". On
+     * re-reading the refresh path (E14), it is not the alternative at all.
+     *
+     * Refresh ALREADY re-checks the employment for whichever business it is
+     * asked to mint a token for: `?enterpriseRefId=A` is refused the moment
+     * that employment stops being active, and a refresh naming no business
+     * mints a token with `enterpriseId: null`, which reaches no tenant data.
+     * So the suspending business is protected without touching the session.
+     *
+     * What revocation actually bought was nothing for them — a stateless
+     * access token survives it for its full life either way — while costing
+     * another employer a colleague's sign-in. A session belongs to the HUMAN,
+     * not to the business, and this is the last place that forgot it.
+     *
+     * So it is scoped to the case where nothing is reached into: this person
+     * works nowhere else, and "suspended" should plainly mean "signed out".
      */
     if (status === EmployeeStatus.Suspended && employee.joinedAt !== null) {
-      const revoked = await this.sessions.revokeAllForIdentity(employee.identityId);
-      this.logger.info(
-        { enterpriseId, employeeId: employee.employeeId, revoked },
-        'employee suspended — every session for that identity was revoked',
+      const worksElsewhere = await this.employees.hasActiveEmploymentElsewhere(
+        employee.identityId,
+        enterpriseId,
       );
+
+      if (worksElsewhere) {
+        this.logger.info(
+          { enterpriseId, employeeId: employee.employeeId },
+          'employee suspended — sessions left alone; they work elsewhere and refresh enforces this',
+        );
+      } else {
+        const revoked = await this.sessions.revokeAllForIdentity(employee.identityId);
+        this.logger.info(
+          { enterpriseId, employeeId: employee.employeeId, revoked },
+          'employee suspended — every session revoked, this was their only employment',
+        );
+      }
     }
 
     await this.audit.record({
