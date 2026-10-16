@@ -1,0 +1,81 @@
+# Local development stack. One command gets the whole system.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: wouchh-postgres
+    environment:
+      POSTGRES_DB: wouchh_dev
+      POSTGRES_USER: wouchh
+      POSTGRES_PASSWORD: wouchh_dev_local
+    ports:
+      # 5544, NOT 5432. Something on this machine already accepts TCP on 5432 and
+      # does not speak Postgres — pg_isready gets no response from it, and it is
+      # owned by another user so it does not show up in an unprivileged `lsof`.
+      # A local postgresql@16 is installed too, currently stopped.
+      #
+      # Overridable, but DB_PORT in .env.dev must match: a mismatch reads as "the
+      # tables vanished", because you connect successfully to the wrong server.
+      - '${HOST_DB_PORT:-5544}:5432'
+    volumes:
+      # Postgres 18+ wants ONE mount at /var/lib/postgresql (data lands in a
+      # subdirectory), not the pre-18 /var/lib/postgresql/data. Mounting the old
+      # path makes the container refuse to start.
+      - wouchh-pgdata:/var/lib/postgresql
+      - ./scripts/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # The database that actually exists. It named `wouchh`, which POSTGRES_DB
+      # does not create — so pg_isready answered for the default database and the
+      # container could report healthy before the init scripts had finished.
+      test: ['CMD-SHELL', 'pg_isready -U wouchh -d wouchh_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command:
+      # pg_trgm is required for customer name search (schema.md §16).
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: wouchh-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: '5432'
+    env_file:
+      - .env.dev
+    ports:
+      - '3000:3000'
+    read_only: true
+    tmpfs:
+      - /tmp
+    profiles: ['containerised']
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    container_name: wouchh-worker
+    command: ['node', 'dist/workers/main.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: '5432'
+    env_file:
+      - .env.dev
+    read_only: true
+    tmpfs:
+      - /tmp
+    profiles: ['containerised']
+
+volumes:
+  wouchh-pgdata:

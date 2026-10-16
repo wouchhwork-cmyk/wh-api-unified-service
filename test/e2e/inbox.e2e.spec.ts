@@ -1,0 +1,1115 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import type { DataSource } from 'typeorm';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  createTestApp,
+  platformAdminLogin,
+  provisionPlatformAdmin,
+  resetTenantData,
+  type TestApp,
+} from './app.harness';
+import { MAX_MODERATION_REPLAYS } from '@/shared/constants';
+
+/**
+ * The shared inbox over HTTP: who has a conversation, and whether it is done.
+ *
+ * Both endpoints shipped with no client and no test, and the consequences were
+ * exactly what that combination predicts. setStatus bound one parameter as both
+ * a column value and an `IN (...)` operand, which Postgres refuses — so it
+ * answered 500 for every request ever made to it. And nothing read the assignee
+ * back, so "assigned to me" was permanently empty however many times anybody
+ * pressed assign.
+ *
+ * A conversation needs a channel, a customer and a thread, so the fixtures go in
+ * through the database. Everything under test goes through HTTP.
+ */
+const OWNER_PASSWORD = 'a-long-enough-password';
+const SIGNUP = {
+  business: { name: 'Blue Bottle Cafe', email: 'hello@bluebottle.test', city: 'Pune' },
+  owner: {
+    firstName: 'Meera',
+    lastName: 'Iyer',
+    email: 'meera@bluebottle.test',
+    password: OWNER_PASSWORD,
+  },
+};
+
+describe('the shared inbox', () => {
+  let testApp: TestApp;
+  let app: NestExpressApplication;
+  let db: DataSource;
+
+  beforeAll(async () => {
+    testApp = await createTestApp();
+    app = testApp.app;
+    db = testApp.db;
+  });
+  afterAll(async () => {
+    await testApp.close();
+  });
+  beforeEach(async () => {
+    await resetTenantData(db);
+    await provisionPlatformAdmin(app);
+  });
+
+  const http = () => request(app.getHttpServer());
+  const code = (): string => process.env.OTP_STATIC_CODE ?? '666666';
+
+  async function onboardedBusiness(
+    /**
+     * Distinguishes a SECOND business in one test. Signup is unique on email, so
+     * without this a tenant-isolation test 409s on its own fixture before it
+     * reaches what it means to assert.
+     */
+    suffix = '',
+  ): Promise<{ ownerToken: string; enterpriseRefId: string }> {
+    const payload = suffix
+      ? {
+          business: {
+            ...SIGNUP.business,
+            name: `Rival ${suffix}`,
+            email: `hello${suffix}@rival.test`,
+          },
+          owner: { ...SIGNUP.owner, email: `owner${suffix}@rival.test` },
+        }
+      : SIGNUP;
+    const signup = await http().post('/api/v1/enterprises/signup').send(payload).expect(201);
+    const verified = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: signup.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    const adminAuth = { Authorization: `Bearer ${admin.body.data.accessToken as string}` };
+
+    await http()
+      .post(`/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/status`)
+      .set(adminAuth)
+      .send({ status: 'active' })
+      .expect(200);
+
+    /*
+     * Every surface here is feature-gated, and the gate is real: without these
+     * every request below is a 403 rather than a failure of what is under test.
+     * That the gate itself works is asserted in the platform-console suite.
+     */
+    /*
+     * `comment_management` is in this list now, and it has to be: the threads
+     * this suite creates are `comment_thread` rows, and comment threads are
+     * governed by `comments.*` rather than by `conversations.*`.
+     *
+     * They passed without it before, which was the bug — comments rode in on
+     * `conversations.view`, gated on `unified_inbox`, so a business whose
+     * comment feature had never been granted (or had been REVOKED) kept full
+     * comment access. Measured on real data: one tenant was in exactly that
+     * state.
+     */
+    for (const feature of [
+      'unified_inbox',
+      'comment_management',
+      'post_insights',
+      'customer_directory',
+    ]) {
+      await http()
+        .post(
+          `/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/features/${feature}`,
+        )
+        .set(adminAuth)
+        .send({ status: 'active' })
+        .expect(200);
+    }
+
+    return {
+      ownerToken: verified.body.data.accessToken as string,
+      enterpriseRefId: signup.body.data.enterpriseRefId as string,
+    };
+  }
+
+  /** A channel, a customer and one comment thread with a message in it. */
+  /**
+   * A DIRECT MESSAGE thread with a platform identifier behind it — the only
+   * shape a resync can act on, because the identifier is what becomes `user_id`.
+   */
+  async function seedDirectMessageThread(
+    enterpriseRefId: string,
+  ): Promise<{ refId: string; channelId: string }> {
+    const enterprise: { id: string }[] = await db.query(
+      `SELECT id FROM enterprises WHERE ref_id = $1`,
+      [enterpriseRefId],
+    );
+    const enterpriseId = enterprise[0]?.id;
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu-dm','envelope') RETURNING id`,
+      [enterpriseId],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id, name)
+       VALUES ($1,$2,'instagram','instagram_business','IG_1','Acme IG') RETURNING id`,
+      [connection[0]?.id, enterpriseId],
+    );
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'genzrelics','instagram_dm',$2) RETURNING id`,
+      [enterpriseId, channel[0]?.id],
+    );
+    const identifier: { id: string }[] = await db.query(
+      `INSERT INTO customer_identifiers
+         (enterprise_id, customer_id, identifier_kind, identifier_value, identifier_value_raw, source)
+       VALUES ($1,$2,'instagram_user_id','1774658693722714','1774658693722714','platform')
+       RETURNING id`,
+      [enterpriseId, customer[0]?.id],
+    );
+    const conversation: { ref_id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, customer_identifier_id, platform,
+          conversation_kind, platform_thread_id, status, message_count, last_message_at)
+       VALUES ($1,$2,$3,$4,'instagram','direct_message','dm:1774658693722714','open',1, now())
+       RETURNING ref_id`,
+      [enterpriseId, channel[0]?.id, customer[0]?.id, identifier[0]?.id],
+    );
+
+    return { refId: conversation[0]?.ref_id as string, channelId: channel[0]?.id as string };
+  }
+
+  async function seedConversation(
+    enterpriseRefId: string,
+    threadKey = 'comment:1',
+  ): Promise<string> {
+    const enterprise: { id: string }[] = await db.query(
+      `SELECT id FROM enterprises WHERE ref_id = $1`,
+      [enterpriseRefId],
+    );
+    const enterpriseId = enterprise[0]?.id;
+
+    /*
+     * Reused when it already exists: a business has ONE Meta connection, and a
+     * test that seeds a second conversation for the same enterprise must not
+     * trip provider_connections_uniq trying to invent another.
+     */
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social','fbu','envelope')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [enterpriseId],
+    );
+    const connectionId =
+      connection[0]?.id ??
+      (
+        await db.query<{ id: string }[]>(
+          `SELECT id FROM provider_connections WHERE enterprise_id = $1 LIMIT 1`,
+          [enterpriseId],
+        )
+      )[0]?.id;
+
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id, name)
+       VALUES ($1,$2,'facebook','page','PAGE_1','Blue Bottle')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [connectionId, enterpriseId],
+    );
+    const channelId =
+      channel[0]?.id ??
+      (
+        await db.query<{ id: string }[]>(
+          `SELECT id FROM channels WHERE enterprise_id = $1 LIMIT 1`,
+          [enterpriseId],
+        )
+      )[0]?.id;
+    const customer: { id: string }[] = await db.query(
+      `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+       VALUES ($1,'Grace Hopper','facebook_comment',$2) RETURNING id`,
+      [enterpriseId, channel[0]?.id],
+    );
+    /*
+     * A comment thread hangs off a POST of ours, and moderation refuses one
+     * that does not — hiding a comment means calling Graph about the post it
+     * sits on. Seeding the conversation without a post made every moderation
+     * test 409 on its first call.
+     */
+    const post: { id: string }[] = await db.query(
+      `INSERT INTO posts
+         (enterprise_id, channel_id, platform, platform_post_id, post_kind, status, published_at)
+       VALUES ($1,$2,'facebook',$3,'image','published', now())
+       RETURNING id`,
+      [enterpriseId, channelId, `FB_POST_${threadKey}`],
+    );
+
+    const conversation: { ref_id: string; id: string }[] = await db.query(
+      `INSERT INTO conversations
+         (enterprise_id, channel_id, customer_id, post_id, platform, conversation_kind,
+          platform_thread_id, status, message_count, last_message_at)
+       VALUES ($1,$2,$3,$4,'facebook','comment_thread',$5,'open',1, now())
+       RETURNING ref_id, id`,
+      [enterpriseId, channelId, customer[0]?.id, post[0]?.id, threadKey],
+    );
+    await db.query(
+      `INSERT INTO messages
+         (enterprise_id, conversation_id, customer_id, direction, message_kind, body, status,
+          platform_sent_at, platform_message_id)
+       VALUES ($1,$2,$3,'inbound','text','is this open on Sundays?','delivered', now(), $4)`,
+      [enterpriseId, conversation[0]?.id, customer[0]?.id, `FB_CM_${threadKey}`],
+    );
+
+    return conversation[0]?.ref_id as string;
+  }
+
+  it('hides comment threads from a business whose comment feature is revoked', async () => {
+    /*
+     * THE LEAK THIS SPLIT CLOSES, pinned.
+     *
+     * Comment threads used to be governed by `conversations.view`, which is
+     * gated on `unified_inbox`. So a business could have `comment_management`
+     * declined, disabled or REVOKED and keep full access to every comment —
+     * reading them, replying, and hiding or deleting a customer's comment from
+     * a public post. Measured on real data before the fix: one live tenant sat
+     * in exactly that state.
+     *
+     * Revoking is the sharpest version of the test because it is the state a
+     * business is put into deliberately, by us, and it is terminal — the
+     * feature state machine has no transition out of `revoked`.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+
+    // Visible while the feature is active.
+    await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+
+    await http()
+      .post(`/api/v1/platform/enterprises/${enterpriseRefId}/features/comment_management`)
+      .set({ Authorization: `Bearer ${admin.body.data.accessToken as string}` })
+      .send({ status: 'revoked', reason: 'terms breach' })
+      .expect(200);
+
+    /*
+     * NOT FOUND rather than FORBIDDEN, on the same access token. The route is
+     * still reachable — this business still has the DM inbox — so a 403 would
+     * confirm that this particular conversation exists to somebody who may not
+     * see it, and a refId is the only handle a client has.
+     */
+    await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(404);
+
+    // And it is gone from the listing, not merely unreadable.
+    const listed = await http().get('/api/v1/conversations').set(auth).expect(200);
+    expect(listed.body.data).toEqual([]);
+  });
+
+  it('tells the client who it is, so it can offer "assign to me"', async () => {
+    const { ownerToken } = await onboardedBusiness();
+
+    const me = await http()
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    // Without this the assign endpoint is unusable from a client: it speaks in
+    // refIds and nothing told the client what its own was.
+    expect(me.body.data.employeeRefId).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it('lists a conversation as unassigned, and says who has it once assigned', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const before = await http().get('/api/v1/conversations').set(auth).expect(200);
+    expect(before.body.data[0].assignedTo).toBeNull();
+
+    const me = await http().get('/api/v1/auth/me').set(auth).expect(200);
+    await http()
+      .post(`/api/v1/conversations/${refId}/assign`)
+      .set(auth)
+      .send({ employeeRefId: me.body.data.employeeRefId })
+      .expect(204);
+
+    const after = await http().get('/api/v1/conversations').set(auth).expect(200);
+    expect(after.body.data[0].assignedTo).toEqual({
+      refId: me.body.data.employeeRefId,
+      name: 'Meera Iyer',
+    });
+
+    // The filter this makes work at all: it was permanently empty before,
+    // because nothing ever read the column back.
+    const mine = await http().get('/api/v1/conversations?assignedToMe=true').set(auth).expect(200);
+    expect(mine.body.data).toHaveLength(1);
+  });
+
+  it('unassigns', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    const me = await http().get('/api/v1/auth/me').set(auth).expect(200);
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/assign`)
+      .set(auth)
+      .send({ employeeRefId: me.body.data.employeeRefId })
+      .expect(204);
+    await http()
+      .post(`/api/v1/conversations/${refId}/assign`)
+      .set(auth)
+      .send({ employeeRefId: null })
+      .expect(204);
+
+    const after = await http().get('/api/v1/conversations').set(auth).expect(200);
+    expect(after.body.data[0].assignedTo).toBeNull();
+  });
+
+  it('refuses to assign work to somebody from another business', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/assign`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      // A well-formed ref that belongs to nobody here.
+      .send({ employeeRefId: '11111111-2222-4333-8444-555555555555' })
+      .expect(404);
+  });
+
+  it('RESOLVES a conversation — the request that used to answer 500', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/status`)
+      .set(auth)
+      .send({ status: 'resolved' })
+      .expect(204);
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    expect(thread.body.data.conversation.status).toBe('resolved');
+  });
+
+  it('refuses a status that is not a status', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/status`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      // 422, this service's shape for a body that parsed but does not validate.
+      .send({ status: 'nearly-done' })
+      .expect(422);
+  });
+
+  it('paginates a thread, and says when there is more', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const first = await http().get(`/api/v1/conversations/${refId}?limit=1`).set(auth).expect(200);
+
+    // One message seeded, so there is nothing after it — but the surface has to
+    // exist and be honest, which it did not before: a long thread simply
+    // stopped, with nothing to say there was more.
+    expect(first.body.data.messages).toHaveLength(1);
+    // In META, like every other list. Its first version put this in `data`,
+    // which made one envelope into two shapes.
+    expect(first.body.data.pagination).toBeUndefined();
+    expect(first.body.meta.pagination).toEqual({ limit: 1, nextCursor: null, hasMore: false });
+  });
+
+  it('answers a malformed reference with 422, not 500', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    /*
+     * ref_id is a `uuid` column, so an unvalidated path segment reached Postgres
+     * and came back as 22P02 — a 500 on input the caller controls. The schema to
+     * prevent that already existed and was applied on the platform and employee
+     * routes but not here.
+     */
+    await http().get('/api/v1/conversations/not-a-uuid').set(auth).expect(422);
+    await http().post('/api/v1/conversations/not-a-uuid/read').set(auth).expect(422);
+    await http()
+      .post('/api/v1/conversations/not-a-uuid/status')
+      .set(auth)
+      .send({ status: 'open' })
+      .expect(422);
+    await http().get('/api/v1/posts?channelRefId=not-a-uuid').set(auth).expect(422);
+  });
+
+  it('restarts a listing from the top when the cursor is nonsense', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    // The cursor is OPAQUE: clients must not build one, so there is nothing
+    // useful to tell them about a bad one. It must not be a 500 either — the
+    // three hand-rolled decoders it replaced all bound an Invalid Date into the
+    // query.
+    const garbage = await http().get('/api/v1/conversations?cursor=garbage').set(auth).expect(200);
+    expect(garbage.body.data).toHaveLength(1);
+
+    const badDate = Buffer.from('{"t":"nope","i":1}').toString('base64url');
+    await http().get(`/api/v1/customers?cursor=${badDate}`).set(auth).expect(200);
+  });
+
+  it('returns a thread without a single internal id', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const thread = await http()
+      .get(`/api/v1/conversations/${refId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    // It used to return the row as it came out of the database: id, customerId
+    // and sentByEmployeeId, all internal bigints — the one thing this API's own
+    // platform-console test asserts it never does.
+    const message = thread.body.data.messages[0];
+    expect(Object.keys(message).sort()).toEqual([
+      // Added when attachments started being stored: a message whose entire
+      // content is its media used to arrive here as an empty body.
+      'attachments',
+      // Added when a comment thread turned out to carry SEVERAL customers: the
+      // thread named none of them, so two people's comments were both drawn as
+      // an unnamed "inbound".
+      'author',
+      'body',
+      'canBeRepliedTo',
+      'contentUnavailable',
+      'createdAt',
+      // Added when a deleted comment stopped being erased: both a customer
+      // unsend and an agent delete set deletedOnPlatform, and until this they
+      // could not be told apart.
+      'deletedBy',
+      'deletedOnPlatform',
+      'deletedOnPlatformAt',
+      'direction',
+      // Hidden by US on the platform — Instagram never announces it, so this
+      // flag is ours to keep.
+      'hiddenOnPlatform',
+      'isInternalNote',
+      'isRead',
+      'messageKind',
+      /*
+       * Our mark and the platform disagree: a hide or delete whose send died,
+       * leaving the comment public while this thread says it is gone. Exposed
+       * so the client can offer the replay — the ordinary hide is refused from
+       * here on, because our own copy really does read hidden.
+       */
+      'moderationFailed',
+      /*
+       * The whole stored metadata bag, added so nothing is captured unseen —
+       * we hold far more than the thread shows and none of it was visible
+       * anywhere, which is how a captured field gets dropped for looking
+       * useless. Explicitly NOT part of the contract; the assertion below is
+       * what keeps it from becoming a hole in the rule this test exists for.
+       */
+      'platformDetails',
+      'platformSentAt',
+      // Added when a GIF comment turned up as a blank line: Instagram omits
+      // `text` rather than sending it empty, and exposes no media field at all.
+      'platformSentNoText',
+      // Added when the corpus replay showed every comment delivery carries
+      // `media.media_product_type` and we kept none of it: FEED, REELS or
+      // STORY. Null on a direct message.
+      'postProductType',
+      'reaction',
+      'refId',
+      // Added when story replies started being surfaced: null unless the
+      // customer answered a STORY rather than a message.
+      'repliedToStory',
+      // Added when Instagram replies started being threaded: null unless the
+      // customer answered one specific message.
+      'replyTo',
+      'seenAt',
+      'sentBy',
+      'status',
+    ]);
+    // Additive: a text message still carries the key, as an empty list, so a
+    // client never has to test for its presence.
+    // Empty for a text message; each entry carries renderAs so a client never
+    // has to work out whether a link can be shown or only followed.
+    expect(message.attachments).toEqual([]);
+    // Null for an ordinary message; an object with refId, excerpt, direction
+    // and isSelfReply when the customer answered one in particular.
+    expect(message.replyTo).toBeNull();
+  });
+
+  it('keeps our own ids out of the metadata bag it now exposes', async () => {
+    /*
+     * `platformDetails` ships whatever the projectors stored, which is the
+     * point — and it would be the easy way to undo the rule the test above
+     * enforces. Every id in there is META'S: a comment id, a media id, a story
+     * id. Ours are bigints and belong to nobody outside this service.
+     *
+     * Asserted on shape rather than on a key list, so a projector that starts
+     * storing something new is caught by this rather than by a customer.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const thread = await http()
+      .get(`/api/v1/conversations/${refId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+
+    const internalish = /^(id|.*(?:^|[a-z])(?:Id))$/;
+    const offenders: string[] = [];
+
+    const walk = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => walk(item, `${path}[${index}]`));
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      for (const [key, nested] of Object.entries(value)) {
+        // A NUMBER under an id-shaped key is the tell: every platform id Meta
+        // gives is a string, and every id of ours is a bigint.
+        if (internalish.test(key) && typeof nested === 'number') {
+          offenders.push(`${path}.${key}`);
+        }
+        walk(nested, `${path}.${key}`);
+      }
+    };
+
+    for (const message of thread.body.data.messages) {
+      walk(message.platformDetails, 'message.platformDetails');
+      for (const attachment of message.attachments ?? []) {
+        walk(attachment.platformDetails, 'attachment.platformDetails');
+      }
+    }
+    walk(thread.body.data.conversation.platformDetails, 'conversation.platformDetails');
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('names the colleague who sent a reply', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'we open at nine', internalNote: true, idempotencyKey: 'note-one-key' })
+      .expect(202);
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const note = thread.body.data.messages.find(
+      (m: { isInternalNote: boolean }) => m.isInternalNote,
+    );
+    // A name, not an id: a client cannot turn an employee id into anything.
+    expect(note.sentBy).toEqual({ refId: expect.any(String), name: 'Meera Iyer' });
+  });
+
+  it('refuses a reply with no idempotency key at all', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    // The one write that reaches a customer had no idempotency unless the caller
+    // opted in, which is exactly backwards.
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ body: 'hello', internalNote: true })
+      .expect(422);
+  });
+
+  it('refuses a key already used for a different message', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'first', internalNote: true, idempotencyKey: 'shared-key-x' })
+      .expect(202);
+
+    /*
+     * Same key, different request. It used to return the FIRST message with a
+     * 202: the caller was told its second reply was accepted, the reply was
+     * never written, and nothing recorded that a customer had been left
+     * unanswered.
+     */
+    const conflict = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({ body: 'second', internalNote: false, idempotencyKey: 'shared-key-x' })
+      .expect(409);
+    expect(conflict.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+  });
+
+  it('returns the original message when the SAME request is retried', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    const body = { body: 'once', internalNote: true, idempotencyKey: 'retry-key-xx' };
+
+    const first = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send(body)
+      .expect(202);
+    const again = await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send(body)
+      .expect(202);
+
+    expect(again.body.data.messageRefId).toBe(first.body.data.messageRefId);
+  });
+
+  it('never lets one business read another’s conversation', async () => {
+    const { enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    // A second business, whose owner must not see the first one's thread.
+    const other = await http()
+      .post('/api/v1/enterprises/signup')
+      .send({
+        business: { name: 'Rival Roasters', email: 'hello@rival.test', city: 'Pune' },
+        owner: {
+          firstName: 'Ada',
+          lastName: 'Byron',
+          email: 'ada@rival.test',
+          password: OWNER_PASSWORD,
+        },
+      })
+      .expect(201);
+    const rival = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: other.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    const adminAuth = { Authorization: `Bearer ${admin.body.data.accessToken as string}` };
+    await http()
+      .post(`/api/v1/platform/enterprises/${other.body.data.enterpriseRefId}/status`)
+      .set(adminAuth)
+      .send({ status: 'active' })
+      .expect(200);
+    await http()
+      .post(
+        `/api/v1/platform/enterprises/${other.body.data.enterpriseRefId}/features/unified_inbox`,
+      )
+      .set(adminAuth)
+      .send({ status: 'active' })
+      .expect(200);
+
+    const rivalAuth = { Authorization: `Bearer ${rival.body.data.accessToken as string}` };
+
+    /*
+     * PROVE THE GATE IS OPEN FIRST.
+     *
+     * Both assertions below are 404s, and a 403 from the feature gate would fail
+     * them for a reason that has nothing to do with tenancy — which is exactly
+     * how a fixture problem reads as an intermittent tenancy failure. This line
+     * makes the two distinguishable: if the rival cannot reach its own empty
+     * inbox, the fixture is wrong, and it says so here rather than 20 lines down.
+     */
+    const ownInbox = await http().get('/api/v1/conversations').set(rivalAuth).expect(200);
+    expect(ownInbox.body.data).toEqual([]);
+
+    // 404, not 403: a 403 would confirm the ref exists.
+    await http().get(`/api/v1/conversations/${refId}`).set(rivalAuth).expect(404);
+    await http()
+      .post(`/api/v1/conversations/${refId}/status`)
+      .set(rivalAuth)
+      .send({ status: 'closed' })
+      .expect(404);
+  });
+
+  it('queues a resync for a message thread, and refuses to queue it twice', async () => {
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const first = await http().post(`/api/v1/conversations/${refId}/resync`).set(auth).expect(201);
+    expect(first.body.data).toEqual({ queued: true });
+
+    /*
+     * queued:false, not an error. The button is clickable twice and the same
+     * repair must not run twice — but a caller has done nothing wrong.
+     */
+    const second = await http().post(`/api/v1/conversations/${refId}/resync`).set(auth).expect(201);
+    expect(second.body.data).toEqual({ queued: false });
+
+    const jobs: { job_kind: string; target_platform_id: string }[] = await db.query(
+      `SELECT job_kind, target_platform_id FROM sync_jobs WHERE job_kind = 'resync_conversation'`,
+    );
+    expect(jobs).toHaveLength(1);
+    // The identifier is what becomes user_id on the conversations edge; without
+    // it the walk silently widens to every conversation on the account.
+    expect(jobs[0]?.target_platform_id).toBe('1774658693722714');
+  });
+
+  it('refuses to resync a comment thread', async () => {
+    // A comment thread has no conversations edge to re-read. 422 with a reason,
+    // rather than a job that could never do anything.
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+
+    const response = await http()
+      .post(`/api/v1/conversations/${refId}/resync`)
+      .set({ Authorization: `Bearer ${ownerToken}` })
+      .expect(422);
+
+    expect(response.body.error.code).toBe('CONVERSATION_RESYNC_UNSUPPORTED');
+  });
+
+  it("will not resync another business's conversation", async () => {
+    const owner = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(owner.enterpriseRefId);
+    const stranger = await onboardedBusiness('2');
+
+    // Tenant scoping: a valid ref_id from someone else's account must read as
+    // "not found", never as a thread this caller may repair.
+    await http()
+      .post(`/api/v1/conversations/${refId}/resync`)
+      .set({ Authorization: `Bearer ${stranger.ownerToken}` })
+      .expect(404);
+  });
+
+  it('refuses a resync without permission', async () => {
+    const { enterpriseRefId } = await onboardedBusiness();
+    const { refId } = await seedDirectMessageThread(enterpriseRefId);
+
+    await http().post(`/api/v1/conversations/${refId}/resync`).expect(401);
+  });
+
+  it('refuses to answer a message from another conversation', async () => {
+    /*
+     * The reply target is scoped to the conversation as well as the tenant.
+     * Meta would refuse a mid from a different thread anyway, and accepting the
+     * ref_id would confirm that it exists.
+     */
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const strangerRefId = thread.body.data.messages[0].refId;
+
+    const other = await seedConversation(enterpriseRefId, 'comment:2');
+    const response = await http()
+      .post(`/api/v1/conversations/${other}/reply`)
+      .set(auth)
+      .send({
+        body: 'answering',
+        idempotencyKey: 'reply-cross-1',
+        replyToMessageRefId: strangerRefId,
+      })
+      .expect(404);
+
+    expect(response.body.error.code).toBe('MESSAGE_NOT_FOUND');
+  });
+
+  it('refuses a reply target on an internal note', async () => {
+    // A note is a record for colleagues and answers nothing on the platform, so
+    // a target there is a mistake rather than something to ignore silently.
+    const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+    const refId = await seedConversation(enterpriseRefId);
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+
+    const thread = await http().get(`/api/v1/conversations/${refId}`).set(auth).expect(200);
+    const target = thread.body.data.messages[0].refId;
+
+    await http()
+      .post(`/api/v1/conversations/${refId}/reply`)
+      .set(auth)
+      .send({
+        body: 'a note',
+        idempotencyKey: 'reply-note-1',
+        internalNote: true,
+        replyToMessageRefId: target,
+      })
+      .expect(422);
+  });
+
+  /**
+   * Hiding and deleting a comment, as a SEQUENCE.
+   *
+   * WRITTEN AFTER SIX REVIEW ROUNDS ON THIS PATH, each of which fixed one bug
+   * by introducing another, because nothing anywhere exercised it. In order:
+   * a deleted comment vanished while its conversation went on counting it; the
+   * fix for that let hide be sent on an already-deleted comment; the fix for
+   * THAT refused every retry; the fix for that reported a dropped duplicate as
+   * success; and the fix for that made a double-clicked delete queue one event
+   * per click.
+   *
+   * Every one of those would have been caught here. The assertions are about
+   * SEQUENCES rather than single calls, because each bug lived in the second
+   * or third step and a test of one action in isolation passes through all of
+   * them.
+   */
+  describe('moderating a comment', () => {
+    const moderate = (
+      token: string,
+      conversationRefId: string,
+      messageRefId: string,
+      action: string,
+    ) =>
+      http()
+        .post(`/api/v1/conversations/${conversationRefId}/messages/${messageRefId}/moderate`)
+        .set({ Authorization: `Bearer ${token}` })
+        .send({ action });
+
+    /** The one comment in a freshly seeded thread. */
+    const onlyMessage = async (token: string, conversationRefId: string): Promise<string> => {
+      const thread = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${token}` })
+        .expect(200);
+      return (thread.body.data.messages as { refId: string }[])[0]?.refId as string;
+    };
+
+    it('can hide, unhide, and hide again', async () => {
+      /*
+       * THE SEQUENCE THAT WAS REFUSED FOR EVER. The outbound dedup key was the
+       * message and the action, and the unique index behind it is not partial
+       * on status — so the first hide's ledger row blocked every later hide of
+       * that comment. The third step 409'd and nothing said why.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_1');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'unhide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+    });
+
+    it('refuses a second hide while it is already hidden', async () => {
+      // The double-click. Refused on the state, which the row lock makes
+      // authoritative rather than advisory.
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_2');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+    });
+
+    const retry = (token: string, conversationRefId: string, messageRefId: string) =>
+      http()
+        .post(`/api/v1/conversations/${conversationRefId}/messages/${messageRefId}/moderate/retry`)
+        .set({ Authorization: `Bearer ${token}` });
+
+    /** Forces the queued moderation send to the state the relay leaves after giving up. */
+    const killTheSend = async (enterpriseRefId: string): Promise<void> => {
+      await db.query(
+        `UPDATE outbound_events SET status = 'dead_letter', attempt_count = 5
+          WHERE event_type IN ('comment_hide', 'comment_delete')
+            AND enterprise_id = (SELECT id FROM enterprises WHERE ref_id = $1)`,
+        [enterpriseRefId],
+      );
+    };
+
+    const moderationRows = async (
+      enterpriseRefId: string,
+    ): Promise<{ status: string; replays: string | null }[]> =>
+      db.query(
+        `SELECT status, metadata->>'replays' AS replays FROM outbound_events
+          WHERE event_type IN ('comment_hide', 'comment_delete')
+            AND enterprise_id = (SELECT id FROM enterprises WHERE ref_id = $1)
+          ORDER BY id`,
+        [enterpriseRefId],
+      );
+
+    /*
+     * E19. Hiding marks our copy optimistically — Instagram sends no webhook
+     * for it — so when the send dies the comment is still public and the inbox
+     * says it is gone. The ordinary moderate call is refused, correctly,
+     * because our copy really does read hidden. Without a replay there is no
+     * way back at all.
+     */
+    it('sends a dead-lettered hide again', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_1');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      // The ordinary path is closed once our own mark is in place.
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+
+      await killTheSend(enterpriseRefId);
+
+      /*
+       * The client cannot offer a retry it is never told about. This flag is
+       * the only thing separating "hidden" from "we said hidden and the
+       * platform never heard".
+       */
+      const failed = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      expect(
+        (failed.body.data.messages as { refId: string; moderationFailed: boolean }[]).find(
+          (m) => m.refId === messageRefId,
+        )?.moderationFailed,
+      ).toBe(true);
+
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+
+      const rows = await moderationRows(enterpriseRefId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: 'pending', replays: '1' });
+
+      // Queued again, so there is nothing failed to show.
+      const repaired = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      expect(
+        (repaired.body.data.messages as { refId: string; moderationFailed: boolean }[]).find(
+          (m) => m.refId === messageRefId,
+        )?.moderationFailed,
+      ).toBe(false);
+    });
+
+    /*
+     * THE BUG THE WITHDRAWN CARVE-OUT CAUSED. Letting a second click through
+     * moderateComment queued a whole new send each time, because the dedup key
+     * carries updated_at and our own optimistic mark bumps it. N clicks, N
+     * events, every one refused by Graph. Replaying the row cannot do that.
+     */
+    it('replays the same ledger row rather than queueing another send', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_2');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+
+      const rows = await moderationRows(enterpriseRefId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.replays).toBe('2');
+    });
+
+    it('refuses a retry when nothing has failed', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_3');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      // Queued and alive: there is nothing dead to send again.
+      await retry(ownerToken, conversationRefId, messageRefId).expect(409);
+    });
+
+    /*
+     * A replay is a button somebody can keep pressing, and a hide Graph refuses
+     * will refuse every time. Bounded so it cannot be held down.
+     */
+    it('stops replaying after the cap', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:RETRY_4');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(202);
+      for (let attempt = 0; attempt < MAX_MODERATION_REPLAYS; attempt += 1) {
+        await killTheSend(enterpriseRefId);
+        await retry(ownerToken, conversationRefId, messageRefId).expect(202);
+      }
+      await killTheSend(enterpriseRefId);
+      await retry(ownerToken, conversationRefId, messageRefId).expect(409);
+    });
+
+    it('refuses everything once the comment is deleted', async () => {
+      /*
+       * Gone is gone. A retry carve-out for a deletion WE marked was tried and
+       * removed: our own mark bumps updated_at, so a second click built a
+       * fresh dedup key and queued another delete — N clicks, N events, each
+       * refused by Graph and dead-lettered. Retrying a send that died belongs
+       * to the ledger, not to this endpoint.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_3');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(202);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(409);
+      await moderate(ownerToken, conversationRefId, messageRefId, 'hide').expect(409);
+    });
+
+    it('keeps the deleted comment, and its conversation count honest', async () => {
+      /*
+       * The original defect. A deletion set our own is_deleted flag, which
+       * every read filters on, while nothing decremented message_count — so
+       * the summary counted a message the thread no longer returned, and the
+       * business lost the record of what was said on their own post.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_4');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      await moderate(ownerToken, conversationRefId, messageRefId, 'delete').expect(202);
+
+      const thread = await http()
+        .get(`/api/v1/conversations/${conversationRefId}`)
+        .set({ Authorization: `Bearer ${ownerToken}` })
+        .expect(200);
+      const messages = thread.body.data.messages as {
+        refId: string;
+        deletedOnPlatform: boolean;
+        deletedBy: string | null;
+        body: string | null;
+      }[];
+
+      // Still there, marked, and attributed to us rather than the customer.
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.deletedOnPlatform).toBe(true);
+      expect(messages[0]?.deletedBy).toBe('business');
+      expect(messages[0]?.body).toBe('is this open on Sundays?');
+
+      /*
+       * AND THE COUNT STILL MATCHES, which is the half the original defect
+       * broke: erasing the row left message_count counting a message the
+       * thread no longer returned, permanently, with nothing to reconcile it.
+       */
+      expect(thread.body.data.conversation.messageCount).toBe(messages.length);
+    });
+
+    it('lets only ONE of two simultaneous hides through', async () => {
+      /*
+       * TWO AT ONCE MUST SEND ONE CALL. Sequential tests cannot ask this.
+       *
+       * WHAT THIS DOES NOT PROVE, stated because it would be easy to assume
+       * otherwise: it is not a test of the row lock. Removing `FOR UPDATE`
+       * leaves it green, because two requests racing read the same
+       * `updated_at`, build the same dedup key, and the loser is refused by
+       * the unique index instead. Both mechanisms produce one 202, which is
+       * why the assertion is on the OUTCOME rather than on which one fired.
+       *
+       * The lock still earns its place — it is what makes the state checks
+       * above authoritative rather than advisory, and what keeps the
+       * read-decide-write sequence from interleaving at all. Proving that
+       * needs a test that can pause a transaction mid-flight, which is worth
+       * more than it costs only if this ever regresses.
+       */
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const conversationRefId = await seedConversation(enterpriseRefId, 'comment:SEQ_5');
+      const messageRefId = await onlyMessage(ownerToken, conversationRefId);
+
+      const results = await Promise.all([
+        moderate(ownerToken, conversationRefId, messageRefId, 'hide'),
+        moderate(ownerToken, conversationRefId, messageRefId, 'hide'),
+      ]);
+      const codes = results.map((r) => r.status).sort();
+
+      expect(codes).toHaveLength(2);
+      expect(codes.filter((c) => c === 202)).toHaveLength(1);
+      // The loser is refused, not silently accepted — by the state check if it
+      // waited for the lock, or by the dedup key if it raced inside it.
+      expect(codes.filter((c) => c === 409)).toHaveLength(1);
+    });
+  });
+});

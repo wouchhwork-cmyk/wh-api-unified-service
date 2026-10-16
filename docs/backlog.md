@@ -1,0 +1,550 @@
+# What is left to do
+
+Everything known to be missing or wrong, as of the review pass on
+`feature/base-setup` (23 August 2026). Written to be picked up cold: each item says what is wrong, why it
+matters, and roughly what it costs.
+
+Grouped by **risk**, not by feature area — the first section is things that are
+already shipped and already wrong, which is a different kind of urgent from things
+that do not exist yet.
+
+Sizes are rough: **S** under half a day, **M** a day or two, **L** longer.
+
+---
+
+## 0. What the review pass closed, and what it opened
+
+A full review of the branch (docs/code-review-2026-08-23.md, since removed)
+raised 307 findings, of which 228 were confirmed by adversarial verification: one
+critical, 25 high, 109 medium, 93 low. All 26 BLOCKING findings are fixed, along
+with most of the medium ones. What is not fixed is listed in §0.1 rather than
+quietly dropped.
+
+Two things the review could not have known, found while fixing it:
+
+- `ensureDatabaseExists` had NEVER created a database. It compared `count(*)`
+  against the string `'0'` while pg-types.ts registers an int8 parser that returns
+  a number, so it always reported "already there". It looked correct only because
+  every database it had been pointed at already existed.
+- `POST /conversations/:refId/status` had never worked either. It bound one
+  parameter as both a column value and an `IN (...)` operand, which Postgres
+  refuses, so every request to it answered 500. Found by calling it — no client
+  called it and no test covered it, which is exactly why the review's own method
+  could not reach it.
+
+The review also said it had run no EXPLAIN. Its three index findings are now
+measured: all four paginated list queries come back index-ordered with no Sort
+node.
+
+The defects worth knowing about, because they say what kind of mistake this
+codebase makes:
+
+- **The relay could send a customer the same reply twice.** Its settlement writes
+  shared a try with the Graph call, so a database error AFTER a successful send
+  was reported as a send failure — and `markFailed` had no status guard, so it
+  flipped a `sent` row back to `failed` and the relay re-claimed it.
+- **`POST /conversations/:refId/status` had never worked.** It bound one parameter
+  as both a column value and an `IN (...)` operand, which Postgres refuses, so it
+  answered 500 for every request ever made to it. Found by calling it: no client
+  called it and no test covered it.
+- **Two keyset queries did not match their own ORDER BY**, so rows were silently
+  unreachable — conversations with no messages yet, and half of any thread with
+  backfilled history.
+- **A reply to a MENTION was sent as a direct message addressed to a comment id**,
+  and every top-level Facebook comment on one post collapsed into one
+  conversation, because `parent_id` is the POST on a top-level comment.
+- **Hiding an Instagram comment did nothing.** The parameter is `hide` there and
+  `is_hidden` on a Page, and Meta ignores the wrong one silently.
+- **`posts.like_count` and `posts.share_count` were never written**, because
+  nothing asked Meta for a reaction summary — two columns the API sorts on.
+
+### 0.1 Still open, from the same review
+
+Fixed items are struck through in place below. These are the ones NOT fixed, so
+none of it is quietly dropped.
+
+| | Size | Note |
+| --- | --- | --- |
+| **Throttler keys grow without bound** | M | The in-memory store never evicts, so the key space is (throttled handlers × every client address ever seen) and a deploy resets every counter. Per-process limits also multiply by replica count. Needs Redis, or a sweep and a cap. The credential routes at least have their own much tighter budget now. |
+| **Staff roles are a fiction** | M | `support` and `ops` are seeded as `RoleScope.Staff` templates and can never be granted: `employee_roles.enterprise_id` is NOT NULL behind a composite foreign key, and a staff template has no enterprise. Staff authority is the `has_all_enterprise_access` flag and nothing else. The permission query is fail-CLOSED now — it re-reads the staff row rather than trusting the token — so the exposure is gone; what remains is that the two templates mean nothing. |
+| ~~**`GET /employees` is unpaginated**~~ | — | **DONE 17 Sep 2026.** Keyset-paginated on (createdAt, id) like every other list, oldest first. `data` is unchanged — the envelope already lifts `items` and puts pagination in `meta` — so the only behavioural change is the cap, which the portal now follows with `api.requestAll()`. Uncovered a real defect on the way in; see §1.11. |
+| ~~**The correlation id is still client-supplied**~~ | — | **DONE 17 Sep 2026.** See §1.6. The fix is in `logger.config.ts`, not the middleware the entry named. |
+| ~~**`LISTEN` clients have no TCP keepalive**~~ | — | **DONE 18 Sep 2026.** `keepAlive` plus a 30s initial delay on both dedicated clients — the entry said "clients" and there are indeed two, the queue listener and the inbox SSE stream, and neither had it. A reclaimed socket now surfaces as an error, which both already handle by reconnecting. The cost really was latency for the queue listener; for the SSE stream it was a browser holding a connection that would never deliver another event. Pinned by `test/unit/listen-keepalive.spec.ts`. |
+| ~~**Graph responses are not validated**~~ | — | **DONE 18 Sep 2026.** `graph.schemas.ts` covers all 23 call sites, and `request()` cannot be called without one — the schema is a required option, not a generic. The response types in `graph.types.ts` are now `z.infer` of those schemas rather than a second hand-written declaration, so the compile-time and runtime shapes cannot disagree. Deliberately permissive where Meta is: unknown keys stripped (they add fields on their own schedule), ids accepted as string or number, counts coerced. A mismatch raises `UPSTREAM_CONTRACT_CHANGED` — permanent, since a retry fetches the same shape — naming field PATHS only, because that message reaches logs and a ledger row and a Graph payload is full of customer text. |
+| ~~**The webhook subscription is never reconciled**~~ | — | **DONE 9 Sep 2026.** `WebhookSubscriptionService.reconcileAll()` diffs `listSubscribedFields` against `SUBSCRIBED_FIELDS` every six hours and re-subscribes what is missing; a dead token is flagged through the existing `markReauthRequired` convention and then costs nothing, because the population query already excludes flagged channels. Instagram channels are skipped without a call — `{ig-id}/subscribed_apps` is `(#100) nonexisting field`, verified live; the subscription lives on the linked Page. Found a real gap on the first look: the dev Page was missing `mentions`, `comments` and `messaging_optins`, because it was subscribed twelve hours BEFORE those fields were added to the constant. |
+| **Backfill holds one lease for a serial batch** | M | Claim leases the whole batch, then the work is done row by row, so the tail of a large batch is guaranteed to overrun. Truncation is at least reported now, for both comments and messages. |
+| ~~**A partially-walked sync job sits in `running`**~~ | — | **NOT A DEFECT — checked 17 Sep 2026.** The entry describes the design, not a gap. `LeaseReaperWorker` calls `syncJobs.reclaimExpiredLeases()` alongside the inbound and outbound ledgers, and `claimBatch` always stamps `lease_expires_at` when it sets `running`, so no row can reach that status without a lease to expire. |
+| ~~**The daily metrics refresh has no retention**~~ | — | **DONE 18 Sep 2026, and wider than this entry.** Not just the metrics refresh: `inbound_events`, `outbound_events` and `sync_jobs` had NO retention at all and grew forever — the metrics refresh was merely the guaranteed daily floor under that growth. A 30-day sweep of settled rows now runs with the nightly one, behind three partial indexes (migration `1757900000000`). The window is a correctness floor rather than a size preference: `inbound_events_dedup_uniq` is what makes a redelivered webhook collide, and that guarantee lives in the row. Dead letters are never swept — the gauge alarms on them. |
+| ~~**`provider_connections` uniqueness**~~ | — | **DONE 19 Sep 2026.** `channels_enterprise_platform_uniq`, migration `1758000000000`, plus a service-level refusal with `CHANNEL_ALREADY_CONNECTED`. **The harm was not what this entry implied:** nothing was processed twice — `inbound_events_dedup_uniq` is scoped by enterprise and catches the second copy — the fan-out simply attaches events to the OLDER channel, so a business reconnecting through a different Facebook login got a Page listed twice, events still landing on the dead token, and no sign of why. Index scoped by enterprise and partial on `is_deleted`: the first so an agency and its client can both connect one Page, the second so a future disconnect releases it. **Refusing is only safe once disconnect exists** — see todo A3. |
+| ~~**Retention sweeps are unindexed**~~ | — | **DONE 17 Sep 2026.** Confirmed with `EXPLAIN` under `enable_seqscan = off` — the planner refused an index on all four predicates, so these were sequential scans of `sessions` and `verifications` on every run. Migration `1757600000000`. See §1.12. |
+| ~~**Queue gauges scan three ledgers**~~ | — | **DONE 18 Sep 2026.** One subquery per gauge rather than one pass per table with `FILTER`: each now repeats the predicate of a partial index that already existed, so the work is proportional to the active set rather than the archive. `sync_jobs` was missing its dead-letter index entirely — added in migration `1757800000000`. Pinned by `test/integration/queue-gauges.spec.ts`. |
+| ~~**Three copies of `clampLimit`**~~ | — | **DONE 17 Sep 2026.** One `shared/utils/page-limit.ts` beside the cursor codec. The three had already drifted: catalogue's returned NaN for a non-finite input and never floored, so a fractional limit would have reached SQL as `LIMIT 7.9`. Unreachable through any controller — every schema parses `limit` first — which is exactly why nobody noticed. |
+| **Keyset cursors lose sub-millisecond precision** | S | Found 17 Sep while paginating employees, fixed THERE only; platform, inbox and catalogue still have it. See §1.11. |
+| **`handleCallback` is a god method** | M | ~150 lines over eight concerns. |
+| ~~**Some controllers read repositories directly**~~ | — | **DONE 18 Sep 2026. Five, not three:** Connections and Inbox as well as Auth, Enterprises and Employees. The Inbox one was not cosmetic — it held the enterprise-scoped assignee lookup, which is the single rule stopping a refId from another tenant being handed work, sitting in the layer least likely to be re-read when assignment changes. Enterprises had no service at all, so one exists now, separate from `EnterpriseOnboardingService` (creating a business and reading the one you are in have no steps in common). `test/unit/controller-layering.spec.ts` keeps it that way, allowing `import type` of a row shape — a type cannot be injected and cannot reach the database. |
+| **System roles are never reconciled** | M | Copied once at signup, so a permission added in a later release never reaches an existing tenant. |
+| **No metrics** | M | Counters, latencies and retry gauges still do not exist; logs are the only telemetry. |
+
+---
+
+## 1. Wrong in code that already ships
+
+These have no ticket in any product sense. They are defects in built features,
+found by review or by hand-testing, and each one is a thing that will behave
+incorrectly in production today.
+
+### 1.1 The inbox path's test coverage — **S remaining**
+
+Was **zero**. Now covered, all against real Postgres:
+
+| File | What it pins down |
+| --- | --- |
+| `test/e2e/inbox.e2e.spec.ts` | 15 cases: assign, unassign, cross-tenant assign, status, thread pagination, malformed refs, nonsense cursors, no internal ids in a thread, idempotency (missing key, reused key, honest retry), cross-tenant read |
+| `test/integration/conversation-workflow.spec.ts` | every status value, the resolved stamp, the assignee join, cross-tenant writes |
+| `test/integration/outbound-settlement.spec.ts` | the duplicate-send guards, the lease fence, dead-lettering, the attempt budget |
+| `test/integration/keyset-pagination.spec.ts` | both keyset defects, reproduced before being fixed |
+| `test/unit/meta-webhook-signature.spec.ts` | 13 cases on HMAC verification — the only auth on a public write route |
+
+**Still untested:** ingestion end to end (webhook → ledger → projector → domain)
+and the relay's own loop. The projectors and `BackfillWorker` have no direct
+tests at all; they were verified by hand against a live account, and the recipe
+below is still the recipe.
+
+| Step | Verified behaviour |
+| --- | --- |
+| `GET /webhooks/meta` | returns the bare `hub.challenge`, no envelope |
+| Unsigned `POST` | `401`, nothing stored |
+| Signed `POST` | `200 {"received":true}`, ledger key `facebook:comment:<id>:add` |
+| Projector | customer, `comment_thread` conversation and inbound message created |
+| Reply | `202 pending`, message + ledger row in one transaction |
+| Relay | dead credential → `cancelled`, not retried; message `failed` |
+| Idempotent retry | returns the ORIGINAL message; outbound count stays 1 |
+
+The projectors are now the largest untested surface in the service, and the
+recipe above is exactly the test.
+
+### ~~1.2 Removing somebody does not end their sessions~~ — DONE 9 Sep 2026
+
+**Was already half-fixed when re-read, and the entry was stale:**
+`revokeAllForIdentity` did have callers — suspension in `employees.service.ts`
+and password-set in `auth.service.ts`. What was genuinely missing was the
+refresh path.
+
+`AuthService.refresh` now refuses when an identity's standing has been
+**revoked** — it has employment rows on record and none is active — and it is
+not platform staff. The distinction matters: an identity with NO employment at
+all is legitimate (staff, and anyone who has not joined a business yet), so
+"require an active employment" would have 403'd both. The check runs only when
+nothing else already proved standing, so passing `?enterpriseRefId=` costs no
+extra query and staff short-circuit it entirely. A refusal also revokes that
+identity's sessions, so the cookie is dead rather than re-evaluated every
+fifteen minutes for a week.
+
+Caveat recorded in the repository: `enterprise_employees_identity_idx` is
+partial on `is_deleted = false`, so a SOFT-DELETED employment reads as "never
+had one". Nothing writes `is_deleted` today; a future removal path that does
+must revoke sessions in the same transaction.
+
+### ~~1.3 Sessions are unbounded~~ — DONE 9 Sep 2026
+
+Capped at `MAX_SESSIONS_PER_IDENTITY = 10`, applied AFTER the insert so the
+session just created is never the one evicted; the oldest live session goes
+first. The cap sits above devices × businesses on purpose, because a session is
+per device *and* per enterprise selection. `revokeBeyondNewest(identityId, keep)`
+is idempotent, so racing logins, rows already over the cap, and a lowered cap
+all settle at N.
+
+`POST /api/v1/auth/logout-all` is the "sign out everywhere": authenticated,
+identity read from the access token, no body and no identifier a caller could
+use to sign somebody else out. It includes the caller's own session and clears
+the refresh cookie. Access tokens already minted are stateless and live out
+their remaining fifteen minutes — what this ends is the ability to mint more.
+
+### ~~1.4 The OAuth `state` token is not single-use~~ — WAS ALREADY DONE
+
+Stale entry, corrected rather than fixed: `OauthStateRepository.consume` is a
+conditional `UPDATE ... WHERE nonce = $1 AND consumed_at IS NULL AND expires_at >
+now()` returning the row, so the first caller wins and a replay resolves to
+nothing. `oauth_states_nonce_uniq` backs it and
+`test/integration/oauth-state.spec.ts` covers it. The entry described the design
+before the table existed.
+
+### ~~1.5 Malformed reference ids are 500s on the conversation routes~~ — DONE
+
+`RefIdParamSchema` is applied on every `/conversations` route, and
+`test/e2e/inbox.e2e.spec.ts` asserts 422 rather than 500 on all four. The same
+class of defect turned up twice more and is fixed with it: a client-supplied
+`X-Forwarded-For` that is not an address was written into an `inet` column, and
+an opaque cursor carrying `{"t":"nope"}` bound an Invalid Date into a query.
+
+### ~~1.6 The correlation id is client-supplied~~ — DONE (17 Sep)
+
+The id is now always ours, and the caller's value survives only as a logged
+`clientTraceId` — a trace hint, which is all it was ever fit to be.
+
+**The entry pointed at the wrong file.** The fix does not belong in
+`RequestContextMiddleware`: `LoggerModule` is an *imported* module, so pino's
+middleware runs before anything in `configure()`, and `genReqId` had already
+adopted the client's header by the time the context middleware read
+`request.id`. Hardening only the middleware — the obvious reading of this entry
+— compiles, tests clean, and changes nothing. The trust boundary is
+`src/shared/logging/logger.config.ts`.
+
+Bounding and stripping now live in one place, `shared/logging/client-trace.ts`,
+shared by both readers so they cannot drift: the hint is truncated to 100
+characters (the width of `correlation_id` in both ledgers) and control
+characters are removed, because a newline in a logged value is how one log line
+becomes two and the forged one reads exactly like the real one.
+
+Pinned by `test/unit/correlation-id.spec.ts`, including the case that motivates
+all of it: two callers sending the same value now get two different ids instead
+of collapsing into one apparent request.
+
+### 1.7 Audit coverage — **S remaining**
+
+Mostly closed. Now written: staff impersonation (`impersonated`, the event a
+customer is most entitled to see, and which previously left no trace at all),
+platform-console reads of one business (`viewed`), conversation assignment
+(`assigned`) and conversation status changes (`updated`).
+
+Still silent: **auth** — login, `login_failed`, logout, verification and
+invitation acceptance — though `AuditAction` declares all of them. A reply is
+also still unaudited; the message row is the record, which is arguably enough,
+but `Replied` exists in the enum and is unused.
+
+### ~~1.8 One test fails intermittently, unexplained~~ — SOLVED
+
+Reproduced by looping the combined suite until it broke and reading the actual
+error rather than the assertion. It took three passes, because the first two
+causes were real bugs that were not the cause.
+
+**The cause: the harness never bound its HTTP server.** `createTestApp` called
+`app.init()` and nothing else, so supertest bound the server for every single
+request and unbound it afterwards. That start/stop cycle occasionally left
+body-parser looking at a socket that had gone away mid-body, which surfaces as
+`400 request aborted` or `socket hang up` — landing on whichever test happened
+to be running. That is why it was never the same test twice and never
+reproducible alone. Binding once in `beforeAll` fixed it: 14 clean e2e runs and
+22 clean combined runs, against a baseline of roughly one failure in six.
+
+Two real defects were found on the way, and are fixed on their own merits:
+
+- **The e2e and integration suites shared one database.** Both TRUNCATE in
+  beforeEach, and vitest runs projects alongside each other — `fileParallelism`
+  and `maxWorkers` serialise files WITHIN a project, not across them. The e2e
+  suite has its own database now.
+- **Two LISTEN clients could outlive their application.** `onModuleInit` starts
+  the connection without awaiting, deliberately, so `onApplicationShutdown` could
+  run mid-connect, find the client null, and let the finished connection be
+  assigned afterwards. Both services check for shutdown after connecting now, and
+  end a client whose LISTEN failed.
+
+And `ensureDatabaseExists` had NEVER created a database: it read `count(*)` and
+compared against the string `'0'`, while pg-types.ts registers a global int8
+parser that returns a number — so the comparison was always true and it always
+reported "already there". It looked correct only because every database it had
+been pointed at already existed.
+
+### 1.9 Smaller, but real — **audited 16 Sep 2026, and mostly stale**
+
+**Four of the six below were already done or were never real.** Each was checked
+against the code before being struck through, and the note says what was found —
+an entry that sends somebody looking for a bug that does not exist costs as much
+as a missing entry.
+
+- ~~**Resend cooldown is configured and unenforced.**~~ DONE.
+  `VerificationService.resend` enforces `resendCooldownMs` and answers an
+  unknown destination, one with no live challenge, and one inside its cooldown
+  identically, so it reveals nothing. `POST /auth/resend` exists, on the
+  credential throttle budget.
+- ~~**`recordDelivery` has no tenant predicate.**~~ DONE — it takes the
+  enterprise and scopes on it, and the relay threads its own claimed row's
+  tenant through. The one caller with no tenant (an event naming no enterprise)
+  now says out loud that the message cannot be settled.
+- ~~**Only `archived` blocks a reply.**~~ DONE. `CLOSED_TO_REPLIES` holds
+  Resolved, Closed and Archived.
+- ~~**A role's scope is not enforced at assignment.**~~ NOT REAL. The only
+  granting path resolves the role through `findByRefId(enterpriseId, …)`, which
+  filters on `enterprise_id` — and every staff-scoped role has a NULL
+  enterprise, so none can ever be returned there. Verified against the seeded
+  roles: `staff` rows are `enterprise_id IS NULL`, `enterprise` rows are not.
+  The composite foreign keys are the second line, not the only one.
+- ~~**Ambiguous sends are cancelled, never reconciled.**~~ DONE 16 Sep 2026 —
+  and the reconciliation was already arriving; we were using half of it.
+
+  Where a send fails without saying whether Meta accepted it, the relay settles
+  it as failed rather than retrying, because a duplicate reply to a customer is
+  worse than a missing one an agent can resend. But if Meta HAD accepted it, the
+  echo comes back carrying the platform's id — that IS the read-back the branch
+  says is required. `claimPendingOutbound` matches on `platform_message_id IS
+  NULL` rather than on status, so it claimed the row and stamped the id while
+  leaving the status at `failed`: a delivered reply read as failed in the thread
+  permanently. It now corrects the status too, and only ever upwards, so a read
+  receipt is never walked backwards.
+- ~~**`POST /conversations/:refId/read` parses nothing.**~~ DONE. It parses
+  `MarkReadRequestSchema`, so a body it does not understand is refused rather
+  than silently ignored.
+
+### ~~1.12 Neither retention sweep could use an index~~ — DONE (17 Sep)
+
+Both sweeps sequentially scanned their table on every run: `sessions`, which
+grows with every login, and `verifications`, which grows with every code ever
+sent.
+
+The session sweep had ALREADY been split into two statements to escape an `OR`,
+with a comment saying each half then used an index. It did not. A partial index
+only serves a query that repeats its predicate, and the first half asked for a
+bare `expires_at < $1` while `sessions_expiry_idx` is partial on
+`revoked_at IS NULL`. Proved rather than assumed, with `enable_seqscan = off`:
+
+| predicate | before | after |
+| --- | --- | --- |
+| `expires_at < $1` | seq scan even with seqscan off | — |
+| `expires_at < $1 AND revoked_at IS NULL` | — | `sessions_expiry_idx` |
+| `revoked_at IS NOT NULL AND revoked_at < $1` | nothing indexed `revoked_at` | `sessions_revoked_idx` |
+| verifications, the whole `OR` | seq scan | — |
+| `consumed_at IS NOT NULL AND consumed_at < $1` | — | `verifications_consumed_idx` |
+| `consumed_at IS NULL AND expires_at < $1` | — | `verifications_unconsumed_expiry_idx` |
+
+`verifications_expiry_idx` was **widened** rather than duplicated — its
+`is_deleted = false` predicate meant it could never serve a sweep, and a sweep
+that cannot reach soft-deleted rows keeps destinations and secret hashes
+forever. The wider index still serves the live-verification lookup, so this
+replaced an index instead of adding one. Net: two new partial indexes, both
+narrow.
+
+**One behavioural change, deliberate.** Each sweep is now two disjoint halves
+split on `revoked_at IS NULL` / `consumed_at IS NULL`, so a row that is both
+expired and settled ages out on the LATER of the two events rather than the
+earlier. "Delete N days after the last thing that happened to this row" is what
+retention is normally taken to mean, and the old rule could remove a session
+revoked minutes ago because it had expired months before.
+
+Pinned by `test/integration/retention-sweeps.spec.ts`, which covers both halves,
+the later-event rule, the soft-deleted row, and — the failure a split invites —
+that no row falls into the gap between the two predicates.
+
+### ~~1.11 Keyset cursors lose sub-millisecond precision~~ — DONE (18 Sep)
+
+Found on 17 Sep while paginating `GET /employees`, where it failed immediately
+and visibly. **Now fixed at the root, for every listing**, by migration
+`1757700000000` — see the end of this section.
+
+Postgres keeps `timestamptz` to the microsecond. A cursor cannot: it round-trips
+through a JS `Date`, which holds milliseconds, so a row stored at `.993456`
+produces a cursor saying `.993000`. Compared against the untruncated column the
+two disagree, and the direction decides how:
+
+- **Ascending** (employees): `created_at > '.993000'` is still true of the
+  cursor row itself, so every page repeats the row it was meant to resume after.
+  With several rows in one millisecond the listing cannot advance at all.
+- **Descending** (the other three): the mirror image, and worse for being
+  silent. `created_at < '.993000'` is false for every row in that millisecond,
+  including ones that should have come next — they are **skipped and appear on
+  no page**. This is precisely the failure the `(created_at, id)` tiebreaker was
+  added to prevent, and the tiebreaker cannot help, because the comparison never
+  reaches it.
+
+Rows must share a millisecond for the descending case to lose data — which
+sounds rare until you notice that rows written in one transaction all take the
+transaction's `now()`, so a batch insert produces exactly that.
+
+**The fix is the column type, not the queries.** Every timestamptz in the
+schema is now `timestamptz(3)`. Nothing in the application could ever READ a
+microsecond — the driver hands timestamps to a JS `Date` and the API prints
+them with `toISOString()`, both millisecond — so the extra three digits were
+invisible everywhere except inside SQL comparisons, where they were wrong.
+Storing only what can be read makes the whole class of defect unrepresentable,
+costs no query changes at all, and leaves plain b-tree indexes usable. The
+alternatives considered — `date_trunc` in every query, or a cursor carrying
+microseconds as text — both forfeit the index or touch every listing, on
+exactly the hot tables that can least afford either.
+
+The `date_trunc` workaround added to the employees query on 17 Sep is reverted;
+it was the right local fix and is now redundant.
+
+121 columns across 26 tables, altered in a loop over the catalogue rather than
+hand-listed, so the migration states the invariant and stays correct. Each
+`ALTER ... TYPE` rewrites its table under an ACCESS EXCLUSIVE lock — free now,
+on empty tables, and the reason this was worth doing before launch rather than
+after.
+
+Pinned in three places: `schema-guarantees.spec.ts` asserts no timestamptz
+column sits at the Postgres default and that a stored microsecond value rounds;
+`keyset-pagination.spec.ts` drives the descending inbox listing with three
+conversations sharing `.993456` and requires all three back — reverting one
+column to microseconds makes it return one of the three, which is the defect;
+and `employees.e2e.spec.ts` covers the ascending case.
+
+---
+
+## 2. Built, but nothing consumes it
+
+Machinery that exists, is migrated, has indexes, and is never read.
+
+| | Size | What is missing |
+| --- | --- | --- |
+| ~~**Backfill**~~ | DONE | `BackfillWorker` claims `sync_jobs` and the reaper covers them. Four walks are implemented — posts, comments, conversations and Instagram `tags` for mention history — and they synthesise webhook-shaped rows into `inbound_events` so the live projectors do the work. What remains is Meta-side: `pages_read_user_content` for Facebook comments, and Advanced Access for conversation visibility. |
+| **Attachments** | M | Inbound media is never downloaded. A DM with an attachment becomes a message marked as an image regardless of real type, and no `message_attachments` row is written — despite a partial index built for exactly that query. |
+| **Token expiry warnings** | S | `SweeperWorker.flagExpiringTokens` emits a debug line and moves no token to an expiring state, so a channel whose token dies simply goes quiet. `EXPIRY_SWEEP_CRON` is validated, plumbed to config, and read by nothing. |
+| **Feature expiry** | S | Nothing acts on `enterprise_features.expires_at`; a feature never moves to `expired` on its own. |
+| **Channel retirement** | S | No code path writes `is_deleted = true` or moves a channel to `disconnected`/`expired`. The connect flow only upserts the Pages currently discovered, so a Page that goes away stays active forever. |
+
+---
+
+## 3. Endpoints that do not exist
+
+The schema supports all of these; nothing exposes them.
+
+- **Change an employee's role** after creation. Today a role is set once, at
+  creation, and cannot be changed. **S**
+- **Create or edit a role.** A business gets its four copied templates and cannot
+  alter them. **M**
+- **A business requesting a feature.** `access_requested`, the `features.request`
+  permission and the whole request path are modelled and unreachable — only an
+  admin can grant. **S**
+- ~~**Customer directory.**~~ DONE — `GET /customers`, searchable by name or
+  handle, with the split given name and the Instagram handle, and a page in the
+  portal.
+- ~~**Posts.**~~ DONE — synced by the backfill, served by `GET /posts` with
+  previews, engagement counts and a channel filter, and a page in the portal.
+  What is missing is a post DETAIL view showing its comment thread. **M**
+- **Comment hide and delete.** The outbound event types and relay senders exist;
+  no endpoint triggers them. **S**
+- **Password reset.** Configured as a token flow in `verification.config.ts`,
+  with no endpoint. Note the same problem the invitation had: a token needs a
+  link, so the reset page needs the reference and the secret in the URL. **M**
+- **Resend a verification code.** **S**
+
+---
+
+## 4. Meta integration
+
+**Rewritten 9 September 2026 — the three entries here were all stale.** This has
+now run against real Meta credentials extensively: live DMs, comments, story
+mentions, shared posts and reels, mentions on strangers' posts, and outbound
+replies through both the messaging and mentions edges. See
+`docs/platform-limitations.md` for what the platform will and will not give us,
+each entry tagged **[APP]** (a scope or App Review would fix it) or **[META]**
+(nothing will).
+
+Corrections to what used to be here:
+
+- ~~"It has never run against real Meta credentials"~~ — it has, repeatedly.
+- ~~"`comments` is not subscribed"~~ — `comments` and `mentions` ARE in
+  `SUBSCRIBED_FIELDS`. The dev Page was found missing them on 9 Sep because it
+  was subscribed twelve hours before the constant gained them; the new
+  reconciliation sweep (§0.1) repairs exactly that drift.
+- ~~"Instagram … none of it has been exercised"~~ — Instagram is the surface
+  that has had the most real traffic.
+
+### Still open
+
+- **A tagged post's metrics and a mention's like count are snapshots.** Both are
+  read once at projection and Meta sends no webhook when a like or comment lands
+  on somebody else's post, so they age from the moment they are written.
+  Measured drift on 9 Sep: one post moved 1,884,654 → 2,098,079 likes between
+  projection and viewing, and a mention's own like count went 0 → 1 (replaying
+  the event corrected it to 1, which proves the capture is right and only the
+  freshness is wrong).
+
+  **DEFERRED to a future version, deliberately.** The fix is a refresh on thread
+  open — one Graph call per view, which is a human action rather than a poll —
+  with a short staleness guard so rapid clicking does not multiply calls, or the
+  same behind an explicit refresh button for zero idle cost. Do NOT poll these
+  on a timer: on a viral post the numbers change constantly and the calls would
+  be endless. The cheap interim, if the wrong number ever bothers somebody, is
+  to label the counts with their age the way `postComments` already is. **S**
+
+- **A tag EDITED into an existing comment is lost.** Instagram sends no webhook
+  when somebody adds `@ourhandle` to a comment they already posted — the
+  `mentions` field fires on comment CREATION only, and there is no
+  comment-edited event. Confirmed 9 Sep 2026: the mention was real and fully
+  readable through `mentioned_comment`, so only the notification was missing
+  (docs/platform-limitations.md §1.2b).
+
+  This one matters more than the stale counts above: a stale number is cosmetic,
+  a silently lost customer tag is the product failing at its job, and somebody
+  editing a comment to tag you is deliberately trying to reach you.
+
+  **DEFERRED to a future version.** The recovery costs **zero Graph calls** —
+  the tagged post's comment section is already stored per mention WITH each
+  comment's platform id, so detection is a SQL scan for our own handle excluding
+  known mention ids; one call is spent only on a mention actually recovered.
+  It recovers SOME of these, not all: it reaches only posts where we already
+  hold a mention, and only the 50 comments Instagram returns in its single page.
+  There is no edge that lists our mentions, so full coverage is impossible —
+  do not go looking for it. **S**
+
+---
+
+## 5. Frontend
+
+The portal is deliberately plain, with no build step and no dependencies. It
+exists to prove the API flows, and none of it is written to last.
+
+- ~~**Inbox UI**~~ — built: list, filters, thread with pagination, reply with a
+  reply-window gate, assignment, status, and live updates over SSE. What is left
+  is a design pass, not a screen. **DONE**
+- **A post detail view** showing a post's own comment thread. **M**
+- **Customer → conversations click-through** from the directory. **S**
+- **Live updates on the posts and customers pages** — the inbox has them; those
+  two still need a reload. **S**
+- **Queue depth is not surfaced anywhere.** `/health/detail` carries the gauges
+  and no screen reads them. **S**
+- **Connect Meta UI** — a button that starts the OAuth flow and shows connected
+  channels. Blocked on §4. **M**
+- **Feature request UI** for a business, once §3 exists. **S**
+- **Role management UI**, once §3 exists. **M**
+- **A real design pass**, and a decision on whether to keep vanilla JS or move to
+  a framework. Worth deferring until the flows settle. **L**
+- **No frontend tests of any kind.** **M**
+
+---
+
+## 6. Release readiness
+
+| | Size | Note |
+| --- | --- | --- |
+| ~~**CI pipeline**~~ | DONE | `.github/workflows/ci.yml` runs typecheck, lint, format, the whole suite, `dist/migrate.js` the way a deploy does, and `db:check`; schema parity is a separate job so a deliberate drift does not turn the suite red. `pnpm verify` and `pnpm predeploy` run the same gates locally. |
+| **Committed OpenAPI document** | S | `package.json` has an `openapi:export` script pointing at `scripts/export-openapi.ts`, **which does not exist**. So the script fails, there is no committed `openapi.json`, and no breaking-change check. |
+| **Regenerate the migration before the first deploy** | M | Development now uses `pnpm db:sync`, so the migration is deliberately drifting from the entities. `pnpm test:schema` is the alarm. Nothing is in production yet, so the cheapest path is to regenerate the initial migration from the settled schema rather than accumulate deltas. |
+| **Docker image never built** | S | The Dockerfile and compose entries exist and have never been exercised. It can at least run a migration now — `dist/migrate.js` is compiled into it, which it was not before, so the mandated migrations-then-code order is executable rather than only documented. |
+| **A real email/SMS provider** | M | `OTP_REALTIME_ENABLED=false` everywhere, and every code is `666666`. Production refuses to boot that way, so this blocks any real deployment. The provider seam is one binding in the communication module. |
+| **Metrics** | M | Structured logs and correlation ids exist; there are no counters, latencies or retry gauges. `@nestjs/terminus` is a declared dependency with zero references — the health module is hand-rolled. |
+| **Secret manager** | M | Secrets come from the environment. No rotation path beyond `TOKEN_ENCRYPTION_KEY_ID`, which is designed for it and untested. |
+
+Deferred by design, not oversights: row-level security, partitioning, read
+replicas, refresh-token rotation.
+
+---
+
+## 7. Decisions still open
+
+- **PostgreSQL 17.5 or 18 locally.** Development runs on the native 17.5 on 5432.
+  The native 18 on 5433 has a different password. Compose pins 18 because that is
+  what production will run. Nothing in the schema needs newer than 16, so this is
+  about parity, not capability.
+- **How secrets live in `.env.dev`.** The file is tracked with placeholder keys
+  and real credentials are layered on top as uncommitted changes. That works only
+  as long as nothing does `git add -A` on it — and something in the IDE appears to
+  be auto-pushing. `git update-index --skip-worktree .env.dev` would make it
+  impossible to stage, at the cost of blocking legitimate edits when a new config
+  key is added.
+- **Whether the test database stays separate.** It is separate now
+  (`wouchh_test`), which is why a test run no longer wipes what you are clicking
+  through. Keep it.
+
+---
+
+## Suggested order
+
+1. **§1.1** — tests over the inbox path. Everything else is safer once the largest
+   untested surface has a net under it.
+2. **§1.2, §1.3, §1.5, §1.6** — the small correctness fixes, together in one pass.
+3. **§6 CI** — so the gates that pass today keep passing.
+4. **§4** — Meta against real credentials, since the product does nothing useful
+   until a real Page is connected.
+5. **§2 backfill** and **§5 inbox UI** — the two things that make a connected Page
+   worth having.
+6. Everything else, by whatever the product needs next.

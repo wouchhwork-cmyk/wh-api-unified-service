@@ -1,0 +1,733 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { MAX_ROLES_PER_ENTERPRISE } from '@/shared/constants';
+import request from 'supertest';
+import type { DataSource } from 'typeorm';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  createTestApp,
+  platformAdminLogin,
+  provisionPlatformAdmin,
+  resetTenantData,
+  type TestApp,
+} from './app.harness';
+import { ROLE_LEVEL } from '@/shared/enums';
+
+const OWNER_PASSWORD = 'a-long-enough-password';
+const SIGNUP = {
+  business: { name: 'Blue Bottle Cafe', email: 'hello@bluebottle.test', city: 'Pune' },
+  owner: {
+    firstName: 'Meera',
+    lastName: 'Iyer',
+    email: 'meera@bluebottle.test',
+    password: OWNER_PASSWORD,
+  },
+};
+
+/**
+ * A business defining its own roles.
+ *
+ * This is the feature the whole levelling exercise was a precondition for, and
+ * the reason it could not ship earlier: role editing without the level and
+ * subset rules is a privilege-escalation route, not a feature. A manager with
+ * `roles.manage` could define a role below themselves carrying
+ * `enterprise.manage`, grant it to a colleague, and have that colleague do what
+ * the manager cannot.
+ *
+ * So most of what is asserted here is refusal.
+ */
+describe('a business defines its own roles', () => {
+  let testApp: TestApp;
+  let app: NestExpressApplication;
+  let db: DataSource;
+
+  beforeAll(async () => {
+    testApp = await createTestApp();
+    app = testApp.app;
+    db = testApp.db;
+  });
+  afterAll(async () => {
+    await testApp.close();
+  });
+  beforeEach(async () => {
+    await resetTenantData(db);
+    await provisionPlatformAdmin(app);
+  });
+
+  const http = () => request(app.getHttpServer());
+  const code = (): string => process.env.OTP_STATIC_CODE ?? '666666';
+  const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+  async function onboardedBusiness(): Promise<{ ownerToken: string; enterpriseRefId: string }> {
+    const signup = await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+    const verified = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: signup.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    await http()
+      .post(`/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/status`)
+      .set(bearer(admin.body.data.accessToken as string))
+      .send({ status: 'active' })
+      .expect(200);
+
+    return {
+      ownerToken: verified.body.data.accessToken as string,
+      enterpriseRefId: signup.body.data.enterpriseRefId as string,
+    };
+  }
+
+  async function roleRefId(token: string, name: string): Promise<string> {
+    const roles = await http().get('/api/v1/roles').set(bearer(token)).expect(200);
+    const match = (roles.body.data as { refId: string; name: string }[]).find(
+      (role) => role.name === name,
+    );
+    if (!match) throw new Error(`role ${name} not found`);
+    return match.refId;
+  }
+
+  /** Invites somebody into a role and returns their accepted token and refId. */
+  async function member(
+    ownerToken: string,
+    firstName: string,
+    email: string,
+    role: string,
+  ): Promise<{ token: string; refId: string }> {
+    const created = await http()
+      .post('/api/v1/employees')
+      .set(bearer(ownerToken))
+      .send({ firstName, email, roleRefId: await roleRefId(ownerToken, role) })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email, code: code(), password: OWNER_PASSWORD })
+      .expect(200);
+    return {
+      token: accepted.body.data.accessToken as string,
+      refId: created.body.data.refId as string,
+    };
+  }
+
+  describe('the permission list a person actually sees', () => {
+    it('is grouped by area, in reading order, not alphabetically', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const response = await http()
+        .get('/api/v1/roles/permissions')
+        .set(bearer(ownerToken))
+        .expect(200);
+
+      const groups = response.body.data as { resource: string; label: string }[];
+      const resources = groups.map((group) => group.resource);
+
+      // Daily work first, configuration last. Alphabetically `channels` would
+      // come first and bury the inbox under the plumbing.
+      // Presence FIRST: `indexOf` returns -1 for a missing group, and -1 is
+      // less than everything, so a vanished section would read as correct order.
+      for (const resource of ['conversations', 'channels', 'mentions', 'enterprise']) {
+        expect(resources).toContain(resource);
+      }
+      expect(resources.indexOf('conversations')).toBeLessThan(resources.indexOf('channels'));
+      expect(resources.indexOf('mentions')).toBeLessThan(resources.indexOf('enterprise'));
+      expect(groups.every((group) => group.label.length > 0)).toBe(true);
+    });
+
+    it('has a mentions section, which is the whole point of the split', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const response = await http()
+        .get('/api/v1/roles/permissions')
+        .set(bearer(ownerToken))
+        .expect(200);
+
+      const mentions = (response.body.data as { resource: string; permissions: unknown[] }[]).find(
+        (group) => group.resource === 'mentions',
+      );
+
+      expect(mentions).toBeDefined();
+      const codes = (mentions?.permissions as { code: string }[]).map((p) => p.code);
+      expect(codes).toEqual(
+        expect.arrayContaining([
+          'mentions.view',
+          'mentions.reply',
+          'mentions.assign',
+          'mentions.manage',
+        ]),
+      );
+      // Deliberately absent: a mention lives on somebody else's post and Meta
+      // gives us no way to hide or delete it.
+      expect(codes).not.toContain('mentions.hide');
+      expect(codes).not.toContain('mentions.delete');
+    });
+
+    it('marks what a manager may not hand out, rather than hiding it', async () => {
+      /*
+       * `enterprise.manage` is withheld from the manager template, so a manager
+       * must see it and must not be able to grant it. Showing it greyed is the
+       * deliberate choice: hiding it would make an owner-built role that grants
+       * it look corrupt in the manager's editor.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const response = await http()
+        .get('/api/v1/roles/permissions')
+        .set(bearer(manager.token))
+        .expect(200);
+
+      const all = (
+        response.body.data as { permissions: { code: string; grantable: boolean }[] }[]
+      ).flatMap((group) => group.permissions);
+      const billing = all.find((permission) => permission.code === 'enterprise.manage');
+
+      expect(billing).toBeDefined();
+      expect(billing?.grantable).toBe(false);
+      expect(all.find((p) => p.code === 'conversations.view')?.grantable).toBe(true);
+    });
+
+    it('never offers a staff-only permission to a business', async () => {
+      // `features.decide` is ours: approving a business's feature request. In a
+      // tenant's role editor it would be a toggle that can never do anything.
+      const { ownerToken } = await onboardedBusiness();
+
+      const response = await http()
+        .get('/api/v1/roles/permissions')
+        .set(bearer(ownerToken))
+        .expect(200);
+
+      const codes = (response.body.data as { permissions: { code: string }[] }[])
+        .flatMap((group) => group.permissions)
+        .map((permission) => permission.code);
+
+      expect(codes).not.toContain('features.decide');
+    });
+  });
+
+  describe('creating a role', () => {
+    it('lets an owner build one below themselves', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const created = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({
+          name: 'Mentions only',
+          description: 'Handles public mentions and nothing else',
+          level: 35,
+          permissions: ['mentions.view', 'mentions.reply', 'mentions.assign'],
+        })
+        .expect(201);
+
+      expect(created.body.data).toMatchObject({
+        name: 'Mentions only',
+        level: 35,
+        isSystem: false,
+        holderCount: 0,
+      });
+      expect(created.body.data.permissions).toEqual(
+        expect.arrayContaining(['mentions.view', 'mentions.reply', 'mentions.assign']),
+      );
+    });
+
+    it('REFUSES a role at or above the creator level', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(manager.token))
+        .send({
+          name: 'Co-manager',
+          level: ROLE_LEVEL.Manager,
+          permissions: ['conversations.view'],
+        })
+        .expect(403);
+
+      // Distinguishes `role_not_below_actor` from `target_not_below_actor`,
+      // which share the looser phrase — the reason codes exist so a test cannot
+      // pass because a different rule happened to deny.
+      expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
+    });
+
+    it('REFUSES a role carrying a permission the creator does not hold', async () => {
+      /*
+       * The subtle escalation, and the reason this endpoint could not exist
+       * before the subset rule. The level is fine — well below the manager —
+       * but the role would carry billing, which the manager does not have.
+       * Grant it to somebody and they can do what the manager cannot.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(manager.token))
+        .send({
+          name: 'Quiet billing',
+          level: 20,
+          permissions: ['conversations.view', 'enterprise.manage'],
+        })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/permissions you do not hold/i);
+    });
+
+    it('REFUSES the owner level even to an owner', async () => {
+      // There is exactly one top of the ladder and it comes from the seed. A
+      // second owner-level role would be a way around every owner rule that
+      // checks the name.
+      const { ownerToken } = await onboardedBusiness();
+
+      await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Super', level: ROLE_LEVEL.Owner, permissions: [] })
+        .expect(422);
+    });
+
+    it('REFUSES an agent entirely, who has no roles.manage', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const agent = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(agent.token))
+        .send({ name: 'Anything', level: 5, permissions: [] })
+        .expect(403);
+
+      expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    });
+
+    it('refuses a duplicate name', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const body = { name: 'Weekend cover', level: 30, permissions: ['conversations.view'] };
+
+      await http().post('/api/v1/roles').set(bearer(ownerToken)).send(body).expect(201);
+      await http().post('/api/v1/roles').set(bearer(ownerToken)).send(body).expect(422);
+    });
+
+    /*
+     * E15, and the name matters: `support` is a template this tenant does NOT
+     * hold, which is the whole case. A template it already has is caught by the
+     * ordinary duplicate check one line earlier; the dangerous one is a
+     * template that has not arrived yet, because taking its name makes it
+     * UNRECEIVABLE for ever. Role names are unique per tenant, so
+     * reconciliation skips, the unique index would refuse the insert anyway,
+     * and the business silently never gets a role it should have.
+     *
+     * Refused at creation, where it costs a sentence, rather than discovered
+     * later when it costs a migration.
+     */
+    it('refuses a name that belongs to a built-in role', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'support', level: 30, permissions: ['conversations.view'] })
+        .expect(422);
+      expect(refused.body.error.details[0].issue).toMatch(/built-in/i);
+    });
+
+    /*
+     * E12. Roles are not merely a tenant's own clutter: `role_permissions` is
+     * joined on every authenticated request to resolve permissions, so a
+     * business creating them in bulk slows authorisation for everybody on the
+     * instance. It was the one shared resource a tenant could still grow
+     * without limit — pages, bodies, sessions and SSE streams were all bounded.
+     */
+    it('refuses to define more roles than a business may hold', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      // Fill to the ceiling. The built-in roles count, because they are rows in
+      // the same table doing the same work.
+      const existing = await http().get('/api/v1/roles').set(bearer(ownerToken)).expect(200);
+      const headroom = MAX_ROLES_PER_ENTERPRISE - (existing.body.data as unknown[]).length;
+
+      for (let n = 0; n < headroom; n += 1) {
+        await http()
+          .post('/api/v1/roles')
+          .set(bearer(ownerToken))
+          .send({ name: `Shift ${n}`, level: 30, permissions: ['conversations.view'] })
+          .expect(201);
+      }
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'One too many', level: 30, permissions: ['conversations.view'] })
+        .expect(422);
+      // The real reason, not a name complaint: a business at the ceiling must
+      // not be sent away to think of a different name.
+      expect(refused.body.error.details[0].issue).toMatch(/at most/i);
+    });
+
+    it('still allows a name of the business’s own choosing', async () => {
+      // The control: the guard must refuse template names, not unusual ones.
+      const { ownerToken } = await onboardedBusiness();
+
+      await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Weekend supervisor', level: 30, permissions: ['conversations.view'] })
+        .expect(201);
+    });
+  });
+
+  describe('editing a role', () => {
+    it('REFUSES to edit a built-in role', async () => {
+      /*
+       * Otherwise the whole ladder is editable: change what `agent` means and
+       * every agent changes with it, including ones granted by somebody more
+       * senior. A business that wants a different agent makes its own role.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const agentRole = await roleRefId(ownerToken, 'agent');
+
+      const refused = await http()
+        .patch(`/api/v1/roles/${agentRole}`)
+        .set(bearer(ownerToken))
+        .send({ name: 'agent', level: 40, permissions: [] })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/built-in/i);
+    });
+
+    it('REFUSES a manager editing a role above them, even downwards', async () => {
+      /*
+       * Checking only the NEW state would let somebody edit a role above them
+       * down to a level they outrank and walk away holding the edit — the level
+       * requested is theirs to choose, so it proves nothing about what they
+       * were allowed to touch.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const senior = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Deputy', level: 90, permissions: ['conversations.view'] })
+        .expect(201);
+
+      await http()
+        .patch(`/api/v1/roles/${senior.body.data.refId}`)
+        .set(bearer(manager.token))
+        .send({ name: 'Deputy', level: 10, permissions: ['conversations.view'] })
+        .expect(403);
+    });
+
+    it('replaces the permission set wholesale', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const created = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Trial', level: 30, permissions: ['mentions.view', 'mentions.reply'] })
+        .expect(201);
+
+      const updated = await http()
+        .patch(`/api/v1/roles/${created.body.data.refId}`)
+        .set(bearer(ownerToken))
+        .send({ name: 'Trial', level: 30, permissions: ['mentions.view'] })
+        .expect(200);
+
+      // Removed, not merged. A partial update of a permission SET is ambiguous
+      // and the ambiguity is a silent total revocation.
+      expect(updated.body.data.permissions).toEqual(['mentions.view']);
+    });
+  });
+
+  describe('retiring a role', () => {
+    it('refuses while somebody still holds it', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const created = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Temp', level: 30, permissions: ['conversations.view'] })
+        .expect(201);
+
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [created.body.data.refId] })
+        .expect(204);
+
+      const refused = await http()
+        .post(`/api/v1/roles/${created.body.data.refId}/archive`)
+        .set(bearer(ownerToken))
+        .expect(422);
+
+      expect(refused.body.error.details[0].issue).toMatch(/still hold this role/i);
+    });
+
+    it('retires one nobody holds, and stops it being assignable', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const created = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Unused', level: 30, permissions: [] })
+        .expect(201);
+
+      await http()
+        .post(`/api/v1/roles/${created.body.data.refId}/archive`)
+        .set(bearer(ownerToken))
+        .expect(204);
+
+      const remaining = await http().get('/api/v1/roles').set(bearer(ownerToken)).expect(200);
+      expect((remaining.body.data as { name: string }[]).map((r) => r.name)).not.toContain(
+        'Unused',
+      );
+    });
+  });
+
+  describe('changing what somebody holds', () => {
+    it('promotes an agent into a role the owner made', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const created = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Shift lead', level: 55, permissions: ['conversations.view'] })
+        .expect(201);
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [created.body.data.refId] })
+        .expect(204);
+
+      const team = await http().get('/api/v1/employees').set(bearer(ownerToken)).expect(200);
+      const junior = (
+        team.body.data as { name: string; roles: string[]; roleLevel: number }[]
+      ).find((p) => p.name === 'Junior');
+      expect(junior?.roles).toEqual(['Shift lead']);
+      expect(junior?.roleLevel).toBe(55);
+    });
+
+    it('REFUSES promoting somebody into your own level', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+      const managerRole = await roleRefId(ownerToken, 'manager');
+
+      const refused = await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [managerRole] })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
+    });
+
+    it('REFUSES promoting yourself', async () => {
+      /*
+       * The most direct attack on this endpoint. Blocked by the self rule
+       * rather than by the level rule, and reported as such — "you do not
+       * outrank them" is also true of yourself and would be a baffling way to
+       * be told.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+      const ownerRole = await roleRefId(ownerToken, 'owner');
+
+      const refused = await http()
+        .post(`/api/v1/roles/employees/${manager.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [ownerRole] })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/your own account/i);
+    });
+
+    it('REFUSES a mixed set where only one role is too senior', async () => {
+      // Every role is checked, not just the highest — otherwise a junior role
+      // alongside a senior one would carry the senior one through.
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(manager.token))
+        .send({
+          roleRefIds: [
+            await roleRefId(ownerToken, 'agent'),
+            await roleRefId(ownerToken, 'manager'),
+          ],
+        })
+        .expect(403);
+    });
+
+    it('lets one owner re-role another while a second owner remains', async () => {
+      /*
+       * The capability the strict rule removed, restored.
+       *
+       * Owners are the one place equals may act on each other, because there is
+       * nobody above them to settle it — and without this a business whose
+       * founder has left could never close their account.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const second = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'owner');
+
+      await http()
+        .post(`/api/v1/roles/employees/${second.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [await roleRefId(ownerToken, 'agent')] })
+        .expect(204);
+    });
+
+    it('still refuses a manager acting on an owner', async () => {
+      /*
+       * The peer rule is for the TOP of the ladder only. A manager acting on an
+       * owner is the escalation the levels exist to stop, and widening the
+       * owner case must not have widened that one.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const team = await http().get('/api/v1/employees').set(bearer(ownerToken)).expect(200);
+      const founder = (team.body.data as { refId: string; name: string }[]).find((person) =>
+        person.name.startsWith('Meera'),
+      );
+
+      const refused = await http()
+        .post(`/api/v1/roles/employees/${founder?.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [await roleRefId(ownerToken, 'agent')] })
+        .expect(403);
+
+      expect(refused.body.error.details[0].issue).toMatch(/act on people below/i);
+    });
+
+    it('REFUSES a manager handing out a role that carries more than they hold', async () => {
+      /*
+       * THE ESCALATION REVIEW FOUND, closed, walked end to end.
+       *
+       * The level rule alone waves this through: "Billing clerk" sits at 30,
+       * well below the manager's 70. But it carries `enterprise.manage`, which
+       * the manager does not hold — so granting it to anybody, including an
+       * address the manager controls, would hand them billing through a second
+       * session. Delegating billing without handing over the business is the
+       * most natural reason an owner creates a custom role at all, so this is
+       * not a contrived configuration.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+      const junior = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      const clerk = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Billing clerk', level: 30, permissions: ['enterprise.manage'] })
+        .expect(201);
+
+      // Through the re-role endpoint.
+      const refusedGrant = await http()
+        .post(`/api/v1/roles/employees/${junior.refId}`)
+        .set(bearer(manager.token))
+        .send({ roleRefIds: [clerk.body.data.refId] })
+        .expect(403);
+      expect(refusedGrant.body.error.details[0].issue).toMatch(/permissions you do not hold/i);
+
+      // And through the invite, which is the version that needs no accomplice.
+      const refusedInvite = await http()
+        .post('/api/v1/employees')
+        .set(bearer(manager.token))
+        .send({
+          firstName: 'Mine',
+          email: 'mine@bluebottle.test',
+          roleRefId: clerk.body.data.refId,
+        })
+        .expect(403);
+      expect(refusedInvite.body.error.details[0].issue).toMatch(/permissions you do not hold/i);
+
+      // The owner, who holds it, is unaffected.
+      await http()
+        .post(`/api/v1/roles/employees/${junior.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [clerk.body.data.refId] })
+        .expect(204);
+    });
+
+    it('refuses a role that belongs to another business', async () => {
+      /*
+       * A SECOND BUSINESS, with a REAL role of its own.
+       *
+       * This used to send a refId belonging to nobody, which returns 404 from
+       * the plain not-found path — so removing the `enterprise_id` predicate
+       * from the lookup entirely would have left the test green. It was a
+       * not-found test wearing a tenant-isolation test's name.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      const rival = await http()
+        .post('/api/v1/enterprises/signup')
+        .send({
+          business: { name: 'Rival Roasters', email: 'hello@rival.test', city: 'Pune' },
+          owner: {
+            firstName: 'Ada',
+            lastName: 'Byron',
+            email: 'ada@rival.test',
+            password: OWNER_PASSWORD,
+          },
+        })
+        .expect(201);
+      const rivalOwner = await http()
+        .post('/api/v1/auth/verify')
+        .send({ verificationRefId: rival.body.data.verificationRefId, code: code() })
+        .expect(200);
+      const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+      await http()
+        .post(`/api/v1/platform/enterprises/${rival.body.data.enterpriseRefId}/status`)
+        .set(bearer(admin.body.data.accessToken as string))
+        .send({ status: 'active' })
+        .expect(200);
+
+      // A role that genuinely exists — just not here.
+      const theirs = await roleRefId(rivalOwner.body.data.accessToken as string, 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [theirs] })
+        .expect(404);
+    });
+
+    it('refuses a refId that belongs to nobody, the same way', async () => {
+      // Indistinguishable from the case above on purpose: whether a role exists
+      // in somebody else's business is not something to confirm.
+      const { ownerToken } = await onboardedBusiness();
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: ['00000000-0000-4000-8000-000000000000'] })
+        .expect(404);
+    });
+  });
+
+  describe('what the listing tells a client', () => {
+    it('says which roles this caller may edit and assign', async () => {
+      /*
+       * So a client does not offer a button the server will refuse. A manager
+       * sees the owner role — they need to know it exists — and is told they
+       * can neither edit nor assign it.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const manager = await member(ownerToken, 'Priya', 'priya@bluebottle.test', 'manager');
+
+      const roles = await http().get('/api/v1/roles').set(bearer(manager.token)).expect(200);
+      const byName = new Map(
+        (roles.body.data as { name: string; editable: boolean; assignable: boolean }[]).map(
+          (role) => [role.name, role],
+        ),
+      );
+
+      expect(byName.get('owner')).toMatchObject({ editable: false, assignable: false });
+      expect(byName.get('manager')).toMatchObject({ editable: false, assignable: false });
+      expect(byName.get('agent')).toMatchObject({ editable: false, assignable: true });
+    });
+  });
+});

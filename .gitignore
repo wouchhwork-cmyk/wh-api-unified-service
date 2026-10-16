@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Env: .env.dev / .env.qa are committed and hold NO real secrets.
+# Everything else, including any developer's own overrides, stays out.
+.env
+.env.local
+.env.*.local
+.env.prod
+!.env.dev
+!.env.qa
+!.env.example

@@ -1,0 +1,1579 @@
+# What Meta will not tell us
+
+Things the platform genuinely does not deliver, or delivers without enough to be
+useful. Every entry is something we **tested against live traffic or the live
+Graph API**, not something inferred from the docs — several of these contradict
+what the docs imply, and two are undocumented entirely.
+
+This file exists so nobody spends another afternoon rediscovering the same wall.
+If you are about to go looking for a way to resolve a shared post, or wondering
+why a removed reaction never disappears, read the relevant section first.
+
+**Each entry says: what we expected, what actually happens, how it was verified,
+and what we do about it.** Where a workaround exists it is named; where none
+exists that is stated plainly rather than left open.
+
+Last verified: **9 September 2026**, against `@ai_automation_demo`
+(IG `17841472020051826`).
+
+**THE VERSION MATTERS, and mind which one you measure on.** This app runs the
+version in `GRAPH_API_VERSION`, currently **`v25.0`**. Much of the early probing
+here was done with a scratch script pinned to `v23.0` — the app was never on
+v23, but the findings were gathered there, and **one of them turned out to be a
+v23 artefact** (§1.4). Everything else was re-checked on v25 on 9 Sep 2026 and
+holds.
+
+`v26.0` exists and answers; `v27.0` does not. Upgrading to v26 gains nothing
+listed here — comment media, share counts, reply authorship and both `(#10)`
+permission walls are identical — and **loses** one thing: `replies{id,username}`
+returns 500 on v26 where v25 answers. So v25 is the deliberate choice, not
+inertia.
+
+---
+
+
+---
+
+## 0.4 Rate limits: what Meta meters, and how it tells us
+
+Researched 21 Sep 2026 — headers read off live responses with our own token,
+formulas from Meta's rate-limiting docs.
+
+### There are TWO meters, and the TOKEN decides which one you get
+
+Corrected 22 Sep after direct measurement. An earlier note here said
+`x-app-usage` never appeared; that was wrong, and wrong in a way that mattered —
+it hid the tighter of the two meters.
+
+| token used | header returned | what it meters |
+| --- | --- | --- |
+| app (`{id}\|{secret}`) or **user** | `x-app-usage` | the whole developer app, one pool |
+| Page or Instagram | `x-business-use-case-usage` | one pool per business per product |
+
+Never both on one response. Meta documents that where both could apply, the
+business meter is applied **instead of** the app meter, and measurement agrees:
+ninety business-token calls moved the app counter not at all.
+
+**This means our connect flow and our inbox are metered separately.**
+`oauth/access_token`, `debug_token`, `me` and `me/accounts` all carry a user or
+app token, so the entire OAuth and discovery path draws on the app pool. Every
+inbox read draws on a business pool.
+
+### The app pool is small, and does not grow as customers connect
+
+`200 x daily active users` per **rolling hour** — and "users" means people
+actively using the app that day, not accounts stored. Measured on our own app:
+
+```
+30 sequential calls   call_count 1%  ->  12%
+```
+
+So the pool holds roughly 250 calls an hour. Connecting one business costs about
+half a dozen app-meter calls (two token exchanges, `me`, `me/accounts`, and
+`debug_token` twice), which puts the ceiling somewhere near forty connections
+per hour **across the whole platform**. That is fine today and is the first
+thing that will bite during an onboarding push or a mass reconnect after a token
+expiry event.
+
+The app header also carries **no** `estimated_time_to_regain_access` — that
+field exists only on the business header. So when the app pool throttles, Meta
+tells us nothing about how long to wait.
+
+### The business pools are roomy by comparison
+
+Thirty consecutive calls against each of `pages`, `messenger` and `instagram`
+moved every one of them **0%**.
+
+### One asset, several pools
+
+The same Page token, the same Page id:
+
+```
+GET /{page-id}                -> type: pages
+GET /{page-id}/conversations  -> type: messenger
+```
+
+And a single Instagram read reports under **two** ids at once — the account
+(which is one of our `platform_channel_id` values) and the owning Meta Business
+(which is not). That second fact is what lets usage be attributed to a channel
+without threading tenant context through every call site.
+
+### The numbers are PERCENTAGES, not counts
+
+Six consecutive calls to one edge left `call_count` at **1**, not 6. Each figure
+is a whole-number percentage of the allowance, and **throttling begins at 100**.
+So this is a fuel gauge, readable continuously — not an error to react to.
+
+| field | meaning |
+| --- | --- |
+| `call_count` | % of allowed calls used |
+| `total_cputime` | % of CPU allowance used |
+| `total_time` | % of total time allowance used |
+| `estimated_time_to_regain_access` | **minutes** until calls stop being throttled |
+
+### Metering is per business AND per product — separate pools
+
+The same thread reports `type: instagram` under one business id and
+`type: messenger` under another. Reading DMs and reading media drain different
+quotas, so one can throttle while the other is idle.
+
+| product | quota, 24-hour rolling window |
+| --- | --- |
+| Instagram | `4800 x impressions` |
+| Messenger | `200 x engaged users` |
+
+Both are **24-hour** windows, not the one-hour window most other BUC types use.
+The quota therefore grows with the business's own reach: a quiet account has a
+small allowance, which is exactly when a backfill is most likely to exhaust it.
+
+### The throttle codes we did not know
+
+| code | product |
+| --- | --- |
+| `80001` | Pages |
+| `80002` | Instagram |
+| `80006` | Messenger |
+| subcode `2446079` | attached across products |
+
+**These were unmapped, and that was a live defect.** The error mapper knew only
+the legacy platform limits (4, 17, 32, 613), so every real Instagram or
+Messenger throttle fell through to the fallback as `retryable: false` and
+dead-lettered the work — while the client was already reading
+`estimated_time_to_regain_access` off the same response. Fixed 21 Sep; the
+subcode is matched too, so a use case Meta adds later is recognised on arrival
+rather than after an outage.
+
+### What we now do with all this
+
+Every Graph response is read for both headers and folded into `provider_api_usage`,
+one row per pool per minute, and the platform console shows it per business and
+per channel. See the 22 Sep commits.
+
+Two rules in that code are worth repeating because they are easy to get
+backwards:
+
+- **A missing header is `NULL`, never `0`.** Meta's documentation says the
+  header appears on endpoints receiving enough requests, so absence means we
+  cannot see our position. Recording it as zero would show a clear budget at the
+  one moment it is least safe to assume one.
+- **`estimated_time_to_regain_access: 0` does not mean safe.** Meta's own
+  examples show 0 against pools sitting at 95% and 97%. It means "not blocked
+  right now". The percentage is the only thing that says how much room is left.
+
+### Still not done
+
+Nothing SLOWS DOWN on a rising percentage. The position is now visible and
+recorded; acting on it automatically — pausing a backfill at 80%, spreading a
+poller out — is todo P1 and is the only part of this left.
+
+Meta's own advice, worth honouring when that is built: spread calls evenly
+rather than in bursts, and **stop** when refused rather than retrying, because
+continuing to call while throttled increases the count and extends the block.
+Note also that batching does **not** save quota — three ids in one batched
+request still count as three calls.
+
+---
+
+## 0.5 The standing rule: take everything Meta offers, every time
+
+**Extract the most granular data available from EVERY interaction with Meta —
+webhooks, Graph reads, backfills, resyncs, refreshes and the responses to our
+own writes. Without exception.** Capture a field even when nothing consumes it
+yet, provided it costs no extra call.
+
+This is a rule rather than a preference because of what the rest of this
+document records. Meta omits fields without warning (§6.0.1: ten of eleven
+fields returned, `media_url` simply absent). Media links expire in as little as
+35 hours, and on some hosts carry no expiry marker at all, so there is no way to
+know a link is dying until it is dead (§6.2). Shared posts and stories are
+exposed **only on the live webhook** — every read path returns them empty
+afterwards (§3.3). A shared story's owner is unknowable the moment the payload
+is gone (§3.4).
+
+**A field not captured on arrival usually cannot be captured later.** The cost
+of storing something unused is a column. The cost of missing it is a customer's
+message that can never be explained.
+
+In practice:
+
+- Keep every identifier and descriptor, not just what the current screen
+  renders: `storyMediaId`, `reelVideoId`, `assetId`, `platformType`, captions,
+  owner handles, counts. These are what make a thing recoverable, or at least
+  nameable, later.
+- **Merge, never replace,** when refreshing from Meta. A newer answer with fewer
+  fields must not delete what an older one knew (§6.0.1).
+- When a query must be made smaller — Meta answering `(#1) Please reduce the
+  amount of data` — drop the least valuable expansion, never an identifying
+  field.
+- Ask for a field even when nothing reads it yet, as long as it adds no round
+  trip. An extra name in a `fields` list is free; a second call is not.
+- **This is about STORAGE, never logs.** Message text, handles and profile links
+  stay out of log lines whatever else is captured.
+
+## 0. Two kinds of limitation, and the difference matters
+
+Every entry below is tagged, because "we cannot get it" has two completely
+different meanings and only one of them is worth spending effort on:
+
+- **[APP]** — our app or its granted scopes are the constraint. **Fixable** by
+  adding a scope or passing App Review. Effort has a payoff.
+- **[META]** — the platform does not expose it to anybody, at any permission
+  level. **Not fixable.** Design around it and stop looking.
+
+The tell is usually the error. `(#10) Application does not have permission for
+this action` is **[APP]**. `(#100) Tried accessing nonexisting field` is
+**[META]** — no permission conjures a field that does not exist. A `400` naming
+the object, or a field silently omitted from a `200`, is usually **[META]**
+enforcing a privacy boundary.
+
+Our currently granted scopes:
+
+```
+pages_show_list, pages_messaging, instagram_basic, instagram_manage_comments,
+instagram_manage_messages, pages_read_engagement, pages_manage_metadata,
+public_profile
+```
+
+Notably **absent: `instagram_manage_insights`** — which is why every insight,
+even on our own media, is refused today. That one is **[APP]**.
+
+---
+
+## 0.6 What the token can already reach, and what needs App Review
+
+Swept field by field on 27 Sep 2026, because "we do not have that" and "nobody
+asked for it" look identical from the outside and only one of them is true.
+
+**Open to the token we already hold — no review, no new scope:**
+
+| surface | verdict |
+|---|---|
+| Page node, 26 fields tried | **all 26 readable** — we were asking for four |
+| Instagram node | all but `shopping_product_tag_eligibility` |
+| `messenger_profile` (ice breakers, persistent menu, greeting) | readable |
+| `/{page}/conversations` | readable |
+| `/{page}/roles`, `/{page}/blocked` | readable |
+| `/{ig}/stories`, `/{ig}/live_media` | readable |
+
+The Page fields we had been discarding include its public `link`, its
+`overall_star_rating` and `rating_count` (its reviews), `verification_status`,
+`picture`, and whichever of phone, email and address the business has filled
+in. All of it arrives on a request the daily profile refresh already makes.
+
+**Refused, and what each would cost:**
+
+| surface | refusal | needs |
+|---|---|---|
+| account + post insights | `#10` | `instagram_manage_insights` |
+| `business_discovery` | `#10` | Instagram Public Content Access |
+| hashtag search | `#10` | Instagram Public Content Access |
+| `content_publishing_limit` | `#10` | `instagram_content_publish` |
+| page ratings (the reviews themselves) | `#283` | `pages_read_user_content` |
+
+Note the split on reviews: the COUNT and the average star rating are readable
+now, and the review TEXT is not. So "you have 12 reviews averaging 4.3" is
+available today and "here is what they said" is an App Review away.
+
+`pages_read_user_content` appears twice in this table and also gates
+`reactions.summary` (1.3), so it is the single permission that would unlock the
+most.
+
+**Surfaced 17 Oct 2026.** The widened fetch landed in September and nothing read
+it back: the channel listing still returned the same nine configuration fields,
+so the follower count, category, rating, verification and page link reached the
+database and stopped there. `/connections/channels` now carries a `profile`
+object and the portal renders it. The Page-only fields read as `null` on an
+Instagram channel rather than being absent, so a client shows "not applicable"
+instead of breaking on a missing key — and a channel never refreshed is
+distinguished from one that reported nothing, so nobody reconnects an account to
+fix an empty cell that only means the sweep has not run.
+
+**Re-run with** `scripts/capability-sweep.ts` and `scripts/field-sweep.ts`. Both
+are read-only, and a refusal is the useful half of the output.
+
+## 1. Mentions
+
+### 1.1 An @mention inside a story reply produces no `mentions` webhook
+
+**Expected:** tagging the business inside a reply/comment on another account's
+story would raise the `mentions` field we subscribe to.
+
+**Actual:** nothing arrives. Observed directly — a story reply carrying the
+literal text `"@indian"` was delivered as an ordinary `messages` event with
+`reply_to.story`, and no `mentions` change was ever sent for it.
+
+**Verified:** live webhook capture, 6 Sep 2026, 20:15:58 IST.
+
+**What we do:** nothing to do — there is no event to consume. An @mention in a
+story reply is only ever visible as text inside the message body.
+
+### 1.2 The `mentions` webhook carries no author and no content
+
+**Expected:** a mention notification would say who mentioned us and what they
+said.
+
+**Actual:** the payload carries `media_id` and/or `comment_id` and **nothing
+else** — no username, no caption, no text. So a live mention cannot be projected:
+there is no author to attribute it to and no body to store.
+
+**Verified:** `normalizeMention` in `comment-normalizer.ts` skips on exactly this
+and says so in its skip reason. Only the `/tags` backfill, which returns the
+tagging media *with* the tagger's username, produces a projectable mention.
+
+**Workaround, BUILT and verified working.** Meta's **Mentions API**
+resolves the ids off our own IG user node. It needs `instagram_manage_comments`,
+which the connection **already holds** — no App Review.
+
+One call returns everything a mention needs, the parent post included:
+
+```
+GET /{ig-user-id}?fields=mentioned_comment.comment_id(<comment_id>){
+      id,text,timestamp,username,
+      media{id,caption,media_type,permalink,username,owner,timestamp}
+    }
+```
+
+Verified 6 Sep 2026 against a real mention (event 1514) — returned the comment
+text, the commenter's handle, the parent post's caption, **its permalink, and its
+owner's username**.
+
+**Which edge to use is decided by the payload, not by guessing:**
+
+| Payload | Edge | Note |
+|---|---|---|
+| `comment_id` present | `mentioned_comment` | The mention is in a comment |
+| `comment_id` absent | `mentioned_media` | The mention is in the caption |
+
+Using the wrong one fails loudly and usefully: asking `mentioned_media` for a
+comment mention returns `(#10) User is not mentioned in the caption.`
+
+### 1.2b A tag EDITED into an existing comment sends no webhook — but is readable
+
+**Reported by the user and confirmed 9 Sep 2026.** Somebody comments on an
+external post without tagging us, then edits the comment to add `@ourhandle`.
+**No `mentions` webhook is ever delivered.** The `mentions` field fires when a
+comment is CREATED containing a mention; there is no comment-edited event for
+mentions at all — unlike DMs, which do get `message_edit` (§7.1).
+
+**The mention is nonetheless real.** The Mentions API accepts the comment id and
+answers in full:
+
+```
+mentioned_comment.comment_id(18223508260329375) → 200
+  text     : "what are you planning @ai_automation_demo"
+  username : testrestaurant_sd
+  timestamp: 2026-09-09T18:10:26+0000
+```
+
+So this is **[META]** for the notification and NOT a limitation for the data: the
+tag is invisible only because nothing tells us to go and look.
+
+**These are recoverable, partially, at zero API cost.** We already store the
+tagged post's comment section per mention (§1.3), and that snapshot is how this
+one was found — it appeared in another mention's `postComments` on the same post.
+Scanning stored `postComments` for our own handle and projecting any comment that
+is not already a known mention would recover it, with no extra Graph call.
+
+**The limits of that approach, stated plainly — it recovers SOME of these, not
+all.** Two windows have to line up:
+
+1. **The post.** Only posts where we already hold at least one mention have a
+   stored comment section at all.
+2. **The 50 comments.** Instagram returns one page and no more (§1.4), so the
+   edited comment must fall inside it. This one did, because it landed on a post
+   we had been tagged on minutes earlier; on a post with 19,599 comments a tag
+   outside the returned 50 is invisible to us.
+
+And there is **no edge that LISTS our mentions** — `mentioned_media` and
+`mentioned_comment` both require an id you must already possess — so a tag
+edited into a comment on a post we have never been mentioned on is
+undiscoverable by any route. Do not go looking for one.
+
+**Where the id comes from, since it is the whole trick:** the comment list is
+requested as `comments{id,text,timestamp,like_count}` and we persist that `id`
+as `platformId`. So detection is a SQL query over data already banked, not a
+platform call; the only call is resolving a mention actually recovered — one per
+genuine find, which is the cheapest possible ratio.
+
+**Status: not built.** See docs/backlog.md §4.
+
+### 1.2c EDITING A COMMENT SENDS NOTHING, on our own posts too
+
+**Generalised from §1.2b, and it is broader than mentions.** There is **no
+webhook for a comment being edited, at all**. The `comments` field fires on
+creation; `mentions` fires on creation. Neither fires again when the text
+changes, and there is no `comment_edit` counterpart to the DM's `message_edit`
+(§7.1).
+
+So every one of these is invisible to us:
+
+- a tag added to an existing comment (§1.2b — confirmed, the mention was real
+  and readable, only the notification was missing)
+- a tag REMOVED from a comment we already stored, which leaves us showing a
+  mention that no longer names us
+- any wording change, on a stranger's post or **on our own**
+
+**[META]**, and the consequence is that stored comment text is only ever
+accurate as of the moment it arrived. We have no way to learn it changed, so we
+cannot correct it and cannot know we are wrong.
+
+**What partially covers it:** the tagged post's comment section is re-read on
+every projection (§1.3), so a comment whose text changed will show its NEW text
+in that snapshot while the stored message keeps the old — the two disagreeing is
+itself a signal, though nothing acts on it. There is no equivalent for comments
+on our own posts, which are stored once from the webhook and never re-read.
+
+**Deletion, by contrast, we CAN act on** — see §1.10 — just not detect: no
+webhook announces it either.
+
+### 1.2d A CAPTION mention notifies, and an EDITED caption notifies too
+
+The `mentions` webhook carries **`media_id` and no `comment_id`** when the tag
+is in the post's caption. That absence is the only discriminator, and it decides
+which edge resolves the mention: `mentioned_media` for a caption tag,
+`mentioned_comment` for a comment tag. Sending a caption mention to the wrong
+one fails with `(#10) User is not mentioned in the caption`, which names the
+cause precisely and is easy to misread as a permissions problem.
+
+**Editing a caption to ADD a tag fires the webhook.** Verified 27 Sep 2026:
+event 1911, `{"media_id":"17909028732477843"}`, arriving seconds after the edit,
+and resolving to the edited text (`"Buy now.\n\nai_automation_demo ....."`).
+
+That is the **opposite** of a comment, where editing a tag in sends nothing at
+all (1.2b, 1.2c). So the two halves of "somebody tagged us later" behave
+differently and only one of them needs the polling workaround. Worth knowing
+before that workaround is generalised to captions, where it would be waste.
+
+### 1.2e A post's AUDIO is not exposed
+
+A photo or reel published with a music track reports as a plain `IMAGE` and
+offers no field for the audio. Every name Meta has used returns `(#100) Tried
+accessing nonexisting field`: `music`, `audio`, `audio_name`, `music_info`,
+`original_sound`, `alt_media_url`. `owner` and `thumbnail_url` are accepted and
+come back empty.
+
+Verified 27 Sep 2026 on `17911065744521471`, a caption mention the poster had
+added a track to. **[META]** — the same shape as the missing share count in 1.3:
+the field is not withheld, it does not exist.
+
+### 1.2f A COLLABORATOR or photo tag sends no webhook at all
+
+The third way to be tagged, and the only one that notifies nobody. Being added
+as a collaborator, or listed in a post's tagged-people, produces **no `mentions`
+delivery**. Verified 27 Sep 2026: the tag went up at 23:44:45 and the ledger
+recorded nothing; the only event in that window was the poster sharing the post
+into a DM by hand.
+
+It IS readable. `GET /{ig-user-id}/tags` listed it within seconds, with the same
+media id, a permalink and the owner's handle. `BackfillMentions` walks that
+edge, and re-running it projected the tag as an ordinary mention thread.
+
+**So the customer sees a tag the inbox does not**, until a backfill runs. That
+is a gap in NOTIFICATION, not in reach — worth stating plainly because the
+symptom is a mention appearing hours late and reading as a slow inbox.
+
+**Telling the three apart**, now recorded on the thread as `mentionKind`:
+
+| kind | webhook | discriminator |
+|---|---|---|
+| `caption` | yes | `media_id`, no `comment_id` |
+| `comment` | yes | `comment_id` present |
+| `tagged` | **none** | only ever from the `/tags` walk |
+
+The `/tags` edge returns BOTH captions and silent tags, so a backfilled row has
+to be classified from its caption — matched **bare**, because Meta strips the
+`@`. That makes the backfill's answer a heuristic where the webhook's is a
+fact, and it errs toward `caption`: over-reporting shows an agent a post that
+names the business, where the other way round would quietly downgrade a real
+mention to a tag nobody is told about.
+
+### 1.3 What a tagged post will and will not tell us
+
+A mention is read access to the post it sits on (§3.1), so a surprising amount
+comes back for an account we do not manage. Probed field-by-field on a real
+mention, 6 Sep 2026.
+
+**Readable** via `mentioned_comment.comment_id(X){media{…}}`:
+
+| Field | Example |
+|---|---|
+| `like_count` | `6447` |
+| `comments_count` | `43` |
+| `caption` | full text |
+| `permalink` | `https://www.instagram.com/p/Dc53LpVs_06/` |
+| `username` | `alpha_series369` — the owner |
+| `media_type` / `media_product_type` | `IMAGE` / `FEED` |
+| `media_url` | a real CDN image — the COVER only, on a carousel |
+| `timestamp` | post time |
+| `children{…}` | **every slide of a carousel**, with an id, type and url each |
+
+**`children` was not asked for until 27 Sep 2026**, and that is worth a line
+because nothing looked wrong: `media_url` on a `CAROUSEL_ALBUM` returns the
+first image, so a mention on a ten-slide post rendered as a mention on one
+photo. The slides were never missing from Meta — nobody named the field. Adding
+`children{id,media_type,media_url,thumbnail_url}` to a call we already make
+returned all four slides of a live mention immediately.
+
+The field list was written out TWICE — once for a caption mention, once for a
+comment mention — and the first fix reached only one of them, leaving comment
+mentions (the common kind) still on a single cover. They are one constant now.
+A video slide carries `thumbnail_url` and no `media_url`, exactly as a reel does
+at the top level.
+
+**Contrast with a carousel SHARED into a DM (§3.7), which gives the cover and
+nothing else.** Being mentioned buys read access to the post; being shown
+something does not.
+
+**There is no share count on the media node, and no field for one** —
+`share_count`, `shares`, `reshare_count`, `saved` and `video_view_count` all
+return `(#100) Tried accessing nonexisting field`. **[META]**
+
+Shares and saves live only in **Insights**, and this splits cleanly:
+
+- On **somebody else's** post — **[META]**, permanently. Insights is own-media
+  only; a tagged post returns 500 no matter what we hold.
+- On **our own** posts — **[APP]**, and fixable. Every metric (`shares`,
+  `saved`, `impressions`, `reach`, `total_interactions`) currently returns
+  `(#10) Application does not have permission for this action` because
+  `instagram_manage_insights` is not among our granted scopes. Add the scope and
+  our own share and save counts become available. Verified 6 Sep 2026 against
+  our own post `17993553824735399`.
+
+Also refused: `shortcode`, `is_shared_to_feed`, `is_comment_enabled`
+(`(#100) Please read documentation for supported fields`). **[META]** — these
+exist for our own media and are simply not exposed on somebody else's.
+
+Returned as **200 with the field silently absent** — present in the schema, not
+applicable or not permitted here: `thumbnail_url` (video only), `children`
+(carousel only), `owner` (own media only). An absent field is not an error, so
+code must treat missing as normal rather than retrying.
+
+### 1.4 The comment thread IS readable, but not who wrote it
+
+**Replies to the comment that named us** — `mentioned_comment(X){replies{…}}`:
+`id`, `text`, `timestamp` and `like_count` all come back.
+
+**The whole post's comment list** is reachable too, paginated:
+`media{comments.limit(N){id,text,timestamp,like_count}}` returned all 43 comments
+on a stranger's post.
+
+**What is NOT available is authorship.** `replies{username}`, `replies{from}`,
+`replies{from{id,username}}` and `replies{user{id,username}}` all return **200
+with the field omitted**. So a thread can be read but not attributed — every
+reply is anonymous to us.
+
+The boundary is precisely the mention: on the post's own comment list,
+`comments{id,timestamp,username}` returns `username` **for the comment that
+tagged us and for no other comment on that post**. The mention is the grant, and
+it does not extend to the people around it.
+
+Probably **[META]** — it reads as a deliberate privacy boundary rather than a
+missing scope, and no error is raised, the field is simply absent. Not proven:
+`Instagram Public Content Access` (App Review) might widen it. Treat as [META]
+until somebody tests it with that feature granted.
+
+**Some replies come back with no `text` at all**, and no field combination
+recovers it — `replies{text}`, `{id,text}`, `{id,text,timestamp}` and
+`{id,text,like_count}` all omit it for the same reply while returning `id`,
+`timestamp` and `like_count` normally. Other replies on the same thread return
+their text fine, so it is per-comment, not per-query. Fetching the reply id
+directly is refused (`400`) — the mention edge is the only route to it.
+
+We do not know the rule. Treat a reply's text as **optional**: render what came
+back and say nothing about the rest, rather than showing an empty bubble.
+Observed on events 1516 and 1517, 6 Sep 2026.
+
+**Confirmed again 10 Sep 2026 on OUR OWN post, which settles it.** A GIF comment
+on media we own is DIRECTLY readable — `GET /{comment-id}` answers 200, unlike an
+external comment, which is reachable only through the mentions edge — and every
+media field is still refused:
+
+```
+GET /18124808758891144 → 200 { id, timestamp, username, like_count, hidden }
+                                ^^ no `text` key at all
+media_url, attachment(s), image, sticker, gif, media_type, thumbnail_url
+                       → (#100) Tried accessing nonexisting field
+```
+
+The control on the same post returns `text: "😍"` fine, so `text` is simply
+**omitted when a comment has none** — that absence is the only signal that a
+comment was media. Full ownership changes nothing, so this is the object model,
+not a permission or version boundary.
+
+**The documentation is SILENT, checked 10 Sep 2026 — do not go looking again.**
+The IG Comment reference lists twelve fields and none is media (`media` there is
+the POST, not an attachment). The webhooks reference does not enumerate the
+`comments` payload at all and refers you back to that list. Nothing acknowledges
+that a media comment arrives with neither text nor media.
+
+That makes this **undocumented behaviour rather than documented impossibility**,
+which matters for how we write about it: Meta never promised comment media and
+never ruled it out. Treat a missing `text` as normal, and do not write code
+comments claiming it can never exist — "as of September 2026 there is no such
+field" is the honest form.
+
+**A comment's own image is NOT retrievable — confirmed on a comment that had
+one.** A mention carrying both text and an uploaded image returned the text and
+nothing else; every candidate field is refused at comment level, where a bad
+field name errors rather than being silently swallowed:
+
+```
+media_url, thumbnail_url, attachment(s), image, photo, media_type,
+sticker, gif, file, asset, preview
+  → (#100) Tried accessing nonexisting field
+```
+
+`(#100) nonexisting field` is **[META]**: no scope and no App Review adds a
+field that does not exist on the object. So a comment that is a photo, a GIF or
+a sticker reaches us as text-or-nothing, and a media-only one as an id and a
+timestamp. This is also why some replies come back with no `text` — there was
+never any text, and the media is unreachable.
+
+### 1.5b `media_url` is NOT reliably an image, and a reel may omit it
+
+**Corrected 9 Sep 2026.** An earlier version of this entry said a reel always
+omits `media_url`. That was over-stated from one sample. What is actually true,
+across three reels:
+
+| Post | `media_url` | `thumbnail_url` |
+|---|---|---|
+| Photo (`FEED`) | the image | absent |
+| Reel `DZmmE4xA-8o` | **absent** | the still |
+| Reel `DZPvwwGPubk` | **an `.mp4`** | the still |
+
+So a reel may answer with neither, or with the video file — and `media_url` is
+only an image when the post is a photo. Both failure modes are real and both
+were hit: reading only `media_url` left the first reel with no preview, and
+preferring it on the second put an **.mp4 into an `<img>` tag**, which fails and
+then reports "the image is no longer available" about a post that is perfectly
+fine.
+
+**The rule that holds:** `thumbnail_url` is always a still when present, and
+when it is absent the post is a photo whose `media_url` IS the image. So
+**thumbnail first, media second** is displayable in every case; the reverse is
+displayable in only one.
+
+`media_product_type` distinguishes the kinds (`FEED` vs `REELS`). The API
+exposes `previewUrl` in that order so no client has to know this, and keeps
+`mediaUrl` and `thumbnailUrl` separately for one that wants to play the video
+rather than preview it.
+
+**A misleading error worth knowing, and it is EDGE-SPECIFIC.** On the post's
+comment list, `comments{id,text}` fails with `500 Please reduce the amount of
+data you're asking for` while `comments{id,text,timestamp}` succeeds. A
+field-combination quirk, **not** a volume problem — adding a field fixes it, so
+do not read that 500 as "page smaller".
+
+**Corrected 9 Sep 2026:** an earlier version of this entry generalised that to
+the `replies` edge as well. It does not hold there — `replies{id,text}` answers
+**200** on v25. The 500 was measured on v23 and wrongly assumed to be universal.
+
+These expansion limits also MOVE between versions: `replies{id,username}` is
+fine on v25 and 500s on v26. Treat any field list as measured-on-a-version, not
+as a permanent fact.
+
+### 1.5 Who tagged us: a handle, and never an id
+
+`mentioned_comment.username` and `from{username}` both return the tagger's
+handle. **`from{id}` returns nothing** — asking for it yields the comment id and
+no `from` object at all; asking for `from{id,username}` returns the username
+alone. **[META]**
+
+This matters for identity: a handle can be changed and reused, so a mention is
+stored under `IdentifierKind.InstagramUsername` rather than passed off as an
+IGSID. If the same person later DMs us, that message WILL carry a real IGSID and
+the two records will not automatically be the same person.
+
+Per Meta's own IG Comment reference, `user` is **"only returned if the app user
+created the IG Comment"** — which is why it is empty on every comment but ours.
+
+**`business_discovery` would give the tagger's follower count, profile picture,
+biography and recent media** — but returns `(#10) Application does not have
+permission for this action` for every target we tried, our own and strangers'
+alike. That is app-level, not target-level. **[APP]** — fixable via App Review
+(Advanced Access), and the only route to enriching a tagger beyond their handle.
+It resolves business and creator accounts only; personal accounts never.
+
+### 1.6 We CAN reply to a comment that tagged us — with what we already hold
+
+`POST /{ig-user-id}/mentions` posts a reply as a sub-thread comment beneath the
+mention:
+
+| Parameter | When |
+|---|---|
+| `media_id` | always |
+| `message` | always |
+| `comment_id` | only when replying to a COMMENT mention |
+
+Required permissions are `instagram_basic`, `instagram_manage_comments`,
+`pages_read_engagement` and `pages_show_list` — **we hold all four**. No App
+Review needed.
+
+**This is NOT the same call as an ordinary comment reply.** A comment reply goes
+to `POST /{comment-id}/replies`, which works only on media we own — a mention
+lives on somebody else's post, so that edge fails for it. This is why
+`ConversationKind.Mention` routes to its own `OutboundEventType.MentionReply`
+rather than sharing the comment path.
+
+Documented limits: **mentions on Stories cannot be replied to**, and
+**commenting on a photo you were tagged in is not supported**. Also, no webhook
+is delivered at all when the media belongs to a **private account** — so a
+mention from a private account is invisible from the start. **[META]**
+
+### 1.5c A comment on OUR post names its author; a mention never does
+
+The `comments` webhook on our own media carries the author outright:
+
+```json
+{"field":"comments","value":{"id":"18135906259723822",
+ "from":{"id":"2067184747505731","username":"testrestaurant_sd"},
+ "text":"Coming soon wait for me","media":{"id":"18030931424448554"}}}
+```
+
+Compare 1.2: the `mentions` webhook carries a media id and a comment id and
+NOTHING else — no author, no text — which is why a mention needs a Graph call
+before it can be projected at all and a comment does not.
+
+So the two inbox surfaces are not symmetrical, and the asymmetry is ownership
+again (1.6b). Verified 27 Sep 2026.
+
+### 1.6b Our OWN media answers everything a third party's refuses
+
+The same account, the same token, minutes apart — the difference is ownership.
+Re-verified 27 Sep 2026 against a live comment on our own post
+(`18146332678480621`), every action reversed afterwards:
+
+| action | our post | a post we are TAGGED in |
+|---|---|---|
+| read the comment | **200** | **200** (text, time, likes) |
+| the commenter's **username** | **returned** | **silently omitted** (1.4) |
+| hide / unhide | **200** | no such operation |
+| reply to the comment | **200** | `#100` — /replies is owner-only (1.6) |
+| delete OUR reply | **200** | `#100` subcode 33 (4.6) |
+| like the post | — | `#100` |
+
+So moderation is whole on our own media and essentially absent off it. The one
+asymmetry worth remembering is the **username**: the field exists, and Meta
+withholds it precisely when the post is somebody else's. An inbox that shows
+"who said this" on one screen and cannot on another is not inconsistent — it is
+reporting a real boundary.
+
+**A reply we post on OUR post can be deleted; the same reply under a stranger's
+post cannot.** That is the whole of 4.6, and it is worth knowing before a
+"retract" button is offered anywhere.
+
+### 1.7b Only a CAPTION mention lets us comment on the post
+
+`POST /{ig-user-id}/mentions` with a `media_id` and no `comment_id` posts a
+top-level comment on the tagged post. Whether it is allowed depends entirely on
+HOW we were tagged. Measured against live posts, 27 Sep 2026:
+
+| tagged how | comment on the post | like it |
+|---|---|---|
+| caption mention, feed post | **200** | `#100` |
+| caption mention, reel | **200** | `#100` |
+| collaborator / photo tag | `#200 Permissions error` | `#100` |
+| comment mention | `#200 Permissions error` | `#100` |
+
+So the right to comment tracks `mentioned_media` access exactly: a caption tag
+grants read access to the post (1.3) and the right to answer it publicly; the
+other two grant neither. A comment mention can still be answered — but only as a
+reply BENEATH that comment (1.6), never as a comment on the post.
+
+**Liking is not available at all.** `POST /{media-id}/likes` returns `#100
+Unsupported post request` on every media we do not own, as does
+`POST /{media-id}/comments`. The mentions edge is the only door, and it opens
+only for a caption tag.
+
+**`#200 Permissions error` is the refusal to expect here**, and it says nothing
+about scopes: the token holds `instagram_manage_comments` throughout, and the
+same call against a caption mention succeeds seconds later.
+
+**Enforced since 11 Oct 2026**, and not before — for a fortnight this table was
+written down and nothing acted on it. `evaluateReplyWindow` reads `mentionKind`
+and refuses a `tagged` mention outright, in the API and in the reply box both.
+Until then an agent was offered a reply on a collaborator tag, the send went
+202, queued, spent its attempts and dead-lettered: they were told it failed long
+after they had moved on. A mention whose kind predates `mention_kind` being
+recorded stays repliable, because refusing those would close replies on real
+mentions to avoid a refusal the send path already handles.
+
+### 1.8 A reply to a mention can never be deleted, or even read back
+
+**Expected:** having authored a comment, we could delete it.
+
+**Actual:** both refused. Verified 8 Sep 2026 against a reply we had just posted
+ourselves (`17967234453157331`, "@_omlokhande"):
+
+```
+GET    /{comment-id}  → 400 Unsupported get request
+DELETE /{comment-id}  → 400 Unsupported delete request
+```
+
+The comment survived; all five replies were still on the thread afterwards.
+
+Meta's rule, quoted: *"A comment can only be deleted by the owner of the object
+upon which the comment was made, even if the user attempting to delete the
+comment is the comment's author."* A mention lives on somebody else's post, so
+only THAT account can remove our reply. **[META]** — `deleteComment` already
+works on comments on our own media, so this is not a missing scope.
+
+**Consequence, and it is worth telling an agent:** a reply to a mention is
+PERMANENT from our side. There is no unsend.
+
+**Now told, 17 Oct 2026.** The composer says so on a mention thread BEFORE the
+agent types, because afterwards there is nothing anybody can do about it. It is
+a warning and not a refusal — replying is the point of the thread. Moderation
+controls were already correctly withheld (`canModerateComments` requires a
+comment thread on a post we own), so the refusal itself was never reachable;
+what was missing was telling anyone.
+
+Note the `GET` failing too: our own reply, seconds old, is not addressable by id.
+It is visible only through the mentions edge, inside the parent's `replies` list.
+The mention is the only door, in both directions.
+
+### 1.9 A tag under a STRANGER's comment loses its context, and the link is the answer
+
+**The case:** somebody tags us in a reply to a comment that did not mention us.
+`"absolutely"` arrives with no indication of what it is agreeing with.
+
+**Both read routes are closed.** Verified 9 Sep 2026 on comment
+`18095113511414770`, whose parent is `18089045318435608`:
+
+```
+mentioned_comment.comment_id(<parent>)  → (#10) User is not mentioned in the comment
+media{comments}, paged                  → 47 of 19,599 returned, one page,
+                                          parent NOT among them
+```
+
+The mention grants access to OUR comment, not to the one above it. And the
+post's comment edge caps at a single page on media we do not own, so the parent
+cannot be found by walking either.
+
+**[META]**, and not worth further effort — but the agent is not stuck. The
+comment deep link (§1.6 / the link builder) opens our own reply IN PLACE on
+Instagram, with the comment it answers directly above it. So the interface
+offers the route rather than reporting a dead end: *"Instagram will not tell us
+what that comment said — open the mention on Instagram to read it in place."*
+
+The distinction matters. When the parent DID mention us it is fully readable,
+author and sibling thread included (§1.7), so this only bites on tags placed
+under strangers' comments.
+
+### 1.10 We CAN moderate comments on our own posts — hide, unhide and delete
+
+**Verified 10 Sep 2026** against a real comment on our own post
+(`18183484054414151`), which this test genuinely deleted:
+
+```
+GET    /{comment-id}          → 200 { text, hidden: false }
+POST   /{comment-id}?hide=true  → 200 { success: true }   → hidden: true
+POST   /{comment-id}?hide=false → 200 { success: true }   → restored
+DELETE /{comment-id}          → 200 { success: true }
+GET    /{comment-id}          → 400 Object does not exist
+```
+
+**Ownership of the POST is what grants this, not authorship of the comment** —
+the exact inverse of the intuition, and Meta says so: *"A comment can only be
+deleted by the owner of the object upon which the comment was made, even if the
+user attempting to delete the comment is the comment's author."* Hence §1.8: our
+own reply to a mention on somebody else's post can never be removed by us.
+
+| | our post | somebody else's |
+|---|---|---|
+| read the comment directly | ✅ | ❌ (mentions edge only) |
+| hide / unhide | ✅ | ❌ |
+| delete | ✅ | ❌ |
+
+`GraphApiClient.deleteComment` and the hide path already exist, with
+`OutboundEventType.CommentHide` and `CommentDelete` wired through the relay. The
+capability is built; nothing in the portal exposes it yet.
+
+Note there is **no webhook when a comment is deleted** either (§1.2c), so a
+comment removed on Instagram stays in our inbox exactly as a removed reaction
+stays visible (§2.1).
+
+---
+
+## 2. Reactions
+
+### 2.1 Removing a reaction sends no event
+
+**Expected:** Meta documents `reaction.action` with an `unreact` value, so
+removing an emoji should arrive as `action: "unreact"`.
+
+**Actual:** adding a reaction delivers a webhook; **removing it delivers
+nothing**. The ledger holds exactly one reaction event ever — `action: react`,
+`reaction: laugh` — and no `unreact` has ever arrived despite reactions being
+removed.
+
+**Verified:** `SELECT ... FROM inbound_events WHERE payload ? 'reaction'` returns
+a single `react` row, 6 Sep 2026.
+
+**Consequence:** a reaction removed on Instagram **stays visible in our inbox
+permanently**. There is no way to detect it.
+
+**What we do:** `handleReaction` already treats `action === 'unreact'` as a
+removal and nulls the stored reaction, so if Meta ever starts sending it we
+handle it correctly with no code change. We simply never receive it.
+
+---
+
+## 3. Content shared into a DM
+
+The full investigation is in the memory note; the conclusion is here.
+
+### 3.1 An external account's shared post or story cannot be resolved to a link
+
+**Expected:** `ig_post_media_id` and `story_media_id` would resolve through the
+Graph API to a permalink, the way our own media does.
+
+**Actual:** they resolve **only when the media belongs to the connected
+account**. Everything else returns `400 GraphMethodException` (`error_subcode:
+33`) on every field.
+
+**Verified:** three shared `ig_post` ids tested field-by-field. The one that
+resolved — permalink, caption, shortcode, owner, timestamp, like/comment counts —
+turned out to be `owner.username: ai_automation_demo`, i.e. our own post shared
+back to us. The two external ones refused all sixteen fields.
+
+**One exception, and it is a real one:** media reached **through a mention edge**
+IS readable even when somebody else owns it. `mentioned_comment{...media{...}}`
+returned an external account's permalink, caption and owner username (§1.2). The
+ownership rule governs media addressed *by id directly*; a mention is a grant.
+
+**Every alternative route is closed, all tested:**
+
+| Route | Result |
+|---|---|
+| Message node `shares` edge | Returns the link for `share`, **empty** for `ig_post` |
+| `graph.instagram.com` | Rejects a Page token (`code 190`) |
+| `business_discovery` | `(#10)` no permission, and needs a handle we do not have |
+| `instagram_oembed` | `(#10)` requires Meta oEmbed Read via App Review |
+| Facebook Page token instead of IG | Same 400 |
+
+**The base64 shortcode trick cannot work**, and this is a proof rather than a
+failed sample. Ground-truth pair:
+
+```
+webhook media id  : 17993553824735399      (17 digits — a Graph media id)
+real shortcode    : DKhCcH5TDnJ
+base64(media id)  : _7Qq3-GCn              ← the trick's output, nonsense
+decode(shortcode) : 3648207901862672841    (19 digits — an internal pk)
+```
+
+The shortcode encodes a **different id** from the one the webhook gives us. No
+encoding bridges the two.
+
+### 3.2 What *does* yield a link
+
+- **`share`** — the webhook payload's `url` already **is** an instagram.com
+  permalink. Nothing to resolve.
+- **`ig_post` we own** — `posts.permalink_url` already holds it locally, keyed by
+  `posts_platform_uniq (channel_id, platform_post_id)`. No API call needed.
+- **`story_mention`** — the story's owner **is the message sender**, so their
+  profile link is correct by definition.
+
+### 3.4 A shared story is not a story mention, and only one has an owner
+
+Verified 19 Sep 2026 on live messages, because the two render identically and
+are not the same thing:
+
+| type | who owns it | can we name them |
+| --- | --- | --- |
+| `story_mention` | the **sender** — they tagged us in their own story | **yes**, by definition |
+| `ig_story` | a **third party** whose story the sender forwarded | **no** |
+
+A forwarded story arrives as `story_media_id` and an expiring
+`story_media_url`, and nothing else — no owner id, no handle, no permalink. The
+media id resolves for nobody but the connected account (§3.1), so the owner is
+unknowable. The portal says "shared someone's story" rather than inventing one.
+
+**Both are a guess about media KIND — on the webhook.** Meta serves a story's
+photo and its video under one link and names neither: a real `ig_story` share on
+19 Sep was stored as an image and its link served `video/mp4`, 540 KB.
+`kindIsGuessed` covers both shapes, and is derived at read as well as stored, so
+rows written before that still report honestly.
+
+**The READ edge does say.** `mime_type` comes back on every attachment from the
+conversations edge and was being discarded by the translation into the webhook
+shape — so the backfill stored LESS about a message than the live webhook did.
+It is now carried through, which settles two things nothing else could: a voice
+note from a document (both arrive as `file`, and only the mime type separates
+them), and a story's real kind. When a refresh learns it, `kindIsGuessed` is
+dropped — with evidence there is nothing left to retry.
+
+**A shared PROFILE yields nothing at all.** It arrives as
+`is_unsupported: true` with no text and no attachment — Meta declining to
+describe it. That is now reported as `contentUnavailable`, which it was not:
+the marker was stored and never surfaced, so the one case the field exists for
+rendered as the blank bubble it was written to prevent.
+
+### 3.3 Shared content is unrecoverable after a dropped delivery
+
+Meta exposes a shared post, story or reel **only on the live webhook**. Every
+read path — the conversations edge, and the message node asked directly for
+`attachments`, `shares`, `story` and `sticker` — returns them empty.
+
+**What we do:** the projector sets `contentUnavailable` so the inbox says "the
+customer sent something the platform will not show us" rather than rendering an
+empty bubble.
+
+---
+
+### 3.5 A shared PROFILE gives nothing at all
+
+Sharing an Instagram **account** into a DM arrives as `is_unsupported: true`
+with no attachment, no text and no id:
+
+```json
+{"mid":"aWdfZ…","is_unsupported":true}
+```
+
+Asked for by id, every field agrees — `message` is `""`, and `attachments`,
+`shares`, `story` and `sticker` are all absent. Verified 26 Sep 2026 on
+`aWdfZAG1faXRlbToxOklHTWVzc2FnZAUlE…MzM2`.
+
+**[META]**, nothing to build. The client says so and sends the agent to the app.
+
+### 3.6 A shared COMMENT gives a placeholder, which is worse than nothing
+
+A comment shared into a DM arrives as an **empty template**:
+
+```json
+{"type":"template","payload":{"generic":{"elements":[]}}}
+```
+
+The read-back looks more promising and is not. `GET /{mid}?fields=attachments`
+returns `generic_template` carrying a `title` — and the title is **identical
+across five different shares**, of different comments on different posts:
+
+```
+சமீபத்திய செயலியைப் பயன்படுத்துங்கள்   ("use the latest app")
+```
+
+It is Instagram's localized unsupported-content string, not the comment. The
+whole grid, 27 Sep 2026: `shares`, `story`, `sticker`, `reply_to`,
+`is_unsupported` and `tags` all absent; `generic_template` has no subfields at
+all (`#100` on `image_url`); and the `/attachments` **edge** returns
+`{"data":[]}`.
+
+**[META]**. Treated exactly like 3.5 — an empty box is an empty box, and the
+projector marks it `contentUnavailable` on the payload shape rather than on the
+word `template`, because Meta has renamed these types before.
+
+### 3.7 A shared CAROUSEL gives the cover only
+
+`ig_post` carries one `url`, one `title` and one `ig_post_media_id` however many
+slides the post has. The id resolves to nothing — all six field sets return
+`400 "does not exist, cannot be loaded due to missing permissions"`, because
+the post belongs to a third party. Verified 27 Sep 2026 on
+`17896771866395731`.
+
+**Contrast with a carousel we are MENTIONED in, which gives every slide** — see
+1.3. Different edge, different answer, and the difference is ownership of the
+question rather than of the post.
+
+### 3.8 A share and the message beside it cannot be linked
+
+Sending a post and then typing something arrives as **two messages**, and
+nothing in either one refers to the other. The mid decodes to
+`account:thread:sequence` — the 124-character prefix is the THREAD, shared by
+every message in it, so it identifies the conversation and never the pairing.
+
+Measured 27 Sep 2026: a mention share at +12.554s and its text at +13.004s, 450ms
+apart — while an unrelated share sat 12.5s before them. Proximity is the only
+signal and it is a guess, not a fact.
+
+**[US]**, and the answer is to do nothing: Instagram itself shows them as two
+bubbles, so rendering them in platform order is already what the customer sent.
+
+
+## 4. Stories
+
+### 4.1 Someone else's story id resolves to nothing
+
+`ig_story.story_media_id` and a `story_mention`'s asset id both return
+`400` on every field. Verified 6 Sep 2026 on `18031245590895452` and
+`18101327498358721`.
+
+### 4.2 Our own stories *are* readable
+
+`GET /{ig-user-id}/stories?fields=id,media_type,media_url,permalink,timestamp`
+returns **200**. (It returned `{"data":[]}` at time of testing only because no
+story was live — the edge and the permission both work.)
+
+**Not yet used.** When a customer replies to our story we currently keep the
+expiring CDN link from `reply_to.story.url`; resolving the real story object
+would survive the 24-hour expiry.
+
+### 4.3 A story mention's link can be re-issued, but ONLY while the story lives
+
+`GET /{mid}?fields=story` returns `story.mention.link` for a `story_mention` —
+and for nothing else; `ig_post` and `ig_story` return nothing from the same call.
+
+**An earlier version of this entry called that a way to outlive the 24-hour
+expiry. It is not, and the difference matters enough that it was nearly built.**
+Tested 9 Sep 2026 against a story mention **89.9 hours old**:
+
+```
+the link we stored     → 404
+GET /{mid}?fields=story → 200   { "story": { "mention": { "link": "" } } }
+                                                          ^^ empty string
+```
+
+So the call keeps answering `200` after the story is gone, and hands back an
+**empty link**. It re-issues a signature for live media; it does not resurrect
+expired media. Within the 24-hour window the link we already hold still works,
+so refreshing buys essentially nothing.
+
+**[META]**, and there is nothing to build. **Do not build a refresh path** — the
+only thing worth taking from this is that `link: ""` is a definite "the story is
+gone", which is a cleaner signal than waiting for an image to fail to load. We
+do not use it, because the client already treats a failed story image as
+expected.
+
+### 4.4 What we may DO with a story mention: reply, and nothing else
+
+Three actions exist in the Instagram **app** on a story you are tagged in —
+reply, like, reshare to your own story. Only the first is reachable through the
+API. Tested live 27 Sep 2026:
+
+| action | how it would have to work | result |
+|---|---|---|
+| reply | `POST /{page-id}/messages` with `message.text` | **200** |
+| like the story | no endpoint exists | — |
+| react to the message | `sender_action: react` + `message_id` | `#2` |
+| reshare to our story | `MEDIA_SHARE` needs media we OWN | — |
+
+A heart **is** sendable (`attachment: {type: "like_heart"}`, 200) and it is a
+heart-shaped DM, not a like on the story. They are different actions and the
+sender sees different things; do not offer one as the other.
+
+`sender_action: react` fails `#2 An unexpected error has occurred` on a story
+mention AND on an ordinary text message, so it is not story-specific. Either an
+unprovisioned capability or an unsupported op — **[META]** either way.
+
+**[META]** for like and reshare: Meta does not expose them to professional
+accounts, and the story media is not even addressable (4.1).
+
+### 4.5 Instagram messaging goes through the PAGE node, not the IG user
+
+`POST /{ig-user-id}/messages` returns:
+
+```
+#3 Application does not have the capability to make this API call.
+```
+
+which reads exactly like a missing permission and is not one. The same call to
+`POST /{page-id}/messages` with the same token returns **200**. Cost an hour on
+27 Sep 2026, and nearly went into a report as a permissions gap.
+
+`GraphApiClient.sendDirectMessage` already uses the page id. Anything new that
+sends should go through it rather than rebuild the call.
+
+### 4.6 We cannot delete our own comment on somebody else's media
+
+`DELETE /{comment-id}` on a reply we posted under a mention:
+
+```
+#100 subcode 33 — Unsupported delete request.
+```
+
+Deleting works on comments on **our own** posts (1.10). On a stranger's post a
+comment we create is a one-way door: it can only be removed from the app by
+hand. Verified 27 Sep 2026 on `18631273141008816`, which had to be deleted
+manually.
+
+**Worth reading before writing anything against a third party's media.**
+
+
+---
+
+## 4b. Sending: what Instagram accepts, and what it silently discards
+
+All measured against the live account on 27 Sep 2026, through
+`POST /{page-id}/messages` (4.5).
+
+### 4b.1 What sends
+
+| message | result |
+|---|---|
+| `text` | **200** |
+| `attachment` image, **JPEG** | **200** |
+| `attachment` image, **HEIC** | `#100/2534080` this attachment format is not supported |
+| `attachment` audio (`.mp4`) | **200** |
+| `attachment` image, a Giphy `.gif` | **200** |
+| `attachment` video (`.mp4`) | **200** |
+| `attachments: [image, image]` | **200**, and BOTH arrive — the echo carries two |
+
+**HEIC is the trap, and it is ours.** Instagram serves the media on its OWN
+posts as `image/heic`, so the obvious move — take a link we already hold and
+send it back — fails on exactly the images that came from Instagram. A Facebook
+post's `.jpg` sends fine. Anything re-sent from an Instagram CDN link needs
+converting first.
+
+An audio-only `.mp4` sends as `audio` and is REFUSED as `video`
+(`#100/2018047 Upload attachment failure`), so the container is not enough —
+the type has to match what is inside it.
+
+### 4b.2 Two things that answer 200 and throw your content away
+
+**`message: { text, attachment }` sends the TEXT ONLY.** Verified on the echo:
+a message with both came back with `text: "with a picture"` and zero
+attachments. To send both, send two messages — or use the `attachments` ARRAY,
+which does deliver everything in it.
+
+**A comment reply cannot carry media.** `POST /{comment-id}/replies` with
+`attachment_url` alone fails `#1 An unknown error has occurred`; with a
+`message` beside it, it answers **200** and posts a text-only comment. Read
+back, the reply held `"here"` and nothing else.
+
+Both are worse than a refusal: an agent attaches a screenshot, the API says
+yes, and the customer receives words about a picture that is not there. **Never
+report either as sent.**
+
+
+## 5. Undocumented payload shapes
+
+`ig_post` and `ig_story` appear in **no Meta webhook documentation**. They arrive
+anyway, and carry more than the documented `share` does:
+
+```jsonc
+// ig_post — CDN image, caption, and the post's own id
+{ "type": "ig_post", "payload": { "url": "...", "title": "<caption>", "ig_post_media_id": "..." } }
+
+// ig_story — note the link lives under its OWN key, not `url`
+{ "type": "ig_story", "payload": { "story_media_id": "...", "story_media_url": "..." } }
+
+// share — a real permalink, and nothing else
+{ "type": "share", "payload": { "url": "https://www.instagram.com/reel/..." } }
+```
+
+Reading only `payload.url` therefore loses a shared story's link entirely — the
+normalizer reads `story_media_url` as a fallback for exactly this reason.
+
+Observed: reels arrive as `share` (with a permalink), posts as `ig_post` (without
+one). Both shapes were still arriving on 6 Sep 2026.
+
+---
+
+## 6. Media and storage
+
+Meta's terms forbid storing or caching the **media itself** on our servers. The
+**CDN link may** be stored, and that is what we keep.
+
+Signed Meta CDN links (`fbsbx.com`, `fbcdn.net`, `cdninstagram.com`) expire with
+the content they point at — about 24 hours for a story. Links on any other host
+are treated as permanent, which is why `isExpiringMediaUrl` matches on host
+rather than assuming everything expires.
+
+### 6.0 Ask the API what the media is; guess only where it cannot say
+
+`media_url` is NOT always an image. On a reel it is the `.mp4` itself — 1.6 MB
+of `video/mp4`, verified on the wire — so putting it in an `<img>` always fails.
+
+**Where the API declares a type, use it.** `mentionContext.mediaType` says
+`VIDEO`, and `thumbnailUrl` is always a still, so the order is thumbnail for a
+preview, `media_url` for playback. Discovering this by loading the file into an
+`<img>` and waiting for the error downloads the whole thing into a tag that can
+never render it, and shows nothing until it fails.
+
+**Guess only in the two places Meta genuinely gives no type:** a story reply and
+a shared story, where the CDN serves photo and video under one link with no mime
+type. Those are the only legitimate uses of load-and-retry.
+
+Worth stating plainly because it has been got wrong three times in one file.
+`43ceca4` established the rule for attachments on 6 Sep; the mention card was
+written the SAME DAY in the old style, and two later passes over `inbox.js`
+missed it. It was fixed on 19 Sep in `c409d2d`.
+
+### 6.0.1 Meta omits `media_url` on some reels, and means it
+
+Verified on the wire 19 Sep 2026. For a reel whose `media_type` is `VIDEO` and
+`media_product_type` is `REELS`, the mentions edge returned **ten of the eleven
+fields asked for and simply left out `media_url`** — `thumbnail_url` came back
+fine, so it is not a permissions or expiry problem:
+
+```
+keys Meta sent: id, caption, media_type, media_product_type, thumbnail_url,
+                permalink, username, timestamp, like_count, comments_count
+```
+
+Another reel in the same account returns both. So a still with no player is the
+CORRECT rendering for that post, not a failure, and re-resolving will not
+produce a video that Meta does not have.
+
+**This is why the mention refresh MERGES rather than replaces.** Because the
+same media can come back with fewer fields than last time, writing the new
+answer wholesale would let one such response delete a link we already held. A
+new value wins only when there is one; the worst case is keeping a link that
+has since expired, which the client already degrades through — whereas a field
+thrown away is gone from everywhere.
+
+Checked before assuming: two mention conversations that had NEVER been
+refreshed (`391ec1c3`, `c7ed146d`) already carried a thumbnail and no
+`media_url`, so the omission pre-dates the refresh and was not caused by it. The portal now says so rather than
+showing a bare thumbnail, because a silent still reads as something broken —
+it cost twenty minutes of looking for a bug that was not there.
+
+### 6.0.2 What a full refresh of every mention actually produced
+
+Run 19 Sep 2026 over all 18 mentions in the dev database, through the real read
+path rather than fabricated events:
+
+```
+links rewritten : 6/18      newly working : 5
+now live        : media 12/18, thumbnail 9/18
+```
+
+Five links that were dead came back alive; one mention whose thumbnail was
+absent gained one. The rest were already current.
+
+Two things the run found that no amount of reading would have:
+
+**One mention in eighteen could not be refreshed at all** until the timeout was
+raised. Meta answers its query in 7–8.5s standalone — close enough to the 10s
+worker ceiling that it was cut off on every attempt while the other seventeen
+finished. Hence `BACKGROUND_PLATFORM_TIMEOUT_MS`: a refresh running behind a
+response that has already been sent is not holding anything, so ten seconds is
+an arbitrary ceiling rather than a protective one.
+
+**The same mention intermittently returns `(#1) Please reduce the amount of data
+you're asking for`** as a 500. That was rethrown, abandoning the mention over a
+request Meta was telling us how to fix. It now drops the `replies` expansion and
+retries — the same remedy already used for `(#100)`.
+
+**`media_url` absent is not a failure to fix.** Six of the eighteen have no
+`media_url` at all and a refresh will never produce one; see §6.0.1. Of those,
+five have a working thumbnail, which is the correct thing to show.
+
+### 6.1 The expiry is in the link, and it is shorter than it looks
+
+Measured 19 Sep 2026 on a live mention (a reel, resolved 09 Sep 19:40 UTC). The
+`oe=` parameter on a CDN link is a **hex Unix timestamp** of when it stops
+working:
+
+| link | `oe=` | expires | lifetime |
+| --- | --- | --- | --- |
+| `media_url` (the .mp4) | `6AA39DCE` | 2026-09-11 06:21 UTC | **~35 hours** |
+| `thumbnail_url` | `6AA79C10` | 2026-09-14 07:02 UTC | **~4.5 days** |
+
+Two things follow. The video dies **first and fastest**, which is why the portal
+falls back video → still → permalink rather than treating them as one asset. And
+a mention resolved once and served forever is broken within two days — so
+`MENTION_MEDIA_TTL_MS` re-resolves on thread open, chosen against the 35 hours
+rather than the 4.5 days.
+
+`permalink` never expires and is always stored. It is the answer whenever a CDN
+link is not.
+
+### 6.2 What can and cannot be refreshed, measured
+
+Every column that can hold a Meta CDN link, checked 19 Sep 2026 against the live
+API with the app's own token:
+
+| link | refreshable? | call latency |
+| --- | --- | --- |
+| a mention's media | **yes** | **3.1–4.8s**, and 8.4s end to end through the resolver |
+| a customer's `profile_pic` | **yes** | 756–866ms |
+| `channels.profile_picture_url` | yes, daily `RefreshProfile` | — |
+| `posts.media` | yes, daily `RefreshPostMetrics` | — |
+| a message attachment | **NO — see below** | — |
+
+**The latency split is the design.** A profile picture is fetched inside the
+read; a mention's media cannot be, so that refresh runs behind the response and
+the next open is correct. Narrowing the mention query to the two link fields
+was tried and changed nothing — the cost is in Meta's mentions edge, not the
+field list.
+
+**Message attachments are refreshed on demand, by the client** —
+`POST /conversations/:refId/attachments/refresh`. The browser is the only party
+that can tell a dead link from a live one here, so it reports the failure and
+the server re-reads the thread. What follows is why that is the shape, and what
+it cannot reach.
+
+Previously: Their links are
+`lookaside.fbsbx.com`, which carry **no `oe=` parameter**, so nothing in the URL
+says whether it still works — of five stored on 06 Sep, a HEAD on 19 Sep gave
+200, 404, 200, 404, 200. Roughly half dead in thirteen days, unpredictably.
+Refreshing them means re-reading the conversation, and the projector writes
+attachments only for messages it has not seen (`if (!inserted) return`), so a
+resync updates nothing. Fixing it means making that path update existing rows,
+which is a deliberate change to an append-only projector.
+
+**`posts.media` has a scale caveat.** `RefreshPostMetrics` runs once a day over
+200 channels per tick, least-recently-synced first. Under 200 active channels
+everything is refreshed daily and the ~35h link survives; above that a channel
+is reached every `ceil(N/200)` days, which at 1000 channels is five.
+
+---
+
+## 7. Delivery behaviour
+
+### 7.1 A `message_edit` can arrive *before* the message it names
+
+Observed 6 Sep 2026: a `message_edit` for a mid we had never seen arrived
+**0.7 seconds before** the message itself. The lost-delivery detector treats an
+orphan edit as evidence of a dropped webhook, so it fired a resync that recovered
+`synced_item_count: 0`.
+
+Harmless — one wasted Graph call per occurrence, no data harm — but it is a false
+positive, not a real loss.
+
+**Fixed 14 Sep 2026.** An orphan edit now waits one projection pass before being
+treated as evidence, using the ledger's own retry backoff rather than a
+scheduler of its own. It is THROWN rather than skipped, because skipping is
+terminal — a message landing a second later would never be reconsidered — and on
+the next pass the ordinary guard finds it and the event ends as "already hold"
+with no platform call at all. A delivery that really was lost still queues its
+resync one backoff cycle later, which is fine: that is recovery, not real-time
+work. The grace is `ORPHAN_EDIT_GRACE_ATTEMPTS`.
+
+### 7.2 Meta never resends a delivery we answered 200
+
+A webhook item that fails to store after we have answered 200 is **gone**. This
+is why item-level failures are counted and logged at `error` rather than
+swallowed, and why one bad item must never fail the whole delivery — a non-2xx
+run of retries ends with Meta **disabling the subscription**.
+
+### 7.3 The published app receives other accounts' traffic
+
+Deliveries reach this backend through the published socialLift app, which other
+Instagram accounts have also authorized. We therefore receive webhooks —
+including other people's DM text and story media URLs — for accounts that are not
+ours.
+
+`ingest` resolves the tenant from `entry.id` and drops anything it cannot
+attribute (`unmatched`), so none of it is stored. **But it does arrive**, and it
+passes through the relay and any request logging on the way. Filtering by account
+id at the relay is worth considering.
+
+Observed 6 Sep 2026: three deliveries for IG `17841419871844792`, an account with
+no channel here, all correctly dropped.
+
+
+### 7.4 One bad field name fails the whole subscription — and ours had two
+
+`POST {page-id}/subscribed_apps` validates `subscribed_fields` as a **set**. One
+name Meta does not accept fails the entire call with `#100`, and *nothing* is
+subscribed — there is no partial success.
+
+`SUBSCRIBED_FIELDS` named `comments` and `mentions`. Those are **Instagram**
+field names, and Instagram is subscribed on the app-level `instagram` object,
+not through the Page. So:
+
+* every reconciliation POST this service has ever made failed outright;
+* `messaging_optins` was never subscribed despite being valid *and* handled;
+* the six-hourly sweep — the thing built to catch "the worst failure this
+  product has" — returned `unrepairable` on every run since it was written.
+
+Confirmed live 27 Sep 2026 by subscribing one field at a time and reading back.
+
+**What the Page actually had:** `feed`, `mention`, `messages`,
+`messaging_postbacks`. Four. Everything else the projector handles was dead code
+that no event could reach.
+
+**Corrected spellings.** Several names we used do not exist; Meta's own error
+lists the valid set:
+
+| We had / assumed | Meta's name |
+| --- | --- |
+| `messaging_seen` | `message_reads` |
+| `messaging_referral` | `messaging_referrals` |
+| `message_edit` | `message_edits` |
+| `comments`, `mentions` | *(Instagram only — app-level)* |
+
+**Now subscribed (10), each with a handler:** `messages`, `message_echoes`,
+`message_edits`, `message_reactions`, `message_reads`, `messaging_postbacks`,
+`messaging_optins`, `messaging_referrals`, `feed`, `mention`.
+
+`message_echoes` is the notable gain: a reply an agent sends from Meta's own
+inbox or any other tool was previously invisible here, so the thread could show
+a customer waiting on a message that had already been answered elsewhere.
+
+**Available and deliberately not taken**, because subscribing to an event
+nothing projects only adds traffic and dead ledger rows — each is a feature, not
+a fix: `message_mention`, `ratings`, `conversations`, `message_deliveries`,
+`message_context`, `messaging_optouts`, `user_action`, `standby`,
+`messaging_handovers`, `messaging_policy_enforcement`.
+
+`story_share`, `follow`, `comment_poll_response` and `story_poll_response` are
+accepted by the edge but **silently dropped** — `success: true`, absent from the
+read-back. Do not trust a 2xx here.
+
+**The guard.** `compareAndRepair` now reads the subscription back after the
+repair and reports `refused` — an `error`, and no `webhook_subscribed_at` stamp
+— when a field our own policy names does not stick. An unsatisfiable policy is a
+bug in us and now reads as one instead of hiding among ordinary drift.
+
+---
+
+## 8. Known-wrong
+
+### 8.1 `entry.time` has no consistent unit — **[META]**, fixed 8 Sep 2026
+
+**Expected:** one unit for `entry.time`, as the webhook reference implies.
+
+**Actually:** the unit depends on the entry. A `changes` entry (mentions,
+comments) carries **seconds**; a `messaging` entry (Instagram DMs) carries
+**milliseconds**. Meta documents neither, and nothing in the payload labels it.
+
+**Verified:** a DM delivery on 6 Sep 2026 carried `1788705985749`, which is
+`2026-09-06T14:46:25Z` read as milliseconds. Mention event 1514 carried a
+second-epoch and stored correctly as `2026-09-06 20:37:03`.
+
+**What went wrong:** `meta-webhook.service.ts` multiplied every `entry.time` by
+1000. That is right for a `changes` entry, so mentions and comments were fine —
+which is what hid it — and wrong by a factor of a thousand for a `messaging`
+one. **72** ledger rows were left with a `received_at` in the year **58649**
+or later — an earlier note here said seven, which was the count of one
+afternoon's DMs rather than of the table. `received_at` orders recovered history
+against live events, so this was not cosmetic.
+
+**What we do about it:** `normalizeEntryTime` in
+`src/modules/connections/entry-time.ts` decides the unit **by magnitude, not by
+entry type** — a value past the year 2100 read as seconds must be milliseconds,
+and nothing a webhook can deliver falls in the band between the two readings. So
+a third entry type, or a unit Meta changes without saying, needs no new case.
+The same bound rejects the implausible: non-finite, zero, negative and
+absurdly-large values become `null` rather than a Date nobody can order by.
+
+Migration `1757300000000-RepairInboundReceivedAt` repairs the rows already
+stored, dividing the epoch back down and scoped to `received_at > now() +
+interval '1 year'` so it cannot reach a good row. All 72 divide back to an
+instant on 5-6 Sep 2026, so every corrupted row is wrong by exactly this factor
+and none is left behind.
+
+### 8.2 Both closed, 14 Sep 2026 — and neither the way the entry assumed
+
+- **A video `story_mention` stored as `mediaKind: image`.** Still stored as an
+  image, and now it SAYS SO: the attachment carries `kindIsGuessed` and the API
+  exposes it.
+
+  The payload genuinely cannot be improved on. A `story_mention` arrives with a
+  `type` and a `url` and **nothing else** — no media type, no extension, nothing
+  separating a photo from a video — so any label is a default, not a fact. A
+  HEAD request against the CDN to read the content-type was considered and
+  rejected: it buys a correct label at the cost of a network call on a path that
+  already renders correctly, and the signed link expires within a day, so the
+  label would outlive its own evidence.
+
+  What actually changed is that the client's image→video fallback is now
+  DELIBERATE rather than accidental. A first failure is expected and declared,
+  instead of looking like a broken attachment.
+
+- **`ConversationKind.StoryReply` was never assigned — so it is gone.** The
+  entry implied the fix was to start assigning it. It was not.
+
+  `THREAD_KEY_PREFIX` already mapped it to the same `'dm'` prefix as
+  `DirectMessage`, with a comment saying story replies land in the DM thread. So
+  the value was unreachable by construction. And it was the wrong shape anyway:
+  a DM thread carries story replies AND ordinary messages over its life, so
+  naming the whole thread after one message says something false about the rest.
+
+  The concept lives one level down and is live there: `MessageKind.StoryReply`
+  marks the individual message, with real rows behind it. The enum member, its
+  prefix entry, its reply-window mappings and its resyncable-kind entry are
+  removed; the reply-window tests that covered it now read through
+  `DirectMessage`, which is what actually governs those threads.

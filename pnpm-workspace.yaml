@@ -1,0 +1,5 @@
+# pnpm settings. minimumReleaseAge is the single highest-leverage supply-chain
+# mitigation available to us (backend-design.md §2): refuse any package version
+# published less than 72 hours ago, so the ecosystem has time to notice a
+# compromised release before we install it.
+minimumReleaseAge: 4320

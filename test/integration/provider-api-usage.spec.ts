@@ -1,0 +1,520 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { DataSource } from 'typeorm';
+import {
+  ProviderApiUsageRepository,
+  type ProviderUsageBucket,
+} from '@/database/repositories/provider-api-usage.repository';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
+import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
+
+/**
+ * The rate-limit ledger, against real Postgres.
+ *
+ * Every behaviour worth pinning here is a property of the UPSERT, which is a
+ * Postgres feature a mock cannot reproduce: the conflict target, the asymmetric
+ * fold of counts against percentages, and `GREATEST` ignoring NULLs — which is
+ * the single line standing between a monitor that remembers a reading of 80%
+ * and one that forgets it on the next quiet response.
+ */
+describe('provider_api_usage', () => {
+  let db: DataSource;
+  let usage: ProviderApiUsageRepository;
+  let enterpriseId: number;
+  let channelId: number;
+
+  /*
+   * RELATIVE TO NOW, not a fixed date. These were absolute — 2026-09-21 — and
+   * the tests using them passed for exactly as long as that date stayed inside
+   * the 24-hour window `current()` reads. Five days later the suite went red
+   * for no reason connected to the code.
+   *
+   * A fixture that expires is worse than one that is merely wrong: it goes
+   * green again if you change the window, and it sends whoever is bisecting to
+   * the wrong commit.
+   *
+   * Two minutes ago and one minute ago, so both are comfortably inside every
+   * window here (an hour and a day) and their ORDER is still fixed.
+   */
+  const minutesAgo = (minutes: number): Date =>
+    new Date(Math.floor((Date.now() - minutes * 60_000) / 60_000) * 60_000);
+  const MINUTE = minutesAgo(2);
+  const NEXT_MINUTE = minutesAgo(1);
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+    usage = new ProviderApiUsageRepository(db);
+  });
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    enterpriseId = await seedEnterprise(db, 'Acme', 'acme');
+    channelId = await seedChannel(enterpriseId, 'IG_ACCOUNT');
+  });
+
+  async function seedChannel(tenant: number, platformChannelId: string): Promise<number> {
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token)
+       VALUES ($1,'meta','social',$2,'envelope') RETURNING id`,
+      [tenant, `user-${platformChannelId}`],
+    );
+    const channel: { id: string }[] = await db.query(
+      `INSERT INTO channels
+         (provider_connection_id, enterprise_id, platform, channel_kind,
+          platform_channel_id, name)
+       VALUES ($1,$2,'instagram','instagram_business',$3,'The Shop') RETURNING id`,
+      [connection[0]?.id, tenant, platformChannelId],
+    );
+    return Number(channel[0]?.id);
+  }
+
+  const bucket = (over: Partial<ProviderUsageBucket> = {}): ProviderUsageBucket => ({
+    provider: Provider.Meta,
+    scopeKey: 'meta:IG_ACCOUNT:instagram',
+    meter: MetaUsageMeter.BusinessUseCase,
+    product: 'instagram',
+    providerScopeId: 'IG_ACCOUNT',
+    enterpriseId,
+    channelId,
+    bucketStart: MINUTE,
+    calls: 1,
+    throttledCalls: 0,
+    failedCalls: 0,
+    callPct: 10,
+    cpuPct: 1,
+    timePct: 1,
+    regainMinutes: null,
+    lastSeenAt: MINUTE,
+    ...over,
+  });
+
+  const row = async (
+    scopeKey = 'meta:IG_ACCOUNT:instagram',
+  ): Promise<Record<string, unknown> | undefined> => {
+    const rows: Record<string, unknown>[] = await db.query(
+      `SELECT * FROM provider_api_usage WHERE scope_key = $1 ORDER BY bucket_start DESC`,
+      [scopeKey],
+    );
+    return rows[0];
+  };
+
+  describe('folding a flush into the minute', () => {
+    it('writes a new minute', async () => {
+      await usage.record([bucket()]);
+
+      expect(await row()).toMatchObject({ calls: 1, call_pct: 10, product: 'instagram' });
+    });
+
+    it('ADDS our counts across flushes', async () => {
+      /*
+       * This is also what makes multiple replicas correct with no coordination:
+       * two processes each reporting their own calls sum to the truth.
+       */
+      await usage.record([bucket({ calls: 30, failedCalls: 1 })]);
+      await usage.record([bucket({ calls: 20, failedCalls: 2, throttledCalls: 3 })]);
+
+      expect(await row()).toMatchObject({ calls: 50, failed_calls: 3, throttled_calls: 3 });
+    });
+
+    it('takes the HIGHEST percentage rather than adding or replacing', async () => {
+      /*
+       * Meta's figures describe ONE global position, not a contribution. Adding
+       * them would report 110% on a pool that never passed 70; taking the last
+       * would report 40 on a pool that reached 70 and is the number worth
+       * alarming on.
+       */
+      await usage.record([bucket({ callPct: 70 })]);
+      await usage.record([bucket({ callPct: 40 })]);
+
+      expect(await row()).toMatchObject({ call_pct: 70 });
+    });
+
+    it('does not let a null reading erase what Meta already told us', async () => {
+      /*
+       * THE LINE THIS TABLE EXISTS FOR. Meta omits the header on some responses.
+       * `GREATEST` ignores NULLs in Postgres, so a silent response leaves the
+       * reading alone; almost any other formulation — COALESCE the wrong way,
+       * a plain assignment, LEAST — blanks an 80% reading the moment a quiet
+       * call follows it.
+       */
+      await usage.record([bucket({ callPct: 80, cpuPct: 60, timePct: 55 })]);
+      await usage.record([bucket({ callPct: null, cpuPct: null, timePct: null })]);
+
+      expect(await row()).toMatchObject({ call_pct: 80, cpu_pct: 60, time_pct: 55 });
+    });
+
+    it('accepts a first reading of null and fills it in later', async () => {
+      await usage.record([bucket({ callPct: null })]);
+      expect(await row()).toMatchObject({ call_pct: null });
+
+      await usage.record([bucket({ callPct: 33 })]);
+      expect(await row()).toMatchObject({ call_pct: 33 });
+    });
+
+    it('does not let one tenant overwrite another on a shared pool', async () => {
+      /*
+       * A Meta Business shared across two of our tenants resolves differently
+       * in two replicas, depending on which sibling account each cache had
+       * seen. Last-wins made the row flip between them every flush, so a pool's
+       * owner changed on screen every few seconds. First-wins is stable.
+       */
+      const rival = await seedEnterprise(db, 'Rival', 'rival');
+      await usage.record([bucket({ scopeKey: 'meta:SHARED:instagram' })]);
+      await usage.record([
+        bucket({ scopeKey: 'meta:SHARED:instagram', enterpriseId: rival, channelId: null }),
+      ]);
+
+      const stored = await row('meta:SHARED:instagram');
+      expect(Number(stored?.enterprise_id)).toBe(enterpriseId);
+    });
+
+    it('keeps attribution once learned', async () => {
+      /*
+       * A flush from a process whose cache had not yet resolved the channel
+       * arrives with nulls. Letting it win would blank a name the console is
+       * already showing, and the row would flicker between attributed and not.
+       */
+      await usage.record([bucket()]);
+      await usage.record([bucket({ enterpriseId: null, channelId: null, product: null })]);
+
+      const stored = await row();
+      expect(stored).toMatchObject({ product: 'instagram' });
+      expect(Number(stored?.enterprise_id)).toBe(enterpriseId);
+      expect(Number(stored?.channel_id)).toBe(channelId);
+    });
+
+    it('keeps separate minutes separate', async () => {
+      await usage.record([bucket({ bucketStart: MINUTE, calls: 5 })]);
+      await usage.record([bucket({ bucketStart: NEXT_MINUTE, calls: 7 })]);
+
+      const rows: { calls: number }[] = await db.query(
+        `SELECT calls FROM provider_api_usage WHERE scope_key = $1 ORDER BY bucket_start`,
+        ['meta:IG_ACCOUNT:instagram'],
+      );
+      expect(rows.map((entry) => entry.calls)).toEqual([5, 7]);
+    });
+
+    it('keeps separate pools of one asset separate', async () => {
+      await usage.record([
+        bucket({ scopeKey: 'meta:PAGE:pages', product: 'pages', callPct: 4 }),
+        bucket({ scopeKey: 'meta:PAGE:messenger', product: 'messenger', callPct: 90 }),
+      ]);
+
+      expect(await row('meta:PAGE:pages')).toMatchObject({ call_pct: 4 });
+      expect(await row('meta:PAGE:messenger')).toMatchObject({ call_pct: 90 });
+    });
+
+    it('writes many pools in one statement', async () => {
+      const written = await usage.record([
+        bucket({ scopeKey: 'meta:a:instagram' }),
+        bucket({ scopeKey: 'meta:b:instagram' }),
+        bucket({ scopeKey: 'meta:c:instagram' }),
+      ]);
+
+      expect(written).toBe(3);
+    });
+
+    it('does nothing when there is nothing to write', async () => {
+      // The ordinary case on a quiet deployment: no statement at all.
+      expect(await usage.record([])).toBe(0);
+    });
+  });
+
+  describe('room for a second provider', () => {
+    /*
+     * THE POINT OF THE `provider` COLUMN. Provider already lists google,
+     * zendesk and hubspot, and every one of them meters its API somehow — so
+     * this table holds more than Meta by design, and the day it does, nothing
+     * about one provider may disturb another.
+     */
+    it('keeps two providers apart even when they name a pool the same thing', async () => {
+      /*
+       * A product name is the provider's to choose and nothing stops two of
+       * them picking the same word. Without the provider in the scope key these
+       * two would share a row and silently ADD their percentages together —
+       * the worst kind of wrong, because the number stays plausible.
+       */
+      await usage.record([
+        bucket({ scopeKey: 'meta:ACCT:inbox', provider: Provider.Meta, callPct: 20, calls: 3 }),
+        bucket({ scopeKey: 'google:ACCT:inbox', provider: Provider.Google, callPct: 70, calls: 9 }),
+      ]);
+
+      expect(await row('meta:ACCT:inbox')).toMatchObject({
+        provider: 'meta',
+        call_pct: 20,
+        calls: 3,
+      });
+      expect(await row('google:ACCT:inbox')).toMatchObject({
+        provider: 'google',
+        call_pct: 70,
+        calls: 9,
+      });
+    });
+
+    it('reports both to the console, each under its own provider', async () => {
+      const now = new Date();
+      await usage.record([
+        bucket({
+          scopeKey: 'meta:A:inbox',
+          provider: Provider.Meta,
+          bucketStart: now,
+          lastSeenAt: now,
+        }),
+        bucket({
+          scopeKey: 'google:B:inbox',
+          provider: Provider.Google,
+          product: 'inbox',
+          bucketStart: now,
+          lastSeenAt: now,
+        }),
+      ]);
+
+      const current = await usage.current(500);
+      const byKey = new Map(current.map((entry) => [entry.scopeKey, entry.provider]));
+
+      expect(byKey.get('meta:A:inbox')).toBe(Provider.Meta);
+      expect(byKey.get('google:B:inbox')).toBe(Provider.Google);
+    });
+
+    it('stores a meter name this codebase has never heard of', async () => {
+      /*
+       * `meter` is free text, not a constrained enum, because Meta's two names
+       * are Meta's. A provider whose meter is called something else must store
+       * rather than fail — a pool we cannot name is still a pool that throttles.
+       */
+      await usage.record([
+        bucket({
+          scopeKey: 'zendesk:X:tickets',
+          provider: Provider.Zendesk,
+          meter: 'per_minute' as never,
+          product: 'tickets',
+        }),
+      ]);
+
+      expect(await row('zendesk:X:tickets')).toMatchObject({ meter: 'per_minute' });
+    });
+  });
+
+  describe('attributing Meta ids to channels', () => {
+    it('finds the channel behind an id Meta named', async () => {
+      const owners = await usage.resolveOwners(['IG_ACCOUNT']);
+
+      expect(owners).toEqual([{ platformChannelId: 'IG_ACCOUNT', channelId, enterpriseId }]);
+    });
+
+    it('returns nothing for an id that is not ours', async () => {
+      // A Meta Business id. Expected, not exceptional.
+      expect(await usage.resolveOwners(['645699291956344'])).toEqual([]);
+    });
+
+    it('ignores a deleted channel', async () => {
+      await db.query(`UPDATE channels SET is_deleted = true WHERE id = $1`, [channelId]);
+
+      expect(await usage.resolveOwners(['IG_ACCOUNT'])).toEqual([]);
+    });
+
+    it('asks nothing when given nothing', async () => {
+      expect(await usage.resolveOwners([])).toEqual([]);
+    });
+  });
+
+  describe('what the console reads', () => {
+    it('returns the NEWEST minute per pool, not every minute', async () => {
+      await usage.record([bucket({ bucketStart: MINUTE, callPct: 10 })]);
+      await usage.record([bucket({ bucketStart: NEXT_MINUTE, callPct: 20 })]);
+
+      const current = await usage.current(500);
+      const pool = current.find((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram');
+      expect(pool?.callPct).toBe(20);
+      expect(
+        current.filter((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram'),
+      ).toHaveLength(1);
+    });
+
+    it('totals OUR calls across the window, not just the newest minute', async () => {
+      /*
+       * The trap this guards: DISTINCT ON returns one row per pool, so summing
+       * what it returns reports the last minute's calls and labels them the
+       * day's. The totals come from a separate aggregate for that reason.
+       */
+      const recent = new Date(Date.now() - 60_000);
+      const older = new Date(Date.now() - 180_000);
+      await usage.record([bucket({ bucketStart: older, lastSeenAt: older, calls: 4 })]);
+      await usage.record([bucket({ bucketStart: recent, lastSeenAt: recent, calls: 6 })]);
+
+      const pool = (await usage.current(500)).find(
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
+      );
+      expect(pool?.hourCalls).toBe(10);
+      expect(pool?.dayCalls).toBe(10);
+    });
+
+    it('separates the hour from the day, because Meta meters over both', async () => {
+      const withinHour = new Date(Date.now() - 10 * 60_000);
+      const yesterdayish = new Date(Date.now() - 5 * 60 * 60_000);
+      await usage.record([
+        bucket({ bucketStart: yesterdayish, lastSeenAt: yesterdayish, calls: 100 }),
+      ]);
+      await usage.record([bucket({ bucketStart: withinHour, lastSeenAt: withinHour, calls: 7 })]);
+
+      const pool = (await usage.current(500)).find(
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
+      );
+      expect(pool?.hourCalls).toBe(7);
+      expect(pool?.dayCalls).toBe(107);
+    });
+
+    it('names the business and the channel', async () => {
+      const now = new Date();
+      await usage.record([bucket({ bucketStart: now, lastSeenAt: now })]);
+
+      const pool = (await usage.current(500)).find(
+        (entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram',
+      );
+      expect(pool).toMatchObject({
+        enterpriseName: 'Acme',
+        channelName: 'The Shop',
+        channelPlatform: 'instagram',
+        platformChannelId: 'IG_ACCOUNT',
+      });
+    });
+
+    it('still returns a pool it could not attribute', async () => {
+      // Unattributed is a thing to SHOW, not a row to hide: it is quota being
+      // spent by somebody.
+      const now = new Date();
+      await usage.record([
+        bucket({
+          scopeKey: 'meta:BUSINESS:instagram',
+          providerScopeId: 'BUSINESS',
+          enterpriseId: null,
+          channelId: null,
+          bucketStart: now,
+          lastSeenAt: now,
+        }),
+      ]);
+
+      const pool = (await usage.current(500)).find(
+        (entry) => entry.scopeKey === 'meta:BUSINESS:instagram',
+      );
+      expect(pool).toMatchObject({ enterpriseName: null, channelName: null });
+      expect(pool?.providerScopeId).toBe('BUSINESS');
+    });
+
+    it('leaves out anything older than a day', async () => {
+      const ancient = new Date(Date.now() - 30 * 60 * 60_000);
+      await usage.record([bucket({ bucketStart: ancient, lastSeenAt: ancient })]);
+
+      expect(await usage.current(500)).toEqual([]);
+    });
+  });
+
+  describe('history', () => {
+    it('returns the points in a window', async () => {
+      const now = new Date();
+      await usage.record([bucket({ bucketStart: now, lastSeenAt: now })]);
+
+      const points = await usage.history(60 * 60_000, 100, null);
+      expect(points).toHaveLength(1);
+      expect(points[0]?.scopeKey).toBe('meta:IG_ACCOUNT:instagram');
+    });
+
+    it('narrows to one pool when asked', async () => {
+      const now = new Date();
+      await usage.record([
+        bucket({ bucketStart: now, lastSeenAt: now }),
+        bucket({ scopeKey: 'meta:other:pages', bucketStart: now, lastSeenAt: now }),
+      ]);
+
+      const points = await usage.history(60 * 60_000, 100, 'meta:other:pages');
+      expect(points).toHaveLength(1);
+      expect(points[0]?.scopeKey).toBe('meta:other:pages');
+    });
+
+    it('keeps the RECENT end when the cap bites', async () => {
+      // A chart that silently showed the oldest N points of a window would look
+      // like the system had stopped.
+      const now = Date.now();
+      for (let index = 0; index < 5; index += 1) {
+        const at = new Date(now - index * 60_000);
+        await usage.record([
+          bucket({ scopeKey: `meta:s${index}:instagram`, bucketStart: at, lastSeenAt: at }),
+        ]);
+      }
+
+      const points = await usage.history(60 * 60_000, 2, null);
+      expect(points.map((point) => point.scopeKey)).toEqual([
+        'meta:s0:instagram',
+        'meta:s1:instagram',
+      ]);
+    });
+  });
+
+  describe('retention', () => {
+    it('removes what is past the window and keeps what is not', async () => {
+      const old = new Date(Date.now() - 72 * 60 * 60_000);
+      const fresh = new Date();
+      await usage.record([
+        bucket({ scopeKey: 'meta:old:instagram', bucketStart: old, lastSeenAt: old }),
+        bucket({ scopeKey: 'meta:fresh:instagram', bucketStart: fresh, lastSeenAt: fresh }),
+      ]);
+
+      const removed = await usage.sweep(48 * 60 * 60_000, 500);
+
+      expect(removed).toBe(1);
+      expect(await row('meta:old:instagram')).toBeUndefined();
+      expect(await row('meta:fresh:instagram')).toBeDefined();
+    });
+
+    it('respects the batch limit, so one pass cannot run unbounded', async () => {
+      const old = new Date(Date.now() - 72 * 60 * 60_000);
+      await usage.record(
+        [0, 1, 2, 3, 4].map((index) =>
+          bucket({ scopeKey: `meta:old${index}:instagram`, bucketStart: old, lastSeenAt: old }),
+        ),
+      );
+
+      expect(await usage.sweep(48 * 60 * 60_000, 2)).toBe(2);
+    });
+  });
+
+  describe('the guards on the table itself', () => {
+    it('refuses a percentage that could not be one', async () => {
+      // A monitor that silently reports a wrong number is worse than one that
+      // fails loudly, so the range is a CHECK rather than a convention.
+      await expect(
+        db.query(
+          `INSERT INTO provider_api_usage
+             (scope_key, meter, bucket_start, call_pct, last_seen_at)
+           VALUES ('bad','app',now(),-5,now())`,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('refuses a negative call count', async () => {
+      await expect(
+        db.query(
+          `INSERT INTO provider_api_usage
+             (scope_key, meter, bucket_start, calls, last_seen_at)
+           VALUES ('bad','app',now(),-1,now())`,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('refuses two rows for the same pool and minute', async () => {
+      await usage.record([bucket()]);
+
+      await expect(
+        db.query(
+          `INSERT INTO provider_api_usage
+             (scope_key, meter, bucket_start, last_seen_at)
+           VALUES ($1,'business_use_case',$2,now())`,
+          ['meta:IG_ACCOUNT:instagram', MINUTE],
+        ),
+      ).rejects.toThrow();
+    });
+  });
+});

@@ -1,0 +1,316 @@
+import { Injectable } from '@nestjs/common';
+import {
+  EventPriority,
+  InboundEventStatus,
+  InboundEventType,
+  Platform,
+  SourceKind,
+  SETTLED_INBOUND_STATUSES,
+} from '@/shared/enums';
+import { BaseRepository } from './base.repository';
+import { NOTIFY_INBOUND_CHANNEL } from '@/shared/constants';
+
+export interface InboundEventInput {
+  readonly enterpriseId: number | null;
+  readonly channelId: number | null;
+  readonly sourceKind: SourceKind;
+  readonly sourceId: string | null;
+  readonly platform: Platform;
+  readonly eventType: InboundEventType;
+  readonly platformEventId: string | null;
+  readonly dedupKey: string;
+  readonly correlationId: string | null;
+  readonly payload: unknown;
+  readonly receivedAt: Date | null;
+  readonly priority?: EventPriority;
+}
+
+/** What a projector needs about the row it is projecting, and about us. */
+export interface ProjectionContext {
+  readonly enterpriseId: number;
+  readonly channelId: number;
+  readonly platform: Platform;
+  /** OUR id on the platform — the one an author id is compared against. */
+  readonly platformChannelId: string;
+  /** The linked Page, for an Instagram channel. Null for a Page itself. */
+  readonly parentPlatformChannelId: string | null;
+}
+
+@Injectable()
+export class InboundEventRepository extends BaseRepository {
+  /**
+   * THE idempotency guard.
+   *
+   * A duplicate is a SUCCESS, not an error (schema.md): returning an error to
+   * Meta on a redelivery guarantees more retries of something we already hold,
+   * which is how a redelivery storm starts. The conflict target mirrors the
+   * COALESCE expression in inbound_events_dedup_uniq exactly — a plain
+   * (enterprise_id, dedup_key) target would not match the index.
+   */
+  async insertIgnoringDuplicate(
+    input: InboundEventInput,
+  ): Promise<{ id: number | null; duplicate: boolean }> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, source_id, platform, event_type,
+          platform_event_id, dedup_key, correlation_id, payload, priority, status,
+          next_attempt_at, received_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13)
+       ON CONFLICT (COALESCE(enterprise_id, 0), dedup_key) DO NOTHING
+       RETURNING id`,
+      [
+        input.enterpriseId,
+        input.channelId,
+        input.sourceKind,
+        input.sourceId,
+        input.platform,
+        input.eventType,
+        input.platformEventId,
+        input.dedupKey,
+        input.correlationId,
+        JSON.stringify(input.payload ?? {}),
+        input.priority ?? EventPriority.Normal,
+        InboundEventStatus.Pending,
+        input.receivedAt,
+      ],
+    );
+
+    const row = rows[0];
+    // Only a NEW row is worth a wake-up; a duplicate means the work already
+    // exists and something has already been woken for it.
+    if (row !== undefined) await this.notifyQueue(NOTIFY_INBOUND_CHANNEL);
+    return { id: row?.id ?? null, duplicate: row === undefined };
+  }
+
+  /**
+   * Claims a batch of work in ONE statement.
+   *
+   * FOR UPDATE SKIP LOCKED is the whole concurrency story: two workers polling
+   * concurrently can never take the same row, and neither waits for the other.
+   * The ORDER BY and WHERE mirror inbound_events_claimable_idx so the scan uses
+   * it — priority is numeric precisely because this ordering depends on it.
+   */
+  async claimBatch(
+    leaseOwner: string,
+    limit: number,
+    leaseSeconds: number,
+  ): Promise<
+    {
+      id: number;
+      eventType: InboundEventType;
+      payload: unknown;
+      attemptCount: number;
+      priority: number;
+    }[]
+  > {
+    const { rows } = await this.mutate<{
+      id: number;
+      event_type: InboundEventType;
+      payload: unknown;
+      attempt_count: number;
+      priority: number;
+    }>(
+      `UPDATE inbound_events
+          SET status = $1,
+              lease_owner = $2,
+              lease_expires_at = now() + ($3::int * interval '1 second'),
+              attempt_count = attempt_count + 1,
+              processing_started_at = COALESCE(processing_started_at, now())
+        WHERE id IN (
+          SELECT id FROM inbound_events
+           WHERE status IN ('pending','failed')
+             AND COALESCE(next_attempt_at, created_at) <= now()
+           ORDER BY priority, COALESCE(next_attempt_at, created_at), id
+           LIMIT $4
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, event_type, payload, attempt_count, priority`,
+      [InboundEventStatus.Processing, leaseOwner, leaseSeconds, limit],
+    );
+
+    // RETURNING rows arrive in no defined order, so the ORDER BY above decides
+    // only WHICH rows are claimed. Sorting here is what makes an urgent event
+    // inside a batch actually run before a low-priority one.
+    return rows
+      .map((row) => ({
+        id: row.id,
+        eventType: row.event_type,
+        payload: row.payload,
+        attemptCount: row.attempt_count,
+        priority: row.priority,
+      }))
+      .sort((a, b) => a.priority - b.priority || a.id - b.id);
+  }
+
+  /**
+   * The tenant, channel and platform for a claimed row.
+   *
+   * Read from the ROW, never from the payload: the payload is attacker-supplied
+   * data from a webhook, and deriving a tenant from it would be a cross-tenant
+   * write primitive.
+   */
+  async findProjectionContext(id: number): Promise<ProjectionContext | null> {
+    const rows = await this.query<ProjectionContext>(
+      /*
+       * The channel's OWN platform ids come along too.
+       *
+       * A projector has to be able to recognise us. Meta delivers the business's
+       * own comments through the same webhook as a customer's, and nothing
+       * filtered them — so every agent reply that echoed back created a CUSTOMER
+       * record for the business itself, and a conversation attributed to it.
+       * The DM projector already had `is_echo` for this; comments have no such
+       * flag, so the comparison has to be against our own id.
+       *
+       * The parent Page id is carried as well, because an Instagram comment's
+       * author is the Instagram account while sends go through the Page — either
+       * can appear as the author of our own content.
+       */
+      `SELECT ie.enterprise_id AS "enterpriseId",
+              ie.channel_id AS "channelId",
+              ie.platform,
+              c.platform_channel_id AS "platformChannelId",
+              parent.platform_channel_id AS "parentPlatformChannelId"
+         FROM inbound_events ie
+         JOIN channels c ON c.id = ie.channel_id AND c.enterprise_id = ie.enterprise_id
+         LEFT JOIN channels parent ON parent.id = c.parent_channel_id
+                                 AND parent.enterprise_id = c.enterprise_id
+        WHERE ie.id = $1 AND ie.enterprise_id IS NOT NULL AND ie.channel_id IS NOT NULL
+        LIMIT 1`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Settles a projected row — FENCED on the lease, like every other write here.
+   *
+   * A batch that overruns its lease has already been reclaimed and may be owned
+   * by another worker. Writing the outcome then would settle a row that is
+   * mid-flight elsewhere, and the two workers would disagree about what happened
+   * to it. Returns false so the caller can say so rather than assume.
+   */
+  async markProcessed(id: number, leaseOwner: string): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE inbound_events
+          SET status = $2, processed_at = now(), lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $3
+        RETURNING id`,
+      [id, InboundEventStatus.Processed, leaseOwner],
+    );
+    return affected === 1;
+  }
+
+  async markSkipped(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE inbound_events
+          SET status = $2, processed_at = now(), last_error = $3,
+              lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $4
+        RETURNING id`,
+      [id, InboundEventStatus.Skipped, reason, leaseOwner],
+    );
+    return affected === 1;
+  }
+
+  /**
+   * Records a failure and schedules the retry — or dead-letters when the budget
+   * is spent, so a poison row stops being retried forever and becomes visible to
+   * an operator instead.
+   */
+  async markFailed(
+    id: number,
+    leaseOwner: string,
+    error: string,
+    nextAttemptAt: Date,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE inbound_events
+          SET status = CASE WHEN attempt_count >= max_attempts THEN $2 ELSE $3 END,
+              dead_lettered_at = CASE WHEN attempt_count >= max_attempts THEN now() END,
+              last_error = $4,
+              last_error_at = now(),
+              next_attempt_at = $5,
+              lease_owner = NULL,
+              lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $6 AND status <> $7
+        RETURNING id`,
+      [
+        id,
+        InboundEventStatus.DeadLetter,
+        InboundEventStatus.Failed,
+        error.slice(0, 2000),
+        nextAttemptAt,
+        leaseOwner,
+        InboundEventStatus.Processed,
+      ],
+    );
+    return affected === 1;
+  }
+
+  /** A worker that died mid-batch loses its lease, not the work. */
+  /**
+   * Returns rows whose worker died to the runnable pool — or DEAD-LETTERS them
+   * once they have taken too many workers down with them.
+   *
+   * It only ever re-queued, and that is a loop with no exit: an event whose
+   * projection KILLS the process is never marked failed, because nothing runs
+   * after the crash. The reaper hands it straight back, the next worker dies on
+   * it too, and no backoff or attempt budget is ever consulted — the retry path
+   * that bounds ordinary failures does not apply, because an ordinary failure is
+   * one the worker survives to record.
+   *
+   * The claim increments attempt_count, so the count is a true measure of how
+   * many workers this row has been handed to. Past max_attempts it becomes a
+   * dead letter, which is visible in the gauges and to an operator.
+   */
+  async reclaimExpiredLeases(limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE inbound_events
+          SET status = CASE WHEN attempt_count >= max_attempts THEN $3 ELSE $1 END,
+              dead_lettered_at = CASE WHEN attempt_count >= max_attempts THEN now() END,
+              last_error = CASE
+                WHEN attempt_count >= max_attempts
+                  THEN 'lease expired repeatedly without settling — the projection may be crashing the worker'
+                ELSE last_error END,
+              last_error_at = CASE WHEN attempt_count >= max_attempts THEN now() ELSE last_error_at END,
+              lease_owner = NULL,
+              lease_expires_at = NULL
+        WHERE id IN (
+          SELECT id FROM inbound_events
+           WHERE status IN ('leased','processing') AND lease_expires_at < now()
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id`,
+      [InboundEventStatus.Pending, limit, InboundEventStatus.DeadLetter],
+    );
+    return affected;
+  }
+
+  /**
+   * Retention sweep. Removes rows that are SETTLED and old.
+   *
+   * THE DEDUP LEDGER IS THE REASON THIS CANNOT BE AGGRESSIVE.
+   * `inbound_events_dedup_uniq` is what makes a redelivered webhook collide
+   * instead of being handled twice; deleting a settled row gives that
+   * protection up for the row. So the window must comfortably exceed any
+   * redelivery Meta might attempt — see LEDGER_RETENTION_DAYS, which is set
+   * against that, not against disk.
+   *
+   * Dead letters are never swept: a terminal failure is a human's problem and
+   * the gauge alarms on it. Neither are claimable rows, which are still work.
+   */
+  async deleteSettledBefore(cutoff: Date, limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `DELETE FROM inbound_events
+        WHERE id IN (
+          SELECT id FROM inbound_events
+           WHERE status = ANY($1) AND created_at < $2
+           ORDER BY created_at
+           LIMIT $3
+        )`,
+      [[...SETTLED_INBOUND_STATUSES], cutoff, limit],
+    );
+    return affected;
+  }
+}

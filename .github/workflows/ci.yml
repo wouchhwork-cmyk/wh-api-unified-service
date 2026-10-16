@@ -1,0 +1,168 @@
+# Every gate the design document names, actually enforced.
+#
+# Before this file, `pnpm typecheck`, `pnpm lint`, `pnpm format:check`,
+# `pnpm test:all`, `pnpm db:check` and `pnpm test:schema` all passed and all of
+# them were optional — nothing ran them, so any one of them could have started
+# failing silently and the first anybody would know is when a deploy broke.
+#
+# The schema-parity job is deliberately separate. It is the PRE-DEPLOY gate: the
+# migration and the entities are meant to disagree while a schema is moving
+# daily, so it must be visible as its own red light rather than folded into the
+# suite where it would make a red run the normal state.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A new push supersedes the run in flight for the same ref: the older result is
+# about code nobody is looking at any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches .env.dev, which the test setup reads. The values in it are committed
+  # placeholders by design, so there is nothing here to keep secret.
+  POSTGRES_USER: wouchh
+  POSTGRES_PASSWORD: wouchh_dev_local
+  POSTGRES_DB: wouchh_dev
+
+jobs:
+  verify:
+    name: typecheck, lint, format, tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: wouchh
+          POSTGRES_PASSWORD: wouchh_dev_local
+          POSTGRES_DB: wouchh_dev
+        ports: ['5432:5432']
+        # Without this the first connection races the server's own startup, which
+        # fails perhaps one run in five — the worst kind of CI failure.
+        options: >-
+          --health-cmd "pg_isready -U wouchh -d wouchh_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # --ignore-scripts is the mitigation for install-hook attacks, and is set
+      # in .npmrc as well; passed here so it is visible in the build log.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: lint
+        run: pnpm lint
+
+      - name: format
+        run: pnpm format:check
+
+      - name: build
+        run: pnpm build
+
+      # The whole suite. The test harness creates and syncs its own database, so
+      # there is no provisioning step to keep in step with it here.
+      # SWITCHES META ON FOR THE SUITE, and nothing else does.
+      #
+      # The committed .env.dev ships META_ENABLED=false with empty credentials
+      # so a developer can boot the service without any. Right for a checkout,
+      # wrong here: seven e2e tests cover the OAuth URL, the state that may be
+      # spent once, and the webhook signature, and all seven answered 503
+      # META_NOT_CONFIGURED on every run this branch has ever had.
+      #
+      # Written to .env.local rather than the job's `env:` block because the
+      # test loader lets its FILES win over the ambient environment — on
+      # purpose, since vitest exports NODE_ENV=test and the config schema
+      # accepts only dev/qa/prod. .env.local is loaded after .env.dev and wins,
+      # which is how a developer overrides this locally too.
+      #
+      # Every value is INVENTED. These tests never reach Meta: they build a URL,
+      # or sign a body and verify their own signature. What matters is that the
+      # shapes are valid and both sides agree — nothing here is a secret, and
+      # nothing here would authenticate against anything.
+      - name: switch Meta on for the tests
+        run: |
+          cat >> .env.local <<'ENV'
+          META_ENABLED=true
+          FB_APP_ID=000000000000000
+          FB_APP_SECRET=ci0000000000000000000000000000ci
+          FB_LOGIN_CONFIG_ID=000000000000000
+          META_OAUTH_REDIRECT_URI=http://localhost:3000/api/v1/connections/meta/callback
+          FRONTEND_DASHBOARD_URL=http://localhost:5173/connections.html
+          META_WEBHOOK_VERIFY_TOKEN=ci-verify-token-not-a-secret
+          ENV
+
+      - name: tests
+        run: pnpm test:all
+
+      # Proves the PRODUCTION deploy path, not just the development one: this is
+      # the compiled entrypoint the runtime image runs as its migration job, and
+      # before it existed the mandated "migrations first, then code" order was
+      # documented in prose and impossible to execute.
+      - name: migrate the way a deploy does
+        run: node --env-file=.env.dev dist/migrate.js
+
+      - name: the schema matches what the entities expect
+        run: pnpm db:check
+
+      # The committed contract has to match the code that ships. Without this a
+      # breaking change to a response is indistinguishable from a rename.
+      - name: the committed OpenAPI document is current
+        run: |
+          pnpm openapi:export
+          git diff --exit-code -- openapi.json || {
+            echo '::error::openapi.json is out of date — run pnpm openapi:export and commit it'
+            exit 1
+          }
+
+  schema-parity:
+    name: pre-deploy — the migration matches the entities
+    runs-on: ubuntu-latest
+    # Reported separately so a deliberate, temporary drift between the migration
+    # and the entities does not turn the whole suite red.
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: wouchh
+          POSTGRES_PASSWORD: wouchh_dev_local
+          POSTGRES_DB: wouchh_dev
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U wouchh -d wouchh_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # Builds a database from the MIGRATION and one from the ENTITIES, then
+      # compares the indexes, keys, checks, triggers and columns Postgres
+      # actually ended up with.
+      - name: schema parity
+        run: pnpm test:schema

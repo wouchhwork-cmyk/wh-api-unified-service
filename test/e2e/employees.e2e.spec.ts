@@ -1,0 +1,862 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import type { DataSource } from 'typeorm';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  createTestApp,
+  platformAdminLogin,
+  provisionPlatformAdmin,
+  readLatestVerificationSecret,
+  resetTenantData,
+  type TestApp,
+} from './app.harness';
+
+const OWNER_PASSWORD = 'a-long-enough-password';
+const SIGNUP = {
+  business: { name: 'Blue Bottle Cafe', email: 'hello@bluebottle.test', city: 'Pune' },
+  owner: {
+    firstName: 'Meera',
+    lastName: 'Iyer',
+    email: 'meera@bluebottle.test',
+    password: OWNER_PASSWORD,
+  },
+};
+
+describe('a business builds its team', () => {
+  let testApp: TestApp;
+  let app: NestExpressApplication;
+  let db: DataSource;
+
+  beforeAll(async () => {
+    testApp = await createTestApp();
+    app = testApp.app;
+    db = testApp.db;
+  });
+  afterAll(async () => {
+    await testApp.close();
+  });
+  beforeEach(async () => {
+    await resetTenantData(db);
+    await provisionPlatformAdmin(app);
+  });
+
+  const http = () => request(app.getHttpServer());
+  const code = (): string => process.env.OTP_STATIC_CODE ?? '666666';
+
+  /** Signs up, verifies, and gets the business activated. */
+  async function onboardedBusiness(): Promise<{ ownerToken: string; enterpriseRefId: string }> {
+    const signup = await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+    const verified = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: signup.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    await http()
+      .post(`/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/status`)
+      .set('Authorization', `Bearer ${admin.body.data.accessToken}`)
+      .send({ status: 'active' })
+      .expect(200);
+
+    return {
+      ownerToken: verified.body.data.accessToken as string,
+      enterpriseRefId: signup.body.data.enterpriseRefId as string,
+    };
+  }
+
+  async function roleRefId(ownerToken: string, name: string): Promise<string> {
+    const roles = await http()
+      .get('/api/v1/employees/roles')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const match = (roles.body.data as { refId: string; name: string }[]).find(
+      (role) => role.name === name,
+    );
+    if (!match) throw new Error(`role ${name} was not instantiated for this business`);
+    return match.refId;
+  }
+
+  /*
+   * E9. The invite form offered every role and let the server refuse on
+   * submit — correct, and a poor way to find out, because by then somebody has
+   * chosen a colleague and a role. Assignability is a fact about the CALLER,
+   * not the role, so it has to come from the endpoint the form reads.
+   */
+  describe('which roles the caller may actually hand out', () => {
+    const rolesFor = async (token: string) => {
+      const response = await http()
+        .get('/api/v1/employees/roles')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      return response.body.data as { name: string; assignable: boolean }[];
+    };
+
+    it('lets an owner grant everything, including owner', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const roles = await rolesFor(ownerToken);
+
+      expect(roles.length).toBeGreaterThan(0);
+      expect(roles.every((role) => role.assignable)).toBe(true);
+    });
+
+    it('stops a manager handing out their own level, while still listing it', async () => {
+      /*
+       * The escalation the whole mechanism exists to stop: invite an address
+       * you control, grant it your own role, and now there are two of you. The
+       * role stays VISIBLE though — hiding it would tell a manager the role
+       * does not exist, rather than that it is not theirs to give.
+       */
+      const { ownerToken } = await onboardedBusiness();
+      const managerRole = await roleRefId(ownerToken, 'manager');
+
+      await http()
+        .post('/api/v1/employees')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ firstName: 'Priya', email: 'priya@bluebottle.test', roleRefId: managerRole })
+        .expect(201);
+      const accepted = await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({
+          email: 'priya@bluebottle.test',
+          code: code(),
+          password: 'a-password-only-priya-knows',
+        })
+        .expect(200);
+
+      const roles = await rolesFor(accepted.body.data.accessToken as string);
+
+      const manager = roles.find((role) => role.name === 'manager');
+      const agent = roles.find((role) => role.name === 'agent');
+      const owner = roles.find((role) => role.name === 'owner');
+
+      expect(manager).toBeDefined();
+      expect(manager?.assignable).toBe(false);
+      expect(owner?.assignable).toBe(false);
+      // And the ones genuinely below them still are, or the flag is useless.
+      expect(agent?.assignable).toBe(true);
+    });
+  });
+
+  it('refuses a second signup for the same business', async () => {
+    await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+
+    // A colleague signing up the same business must be turned away and told what
+    // to do instead — otherwise two people get two separate tenants with the
+    // same name, split data, and a product that looks broken.
+    const second = await http()
+      .post('/api/v1/enterprises/signup')
+      .send({
+        business: { name: 'Blue Bottle Cafe Pune', email: SIGNUP.business.email },
+        owner: { firstName: 'Rahul', email: 'rahul@bluebottle.test', password: OWNER_PASSWORD },
+      })
+      .expect(409);
+
+    expect(second.body.error.code).toBe('ENTERPRISE_EMAIL_ALREADY_REGISTERED');
+    expect(second.body.error.message).toMatch(/ask its owner/i);
+  });
+
+  it('is case-insensitive about the business address', async () => {
+    await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+    await http()
+      .post('/api/v1/enterprises/signup')
+      .send({
+        business: { name: 'Other', email: SIGNUP.business.email.toUpperCase() },
+        owner: { firstName: 'Rahul', email: 'rahul@bluebottle.test', password: OWNER_PASSWORD },
+      })
+      .expect(409);
+  });
+
+  it('creates a colleague without ever accepting a password for them', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+
+    const created = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        firstName: 'Rahul',
+        lastName: 'Nair',
+        email: 'rahul@bluebottle.test',
+        roleRefId: agentRole,
+      })
+      .expect(201);
+
+    expect(created.body.data.status).toBe('invited');
+    expect(created.body.data.employeeKind).toBe('business');
+    expect(created.body.data.roles).toEqual(['agent']);
+    // Masked even to the colleague who typed it.
+    expect(created.body.data.email).toBe('ra***@bluebottle.test');
+
+    // A password field is not merely optional — it is refused, so nobody can
+    // set a colleague's credential by adding one to the request.
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        firstName: 'Anita',
+        email: 'anita@bluebottle.test',
+        roleRefId: agentRole,
+        password: 'set-by-the-owner',
+      })
+      .expect(422);
+  });
+
+  it('will not let the invited person sign in until they accept', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+
+    // The stored password is random and nobody was told it.
+    const attempt = await http()
+      .post('/api/v1/auth/login')
+      .send({ email: 'rahul@bluebottle.test', password: 'a-guess-at-the-password' })
+      .expect(401);
+    expect(attempt.body.error.code).toBe('AUTH_INVALID_CREDENTIALS');
+  });
+
+  it('lets the invited person prove the address and choose their own password', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+
+    // Keyed on their OWN address, not a verification reference: they were never
+    // shown one — the owner made that request, on another device.
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: code(),
+        password: 'a-password-only-rahul-knows',
+      })
+      .expect(200);
+
+    expect(accepted.body.data.outcome).toBe('authenticated');
+    expect(accepted.body.data.enterprise.name).toBe('Blue Bottle Cafe');
+
+    // And from now on, an ordinary login.
+    const login = await http()
+      .post('/api/v1/auth/login')
+      .send({ email: 'rahul@bluebottle.test', password: 'a-password-only-rahul-knows' })
+      .expect(200);
+    expect(login.body.data.outcome).toBe('authenticated');
+
+    // The employment moved invited -> active on acceptance, not before.
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const rahul = (team.body.data as { name: string; status: string }[]).find(
+      (person) => person.name === 'Rahul',
+    );
+    expect(rahul?.status).toBe('active');
+  });
+
+  it('refuses the same code twice, and a wrong one', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+
+    const wrong = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'rahul@bluebottle.test', code: '000001', password: 'a-long-enough-password' })
+      .expect(401);
+    expect(wrong.body.error.code).toBe('AUTH_CODE_INVALID');
+
+    await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'rahul@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+
+    // Single use: the second attempt cannot find a live challenge, and says the
+    // same thing an unknown address would — whether an invitation exists is not
+    // confirmed to a guesser.
+    const replay = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'rahul@bluebottle.test', code: code(), password: 'another-long-password' })
+      .expect(404);
+    expect(replay.body.error.code).toBe('VERIFICATION_NOT_FOUND');
+  });
+
+  /**
+   * Everything a manager must NOT be able to do.
+   *
+   * Until the level rules landed, `employees.invite` and `employees.manage`
+   * said who may act, never on whom — so a manager could invite a second
+   * manager and could suspend the owner. Both are exercised through real HTTP
+   * here rather than only against the pure rules, because the rules being right
+   * is worth nothing if a service forgets to call them.
+   */
+  async function businessWithAManager(): Promise<{
+    ownerToken: string;
+    managerToken: string;
+    managerRole: string;
+    agentRole: string;
+  }> {
+    const { ownerToken } = await onboardedBusiness();
+    const managerRole = await roleRefId(ownerToken, 'manager');
+    const agentRole = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Priya', email: 'priya@bluebottle.test', roleRefId: managerRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'priya@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+
+    return {
+      ownerToken,
+      managerToken: accepted.body.data.accessToken as string,
+      managerRole,
+      agentRole,
+    };
+  }
+
+  it('refuses a manager inviting another manager', async () => {
+    /*
+     * The escalation the old name-only check missed: a manager invites an
+     * address they control into their OWN level, accepts it, and the business
+     * now has a second manager nobody senior approved.
+     */
+    const { managerToken, managerRole } = await businessWithAManager();
+
+    const refused = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ firstName: 'Clone', email: 'clone@bluebottle.test', roleRefId: managerRole })
+      .expect(403);
+
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    // `/assign roles below/`, not the looser `/below your own level/` that both
+    // denial reasons match — otherwise this passes when the WRONG rule fires.
+    expect(refused.body.error.details[0].issue).toMatch(/assign roles below/i);
+  });
+
+  it('still lets a manager invite below themselves', async () => {
+    // The rule has to stop the escalation without stopping the job.
+    const { managerToken, agentRole } = await businessWithAManager();
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ firstName: 'Junior', email: 'junior@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+  });
+
+  it('refuses a manager suspending the owner', async () => {
+    /*
+     * Suspending somebody revokes every session that identity holds across
+     * EVERY business, so this was not only a takeover route inside one tenant.
+     */
+    const { ownerToken, managerToken } = await businessWithAManager();
+
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    // Meera is the signup owner (see SIGNUP); Priya is the manager this helper
+    // adds. Found by name rather than by position, because the listing order is
+    // not part of what this test is about.
+    const ownerRow = (team.body.data as { refId: string; name: string }[]).find((person) =>
+      person.name.startsWith('Meera'),
+    );
+    expect(ownerRow).toBeDefined();
+
+    const refused = await http()
+      .post(`/api/v1/employees/${ownerRow?.refId}/status`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({ status: 'suspended', reason: 'attempted takeover' })
+      .expect(403);
+
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    // The other sentence: acting on a PERSON, not assigning a role.
+    expect(refused.body.error.details[0].issue).toMatch(/act on people below/i);
+  });
+
+  it('shows an agent their peers and hides the people above them', async () => {
+    /*
+     * The listing used to show everybody to anybody holding `employees.view` —
+     * which the agent and even the read-only viewer roles hold. So the whole
+     * company's management structure, invitation status and contact shape was
+     * readable by the most junior account in the business.
+     *
+     * Filtered in SQL rather than after the page is fetched: filtering a fetched
+     * page returns fewer rows than the limit while more matching rows exist, and
+     * the caller reads a short page as "no more results".
+     */
+    const { ownerToken, agentRole } = await businessWithAManager();
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Junior', email: 'junior@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'junior@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+    const agentToken = accepted.body.data.accessToken as string;
+
+    const seenByOwner = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const ownerSees = (seenByOwner.body.data as { name: string }[]).map((p) => p.name);
+    expect(ownerSees).toEqual(expect.arrayContaining(['Meera Iyer', 'Priya', 'Junior']));
+
+    const seenByAgent = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .expect(200);
+    const agentSees = (seenByAgent.body.data as { name: string }[]).map((p) => p.name);
+
+    // Their own peer group, and themselves.
+    expect(agentSees).toContain('Junior');
+    // Not the manager, and not the owner.
+    expect(agentSees).not.toContain('Priya');
+    expect(agentSees).not.toContain('Meera Iyer');
+  });
+
+  it('gives an agent no authority to build the team', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'rahul@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+    const agentToken = accepted.body.data.accessToken as string;
+
+    const refused = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .send({
+        firstName: 'Anita',
+        email: 'anita@bluebottle.test',
+        roleRefId: agentRole,
+      })
+      .expect(403);
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+  });
+
+  it('suspends somebody, and the suspension applies to a token already issued', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({ email: 'rahul@bluebottle.test', code: code(), password: 'a-long-enough-password' })
+      .expect(200);
+    const agentToken = accepted.body.data.accessToken as string;
+
+    const before = await http()
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .expect(200);
+    expect((before.body.data.permissions as string[]).length).toBeGreaterThan(0);
+
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const rahulRefId = (team.body.data as { name: string; refId: string }[]).find(
+      (person) => person.name === 'Rahul',
+    )?.refId;
+
+    // A reason is required: it is the only record of why.
+    const noReason = await http()
+      .post(`/api/v1/employees/${rahulRefId}/status`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ status: 'suspended' })
+      .expect(422);
+    expect(noReason.body.error.details[0].field).toBe('reason');
+
+    await http()
+      .post(`/api/v1/employees/${rahulRefId}/status`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ status: 'suspended', reason: 'left the company' })
+      .expect(200);
+
+    /*
+     * THE SAME TOKEN, which has not expired. Permissions are resolved per
+     * request against the employment, so switching somebody off means now — not
+     * whenever the token they are holding happens to run out.
+     */
+    const after = await http()
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .expect(200);
+    expect(after.body.data.permissions).toHaveLength(0);
+
+    await http()
+      .get('/api/v1/enterprises/current')
+      .set('Authorization', `Bearer ${agentToken}`)
+      .expect(403);
+
+    // And they cannot sign in again.
+    const login = await http()
+      .post('/api/v1/auth/login')
+      .send({ email: 'rahul@bluebottle.test', password: 'a-long-enough-password' })
+      .expect(403);
+    expect(login.body.error.code).toBe('AUTH_NO_ACTIVE_EMPLOYMENT');
+  });
+
+  it('will not let anybody change their own status', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const ownRefId = (team.body.data as { refId: string }[])[0]?.refId;
+
+    // The realistic accident: an owner locking themselves out with nobody else
+    // able to undo it.
+    const refused = await http()
+      .post(`/api/v1/employees/${ownRefId}/status`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ status: 'suspended', reason: 'by mistake' })
+      .expect(403);
+    /*
+     * The wording is deliberately about the ACCOUNT rather than the status: the
+     * same rule now guards changing your own roles as well as your own status,
+     * and a message naming only one of them would be wrong on the other.
+     */
+    expect(refused.body.error.details[0].issue).toMatch(/your own account/i);
+  });
+
+  it('resends an invitation that a stranger burned, and reveals nothing', async () => {
+    /*
+     * accept-invite is @Public and spends an attempt per submission, so anybody
+     * who knew a colleague's address could post wrong codes until the invitation
+     * was exhausted — and with no resend, that account could never be entered
+     * again. This is the recovery, and it is deliberately indistinguishable from
+     * a request for an address nobody has invited.
+     */
+    const { ownerToken } = await onboardedBusiness();
+    const roleRef = await roleRefId(ownerToken, 'agent');
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: roleRef })
+      .expect(201);
+
+    // Burn the attempt budget with wrong codes.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({ email: 'rahul@bluebottle.test', code: '000000', password: OWNER_PASSWORD });
+    }
+
+    // Even the correct code is refused now: the budget is spent.
+    const spent = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: await readLatestVerificationSecret(db),
+        password: OWNER_PASSWORD,
+      });
+    expect(spent.status).toBeGreaterThanOrEqual(400);
+
+    /*
+     * Waiting out the cooldown, which is five minutes for a token-shaped
+     * challenge. That wait is the deliberate cost of this recovery: a stranger
+     * who burns the budget inside the window makes the real person wait, and
+     * removing the cooldown would turn this endpoint into a free SMS pump.
+     */
+    await db.query(
+      `UPDATE verifications SET last_sent_at = now() - interval '1 hour'
+        WHERE consumed_at IS NULL AND superseded_at IS NULL`,
+    );
+
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'rahul@bluebottle.test', purpose: 'employee_invite' })
+      .expect(202);
+
+    // A fresh challenge, with a fresh budget.
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: await readLatestVerificationSecret(db),
+        password: OWNER_PASSWORD,
+      })
+      .expect(200);
+    expect(accepted.body.data.accessToken).toBeTruthy();
+  });
+
+  it('answers a resend for an address nobody has invited exactly the same way', async () => {
+    // 202 either way: a different answer would tell a caller who has been
+    // invited, which is the enumeration this endpoint must not become.
+    await onboardedBusiness();
+
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'nobody@nowhere.test', purpose: 'employee_invite' })
+      .expect(202);
+  });
+
+  it('refuses a second resend inside the cooldown, still without saying so', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const roleRef = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: roleRef })
+      .expect(201);
+
+    const before: { resend_count: number }[] = await db.query(
+      `SELECT resend_count FROM verifications ORDER BY id DESC LIMIT 1`,
+    );
+
+    // Immediately after the invite was sent, so the cooldown is running.
+    await http()
+      .post('/api/v1/auth/resend')
+      .send({ email: 'rahul@bluebottle.test', purpose: 'employee_invite' })
+      .expect(202);
+
+    const after: { resend_count: number }[] = await db.query(
+      `SELECT resend_count FROM verifications ORDER BY id DESC LIMIT 1`,
+    );
+    // Nothing was sent: resendCooldownMs was configured per kind and read by
+    // nothing at all before this.
+    expect(Number(after[0]?.resend_count)).toBe(Number(before[0]?.resend_count));
+  });
+
+  it('refuses to create the same person twice', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+    const body = { firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole };
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(body)
+      .expect(201);
+    const again = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(body)
+      .expect(409);
+    expect(again.body.error.code).toBe('EMPLOYEE_ALREADY_EXISTS');
+  });
+
+  it('refuses a role that belongs to another business', async () => {
+    const first = await onboardedBusiness();
+    const agentRole = await roleRefId(first.ownerToken, 'agent');
+
+    // A second business, whose owner tries to use the first one's role refId.
+    const other = await http()
+      .post('/api/v1/enterprises/signup')
+      .send({
+        business: { name: 'Zenith Salon', email: 'hello@zenith.test' },
+        owner: { firstName: 'Anita', email: 'anita@zenith.test', password: OWNER_PASSWORD },
+      })
+      .expect(201);
+    const otherVerified = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: other.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    await http()
+      .post(`/api/v1/platform/enterprises/${other.body.data.enterpriseRefId}/status`)
+      .set('Authorization', `Bearer ${admin.body.data.accessToken}`)
+      .send({ status: 'active' })
+      .expect(200);
+
+    // The role resolves only within the caller's own business, so this is a 404
+    // rather than a cross-tenant grant.
+    const refused = await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${otherVerified.body.data.accessToken}`)
+      .send({ firstName: 'X', email: 'x@zenith.test', roleRefId: agentRole })
+      .expect(404);
+    expect(refused.body.error.code).toBe('ROLE_NOT_FOUND');
+  });
+
+  it('shows each business only its own people', async () => {
+    const first = await onboardedBusiness();
+    const agentRole = await roleRefId(first.ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${first.ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+
+    const team = await http()
+      .get('/api/v1/employees')
+      .set('Authorization', `Bearer ${first.ownerToken}`)
+      .expect(200);
+    expect(team.body.data).toHaveLength(2);
+    // Support people are excluded unless asked for: "who works here" is a
+    // question about the business's own staff.
+    expect(
+      (team.body.data as { employeeKind: string }[]).every((p) => p.employeeKind === 'business'),
+    ).toBe(true);
+  });
+
+  describe('the team listing is a page, not the whole table', () => {
+    /**
+     * It used to be unbounded: one screen read every employee a business had.
+     * The cap matters most on the surface that is least likely to be tested at
+     * size — a business with hundreds of staff is exactly the customer this is
+     * sold to, and the endpoint had no way to say "there is more".
+     */
+    async function businessOfThree(): Promise<string> {
+      const { ownerToken } = await onboardedBusiness();
+      const agentRole = await roleRefId(ownerToken, 'agent');
+
+      // Sequential, not parallel: the listing is ordered by (created_at, id)
+      // and the assertions below are about a stable order.
+      for (const person of ['rahul', 'anita']) {
+        await http()
+          .post('/api/v1/employees')
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({
+            firstName: person,
+            email: `${person}@bluebottle.test`,
+            roleRefId: agentRole,
+          })
+          .expect(201);
+      }
+      return ownerToken;
+    }
+
+    const list = (token: string, query: string) =>
+      http().get(`/api/v1/employees${query}`).set('Authorization', `Bearer ${token}`).expect(200);
+
+    it('stops at the requested limit and says there is more', async () => {
+      const token = await businessOfThree();
+
+      const page = await list(token, '?limit=2');
+
+      expect(page.body.data).toHaveLength(2);
+      expect(page.body.meta.pagination.hasMore).toBe(true);
+      expect(page.body.meta.pagination.nextCursor).toEqual(expect.any(String));
+      // The meta describes the page actually returned, not what was asked for.
+      expect(page.body.meta.pagination.limit).toBe(2);
+    });
+
+    it('returns each person exactly once across the pages', async () => {
+      const token = await businessOfThree();
+
+      const first = await list(token, '?limit=2');
+      const second = await list(
+        token,
+        `?limit=2&cursor=${encodeURIComponent(first.body.meta.pagination.nextCursor as string)}`,
+      );
+
+      const refIds = [...first.body.data, ...second.body.data].map(
+        (person: { refId: string }) => person.refId,
+      );
+      // The tiebreaker earns its place here: without a total order a row can
+      // repeat on one page and never appear on any.
+      expect(refIds).toHaveLength(3);
+      expect(new Set(refIds).size).toBe(3);
+      expect(second.body.meta.pagination.hasMore).toBe(false);
+      expect(second.body.meta.pagination.nextCursor).toBeNull();
+    });
+
+    it('loses nobody when two people share a timestamp to the microsecond', async () => {
+      const token = await businessOfThree();
+
+      /*
+       * THE CASE THE TIEBREAKER EXISTS FOR, forced rather than waited for.
+       *
+       * Two people invited in the same transaction genuinely do share
+       * created_at, because now() is the transaction's start. With only the
+       * timestamp to compare, one of them is skipped and never appears on any
+       * page — somebody who works here, invisible to the person managing
+       * access.
+       */
+      await db.query(
+        `UPDATE enterprise_employees
+            SET created_at = (SELECT min(created_at) FROM enterprise_employees)`,
+      );
+
+      const collected: string[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const query: string = cursor ? `?limit=1&cursor=${encodeURIComponent(cursor)}` : '?limit=1';
+        const response = await list(token, query);
+        collected.push(...response.body.data.map((person: { refId: string }) => person.refId));
+        if (!response.body.meta.pagination.hasMore) break;
+        cursor = response.body.meta.pagination.nextCursor as string;
+      }
+
+      expect(collected).toHaveLength(3);
+      expect(new Set(collected).size).toBe(3);
+    });
+
+    it('starts from the top when the cursor is nonsense, rather than erroring', async () => {
+      const token = await businessOfThree();
+
+      // The cursor is ours and opaque; a client that invents one has not made a
+      // request we can meaningfully refuse.
+      const page = await list(token, '?cursor=not-a-real-cursor');
+
+      expect(page.body.data).toHaveLength(3);
+    });
+
+    it('refuses a limit outside the allowed range', async () => {
+      const token = await businessOfThree();
+
+      await http()
+        .get('/api/v1/employees?limit=100000')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(422);
+      await http()
+        .get('/api/v1/employees?limit=0')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(422);
+    });
+  });
+
+  it('records team changes in the audit trail', async () => {
+    const { ownerToken } = await onboardedBusiness();
+    const agentRole = await roleRefId(ownerToken, 'agent');
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole })
+      .expect(201);
+
+    const rows: { action: string; entity_type: string; actor_employee_id: string | null }[] =
+      await db.query(
+        `SELECT action, entity_type, actor_employee_id
+           FROM audit_logs WHERE entity_type = 'enterprise_employee' ORDER BY id`,
+      );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.action).toBe('created');
+    // Attributed to the person who did it, not to the system.
+    expect(rows[0]?.actor_employee_id).not.toBeNull();
+  });
+});

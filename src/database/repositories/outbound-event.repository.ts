@@ -1,0 +1,635 @@
+import { Injectable } from '@nestjs/common';
+import {
+  DestinationKind,
+  EventPriority,
+  OutboundEventStatus,
+  OutboundEventType,
+  Platform,
+  SETTLED_OUTBOUND_STATUSES,
+} from '@/shared/enums';
+import { BaseRepository } from './base.repository';
+import {
+  MAX_SEND_ATTEMPTS,
+  NOTIFY_OUTBOUND_CHANNEL,
+  SENDING_REAP_GRACE_MS,
+} from '@/shared/constants';
+
+/**
+ * What a read-back concluded about a send whose outcome Meta never confirmed.
+ *
+ * `unknown` is NOT a synonym for `lost`. A send that aged past the comments
+ * edge cannot be found and cannot be disproven either, and calling that "lost"
+ * would invite an agent to resend something that may well be live.
+ */
+export type ReadBackOutcome = 'landed' | 'lost' | 'unknown';
+
+/** An ambiguous send waiting to be read back. */
+export interface AmbiguousSend {
+  readonly id: number;
+  readonly enterpriseId: number;
+  readonly channelId: number;
+  readonly eventType: OutboundEventType;
+  /** The comment or media the reply was addressed to. */
+  readonly destinationId: string | null;
+  readonly payload: Record<string, unknown>;
+  /** When the ambiguous failure was settled — the anchor for the time match. */
+  readonly lastErrorAt: Date;
+}
+
+export interface EnqueueOutboundInput {
+  readonly enterpriseId: number | null;
+  readonly channelId: number | null;
+  readonly destinationKind: DestinationKind;
+  readonly destinationId: string | null;
+  readonly platform: Platform;
+  readonly eventType: OutboundEventType;
+  readonly inReplyToEventId: number | null;
+  readonly recipientPlatformId: string | null;
+  readonly dedupKey: string;
+  readonly correlationId: string | null;
+  readonly payload: unknown;
+  readonly scheduledAt: Date | null;
+  readonly priority?: EventPriority;
+}
+
+export interface ClaimedOutboundEvent {
+  readonly id: number;
+  readonly enterpriseId: number | null;
+  readonly channelId: number | null;
+  readonly eventType: OutboundEventType;
+  readonly recipientPlatformId: string | null;
+  readonly payload: unknown;
+  readonly attemptCount: number;
+  readonly maxAttempts: number;
+}
+
+@Injectable()
+export class OutboundEventRepository extends BaseRepository {
+  /**
+   * Inserts the row that ANNOUNCES a state change.
+   *
+   * Called inside the caller's transaction, deliberately: the transactional
+   * outbox rule is that this row and the state change it describes commit
+   * together. Writing the domain row and then publishing outside the transaction
+   * loses the event whenever the process dies in between.
+   *
+   * It therefore does NOT open a transaction of its own.
+   */
+  async enqueue(input: EnqueueOutboundInput): Promise<{ id: number | null; duplicate: boolean }> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `INSERT INTO outbound_events
+         (enterprise_id, channel_id, destination_kind, destination_id, platform, event_type,
+          in_reply_to_event_id, recipient_platform_id, dedup_key, correlation_id, payload,
+          priority, status, scheduled_at, next_attempt_at, max_attempts)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+               COALESCE($14, now()), $15)
+       ON CONFLICT (COALESCE(enterprise_id, 0), dedup_key) DO NOTHING
+       RETURNING id`,
+      [
+        input.enterpriseId,
+        input.channelId,
+        input.destinationKind,
+        input.destinationId,
+        input.platform,
+        input.eventType,
+        input.inReplyToEventId,
+        input.recipientPlatformId,
+        input.dedupKey,
+        input.correlationId,
+        JSON.stringify(input.payload ?? {}),
+        input.priority ?? EventPriority.Normal,
+        input.scheduledAt ? OutboundEventStatus.Scheduled : OutboundEventStatus.Pending,
+        input.scheduledAt,
+        /*
+         * Stated rather than left to the column default. The default is 3, while
+         * the policy this service documents is MAX_SEND_ATTEMPTS — so the
+         * constant was dead and the real budget was whatever the migration
+         * happened to say.
+         */
+        MAX_SEND_ATTEMPTS,
+      ],
+    );
+    const row = rows[0];
+    /*
+     * A SCHEDULED send is deliberately not notified: it is not due yet, so
+     * waking the relay would only make it claim nothing. The poll timer picks it
+     * up when its time arrives.
+     */
+    if (row !== undefined && !input.scheduledAt) {
+      await this.notifyQueue(NOTIFY_OUTBOUND_CHANNEL);
+    }
+    return { id: row?.id ?? null, duplicate: row === undefined };
+  }
+
+  /**
+   * Claims due work. The ORDER BY mirrors outbound_events_due_idx exactly,
+   * including its COALESCE, so a scheduled send whose time has come sorts
+   * alongside a plain pending one instead of being invisible.
+   */
+  async claimDueBatch(
+    leaseOwner: string,
+    limit: number,
+    leaseSeconds: number,
+  ): Promise<ClaimedOutboundEvent[]> {
+    const { rows } = await this.mutate<{
+      id: number;
+      enterprise_id: number | null;
+      channel_id: number | null;
+      event_type: OutboundEventType;
+      recipient_platform_id: string | null;
+      payload: unknown;
+      attempt_count: number;
+      max_attempts: number;
+      priority: number;
+    }>(
+      `UPDATE outbound_events
+          SET status = $1,
+              lease_owner = $2,
+              lease_expires_at = now() + ($3::int * interval '1 second'),
+              attempt_count = attempt_count + 1
+        WHERE id IN (
+          SELECT id FROM outbound_events
+           WHERE status IN ('pending','scheduled','failed')
+             AND COALESCE(next_attempt_at, scheduled_at, created_at) <= now()
+           ORDER BY priority, COALESCE(next_attempt_at, scheduled_at, created_at), id
+           LIMIT $4
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, enterprise_id, channel_id, event_type, recipient_platform_id,
+                  payload, attempt_count, max_attempts, priority`,
+      [OutboundEventStatus.Sending, leaseOwner, leaseSeconds, limit],
+    );
+
+    // Same reason as the inbound claim: RETURNING has no defined order, so
+    // priority is re-applied here to order the work within the batch.
+    return rows
+      .sort((a, b) => a.priority - b.priority || a.id - b.id)
+      .map((row) => ({
+        id: row.id,
+        enterpriseId: row.enterprise_id,
+        channelId: row.channel_id,
+        eventType: row.event_type,
+        recipientPlatformId: row.recipient_platform_id,
+        payload: row.payload,
+        attemptCount: row.attempt_count,
+        maxAttempts: row.max_attempts,
+      }));
+  }
+
+  /**
+   * Settles a sent row, but ONLY while we still hold the lease.
+   *
+   * Returns false when the lease was lost — the batch outlived it and the reaper
+   * re-queued the row, so another worker now owns it. Without this fence both
+   * workers would write back and the send could be duplicated with neither
+   * noticing.
+   */
+  async markSent(id: number, leaseOwner: string, platformEventId: string | null): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $2, sent_at = now(), platform_event_id = $3,
+              lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $4
+        RETURNING id`,
+      [id, OutboundEventStatus.Sent, platformEventId, leaseOwner],
+    );
+    return affected === 1;
+  }
+
+  /** True while this worker still owns the row; false once the lease lapsed. */
+  async stillHoldsLease(id: number, leaseOwner: string): Promise<boolean> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM outbound_events
+        WHERE id = $1 AND lease_owner = $2 AND lease_expires_at > now()
+        LIMIT 1`,
+      [id, leaseOwner],
+    );
+    return rows.length === 1;
+  }
+
+  /**
+   * Records a failed attempt — but NEVER over a row that is already settled,
+   * and never for a worker that no longer owns it.
+   *
+   * Both guards are load-bearing. Without the status guard a database error
+   * raised after a successful send reached this method and flipped a 'sent' row
+   * back to 'failed'; the relay re-claimed it and delivered the customer the
+   * same reply again, overwriting platform_event_id so the data showed no trace.
+   * Without the lease guard a worker whose lease had already lapsed could
+   * re-schedule a row the reaper had handed to someone else.
+   *
+   * Returns false when neither applied, which is the caller's signal to leave
+   * the message row alone as well.
+   */
+  async markFailed(
+    id: number,
+    leaseOwner: string,
+    error: string,
+    nextAttemptAt: Date | null,
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = CASE
+                WHEN $5::timestamptz IS NULL OR attempt_count >= max_attempts THEN $2
+                ELSE $3 END,
+              dead_lettered_at = CASE
+                WHEN $5::timestamptz IS NULL OR attempt_count >= max_attempts THEN now() END,
+              last_error = $4,
+              last_error_at = now(),
+              next_attempt_at = $5,
+              lease_owner = NULL,
+              lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $6 AND status <> $7
+        RETURNING id`,
+      [
+        id,
+        OutboundEventStatus.DeadLetter,
+        OutboundEventStatus.Failed,
+        error.slice(0, 2000),
+        nextAttemptAt,
+        leaseOwner,
+        OutboundEventStatus.Sent,
+      ],
+    );
+    return affected === 1;
+  }
+
+  /**
+   * Terminal, and deliberately distinct from a failure: used when the send can
+   * never succeed as written — a dead credential, or an ambiguous outcome we
+   * refuse to retry because it might send twice.
+   */
+  /**
+   * Parks a throttled send WITHOUT spending an attempt.
+   *
+   * A rate limit is a condition designed to be waited out, and it used to be
+   * classified as an ordinary retryable failure against a three-attempt budget
+   * on a sub-second curve — so a brief Meta throttle burned every attempt in
+   * about three seconds and dead-lettered a customer-visible reply. The attempt
+   * is refunded here, so waiting costs nothing.
+   *
+   * Bounded by the ROW'S AGE rather than by a counter: a quota that never clears
+   * must eventually become an operator's problem instead of an immortal row, and
+   * the age of the reply is what the customer actually experiences. Past that
+   * age it dead-letters like any spent row.
+   *
+   * Returns what happened, because a dead letter means the caller must settle
+   * the message and a park means it must not.
+   */
+  async markRateLimited(input: {
+    id: number;
+    leaseOwner: string;
+    retryAt: Date;
+    error: string;
+    maxWaitMs: number;
+  }): Promise<'parked' | 'dead_lettered' | 'not_applied'> {
+    const { rows } = await this.mutate<{ status: OutboundEventStatus }>(
+      `UPDATE outbound_events
+          SET status = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond') THEN $2
+                ELSE $3 END,
+              -- Refunded only on the parking branch; a dead letter keeps its count.
+              attempt_count = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond')
+                  THEN GREATEST(attempt_count - 1, 0)
+                ELSE attempt_count END,
+              dead_lettered_at = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond') THEN NULL
+                ELSE now() END,
+              -- Cast: inside a CASE whose other branch is NULL, Postgres has
+              -- nothing to infer this parameter's type from and settles on text.
+              next_attempt_at = CASE
+                WHEN created_at > now() - ($6::bigint * interval '1 millisecond')
+                  THEN $5::timestamptz
+                ELSE NULL END,
+              last_error = $4,
+              last_error_at = now(),
+              lease_owner = NULL,
+              lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $7 AND status <> $8
+        RETURNING status`,
+      [
+        input.id,
+        OutboundEventStatus.Pending,
+        OutboundEventStatus.DeadLetter,
+        input.error.slice(0, 2000),
+        input.retryAt,
+        input.maxWaitMs,
+        input.leaseOwner,
+        OutboundEventStatus.Sent,
+      ],
+    );
+
+    const status = rows[0]?.status;
+    if (status === undefined) return 'not_applied';
+    return status === OutboundEventStatus.DeadLetter ? 'dead_lettered' : 'parked';
+  }
+
+  async cancel(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $2, last_error = $3, last_error_at = now(),
+              lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = $1 AND lease_owner = $4 AND status <> $5
+        RETURNING id`,
+      [
+        id,
+        OutboundEventStatus.Cancelled,
+        reason.slice(0, 2000),
+        leaseOwner,
+        OutboundEventStatus.Sent,
+      ],
+    );
+    return affected === 1;
+  }
+
+  /**
+   * Returns rows whose worker died to the runnable pool.
+   *
+   * A SENDING row gets a grace period on top of its lease, and that is the whole
+   * point of this method's shape. The reaper cannot distinguish a dead worker
+   * from a slow one, and it used to reclaim on lease expiry alone — so a reply
+   * whose Graph call was merely slow was re-dispatched while the first request
+   * was still in flight, and the customer received it twice.
+   *
+   * A 'leased' row has no request in flight, so it needs no grace. See
+   * SENDING_REAP_GRACE_MS for why twice the platform timeout is the right margin.
+   */
+  /**
+   * Settles an AMBIGUOUS send — one where the call failed in a way that does
+   * not say whether Meta accepted it.
+   *
+   * Identical to `cancel` except that it records WHY in the metadata rather
+   * than only in prose. The reconciler has to find these rows again, and
+   * matching on the text of an error message is a promise nobody can keep: the
+   * first person to reword that sentence silently switches reconciliation off
+   * for every send after it. `metadata.ambiguous` is a fact about the row.
+   */
+  async cancelAmbiguous(id: number, leaseOwner: string, reason: string): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $2, last_error = $3, last_error_at = now(),
+              metadata = metadata || $6::jsonb,
+              lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+        WHERE id = $1 AND lease_owner = $4 AND status <> $5`,
+      [
+        id,
+        OutboundEventStatus.Cancelled,
+        reason.slice(0, 2000),
+        leaseOwner,
+        OutboundEventStatus.Sent,
+        JSON.stringify({ ambiguous: true }),
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Ambiguous sends that are old enough to read back and young enough to still
+   * be findable.
+   *
+   * BOTH BOUNDS ARE LOAD-BEARING. Too early and the comment may not be visible
+   * on the edge yet, which would read as "never landed" and mark a live comment
+   * lost. Too late and Instagram's comments edge no longer returns it, so the
+   * read-back cannot tell "never sent" from "scrolled out of range" — which is
+   * why a row past the window is settled as unknown rather than as lost.
+   *
+   * `FOR UPDATE SKIP LOCKED` so two runs never read back the same send.
+   */
+  async listAmbiguousAwaitingReadBack(input: {
+    readonly limit: number;
+    readonly settledBeforeMs: number;
+  }): Promise<AmbiguousSend[]> {
+    const rows = await this.query<AmbiguousSend>(
+      `SELECT id, enterprise_id AS "enterpriseId", channel_id AS "channelId",
+              event_type AS "eventType", destination_id AS "destinationId",
+              payload, last_error_at AS "lastErrorAt"
+         FROM outbound_events
+        WHERE status = $1
+          AND platform = $2
+          AND event_type = ANY($3::varchar[])
+          AND COALESCE((metadata->>'ambiguous')::boolean, false) = true
+          AND metadata->>'readBack' IS NULL
+          AND enterprise_id IS NOT NULL
+          AND channel_id IS NOT NULL
+          AND last_error_at < now() - ($4::bigint * interval '1 millisecond')
+        ORDER BY last_error_at
+        LIMIT $5
+        FOR UPDATE SKIP LOCKED`,
+      [
+        OutboundEventStatus.Cancelled,
+        Platform.Instagram,
+        [OutboundEventType.CommentReply, OutboundEventType.MentionReply],
+        input.settledBeforeMs,
+        input.limit,
+      ],
+    );
+    return rows;
+  }
+
+  /**
+   * Records what the read-back found, so the same send is never read back
+   * twice.
+   *
+   * A send that LANDED is promoted to `sent` and given the platform's own id:
+   * the row was only ever cancelled because we could not see the outcome, and
+   * now we can. `lost` and `unknown` stay cancelled — the distinction is for
+   * whoever reads the ledger, and `unknown` is deliberately not `lost` because
+   * a send that aged out of the comments edge was never actually disproven.
+   */
+  async markReadBackResolved(input: {
+    readonly id: number;
+    readonly outcome: ReadBackOutcome;
+    readonly platformEventId: string | null;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET metadata = metadata || $2::jsonb,
+              status = CASE WHEN $3::varchar = 'landed' THEN $4 ELSE status END,
+              platform_event_id = COALESCE($5, platform_event_id),
+              updated_at = now()
+        WHERE id = $1
+          AND metadata->>'readBack' IS NULL`,
+      [
+        input.id,
+        JSON.stringify({ readBack: input.outcome, readBackAt: new Date().toISOString() }),
+        input.outcome,
+        OutboundEventStatus.Sent,
+        input.platformEventId,
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * The dead-lettered moderation send for a comment, if there is one.
+   *
+   * Matched on the COMMENT rather than on a link column, because moderation
+   * does not create a message of its own — it changes one that already exists,
+   * so there is nothing for `linkOutboundEvent` to have linked. The comment id
+   * in the payload is what ties the dead row to the row an agent is looking at.
+   *
+   * Newest first: a comment hidden, unhidden and hidden again has more than one
+   * settled row, and the one worth replaying is the last.
+   */
+  async findDeadModerationEvent(
+    enterpriseId: number,
+    commentId: string,
+  ): Promise<{ id: number; eventType: OutboundEventType; replays: number } | null> {
+    const rows = await this.query<{ id: number; eventType: OutboundEventType; replays: number }>(
+      `SELECT id, event_type AS "eventType",
+              COALESCE((metadata->>'replays')::int, 0) AS replays
+         FROM outbound_events
+        WHERE enterprise_id = $1
+          AND status = $2
+          AND event_type = ANY($3::varchar[])
+          AND payload->>'commentId' = $4
+        ORDER BY id DESC
+        LIMIT 1`,
+      [
+        this.requireEnterprise(enterpriseId),
+        OutboundEventStatus.DeadLetter,
+        [OutboundEventType.CommentHide, OutboundEventType.CommentDelete],
+        commentId,
+      ],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Which of these comments have a hide or delete that died.
+   *
+   * ONE QUERY FOR THE WHOLE THREAD PAGE, not one per message. The inbox asks
+   * this for every comment it renders, and asking per message would be an N+1
+   * on a read path — the shape this codebase keeps out of hot queries.
+   *
+   * Served by `outbound_events_dead_moderation_idx`, whose predicate this
+   * repeats exactly: a partial index serves only a query that asks the same
+   * way.
+   */
+  async findFailedModerationCommentIds(
+    enterpriseId: number,
+    commentIds: readonly string[],
+  ): Promise<Set<string>> {
+    if (commentIds.length === 0) return new Set();
+    const rows = await this.query<{ commentId: string }>(
+      `SELECT DISTINCT payload->>'commentId' AS "commentId"
+         FROM outbound_events
+        WHERE enterprise_id = $1
+          AND status = $2
+          AND event_type IN ($3, $4)
+          AND payload->>'commentId' = ANY($5::varchar[])`,
+      [
+        this.requireEnterprise(enterpriseId),
+        OutboundEventStatus.DeadLetter,
+        OutboundEventType.CommentHide,
+        OutboundEventType.CommentDelete,
+        [...commentIds],
+      ],
+    );
+    return new Set(rows.map((row) => row.commentId));
+  }
+
+  /**
+   * Puts a dead-lettered row back on the queue.
+   *
+   * A LEDGER OPERATION ON THE LEDGER ROW, which is the whole point. Hiding or
+   * deleting a comment marks our copy optimistically — Instagram sends no
+   * webhook for either — so when the send dead-letters the comment is still
+   * public and the inbox says it is gone, with no way back: every later attempt
+   * is refused by the already-in-that-state check.
+   *
+   * The obvious fix, letting a second click through, was tried and withdrawn.
+   * The moderation dedup key carries the row's `updated_at`, and our own
+   * optimistic mark bumps it — so each click built a FRESH key and queued
+   * another send. N clicks, N events, every one of them refused by Graph.
+   *
+   * Replaying the existing row has no such failure mode: same row, same dedup
+   * key, nothing new to collide with. The attempt count is reset because this
+   * is a new decision by a human rather than a continuation of the automatic
+   * backoff that gave up, and `replays` records that it happened — without
+   * which "why did this send six times" has no answer in the data.
+   */
+  async requeueDeadLettered(input: {
+    readonly enterpriseId: number;
+    readonly id: number;
+    readonly maxReplays: number;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $3,
+              attempt_count = 0,
+              next_attempt_at = now(),
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              metadata = metadata || jsonb_build_object(
+                'replays', COALESCE((metadata->>'replays')::int, 0) + 1,
+                'lastReplayAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SSZ')
+              ),
+              updated_at = now()
+        WHERE id = $2
+          AND enterprise_id = $1
+          AND status = $4
+          AND COALESCE((metadata->>'replays')::int, 0) < $5`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.id,
+        OutboundEventStatus.Pending,
+        OutboundEventStatus.DeadLetter,
+        input.maxReplays,
+      ],
+    );
+    return affected > 0;
+  }
+
+  async reclaimExpiredLeases(limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `UPDATE outbound_events
+          SET status = $1, lease_owner = NULL, lease_expires_at = NULL
+        WHERE id IN (
+          SELECT id FROM outbound_events
+           WHERE (status = $3 AND lease_expires_at < now())
+              OR (status = $4
+                  AND lease_expires_at < now() - ($5::int * interval '1 millisecond'))
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id`,
+      [
+        OutboundEventStatus.Pending,
+        limit,
+        OutboundEventStatus.Leased,
+        OutboundEventStatus.Sending,
+        SENDING_REAP_GRACE_MS,
+      ],
+    );
+    return affected;
+  }
+
+  /**
+   * Retention sweep. Removes rows that are SETTLED and old.
+   *
+   * THE DEDUP LEDGER IS THE REASON THIS CANNOT BE AGGRESSIVE.
+   * `outbound_events_dedup_uniq` is what makes a redelivered send collide
+   * instead of being handled twice; deleting a settled row gives that
+   * protection up for the row. So the window must comfortably exceed any
+   * redelivery Meta might attempt — see LEDGER_RETENTION_DAYS, which is set
+   * against that, not against disk.
+   *
+   * Dead letters are never swept: a terminal failure is a human's problem and
+   * the gauge alarms on it. Neither are claimable rows, which are still work.
+   */
+  async deleteSettledBefore(cutoff: Date, limit: number): Promise<number> {
+    const { affected } = await this.mutate(
+      `DELETE FROM outbound_events
+        WHERE id IN (
+          SELECT id FROM outbound_events
+           WHERE status = ANY($1) AND created_at < $2
+           ORDER BY created_at
+           LIMIT $3
+        )`,
+      [[...SETTLED_OUTBOUND_STATUSES], cutoff, limit],
+    );
+    return affected;
+  }
+}

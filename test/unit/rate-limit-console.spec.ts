@@ -1,0 +1,238 @@
+import { describe, expect, it } from 'vitest';
+import { RateLimitService, type RateLimitOverview } from '@/modules/platform/rate-limit.service';
+import type {
+  ProviderApiUsageRepository,
+  ProviderUsageCurrentRow,
+} from '@/database/repositories/provider-api-usage.repository';
+import { MetaUsageMeter, Provider } from '@/shared/enums';
+
+/**
+ * What the platform console is shown.
+ *
+ * THE SHAPING IS WHERE THE LIES HAPPEN. The repository returns rows that are
+ * simply true; this service decides which pool is "the app pool", what counts as
+ * throttled, and which window a percentage belongs to — and every defect found
+ * in this feature so far has been one of those three decisions, not the data.
+ *
+ * Driven directly with rows rather than through Postgres, because the rules
+ * under test are pure and a database would only make it slower to see which one
+ * fired.
+ */
+describe('the rate-limit console view', () => {
+  const row = (over: Partial<ProviderUsageCurrentRow> = {}): ProviderUsageCurrentRow => ({
+    provider: Provider.Meta,
+    scopeKey: 'IG:instagram',
+    meter: MetaUsageMeter.BusinessUseCase,
+    product: 'instagram',
+    providerScopeId: 'IG',
+    enterpriseId: 1,
+    enterpriseName: 'Acme',
+    enterpriseRefId: 'acme-ref',
+    channelId: 5,
+    channelName: 'The Shop',
+    channelPlatform: 'instagram',
+    platformChannelId: 'IG',
+    callPct: 10,
+    cpuPct: 1,
+    timePct: 1,
+    regainMinutes: null,
+    lastSeenAt: new Date(),
+    latestThrottledCalls: 0,
+    recentThrottledCalls: 0,
+    hourCalls: 3,
+    hourThrottledCalls: 0,
+    hourFailedCalls: 0,
+    dayCalls: 40,
+    dayThrottledCalls: 0,
+    dayFailedCalls: 0,
+    ...over,
+  });
+
+  const overviewOf = async (rows: ProviderUsageCurrentRow[]): Promise<RateLimitOverview> => {
+    const repository = { current: async () => rows } as unknown as ProviderApiUsageRepository;
+    return new RateLimitService(repository).overview();
+  };
+
+  describe('which row is the app pool', () => {
+    it('is the app METER, and a headerless row never displaces it', async () => {
+      /*
+       * THE REGRESSION THIS FILE EXISTS FOR. A call that came back with no
+       * usage header used to share the app meter. The grouping keys the app
+       * gauge off the meter, so that row WAS the app pool as far as the console
+       * was concerned — and carrying no percentage it sorted last, so it
+       * overwrote the genuine reading every time.
+       *
+       * Moving it to its own scope key fixed nothing on its own. The meter had
+       * to move with it.
+       */
+      const view = await overviewOf([
+        row({
+          scopeKey: 'meta:app',
+          meter: MetaUsageMeter.App,
+          callPct: 60,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
+        row({
+          scopeKey: 'meta:unknown',
+          meter: MetaUsageMeter.Unknown,
+          callPct: null,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
+      ]);
+
+      expect(view.app?.usedPercent).toBe(60);
+      expect(view.app?.scopeKey).toBe('meta:app');
+    });
+
+    it('still shows the headerless calls, rather than hiding them', async () => {
+      // They are calls we really made. They just belong to no pool.
+      const view = await overviewOf([
+        row({
+          scopeKey: 'meta:unknown',
+          meter: MetaUsageMeter.Unknown,
+          callPct: null,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
+      ]);
+
+      expect(view.app).toBeNull();
+      expect(view.unattributed.map((pool) => pool.scopeKey)).toEqual(['meta:unknown']);
+    });
+  });
+
+  describe('when a pool counts as throttled', () => {
+    it('is throttled while it is STILL being refused', async () => {
+      const view = await overviewOf([
+        row({ latestThrottledCalls: 2, recentThrottledCalls: 2, dayThrottledCalls: 2 }),
+      ]);
+
+      expect(view.enterprises[0]?.pools[0]?.status).toBe('throttled');
+    });
+
+    /*
+     * E11. Status read the NEWEST bucket alone, so a pool still being refused on
+     * one endpoint while another succeeded opened a fresh bucket with no
+     * refusals and went back to reading healthy — mid-throttle, on the screen
+     * whose only job is to say whether a pool is in trouble.
+     *
+     * The day total cannot replace it: one refusal at breakfast painted a pool
+     * red until the next morning, which is alarm fatigue by construction.
+     */
+    it('still reads throttled when refusals were minutes ago, not seconds', async () => {
+      const view = await overviewOf([
+        row({
+          // The newest minute succeeded — a different endpoint, same pool.
+          latestThrottledCalls: 0,
+          recentThrottledCalls: 3,
+          callPct: 4,
+        }),
+      ]);
+
+      expect(view.attention).toHaveLength(1);
+      expect(view.attention[0]?.status).toBe('throttled');
+    });
+
+    it('reads healthy once the refusals have aged out of the short window', async () => {
+      // The control. Without it this is just "always red", which is the failure
+      // the newest-minute rule was introduced to fix.
+      const view = await overviewOf([
+        row({ latestThrottledCalls: 0, recentThrottledCalls: 0, dayThrottledCalls: 9, callPct: 4 }),
+      ]);
+
+      expect(view.attention).toHaveLength(0);
+    });
+
+    it('is NOT throttled because of a refusal earlier in the day', async () => {
+      /*
+       * One 80004 at breakfast used to pin a pool red — and the enterprise
+       * heading, and the banner — until breakfast the next day, long after Meta
+       * had gone back to reporting 3%. The signal wanted is "something is STILL
+       * hammering a pool that has already said no".
+       */
+      const view = await overviewOf([
+        row({ latestThrottledCalls: 0, dayThrottledCalls: 9, callPct: 3 }),
+      ]);
+
+      const pool = view.enterprises[0]?.pools[0];
+      expect(pool?.status).toBe('ok');
+      // Still reported, because the volume is worth seeing.
+      expect(pool?.throttledCallsInWindow).toBe(9);
+      expect(view.attention).toEqual([]);
+    });
+
+    it('is throttled while Meta is still quoting a wait', async () => {
+      const view = await overviewOf([row({ latestThrottledCalls: 0, regainMinutes: 12 })]);
+
+      expect(view.enterprises[0]?.pools[0]?.status).toBe('throttled');
+    });
+  });
+
+  describe('which window a pool is measured over', () => {
+    it('gives an unrecognised product the BUSINESS window, not the app one', async () => {
+      /*
+       * Every business-use-case pool Meta meters runs over 24 hours, and Meta
+       * adds `type` values. Falling back to 60 minutes labelled a day's
+       * percentage as an hour's and read the hour's call count beside it —
+       * understating the pool by up to twenty-four times.
+       */
+      const view = await overviewOf([row({ product: 'something_meta_added' })]);
+
+      const pool = view.enterprises[0]?.pools[0];
+      expect(pool?.windowMinutes).toBe(24 * 60);
+      expect(pool?.callsInWindow).toBe(40);
+    });
+
+    it('keeps the app pool on its hourly window', async () => {
+      const view = await overviewOf([
+        row({
+          scopeKey: 'meta:app',
+          meter: MetaUsageMeter.App,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
+      ]);
+
+      expect(view.app?.windowMinutes).toBe(60);
+      expect(view.app?.callsInWindow).toBe(3);
+    });
+  });
+
+  describe('the headline percentage', () => {
+    it('is the WORST of the three, not the call count', async () => {
+      // Calls, CPU time and total time are metered separately and any one of
+      // them reaching 100 throttles the pool.
+      const view = await overviewOf([row({ callPct: 10, cpuPct: 91, timePct: 4 })]);
+
+      expect(view.enterprises[0]?.pools[0]?.usedPercent).toBe(91);
+      expect(view.enterprises[0]?.pools[0]?.status).toBe('warning');
+    });
+
+    it('is unknown, not zero, when Meta said nothing', async () => {
+      const view = await overviewOf([row({ callPct: null, cpuPct: null, timePct: null })]);
+
+      const pool = view.enterprises[0]?.pools[0];
+      expect(pool?.usedPercent).toBeNull();
+      expect(pool?.remainingPercent).toBeNull();
+      expect(pool?.status).toBe('unknown');
+    });
+  });
+});

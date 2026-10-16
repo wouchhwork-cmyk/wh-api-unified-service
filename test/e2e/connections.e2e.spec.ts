@@ -1,0 +1,622 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import type { DataSource } from 'typeorm';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  createTestApp,
+  platformAdminLogin,
+  provisionPlatformAdmin,
+  resetTenantData,
+  type TestApp,
+} from './app.harness';
+
+const SIGNUP = {
+  business: { name: 'Blue Bottle Cafe', email: 'hello@bluebottle.test' },
+  owner: {
+    firstName: 'Meera',
+    email: 'meera@bluebottle.test',
+    password: 'a-long-enough-password',
+  },
+};
+
+/**
+ * The Meta connect flow, as far as it can go without a real Facebook app.
+ *
+ * Everything up to the token exchange is ours and testable: who may start a
+ * connection, what the authorization URL contains, and every way the callback can
+ * fail. The exchange itself needs real credentials, so these run against the fake
+ * but well-formed ones in .env.local — which is enough, because the assertions
+ * are about OUR behaviour on the way in and the way back.
+ */
+describe('connecting a Meta account', () => {
+  let testApp: TestApp;
+  let app: NestExpressApplication;
+  let db: DataSource;
+
+  beforeAll(async () => {
+    testApp = await createTestApp();
+    app = testApp.app;
+    db = testApp.db;
+  });
+  afterAll(async () => {
+    await testApp.close();
+  });
+  beforeEach(async () => {
+    await resetTenantData(db);
+    await db.query(`DELETE FROM oauth_states`);
+    await provisionPlatformAdmin(app);
+  });
+
+  const http = () => request(app.getHttpServer());
+  const code = (): string => process.env.OTP_STATIC_CODE ?? '666666';
+
+  async function adminToken(): Promise<string> {
+    const login = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+    return login.body.data.accessToken as string;
+  }
+
+  /** Signs up, verifies, and optionally activates. */
+  async function business(activate = true): Promise<{ token: string; refId: string }> {
+    const signup = await http().post('/api/v1/enterprises/signup').send(SIGNUP).expect(201);
+    const verified = await http()
+      .post('/api/v1/auth/verify')
+      .send({ verificationRefId: signup.body.data.verificationRefId, code: code() })
+      .expect(200);
+
+    if (activate) {
+      await http()
+        .post(`/api/v1/platform/enterprises/${signup.body.data.enterpriseRefId}/status`)
+        .set('Authorization', `Bearer ${await adminToken()}`)
+        .send({ status: 'active' })
+        .expect(200);
+    }
+
+    return {
+      token: verified.body.data.accessToken as string,
+      refId: signup.body.data.enterpriseRefId as string,
+    };
+  }
+
+  function stateFrom(authorizationUrl: string): string {
+    const state = new URL(authorizationUrl).searchParams.get('state');
+    if (!state) throw new Error('the authorization URL carried no state');
+    return state;
+  }
+
+  it('refuses to start a connection without a token', async () => {
+    const response = await http()
+      .post('/api/v1/connections/start')
+      .send({ provider: 'meta' })
+      .expect(401);
+    expect(response.body.error.code).toBe('AUTH_TOKEN_INVALID');
+  });
+
+  it('tells a client which platforms it can offer', async () => {
+    const { token } = await business();
+    const response = await http()
+      .get('/api/v1/connections/providers')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    // Only what is implemented — a client should not have to hardcode this, and
+    // should not be shown a platform that would answer 501.
+    expect(response.body.data).toEqual([{ provider: 'meta', label: 'Facebook & Instagram' }]);
+  });
+
+  it('rejects a provider that is not a platform, and one that is not built yet', async () => {
+    const { token } = await business();
+
+    // Not a platform at all: the caller's mistake.
+    const nonsense = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'myspace' })
+      .expect(422);
+    expect(nonsense.body.error.code).toBe('VALIDATION_FAILED');
+
+    // A platform we recognise and have not built: OUR gap, and a different
+    // answer, so a client can say "coming soon" rather than "you sent nonsense".
+    const notBuilt = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'google' })
+      .expect(501);
+    expect(notBuilt.body.error.code).toBe('PROVIDER_NOT_SUPPORTED');
+    expect(notBuilt.body.error.details[0].issue).toContain('meta');
+
+    // Unknown extra fields are refused, like every other endpoint here.
+    await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta', enterpriseId: 999 })
+      .expect(422);
+  });
+
+  it('refuses to start a connection for a business that is not activated', async () => {
+    const { token } = await business(false);
+    const response = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
+      .expect(403);
+    expect(response.body.error.code).toBe('ENTERPRISE_PENDING_ACTIVATION');
+  });
+
+  it('builds a Login for Business URL, with no scope list', async () => {
+    const { token } = await business();
+    const response = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
+      .expect(200);
+
+    const url = new URL(response.body.data.authorizationUrl as string);
+    expect(url.host).toBe('www.facebook.com');
+    expect(url.pathname).toContain('/dialog/oauth');
+    expect(url.searchParams.get('client_id')).toBeTruthy();
+    // config_id is what makes this Login for Business: the configuration decides
+    // the scopes, so sending a scope list too would be wrong.
+    expect(url.searchParams.get('config_id')).toBeTruthy();
+    expect(url.searchParams.get('scope')).toBeNull();
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('redirect_uri')).toContain('/connections/meta/callback');
+    expect(url.searchParams.get('state')).toBeTruthy();
+  });
+
+  it('records the state so it can be spent once', async () => {
+    const { token } = await business();
+    await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
+      .expect(200);
+
+    const rows: { count: string }[] = await db.query(
+      `SELECT count(*) AS count FROM oauth_states WHERE consumed_at IS NULL`,
+    );
+    expect(Number(rows[0]?.count)).toBe(1);
+  });
+
+  it('redirects rather than returning JSON when the callback has no code', async () => {
+    // A human is looking at this URL, so every outcome is a redirect.
+    const response = await http().get('/api/v1/connections/meta/callback').expect(302);
+    const location = new URL(response.headers.location as string);
+    expect(location.searchParams.get('status')).toBe('error');
+    expect(location.searchParams.get('reason')).toBe('missing_code_or_state');
+  });
+
+  it('reports a cancelled consent screen as cancelled, not as an error', async () => {
+    const response = await http()
+      .get('/api/v1/connections/meta/callback?error=access_denied&error_description=User+said+no')
+      .expect(302);
+    const location = new URL(response.headers.location as string);
+    expect(location.searchParams.get('status')).toBe('cancelled');
+  });
+
+  it('refuses a forged state', async () => {
+    const response = await http()
+      .get('/api/v1/connections/meta/callback?code=FAKE&state=not.a.real.state')
+      .expect(302);
+    const location = new URL(response.headers.location as string);
+    expect(location.searchParams.get('reason')).toBe('OAUTH_STATE_INVALID');
+  });
+
+  it('spends the state exactly once, so the callback URL cannot be replayed', async () => {
+    const { token } = await business();
+    const start = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
+      .expect(200);
+    const state = stateFrom(start.body.data.authorizationUrl as string);
+
+    // First time through: the state is spent, then the exchange fails because
+    // the credentials are fake. That failure is the proof it got past the state.
+    const first = await http()
+      .get(`/api/v1/connections/meta/callback?code=FAKE&state=${encodeURIComponent(state)}`)
+      .expect(302);
+    expect(new URL(first.headers.location as string).searchParams.get('reason')).not.toBe(
+      'OAUTH_STATE_INVALID',
+    );
+
+    /*
+     * The replay. This URL sits in browser history, in logs and in a Referer
+     * header, so it WILL be seen again — and it must not work a second time.
+     */
+    const replay = await http()
+      .get(`/api/v1/connections/meta/callback?code=FAKE&state=${encodeURIComponent(state)}`)
+      .expect(302);
+    expect(new URL(replay.headers.location as string).searchParams.get('reason')).toBe(
+      'OAUTH_STATE_INVALID',
+    );
+  });
+
+  it('refuses to complete a connection for a business suspended mid-flow', async () => {
+    const { token, refId } = await business();
+    const start = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ provider: 'meta' })
+      .expect(200);
+    const state = stateFrom(start.body.data.authorizationUrl as string);
+
+    // Switched off AFTER the state was minted. The callback is @Public and
+    // bypasses the guard chain, so it has to check this itself.
+    await http()
+      .post(`/api/v1/platform/enterprises/${refId}/status`)
+      .set('Authorization', `Bearer ${await adminToken()}`)
+      .send({ status: 'suspended', reason: 'mid-flow' })
+      .expect(200);
+
+    const response = await http()
+      .get(`/api/v1/connections/meta/callback?code=FAKE&state=${encodeURIComponent(state)}`)
+      .expect(302);
+    expect(new URL(response.headers.location as string).searchParams.get('reason')).toBe(
+      'ENTERPRISE_SUSPENDED',
+    );
+  });
+
+  it('lists connections and channels, empty and permission-gated', async () => {
+    const { token } = await business();
+
+    const connections = await http()
+      .get('/api/v1/connections')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(connections.body.data).toEqual([]);
+
+    const channels = await http()
+      .get('/api/v1/connections/channels')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(channels.body.data).toEqual([]);
+
+    await http().get('/api/v1/connections').expect(401);
+  });
+
+  /*
+   * THE PROFILE REFRESH HAS BEEN COLLECTING THIS AND NOBODY COULD SEE IT.
+   *
+   * The capability sweep widened the profile fetch (platform-limitations 0.6:
+   * the Page node refused none of 26 fields while we asked for four), and the
+   * listing still returned the same nine configuration fields — so the
+   * follower count, the category, the rating and the rest reached the database
+   * and stopped there. A figure captured and never shown is worth what one
+   * never captured is worth.
+   */
+  it('returns what Meta says the account is, not just how we have it configured', async () => {
+    const { token, refId } = await business();
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social', 'META_USER_1', 'v1:k1:n:c', 'active')
+       RETURNING id`,
+      [refId],
+    );
+
+    await db.query(
+      `INSERT INTO channels
+         (enterprise_id, provider_connection_id, platform, channel_kind,
+          platform_channel_id, name, username, description, profile_picture_url,
+          follower_count, post_count, profile_synced_at, metadata, status, is_managed)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'facebook', 'page',
+               'PAGE_1', 'Ai automation', 'ai.automation', 'We automate things',
+               'https://example.test/pic.jpg', 1234, 56, now(), $3::jsonb, 'active', true)`,
+      [
+        refId,
+        connection[0]?.id,
+        JSON.stringify({
+          category: 'Information Technology Company',
+          pageLink: 'https://www.facebook.com/651551841371924',
+          verificationStatus: 'not_verified',
+          ratingCount: 12,
+          starRating: 4.3,
+        }),
+      ],
+    );
+
+    const channels = await http()
+      .get('/api/v1/connections/channels')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const [channel] = channels.body.data as { profile: Record<string, unknown> }[];
+    expect(channel?.profile).toMatchObject({
+      description: 'We automate things',
+      pictureUrl: 'https://example.test/pic.jpg',
+      followerCount: 1234,
+      postCount: 56,
+      category: 'Information Technology Company',
+      link: 'https://www.facebook.com/651551841371924',
+      verificationStatus: 'not_verified',
+      ratingCount: 12,
+      starRating: 4.3,
+    });
+  });
+
+  /*
+   * An Instagram account has no category, link, rating or verification, and the
+   * bag it does carry is a different shape. Those read as null rather than
+   * being absent, so a client renders "not applicable" instead of crashing on a
+   * missing key.
+   */
+  it('reports null for the Page-only fields on an Instagram channel', async () => {
+    const { token, refId } = await business();
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social', 'META_USER_2', 'v1:k1:n:c', 'active')
+       RETURNING id`,
+      [refId],
+    );
+
+    await db.query(
+      `INSERT INTO channels
+         (enterprise_id, provider_connection_id, platform, channel_kind,
+          platform_channel_id, name, username, follower_count, post_count,
+          metadata, status, is_managed)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'instagram', 'instagram_account',
+               'IG_1', 'Free@storytools', 'ai_automation_demo', 4, 77, $3::jsonb, 'active', true)`,
+      [refId, connection[0]?.id, JSON.stringify({ igId: 72094608668, followsCount: 0 })],
+    );
+
+    const channels = await http()
+      .get('/api/v1/connections/channels')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const [channel] = channels.body.data as { profile: Record<string, unknown> }[];
+    expect(channel?.profile).toMatchObject({
+      followerCount: 4,
+      postCount: 77,
+      category: null,
+      link: null,
+      ratingCount: null,
+      starRating: null,
+      // Never refreshed, which is a different fact from having no followers.
+      syncedAt: null,
+    });
+  });
+
+  /*
+   * A3. Until this existed, A2's refusal was a LOCKOUT: one Page, one
+   * connection, and no way to release one — so a business that had lost its
+   * original Facebook login could neither use its Page here nor reconnect it.
+   *
+   * The contract is narrow and worth stating: authority is withdrawn, history
+   * is kept. Each half is asserted separately below, because getting one right
+   * and the other wrong is the likely failure.
+   */
+  describe('disconnecting', () => {
+    const seedConnected = async (
+      refId: string,
+    ): Promise<{ connectionRefId: string; channelId: string }> => {
+      const connection: { id: string; ref_id: string }[] = await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social',
+                 'META_DISC', 'v1:k1:n:c', 'active')
+         RETURNING id, ref_id`,
+        [refId],
+      );
+      const channel: { id: string }[] = await db.query(
+        `INSERT INTO channels
+           (enterprise_id, provider_connection_id, platform, channel_kind,
+            platform_channel_id, name, access_token, status, is_managed, webhook_subscribed_at)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'facebook', 'page',
+                 'PAGE_DISCONNECT_1', 'Ai automation', 'v1:k1:n:c', 'active', true, now())
+         RETURNING id`,
+        [refId, connection[0]?.id],
+      );
+      return {
+        connectionRefId: connection[0]?.ref_id as string,
+        channelId: channel[0]?.id as string,
+      };
+    };
+
+    it('withdraws authority: status, token and subscription all go', async () => {
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const rows: {
+        status: string;
+        access_token: string | null;
+        webhook_subscribed_at: string | null;
+      }[] = await db.query(
+        `SELECT status, access_token, webhook_subscribed_at FROM channels
+          WHERE platform_channel_id = 'PAGE_DISCONNECT_1'`,
+      );
+      expect(rows[0]?.status).toBe('disconnected');
+      // Cleared, not just flagged: a send that somehow reached the relay must
+      // fail even if a future query forgets to filter on status.
+      expect(rows[0]?.access_token).toBeNull();
+      expect(rows[0]?.webhook_subscribed_at).toBeNull();
+
+      const connections: { status: string; token_status: string }[] = await db.query(
+        `SELECT status, token_status FROM provider_connections WHERE ref_id = $1`,
+        [connectionRefId],
+      );
+      expect(connections[0]).toMatchObject({ status: 'revoked', token_status: 'revoked' });
+    });
+
+    /*
+     * THE HALF THAT IS EASY TO GET WRONG. "Disconnect" reads like "delete" and
+     * is not: a business disconnecting is often moving the account elsewhere
+     * and still owns everything that happened while it was connected.
+     */
+    it('keeps every conversation and message exactly as they were', async () => {
+      const { token, refId } = await business();
+      const { connectionRefId, channelId } = await seedConnected(refId);
+
+      const customer: { id: string }[] = await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'A customer', 'facebook')
+         RETURNING id`,
+        [refId],
+      );
+      const conversation: { id: string }[] = await db.query(
+        `INSERT INTO conversations
+           (enterprise_id, channel_id, customer_id, conversation_kind, platform,
+            platform_thread_id, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, $3, 'direct_message',
+                 'facebook', 'THREAD_KEEP_1', 'open')
+         RETURNING id`,
+        [refId, channelId, customer[0]?.id],
+      );
+      await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, message_kind, body,
+            platform_message_id, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'inbound',
+                 'direct_message', 'keep me', 'MID_KEEP_1', 'delivered')`,
+        [refId, conversation[0]?.id],
+      );
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const kept: { body: string; is_deleted: boolean }[] = await db.query(
+        `SELECT body, is_deleted FROM messages WHERE platform_message_id = 'MID_KEEP_1'`,
+      );
+      expect(kept).toHaveLength(1);
+      expect(kept[0]).toMatchObject({ body: 'keep me', is_deleted: false });
+
+      const threads: { status: string; is_deleted: boolean }[] = await db.query(
+        `SELECT status, is_deleted FROM conversations WHERE platform_thread_id = 'THREAD_KEEP_1'`,
+      );
+      expect(threads[0]).toMatchObject({ status: 'open', is_deleted: false });
+    });
+
+    it('still lists the channel, so the history remains reachable', async () => {
+      // Hiding it would strand every conversation under it in the UI.
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(201);
+
+      const channels = await http()
+        .get('/api/v1/connections/channels')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const [channel] = channels.body.data as { status: string }[];
+      expect(channel?.status).toBe('disconnected');
+    });
+
+    it('is refused for somebody without authority over channels', async () => {
+      // An agent answers messages. Releasing the business's account is not
+      // theirs to do — and it would silence every thread they work in.
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      const roles = await http()
+        .get('/api/v1/employees/roles')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+      const agentRole = (roles.body.data as { refId: string; name: string }[]).find(
+        (role) => role.name === 'agent',
+      );
+      await http()
+        .post('/api/v1/employees')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ firstName: 'Nadia', email: 'nadia@bluebottle.test', roleRefId: agentRole?.refId })
+        .expect(201);
+      const accepted = await http()
+        .post('/api/v1/auth/accept-invite')
+        .send({
+          email: 'nadia@bluebottle.test',
+          code: code(),
+          password: 'a-password-only-nadia-knows',
+        })
+        .expect(200);
+
+      const refused = await http()
+        .post(`/api/v1/connections/${connectionRefId}/disconnect`)
+        .set('Authorization', `Bearer ${accepted.body.data.accessToken}`)
+        .expect(403);
+      expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+    });
+
+    it('404s on a connection this business does not own', async () => {
+      /*
+       * Tenant scoping, asserted through a refId that exists but belongs
+       * elsewhere — the case a global `WHERE ref_id = $1` would get wrong, and
+       * the one a non-existent id cannot catch.
+       */
+      const { token, refId } = await business();
+      const { connectionRefId } = await seedConnected(refId);
+
+      const otherEnterprise: { ref_id: string }[] = await db.query(
+        `INSERT INTO enterprises (name, slug, email, status)
+         VALUES ('Someone Else Ltd', 'someone-else-ltd', 'someone@else.test', 'active')
+         RETURNING ref_id`,
+      );
+      const stranger: { ref_id: string }[] = await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+         VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social',
+                 'META_STRANGER', 'v1:k1:n:c', 'active')
+         RETURNING ref_id`,
+        [otherEnterprise[0]?.ref_id],
+      );
+
+      await http()
+        .post(`/api/v1/connections/${stranger[0]?.ref_id}/disconnect`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(404);
+
+      // And ours is untouched by the attempt.
+      const mine: { status: string }[] = await db.query(
+        `SELECT status FROM provider_connections WHERE ref_id = $1`,
+        [connectionRefId],
+      );
+      expect(mine[0]?.status).toBe('active');
+    });
+  });
+
+  it('gives an agent no authority to connect an account', async () => {
+    const { token } = await business();
+
+    const roles = await http()
+      .get('/api/v1/employees/roles')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    const agentRole = (roles.body.data as { refId: string; name: string }[]).find(
+      (role) => role.name === 'agent',
+    );
+
+    await http()
+      .post('/api/v1/employees')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ firstName: 'Rahul', email: 'rahul@bluebottle.test', roleRefId: agentRole?.refId })
+      .expect(201);
+    const accepted = await http()
+      .post('/api/v1/auth/accept-invite')
+      .send({
+        email: 'rahul@bluebottle.test',
+        code: code(),
+        password: 'a-password-only-rahul-knows',
+      })
+      .expect(200);
+
+    // An agent answers messages; connecting the business's accounts is not
+    // theirs to do.
+    const refused = await http()
+      .post('/api/v1/connections/start')
+      .set('Authorization', `Bearer ${accepted.body.data.accessToken}`)
+      .send({ provider: 'meta' })
+      .expect(403);
+    expect(refused.body.error.code).toBe('PERMISSION_DENIED');
+  });
+});
