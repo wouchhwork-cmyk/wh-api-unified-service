@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Provider } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { PROVIDER_CONNECTORS, type ProviderConnector } from './provider-connector';
-import { ChannelRepository } from '@/database/repositories/channel.repository';
+import { ChannelRepository, type ChannelRow } from '@/database/repositories/channel.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 
 export interface StartedConnection {
@@ -41,6 +41,63 @@ export interface ChannelDto {
   readonly isManaged: boolean;
   readonly webhookSubscribedAt: Date | null;
   readonly parentChannelRefId: string | null;
+  /**
+   * What Meta says this account IS, as opposed to how we have it configured.
+   *
+   * Collected by the daily profile refresh since the capability sweep widened
+   * it (platform-limitations 0.6: the Page node refused none of 26 fields while
+   * we were asking for four) and never once read back, so none of it reached
+   * anybody. The shape differs by platform because the platforms differ — a
+   * Page has a rating and a category, an Instagram account has neither.
+   */
+  readonly profile: ChannelProfileDto;
+}
+
+export interface ChannelProfileDto {
+  readonly description: string | null;
+  readonly pictureUrl: string | null;
+  readonly followerCount: number | null;
+  readonly postCount: number | null;
+  /** null = never refreshed, which is different from "has no followers". */
+  readonly syncedAt: Date | null;
+  /** Page-only, and null on Instagram rather than absent. */
+  readonly category: string | null;
+  readonly link: string | null;
+  readonly verificationStatus: string | null;
+  readonly ratingCount: number | null;
+  readonly starRating: number | null;
+}
+
+/**
+ * Reads one typed value out of the metadata bag.
+ *
+ * NARROWED RATHER THAN CAST, because this bag is written from whatever Meta
+ * returned: a field can be absent, null, or a type we did not expect, and a
+ * cast would hand all three to a client as though they were the real thing.
+ */
+function metaValue<T extends string | number>(
+  metadata: Record<string, unknown>,
+  key: string,
+  kind: 'string' | 'number',
+): T | null {
+  const value = metadata[key];
+  return typeof value === kind ? (value as T) : null;
+}
+
+function toProfile(channel: ChannelRow): ChannelProfileDto {
+  const metadata = channel.metadata ?? {};
+  return {
+    description: channel.description,
+    pictureUrl: channel.profilePictureUrl,
+    followerCount: channel.followerCount,
+    postCount: channel.postCount,
+    syncedAt: channel.profileSyncedAt,
+    category: metaValue<string>(metadata, 'category', 'string'),
+    link: metaValue<string>(metadata, 'pageLink', 'string'),
+    verificationStatus: metaValue<string>(metadata, 'verificationStatus', 'string'),
+    ratingCount: metaValue<number>(metadata, 'ratingCount', 'number'),
+    starRating: metaValue<number>(metadata, 'starRating', 'number'),
+  };
 }
 
 @Injectable()
@@ -136,6 +193,7 @@ export class ConnectionsService {
       webhookSubscribedAt: channel.webhookSubscribedAt,
       parentChannelRefId:
         channel.parentChannelId === null ? null : (refById.get(channel.parentChannelId) ?? null),
+      profile: toProfile(channel),
     }));
   }
 

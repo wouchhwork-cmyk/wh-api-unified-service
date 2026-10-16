@@ -278,6 +278,16 @@ available today and "here is what they said" is an App Review away.
 `reactions.summary` (1.3), so it is the single permission that would unlock the
 most.
 
+**Surfaced 17 Oct 2026.** The widened fetch landed in September and nothing read
+it back: the channel listing still returned the same nine configuration fields,
+so the follower count, category, rating, verification and page link reached the
+database and stopped there. `/connections/channels` now carries a `profile`
+object and the portal renders it. The Page-only fields read as `null` on an
+Instagram channel rather than being absent, so a client shows "not applicable"
+instead of breaking on a missing key — and a channel never refreshed is
+distinguished from one that reported nothing, so nobody reconnects an account to
+fix an empty cell that only means the sweep has not run.
+
 **Re-run with** `scripts/capability-sweep.ts` and `scripts/field-sweep.ts`. Both
 are read-only, and a refusal is the useful half of the output.
 
@@ -810,6 +820,13 @@ works on comments on our own media, so this is not a missing scope.
 
 **Consequence, and it is worth telling an agent:** a reply to a mention is
 PERMANENT from our side. There is no unsend.
+
+**Now told, 17 Oct 2026.** The composer says so on a mention thread BEFORE the
+agent types, because afterwards there is nothing anybody can do about it. It is
+a warning and not a refusal — replying is the point of the thread. Moderation
+controls were already correctly withheld (`canModerateComments` requires a
+comment thread on a post we own), so the refusal itself was never reachable;
+what was missing was telling anyone.
 
 Note the `GET` failing too: our own reply, seconds old, is not addressable by id.
 It is visible only through the mentions edge, inside the parent's `replies` list.

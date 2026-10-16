@@ -274,6 +274,112 @@ describe('connecting a Meta account', () => {
     await http().get('/api/v1/connections').expect(401);
   });
 
+  /*
+   * THE PROFILE REFRESH HAS BEEN COLLECTING THIS AND NOBODY COULD SEE IT.
+   *
+   * The capability sweep widened the profile fetch (platform-limitations 0.6:
+   * the Page node refused none of 26 fields while we asked for four), and the
+   * listing still returned the same nine configuration fields — so the
+   * follower count, the category, the rating and the rest reached the database
+   * and stopped there. A figure captured and never shown is worth what one
+   * never captured is worth.
+   */
+  it('returns what Meta says the account is, not just how we have it configured', async () => {
+    const { token, refId } = await business();
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social', 'META_USER_1', 'v1:k1:n:c', 'active')
+       RETURNING id`,
+      [refId],
+    );
+
+    await db.query(
+      `INSERT INTO channels
+         (enterprise_id, provider_connection_id, platform, channel_kind,
+          platform_channel_id, name, username, description, profile_picture_url,
+          follower_count, post_count, profile_synced_at, metadata, status, is_managed)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'facebook', 'page',
+               'PAGE_1', 'Ai automation', 'ai.automation', 'We automate things',
+               'https://example.test/pic.jpg', 1234, 56, now(), $3::jsonb, 'active', true)`,
+      [
+        refId,
+        connection[0]?.id,
+        JSON.stringify({
+          category: 'Information Technology Company',
+          pageLink: 'https://www.facebook.com/651551841371924',
+          verificationStatus: 'not_verified',
+          ratingCount: 12,
+          starRating: 4.3,
+        }),
+      ],
+    );
+
+    const channels = await http()
+      .get('/api/v1/connections/channels')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const [channel] = channels.body.data as { profile: Record<string, unknown> }[];
+    expect(channel?.profile).toMatchObject({
+      description: 'We automate things',
+      pictureUrl: 'https://example.test/pic.jpg',
+      followerCount: 1234,
+      postCount: 56,
+      category: 'Information Technology Company',
+      link: 'https://www.facebook.com/651551841371924',
+      verificationStatus: 'not_verified',
+      ratingCount: 12,
+      starRating: 4.3,
+    });
+  });
+
+  /*
+   * An Instagram account has no category, link, rating or verification, and the
+   * bag it does carry is a different shape. Those read as null rather than
+   * being absent, so a client renders "not applicable" instead of crashing on a
+   * missing key.
+   */
+  it('reports null for the Page-only fields on an Instagram channel', async () => {
+    const { token, refId } = await business();
+
+    const connection: { id: string }[] = await db.query(
+      `INSERT INTO provider_connections
+         (enterprise_id, provider, provider_category, provider_user_id, access_token, status)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), 'meta', 'social', 'META_USER_2', 'v1:k1:n:c', 'active')
+       RETURNING id`,
+      [refId],
+    );
+
+    await db.query(
+      `INSERT INTO channels
+         (enterprise_id, provider_connection_id, platform, channel_kind,
+          platform_channel_id, name, username, follower_count, post_count,
+          metadata, status, is_managed)
+       VALUES ((SELECT id FROM enterprises WHERE ref_id = $1), $2, 'instagram', 'instagram_account',
+               'IG_1', 'Free@storytools', 'ai_automation_demo', 4, 77, $3::jsonb, 'active', true)`,
+      [refId, connection[0]?.id, JSON.stringify({ igId: 72094608668, followsCount: 0 })],
+    );
+
+    const channels = await http()
+      .get('/api/v1/connections/channels')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    const [channel] = channels.body.data as { profile: Record<string, unknown> }[];
+    expect(channel?.profile).toMatchObject({
+      followerCount: 4,
+      postCount: 77,
+      category: null,
+      link: null,
+      ratingCount: null,
+      starRating: null,
+      // Never refreshed, which is a different fact from having no followers.
+      syncedAt: null,
+    });
+  });
+
   it('gives an agent no authority to connect an account', async () => {
     const { token } = await business();
 

@@ -32,6 +32,19 @@ export interface ChannelRow {
   readonly parentChannelId: number | null;
   /** null = this Page is not subscribed, so no events will arrive. */
   readonly webhookSubscribedAt: Date | null;
+  readonly description: string | null;
+  readonly profilePictureUrl: string | null;
+  readonly followerCount: number | null;
+  readonly postCount: number | null;
+  /** null = the profile refresh has never run for this channel. */
+  readonly profileSyncedAt: Date | null;
+  /**
+   * Everything else Meta returned, which differs per platform — a Page carries
+   * its category, link, rating and verification; an Instagram account carries
+   * its ig id and follows count. Kept as the bag it arrives as rather than
+   * flattened into columns nobody would add fast enough to keep up with Meta.
+   */
+  readonly metadata: Record<string, unknown>;
 }
 
 /** What the send path needs: the token that actually authorises the call. */
@@ -137,7 +150,16 @@ export class ChannelRepository extends BaseRepository {
               platform_channel_id AS "platformChannelId", name, username, status,
               reauth_required AS "reauthRequired", is_managed AS "isManaged",
               parent_channel_id AS "parentChannelId",
-              webhook_subscribed_at AS "webhookSubscribedAt"
+              webhook_subscribed_at AS "webhookSubscribedAt",
+              /*
+               * THE PROFILE, which the daily refresh has been collecting and
+               * nothing ever read back. Meta returns all of this on a call we
+               * already make, and a figure captured but never shown is worth
+               * exactly as much as one never captured.
+               */
+              description, profile_picture_url AS "profilePictureUrl",
+              follower_count AS "followerCount", post_count AS "postCount",
+              profile_synced_at AS "profileSyncedAt", metadata
          FROM channels
         WHERE enterprise_id = $1 AND is_deleted = false
         ORDER BY platform, name NULLS LAST`,
