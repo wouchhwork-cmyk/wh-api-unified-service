@@ -52,11 +52,10 @@ describe('adding one of our own people', () => {
       .get('/api/v1/platform/staff')
       .set(auth(admin))
       .expect(200)
-      .then(
-        (response) =>
-          (response.body.data as { refId: string; status: string; roles: string[] }[]).find(
-            (person) => person.refId === refId,
-          ),
+      .then((response) =>
+        (response.body.data as { refId: string; status: string; roles: string[] }[]).find(
+          (person) => person.refId === refId,
+        ),
       );
 
   describe('creating one', () => {

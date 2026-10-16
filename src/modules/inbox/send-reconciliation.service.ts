@@ -89,7 +89,10 @@ export class SendReconciliationService {
     }
 
     if (pending.length > 0) {
-      this.logger.info({ runId, considered: pending.length, ...tally }, 'read back ambiguous sends');
+      this.logger.info(
+        { runId, considered: pending.length, ...tally },
+        'read back ambiguous sends',
+      );
     }
     return { runId, considered: pending.length, ...tally };
   }
@@ -201,7 +204,8 @@ export class SendReconciliationService {
       if (candidate.timestamp === null) continue;
       const posted = Date.parse(candidate.timestamp);
       if (Number.isNaN(posted)) continue;
-      if (Math.abs(posted - attemptedAt.getTime()) <= SEND_READ_BACK_MATCH_WINDOW_MS) return candidate;
+      if (Math.abs(posted - attemptedAt.getTime()) <= SEND_READ_BACK_MATCH_WINDOW_MS)
+        return candidate;
     }
     return null;
   }

@@ -40,13 +40,22 @@ async function main(): Promise<void> {
   const call = async (label: string, path: string, body: Record<string, string>): Promise<void> => {
     const r = await fetch(`https://graph.facebook.com/${v}/${path}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
       body: new URLSearchParams({ ...body, appsecret_proof: proof }),
     });
-    const out = (await r.json()) as { id?: string; success?: boolean; error?: { message?: string; code?: number } };
+    const out = (await r.json()) as {
+      id?: string;
+      success?: boolean;
+      error?: { message?: string; code?: number };
+    };
     console.log(
       `  ${label.padEnd(30)} ${r.status}  ` +
-        (out.error ? `#${out.error.code} ${String(out.error.message).slice(0, 68)}` : `OK ${out.id ?? ''}`),
+        (out.error
+          ? `#${out.error.code} ${String(out.error.message).slice(0, 68)}`
+          : `OK ${out.id ?? ''}`),
     );
   };
 
@@ -57,4 +66,7 @@ async function main(): Promise<void> {
 
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

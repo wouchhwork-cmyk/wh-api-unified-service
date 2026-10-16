@@ -632,5 +632,4 @@ export class OutboundEventRepository extends BaseRepository {
     );
     return affected;
   }
-
 }

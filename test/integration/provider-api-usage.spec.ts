@@ -257,7 +257,12 @@ describe('provider_api_usage', () => {
     it('reports both to the console, each under its own provider', async () => {
       const now = new Date();
       await usage.record([
-        bucket({ scopeKey: 'meta:A:inbox', provider: Provider.Meta, bucketStart: now, lastSeenAt: now }),
+        bucket({
+          scopeKey: 'meta:A:inbox',
+          provider: Provider.Meta,
+          bucketStart: now,
+          lastSeenAt: now,
+        }),
         bucket({
           scopeKey: 'google:B:inbox',
           provider: Provider.Google,
@@ -297,9 +302,7 @@ describe('provider_api_usage', () => {
     it('finds the channel behind an id Meta named', async () => {
       const owners = await usage.resolveOwners(['IG_ACCOUNT']);
 
-      expect(owners).toEqual([
-        { platformChannelId: 'IG_ACCOUNT', channelId, enterpriseId },
-      ]);
+      expect(owners).toEqual([{ platformChannelId: 'IG_ACCOUNT', channelId, enterpriseId }]);
     });
 
     it('returns nothing for an id that is not ours', async () => {
@@ -326,7 +329,9 @@ describe('provider_api_usage', () => {
       const current = await usage.current(500);
       const pool = current.find((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram');
       expect(pool?.callPct).toBe(20);
-      expect(current.filter((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram')).toHaveLength(1);
+      expect(
+        current.filter((entry) => entry.scopeKey === 'meta:IG_ACCOUNT:instagram'),
+      ).toHaveLength(1);
     });
 
     it('totals OUR calls across the window, not just the newest minute', async () => {
@@ -441,7 +446,10 @@ describe('provider_api_usage', () => {
       }
 
       const points = await usage.history(60 * 60_000, 2, null);
-      expect(points.map((point) => point.scopeKey)).toEqual(['meta:s0:instagram', 'meta:s1:instagram']);
+      expect(points.map((point) => point.scopeKey)).toEqual([
+        'meta:s0:instagram',
+        'meta:s1:instagram',
+      ]);
     });
   });
 

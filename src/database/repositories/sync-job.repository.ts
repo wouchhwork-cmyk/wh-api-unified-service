@@ -343,5 +343,4 @@ export class SyncJobRepository extends BaseRepository {
     );
     return affected;
   }
-
 }

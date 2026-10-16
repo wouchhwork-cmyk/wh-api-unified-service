@@ -421,13 +421,10 @@ export class EmployeesService {
      * across every business. Two managers could also suspend each other, which
      * turns a disagreement into a race.
      */
-    const modifyDenial = mayModifyEmployee(
-      await this.authorityOf(enterpriseId, actingEmployeeId),
-      {
-        employeeId: employee.employeeId,
-        level: await this.roles.highestLevelForEmployee(enterpriseId, employee.employeeId),
-      },
-    );
+    const modifyDenial = mayModifyEmployee(await this.authorityOf(enterpriseId, actingEmployeeId), {
+      employeeId: employee.employeeId,
+      level: await this.roles.highestLevelForEmployee(enterpriseId, employee.employeeId),
+    });
     if (modifyDenial) {
       throw new AppException(ErrorCode.PermissionDenied, {
         details: [{ field: 'refId', issue: explainDenial(modifyDenial) }],

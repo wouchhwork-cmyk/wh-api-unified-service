@@ -383,22 +383,18 @@ export class GraphApiClient {
      */
     replyToPlatformMessageId?: string,
   ): Promise<SendResult> {
-    const result = await this.request(
-      'POST',
-      `${pageId}/messages`,
-      {
-        schema: GraphSendResponseSchema,
-        accessToken: pageAccessToken,
-        body: {
-          recipient: JSON.stringify({ id: recipientPlatformId }),
-          message: JSON.stringify({ text: message }),
-          messaging_type: 'RESPONSE',
-          ...(replyToPlatformMessageId
-            ? { reply_to: JSON.stringify({ mid: replyToPlatformMessageId }) }
-            : {}),
-        },
+    const result = await this.request('POST', `${pageId}/messages`, {
+      schema: GraphSendResponseSchema,
+      accessToken: pageAccessToken,
+      body: {
+        recipient: JSON.stringify({ id: recipientPlatformId }),
+        message: JSON.stringify({ text: message }),
+        messaging_type: 'RESPONSE',
+        ...(replyToPlatformMessageId
+          ? { reply_to: JSON.stringify({ mid: replyToPlatformMessageId }) }
+          : {}),
       },
-    );
+    });
     return { platformId: result.message_id ?? result.id ?? '' };
   }
 
@@ -788,22 +784,18 @@ export class GraphApiClient {
     // Captured once: calling remaining() inside the spread defeats narrowing
     // under exactOptionalPropertyTypes, and would also read the clock twice.
     const budget = remaining();
-    const result = await this.request(
-      'GET',
-      instagramUserId,
-      {
-        schema: GraphMentionedMediaEnvelopeSchema,
-        accessToken,
-        /*
-         * The caller's budget. This branch was missed when the two helpers
-         * below were given one, and it is the call that matters most: the
-         * others swallow their own failures, while a throw here takes the
-         * whole mention with it.
-         */
-        ...(budget === undefined ? {} : { timeoutMs: budget }),
-        params: { fields: `mentioned_media.media_id(${target.mediaId}){${mediaFields}}` },
-      },
-    );
+    const result = await this.request('GET', instagramUserId, {
+      schema: GraphMentionedMediaEnvelopeSchema,
+      accessToken,
+      /*
+       * The caller's budget. This branch was missed when the two helpers
+       * below were given one, and it is the call that matters most: the
+       * others swallow their own failures, while a throw here takes the
+       * whole mention with it.
+       */
+      ...(budget === undefined ? {} : { timeoutMs: budget }),
+      params: { fields: `mentioned_media.media_id(${target.mediaId}){${mediaFields}}` },
+    });
 
     const media = result.mentioned_media;
     /*
@@ -865,18 +857,14 @@ export class GraphApiClient {
     const replies = withReplies ? 'replies{id,text,timestamp,like_count},' : '';
 
     try {
-      const result = await this.request(
-        'GET',
-        instagramUserId,
-        {
-          schema: GraphMentionedCommentEnvelopeSchema,
-          accessToken,
-          ...(timeoutMs === undefined ? {} : { timeoutMs }),
-          params: {
-            fields: `mentioned_comment.comment_id(${commentId}){id,text,timestamp,username,like_count,parent_id,${replies}media{${mediaFields}}}`,
-          },
+      const result = await this.request('GET', instagramUserId, {
+        schema: GraphMentionedCommentEnvelopeSchema,
+        accessToken,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        params: {
+          fields: `mentioned_comment.comment_id(${commentId}){id,text,timestamp,username,like_count,parent_id,${replies}media{${mediaFields}}}`,
         },
-      );
+      });
       return result.mentioned_comment ?? null;
     } catch (error) {
       const graph = error instanceof GraphApiError ? error : null;
@@ -1232,7 +1220,11 @@ export class GraphApiClient {
     try {
       text = await response.text();
     } catch (cause) {
-      this.usage?.observe({ readings: parseUsageReadings(response.headers), throttled: false, failed: true });
+      this.usage?.observe({
+        readings: parseUsageReadings(response.headers),
+        throttled: false,
+        failed: true,
+      });
       throw GraphApiError.fromTransport(cause, `graph ${method} ${path} body was interrupted`);
     }
 

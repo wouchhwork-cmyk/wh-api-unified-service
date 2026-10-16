@@ -71,7 +71,12 @@ export type PlatformFeatureDecisionRequest = z.infer<typeof PlatformFeatureDecis
  */
 export const PlatformRateLimitHistoryQuerySchema = z
   .object({
-    windowMinutes: z.coerce.number().int().min(1).max(48 * 60).optional(),
+    windowMinutes: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(48 * 60)
+      .optional(),
     /** One pool, by its scope key, when drilling into a single line. */
     scopeKey: z.string().trim().min(1).max(120).optional(),
     limit: z.coerce.number().int().positive().max(5000).optional(),

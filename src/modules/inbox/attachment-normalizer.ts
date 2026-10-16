@@ -430,8 +430,10 @@ export function toWebhookAttachments(
   attachments: readonly GraphMessageAttachment[],
   shares: readonly { link?: string | undefined }[] = [],
 ): { type: string; payload: { url: string; mime_type?: string; name?: string } }[] {
-  const translated: { type: string; payload: { url: string; mime_type?: string; name?: string } }[] =
-    [];
+  const translated: {
+    type: string;
+    payload: { url: string; mime_type?: string; name?: string };
+  }[] = [];
 
   /*
    * A SHARE IS NOT AN ATTACHMENT as far as Graph is concerned — it has its own

@@ -15,11 +15,26 @@ import { TokenCipherService } from '../src/shared/crypto/token-cipher.service';
 
 /** Every field Meta documents for a Page/Instagram webhook, as of v25. */
 const KNOWN_FIELDS = [
-  'messages', 'message_reactions', 'messaging_postbacks', 'messaging_optins',
-  'messaging_seen', 'messaging_referral', 'messaging_handovers', 'standby',
-  'message_echoes', 'message_deliveries', 'message_reads',
-  'comments', 'mentions', 'mention', 'feed', 'live_comments', 'story_insights',
-  'messaging_policy_enforcement', 'messaging_account_linking', 'ratings',
+  'messages',
+  'message_reactions',
+  'messaging_postbacks',
+  'messaging_optins',
+  'messaging_seen',
+  'messaging_referral',
+  'messaging_handovers',
+  'standby',
+  'message_echoes',
+  'message_deliveries',
+  'message_reads',
+  'comments',
+  'mentions',
+  'mention',
+  'feed',
+  'live_comments',
+  'story_insights',
+  'messaging_policy_enforcement',
+  'messaging_account_linking',
+  'ratings',
 ];
 
 async function main(): Promise<void> {

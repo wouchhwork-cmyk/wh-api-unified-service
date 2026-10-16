@@ -100,9 +100,9 @@ describe('one Page, one connection, per business', () => {
       await addChannel(agency, await connectionFor(agency, 'fb-agency'));
       const brandConnection = await connectionFor(brand, 'fb-brand');
 
-      expect(
-        await channels.findClaimedByAnotherConnection(brand, brandConnection, [PAGE]),
-      ).toEqual([]);
+      expect(await channels.findClaimedByAnotherConnection(brand, brandConnection, [PAGE])).toEqual(
+        [],
+      );
     });
 
     it('asks nothing of the database when there is nothing to ask', async () => {

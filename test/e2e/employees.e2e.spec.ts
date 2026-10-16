@@ -374,8 +374,8 @@ describe('a business builds its team', () => {
     // Meera is the signup owner (see SIGNUP); Priya is the manager this helper
     // adds. Found by name rather than by position, because the listing order is
     // not part of what this test is about.
-    const ownerRow = (team.body.data as { refId: string; name: string }[]).find(
-      (person) => person.name.startsWith('Meera'),
+    const ownerRow = (team.body.data as { refId: string; name: string }[]).find((person) =>
+      person.name.startsWith('Meera'),
     );
     expect(ownerRow).toBeDefined();
 
@@ -750,10 +750,7 @@ describe('a business builds its team', () => {
     }
 
     const list = (token: string, query: string) =>
-      http()
-        .get(`/api/v1/employees${query}`)
-        .set('Authorization', `Bearer ${token}`)
-        .expect(200);
+      http().get(`/api/v1/employees${query}`).set('Authorization', `Bearer ${token}`).expect(200);
 
     it('stops at the requested limit and says there is more', async () => {
       const token = await businessOfThree();
@@ -807,9 +804,7 @@ describe('a business builds its team', () => {
       const collected: string[] = [];
       let cursor: string | null = null;
       for (let page = 0; page < 5; page += 1) {
-        const query: string = cursor
-          ? `?limit=1&cursor=${encodeURIComponent(cursor)}`
-          : '?limit=1';
+        const query: string = cursor ? `?limit=1&cursor=${encodeURIComponent(cursor)}` : '?limit=1';
         const response = await list(token, query);
         collected.push(...response.body.data.map((person: { refId: string }) => person.refId));
         if (!response.body.meta.pagination.hasMore) break;

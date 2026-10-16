@@ -30,11 +30,17 @@ const NODE_FIELDS: string[] = [
 /** Everything an attachment could plausibly carry. */
 const ATTACHMENT_SHAPES: [string, string][] = [
   ['generic_template all', 'attachments{generic_template}'],
-  ['generic subfields', 'attachments{generic_template{title,subtitle,image_url,buttons,default_action}}'],
+  [
+    'generic subfields',
+    'attachments{generic_template{title,subtitle,image_url,buttons,default_action}}',
+  ],
   ['media fields', 'attachments{id,mime_type,name,size,file_url,image_data,video_data}'],
   ['target/url/title', 'attachments{id,title,url,target}'],
   ['media_type/url', 'attachments{media_type,media_url,thumbnail_url}'],
-  ['everything guessed', 'attachments{id,name,mime_type,size,file_url,image_data,video_data,generic_template,media_type,media_url,title,url,target,payload}'],
+  [
+    'everything guessed',
+    'attachments{id,name,mime_type,size,file_url,image_data,video_data,generic_template,media_type,media_url,title,url,target,payload}',
+  ],
 ];
 
 async function main(): Promise<void> {
@@ -61,13 +67,17 @@ async function main(): Promise<void> {
       error?: { message?: string; code?: number };
     };
     if (body.error) {
-      console.log(`  ${label.padEnd(24)} ${response.status}  #${body.error.code} ${String(body.error.message).slice(0, 72)}`);
+      console.log(
+        `  ${label.padEnd(24)} ${response.status}  #${body.error.code} ${String(body.error.message).slice(0, 72)}`,
+      );
       return;
     }
     // Drop the echoed id so the useful part is what prints.
     const { id: _ignored, ...rest } = body;
     const json = JSON.stringify(rest);
-    console.log(`  ${label.padEnd(24)} ${response.status}  ${json === '{}' ? '(field absent)' : json.slice(0, 150)}`);
+    console.log(
+      `  ${label.padEnd(24)} ${response.status}  ${json === '{}' ? '(field absent)' : json.slice(0, 150)}`,
+    );
   };
 
   console.log('\n== message node, one field at a time ==');
@@ -82,7 +92,11 @@ async function main(): Promise<void> {
 
   console.log('\n== the attachments EDGE directly ==');
   await get('edge, default', `${mid}/attachments`);
-  await get('edge, named fields', `${mid}/attachments`, 'id,image_data,video_data,file_url,mime_type,name,size');
+  await get(
+    'edge, named fields',
+    `${mid}/attachments`,
+    'id,image_data,video_data,file_url,mime_type,name,size',
+  );
 
   await ds.destroy();
 }

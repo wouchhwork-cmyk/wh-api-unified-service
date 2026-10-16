@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateReplyWindow, replyEventTypeFor } from '@/modules/inbox/reply-window';
-import { MentionKind, ConversationKind, ConversationStatus, OutboundEventType } from '@/shared/enums';
+import {
+  MentionKind,
+  ConversationKind,
+  ConversationStatus,
+  OutboundEventType,
+} from '@/shared/enums';
 
 /**
  * Meta's 24-hour messaging window, decided before a reply is accepted.

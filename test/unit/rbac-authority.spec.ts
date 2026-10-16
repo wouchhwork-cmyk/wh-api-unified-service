@@ -117,9 +117,7 @@ describe('role authority', () => {
     });
 
     it('allows a role whose permissions the assigner does hold', () => {
-      expect(
-        mayAssignRole(actor(), role(30, 'Helper', false, ['conversations.view'])),
-      ).toBeNull();
+      expect(mayAssignRole(actor(), role(30, 'Helper', false, ['conversations.view']))).toBeNull();
     });
 
     it('REFUSES somebody holding no roles at all', () => {
@@ -326,7 +324,11 @@ describe('role authority', () => {
        * protected separately, in the service, so this cannot empty a business
        * of owners.
        */
-      const owner = actor({ employeeId: 9, level: ROLE_LEVEL.Owner, roleNames: [SystemRole.Owner] });
+      const owner = actor({
+        employeeId: 9,
+        level: ROLE_LEVEL.Owner,
+        roleNames: [SystemRole.Owner],
+      });
 
       expect(mayModifyEmployee(owner, { employeeId: 2, level: ROLE_LEVEL.Owner })).toBeNull();
     });
@@ -334,7 +336,11 @@ describe('role authority', () => {
     it('still refuses an owner acting on THEMSELVES', () => {
       // The peer rule must not become a self rule: an owner locking themselves
       // out has nobody above to undo it either.
-      const owner = actor({ employeeId: 9, level: ROLE_LEVEL.Owner, roleNames: [SystemRole.Owner] });
+      const owner = actor({
+        employeeId: 9,
+        level: ROLE_LEVEL.Owner,
+        roleNames: [SystemRole.Owner],
+      });
 
       expect(mayModifyEmployee(owner, { employeeId: 9, level: ROLE_LEVEL.Owner })).toBe(
         'cannot_act_on_self',
@@ -391,7 +397,14 @@ describe('role authority', () => {
        * on, you may also SEE. A configuration where the reverse held would let
        * somebody suspend a person their own list never showed them.
        */
-      const levels = [null, 0, ROLE_LEVEL.Viewer, ROLE_LEVEL.Agent, ROLE_LEVEL.Manager, ROLE_LEVEL.Owner];
+      const levels = [
+        null,
+        0,
+        ROLE_LEVEL.Viewer,
+        ROLE_LEVEL.Agent,
+        ROLE_LEVEL.Manager,
+        ROLE_LEVEL.Owner,
+      ];
       for (const actorLevel of levels) {
         for (const targetLevel of levels) {
           const canAct =

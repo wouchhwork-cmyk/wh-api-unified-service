@@ -175,8 +175,9 @@ describe('a business defines its own roles', () => {
         .set(bearer(manager.token))
         .expect(200);
 
-      const all = (response.body.data as { permissions: { code: string; grantable: boolean }[] }[])
-        .flatMap((group) => group.permissions);
+      const all = (
+        response.body.data as { permissions: { code: string; grantable: boolean }[] }[]
+      ).flatMap((group) => group.permissions);
       const billing = all.find((permission) => permission.code === 'enterprise.manage');
 
       expect(billing).toBeDefined();
@@ -235,7 +236,11 @@ describe('a business defines its own roles', () => {
       const refused = await http()
         .post('/api/v1/roles')
         .set(bearer(manager.token))
-        .send({ name: 'Co-manager', level: ROLE_LEVEL.Manager, permissions: ['conversations.view'] })
+        .send({
+          name: 'Co-manager',
+          level: ROLE_LEVEL.Manager,
+          permissions: ['conversations.view'],
+        })
         .expect(403);
 
       // Distinguishes `role_not_below_actor` from `target_not_below_actor`,
@@ -336,10 +341,7 @@ describe('a business defines its own roles', () => {
 
       // Fill to the ceiling. The built-in roles count, because they are rows in
       // the same table doing the same work.
-      const existing = await http()
-        .get('/api/v1/roles')
-        .set(bearer(ownerToken))
-        .expect(200);
+      const existing = await http().get('/api/v1/roles').set(bearer(ownerToken)).expect(200);
       const headroom = MAX_ROLES_PER_ENTERPRISE - (existing.body.data as unknown[]).length;
 
       for (let n = 0; n < headroom; n += 1) {
@@ -472,7 +474,9 @@ describe('a business defines its own roles', () => {
         .expect(204);
 
       const remaining = await http().get('/api/v1/roles').set(bearer(ownerToken)).expect(200);
-      expect((remaining.body.data as { name: string }[]).map((r) => r.name)).not.toContain('Unused');
+      expect((remaining.body.data as { name: string }[]).map((r) => r.name)).not.toContain(
+        'Unused',
+      );
     });
   });
 
@@ -493,9 +497,9 @@ describe('a business defines its own roles', () => {
         .expect(204);
 
       const team = await http().get('/api/v1/employees').set(bearer(ownerToken)).expect(200);
-      const junior = (team.body.data as { name: string; roles: string[]; roleLevel: number }[]).find(
-        (p) => p.name === 'Junior',
-      );
+      const junior = (
+        team.body.data as { name: string; roles: string[]; roleLevel: number }[]
+      ).find((p) => p.name === 'Junior');
       expect(junior?.roles).toEqual(['Shift lead']);
       expect(junior?.roleLevel).toBe(55);
     });
@@ -546,7 +550,10 @@ describe('a business defines its own roles', () => {
         .post(`/api/v1/roles/employees/${person.refId}`)
         .set(bearer(manager.token))
         .send({
-          roleRefIds: [await roleRefId(ownerToken, 'agent'), await roleRefId(ownerToken, 'manager')],
+          roleRefIds: [
+            await roleRefId(ownerToken, 'agent'),
+            await roleRefId(ownerToken, 'manager'),
+          ],
         })
         .expect(403);
     });

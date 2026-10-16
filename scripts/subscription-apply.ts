@@ -22,7 +22,10 @@ async function main(): Promise<void> {
   const res = await fetch(`https://graph.facebook.com/${v}/${page}/subscribed_apps`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscribed_fields: SUBSCRIBED_FIELDS.join(','), appsecret_proof: proof }),
+    body: JSON.stringify({
+      subscribed_fields: SUBSCRIBED_FIELDS.join(','),
+      appsecret_proof: proof,
+    }),
   });
   console.log('POST:', JSON.stringify(await res.json()));
 
@@ -30,11 +33,15 @@ async function main(): Promise<void> {
     `https://graph.facebook.com/${v}/${page}/subscribed_apps?appsecret_proof=${proof}`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
-  const live = ((await back.json()) as { data?: { subscribed_fields?: string[] }[] })
-    .data?.[0]?.subscribed_fields ?? [];
+  const live =
+    ((await back.json()) as { data?: { subscribed_fields?: string[] }[] }).data?.[0]
+      ?.subscribed_fields ?? [];
   const missing = SUBSCRIBED_FIELDS.filter((f) => !live.includes(f));
   console.log(`LIVE (${live.length}): ${[...live].sort().join(', ')}`);
   console.log(missing.length ? `STILL MISSING: ${missing.join(', ')}` : 'POLICY SATISFIED');
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e);
+  process.exit(1);
+});

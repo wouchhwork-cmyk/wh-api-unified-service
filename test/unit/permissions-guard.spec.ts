@@ -69,11 +69,7 @@ describe('the permissions guard', () => {
        * mentions, which is the same endpoint that serves the private inbox.
        */
       const passed = withPermissions(['mentions.view'], {
-        [REQUIRED_ANY_PERMISSION_KEY]: [
-          'conversations.view',
-          'comments.view',
-          'mentions.view',
-        ],
+        [REQUIRED_ANY_PERMISSION_KEY]: ['conversations.view', 'comments.view', 'mentions.view'],
       });
 
       expect(passed).toBe(true);
@@ -170,9 +166,9 @@ describe('the permissions guard', () => {
 
   describe('routes that declare nothing', () => {
     it('lets a public route through without looking at the actor', () => {
-      const passed = new PermissionsGuard(
-        reflectorFor({ [IS_PUBLIC_KEY]: true }),
-      ).canActivate(context);
+      const passed = new PermissionsGuard(reflectorFor({ [IS_PUBLIC_KEY]: true })).canActivate(
+        context,
+      );
 
       expect(passed).toBe(true);
     });

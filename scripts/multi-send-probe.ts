@@ -31,11 +31,13 @@ async function main(): Promise<void> {
         Authorization: `Bearer ${token}`,
         'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json',
       },
-      body: form
-        ? new URLSearchParams(body as Record<string, string>)
-        : JSON.stringify(body),
+      body: form ? new URLSearchParams(body as Record<string, string>) : JSON.stringify(body),
     });
-    const out = (await r.json()) as { id?: string; message_id?: string; error?: { message?: string; code?: number; error_subcode?: number } };
+    const out = (await r.json()) as {
+      id?: string;
+      message_id?: string;
+      error?: { message?: string; code?: number; error_subcode?: number };
+    };
     console.log(
       `  ${label.padEnd(30)} ${r.status}  ` +
         (out.error
@@ -62,8 +64,16 @@ async function main(): Promise<void> {
   console.log('\n== media in a COMMENT reply (our own post) ==');
   await post('reply: message only', `${commentId}/replies`, { message: 'thanks!' }, true);
   await post('reply: attachment_url', `${commentId}/replies`, { attachment_url: imageUrl }, true);
-  await post('reply: message + attachment', `${commentId}/replies`, { message: 'here', attachment_url: gifUrl }, true);
+  await post(
+    'reply: message + attachment',
+    `${commentId}/replies`,
+    { message: 'here', attachment_url: gifUrl },
+    true,
+  );
 
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

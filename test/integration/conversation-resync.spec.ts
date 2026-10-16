@@ -1377,9 +1377,7 @@ describe('an echo reconciling an ambiguous send', () => {
     return Number(rows[0]?.id);
   }
 
-  async function read(
-    id: number,
-  ): Promise<{ status: string; platform_message_id: string | null }> {
+  async function read(id: number): Promise<{ status: string; platform_message_id: string | null }> {
     const rows: { status: string; platform_message_id: string | null }[] = await db.query(
       `SELECT status, platform_message_id FROM messages WHERE id = $1`,
       [id],
@@ -1581,7 +1579,12 @@ describe('subscribed webhooks nobody had ever sent us', () => {
       recipient: { id: 'IG_1' },
       timestamp: 1790470374585,
       message: { mid: 'REFERRAL_MID_1', text: 'Is this still available?' },
-      referral: { ref: 'SPRING_SALE', source: 'ADS', type: 'OPEN_THREAD', ad_id: '23851234567890123' },
+      referral: {
+        ref: 'SPRING_SALE',
+        source: 'ADS',
+        type: 'OPEN_THREAD',
+        ad_id: '23851234567890123',
+      },
     };
 
     it('keeps the referral on the message it arrived with', async () => {

@@ -104,9 +104,7 @@ export class MessageAttachmentRepository extends BaseRepository {
   async listRefreshable(
     enterpriseId: number,
     conversationId: number,
-  ): Promise<
-    { id: number; platformMessageId: string; sortOrder: number; sourceUrl: string }[]
-  > {
+  ): Promise<{ id: number; platformMessageId: string; sortOrder: number; sourceUrl: string }[]> {
     return this.query(
       `SELECT a.id,
               m.platform_message_id AS "platformMessageId",
@@ -179,5 +177,4 @@ export class MessageAttachmentRepository extends BaseRepository {
     );
     return affected;
   }
-
 }

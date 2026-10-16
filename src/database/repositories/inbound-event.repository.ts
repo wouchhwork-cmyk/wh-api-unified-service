@@ -313,5 +313,4 @@ export class InboundEventRepository extends BaseRepository {
     );
     return affected;
   }
-
 }

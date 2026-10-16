@@ -593,5 +593,4 @@ export class CustomerRepository extends BaseRepository {
     );
     return rows[0] ?? null;
   }
-
 }

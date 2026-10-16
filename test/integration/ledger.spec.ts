@@ -45,19 +45,19 @@ describe('transport ledger', () => {
   });
 
   const insertEvent = async (dedupKey: string, priority = 30): Promise<void> => {
-      /*
-       * A MOMENT AGO, not `now()`.
-       *
-       * Every timestamptz here is millisecond-precision, and Postgres ROUNDS to
-       * that precision rather than truncating — `now()` at .956599 is stored as
-       * .957, half a millisecond in the FUTURE. A row written that way is not
-       * yet claimable by `<= now()` in the very next statement, so a test that
-       * inserts and immediately claims is a coin toss.
-       *
-       * Production never notices: the writer and the claimer are different
-       * worker ticks, seconds apart. A test is the only thing fast enough to
-       * catch it, which is exactly why the test should say when it means.
-       */
+    /*
+     * A MOMENT AGO, not `now()`.
+     *
+     * Every timestamptz here is millisecond-precision, and Postgres ROUNDS to
+     * that precision rather than truncating — `now()` at .956599 is stored as
+     * .957, half a millisecond in the FUTURE. A row written that way is not
+     * yet claimable by `<= now()` in the very next statement, so a test that
+     * inserts and immediately claims is a coin toss.
+     *
+     * Production never notices: the writer and the claimer are different
+     * worker ticks, seconds apart. A test is the only thing fast enough to
+     * catch it, which is exactly why the test should say when it means.
+     */
     await db.query(
       `INSERT INTO inbound_events
          (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key,

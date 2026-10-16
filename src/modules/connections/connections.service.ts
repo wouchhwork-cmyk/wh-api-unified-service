@@ -183,7 +183,12 @@ export class ConnectionsService {
    * ingest guard then drops.
    */
   private async unsubscribeQuietly(
-    channel: { id: number; platform: Platform; platformChannelId: string; accessToken: string | null },
+    channel: {
+      id: number;
+      platform: Platform;
+      platformChannelId: string;
+      accessToken: string | null;
+    },
     enterpriseId: number,
   ): Promise<void> {
     // Instagram is covered by its linked Page's subscription, so there is
@@ -286,5 +291,4 @@ export class ConnectionsService {
       profile: toProfile(channel),
     }));
   }
-
 }

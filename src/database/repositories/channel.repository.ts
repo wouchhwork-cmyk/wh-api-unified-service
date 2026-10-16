@@ -332,7 +332,9 @@ export class ChannelRepository extends BaseRepository {
   async listForConnection(
     enterpriseId: number,
     connectionId: number,
-  ): Promise<{ id: number; platform: Platform; platformChannelId: string; accessToken: string | null }[]> {
+  ): Promise<
+    { id: number; platform: Platform; platformChannelId: string; accessToken: string | null }[]
+  > {
     return this.query(
       `SELECT id, platform, platform_channel_id AS "platformChannelId",
               access_token AS "accessToken"

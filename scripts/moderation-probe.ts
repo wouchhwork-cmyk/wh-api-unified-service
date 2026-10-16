@@ -39,15 +39,24 @@ async function main(): Promise<void> {
       method,
       ...(body
         ? {
-            headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'content-type': 'application/x-www-form-urlencoded',
+            },
             body: new URLSearchParams(body),
           }
         : { headers: { Authorization: `Bearer ${token}` } }),
     });
-    const out = (await r.json()) as { id?: string; success?: boolean; error?: { message?: string; code?: number } };
+    const out = (await r.json()) as {
+      id?: string;
+      success?: boolean;
+      error?: { message?: string; code?: number };
+    };
     console.log(
       `  ${label.padEnd(26)} ${r.status}  ` +
-        (out.error ? `#${out.error.code} ${String(out.error.message).slice(0, 62)}` : `OK ${out.id ?? (out.success ? 'success' : '')}`),
+        (out.error
+          ? `#${out.error.code} ${String(out.error.message).slice(0, 62)}`
+          : `OK ${out.id ?? (out.success ? 'success' : '')}`),
     );
     return out.id ?? null;
   };
@@ -59,10 +68,15 @@ async function main(): Promise<void> {
     await call('read it', 'GET', `${commentId}?fields=id,text,timestamp,like_count,hidden`);
     await call('hide', 'POST', commentId, { hide: 'true' });
     await call('unhide', 'POST', commentId, { hide: 'false' });
-    const replyId = await call('reply to it', 'POST', `${commentId}/replies`, { message: 'Thanks for reaching out!' });
+    const replyId = await call('reply to it', 'POST', `${commentId}/replies`, {
+      message: 'Thanks for reaching out!',
+    });
     if (replyId) await call('delete OUR reply', 'DELETE', replyId);
   }
 
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

@@ -68,9 +68,7 @@ describe('schema guarantees', () => {
         [zenith],
       );
       // Reused from the catalogue, which owns every real code.
-      const permission: { id: string }[] = await db.query(
-        `SELECT id FROM permissions LIMIT 1`,
-      );
+      const permission: { id: string }[] = await db.query(`SELECT id FROM permissions LIMIT 1`);
 
       // Zenith's role, filed under Acme: unrepresentable.
       await expect(

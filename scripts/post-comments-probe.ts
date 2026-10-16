@@ -57,4 +57,7 @@ async function main(): Promise<void> {
 
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

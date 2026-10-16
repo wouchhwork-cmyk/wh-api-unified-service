@@ -56,10 +56,7 @@ import { TIMESTAMP_PRECISION } from '../timestamp-precision';
 @Check('provider_api_usage_call_pct_chk', 'call_pct IS NULL OR (call_pct BETWEEN 0 AND 1000)')
 @Check('provider_api_usage_cpu_pct_chk', 'cpu_pct IS NULL OR (cpu_pct BETWEEN 0 AND 1000)')
 @Check('provider_api_usage_time_pct_chk', 'time_pct IS NULL OR (time_pct BETWEEN 0 AND 1000)')
-@Check(
-  'provider_api_usage_counts_chk',
-  'calls >= 0 AND throttled_calls >= 0 AND failed_calls >= 0',
-)
+@Check('provider_api_usage_counts_chk', 'calls >= 0 AND throttled_calls >= 0 AND failed_calls >= 0')
 export class ProviderApiUsage extends BaseEntity {
   /**
    * Whose quota this is.

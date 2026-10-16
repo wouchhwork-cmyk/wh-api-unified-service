@@ -28,17 +28,31 @@ async function main(): Promise<void> {
     { headers: { Authorization: `Bearer ${token}` } },
   );
   const body = (await r.json()) as {
-    data?: { id: string; username?: string; caption?: string; permalink?: string; timestamp?: string }[];
+    data?: {
+      id: string;
+      username?: string;
+      caption?: string;
+      permalink?: string;
+      timestamp?: string;
+    }[];
     error?: { message?: string };
   };
-  if (body.error) { console.log('refused:', body.error.message); }
-  else {
+  if (body.error) {
+    console.log('refused:', body.error.message);
+  } else {
     console.log(`HTTP ${r.status} — ${body.data?.length ?? 0} tagged posts`);
     for (const m of body.data ?? []) {
       console.log(`  ${m.id}  @${m.username}  ${String(m.timestamp).slice(0, 19)}`);
-      console.log(`     ${String(m.caption ?? '').slice(0, 60).replace(/\n/g, ' ')}`);
+      console.log(
+        `     ${String(m.caption ?? '')
+          .slice(0, 60)
+          .replace(/\n/g, ' ')}`,
+      );
     }
   }
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

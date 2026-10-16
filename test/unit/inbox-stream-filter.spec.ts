@@ -127,14 +127,20 @@ describe('who hears about a conversation changing', () => {
       // The tenant is re-checked here and not only when the subscriber set is
       // found, because this is the function that decides delivery.
       expect(
-        deliverableChange(payload({ enterpriseId: 7 }), TENANT, sees(ConversationKind.DirectMessage)),
+        deliverableChange(
+          payload({ enterpriseId: 7 }),
+          TENANT,
+          sees(ConversationKind.DirectMessage),
+        ),
       ).toBeNull();
     });
 
     it('drops malformed JSON rather than throwing', () => {
       // This runs inside a LISTEN callback; a throw here takes the connection
       // down and every stream on this instance with it.
-      expect(deliverableChange('not json', TENANT, sees(ConversationKind.DirectMessage))).toBeNull();
+      expect(
+        deliverableChange('not json', TENANT, sees(ConversationKind.DirectMessage)),
+      ).toBeNull();
       expect(deliverableChange(undefined, TENANT, sees(ConversationKind.DirectMessage))).toBeNull();
     });
 

@@ -56,7 +56,11 @@ describe('SendReconciliationService.reconcileAll', () => {
   let messages: { [K in keyof MessageRepository]?: ReturnType<typeof vi.fn> };
   let channels: { [K in keyof ChannelRepository]?: ReturnType<typeof vi.fn> };
   let graph: { [K in keyof GraphApiClient]?: ReturnType<typeof vi.fn> };
-  let logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+  let logger: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  };
   let service: SendReconciliationService;
 
   beforeEach(() => {
@@ -226,8 +230,8 @@ describe('SendReconciliationService.reconcileAll', () => {
       sendRow({ id: 1 }),
       sendRow({ id: 2 }),
     ]);
-    graph.listMentionedPostComments!
-      .mockRejectedValueOnce(new Error('graph is down'))
+    graph
+      .listMentionedPostComments!.mockRejectedValueOnce(new Error('graph is down'))
       .mockResolvedValue([comment()]);
 
     const summary = await service.reconcileAll();

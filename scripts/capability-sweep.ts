@@ -45,7 +45,10 @@ async function main(): Promise<void> {
     const r = await fetch(`https://graph.facebook.com/${v}/${path}${sep}appsecret_proof=${proof}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const body = (await r.json()) as { error?: { message?: string; code?: number }; data?: unknown[] };
+    const body = (await r.json()) as {
+      error?: { message?: string; code?: number };
+      data?: unknown[];
+    };
     const verdict = body.error
       ? `REFUSED #${body.error.code} ${String(body.error.message).slice(0, 56)}`
       : `OK ${JSON.stringify(body).slice(0, 88)}`;
@@ -58,7 +61,11 @@ async function main(): Promise<void> {
   await probe('i', 'page insights', `${PAGE}/insights?metric=page_impressions&period=day`);
 
   console.log('\n== DISCOVERY — reading accounts we do not manage ==');
-  await probe('d', 'business_discovery', `${IG}?fields=business_discovery.username(natgeo){followers_count,media_count}`);
+  await probe(
+    'd',
+    'business_discovery',
+    `${IG}?fields=business_discovery.username(natgeo){followers_count,media_count}`,
+  );
   await probe('d', 'hashtag search', `ig_hashtag_search?user_id=${IG}&q=coffee`);
 
   console.log('\n== MESSAGING SETUP — what greets a customer ==');
@@ -67,7 +74,11 @@ async function main(): Promise<void> {
   await probe('m', 'greeting', `${PAGE}/messenger_profile?fields=greeting`);
 
   console.log('\n== OUR OWN ACCOUNT — fields we never read ==');
-  await probe('o', 'ig profile + counts', `${IG}?fields=username,followers_count,follows_count,media_count,biography,website`);
+  await probe(
+    'o',
+    'ig profile + counts',
+    `${IG}?fields=username,followers_count,follows_count,media_count,biography,website`,
+  );
   await probe('o', 'our stories', `${IG}/stories?fields=id,media_type,permalink,timestamp`);
   await probe('o', 'live media', `${IG}/live_media?fields=id`);
   await probe('o', 'content publishing limit', `${IG}/content_publishing_limit?fields=quota_usage`);

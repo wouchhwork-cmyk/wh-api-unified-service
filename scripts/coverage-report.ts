@@ -116,15 +116,21 @@ async function main(): Promise<void> {
     console.log('| shape | seen | made a message | statuses | note |');
     console.log('|---|---|---|---|---|');
     for (const [shape, a] of sorted) {
-      const statuses = Object.entries(a.byStatus).map(([s, n]) => `${s}=${n}`).join(' ');
+      const statuses = Object.entries(a.byStatus)
+        .map(([s, n]) => `${s}=${n}`)
+        .join(' ');
       const note = [...a.errors][0] ?? '';
       console.log(`| \`${shape}\` | ${a.seen} | ${a.projected} | ${statuses} | ${note} |`);
     }
   } else {
     console.log(`${agg.size} shapes across ${rows.length} events\n`);
     for (const [shape, a] of sorted) {
-      const statuses = Object.entries(a.byStatus).map(([s, n]) => `${s}=${n}`).join(' ');
-      console.log(`  ${String(a.seen).padStart(4)}  msg=${String(a.projected).padStart(4)}  ${shape.padEnd(38)} ${statuses}`);
+      const statuses = Object.entries(a.byStatus)
+        .map(([s, n]) => `${s}=${n}`)
+        .join(' ');
+      console.log(
+        `  ${String(a.seen).padStart(4)}  msg=${String(a.projected).padStart(4)}  ${shape.padEnd(38)} ${statuses}`,
+      );
       for (const e of a.errors) console.log(`        ! ${e}`);
     }
   }

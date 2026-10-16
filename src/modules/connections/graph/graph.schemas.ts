@@ -76,7 +76,10 @@ export const GraphMeResponseSchema = z.object({
   name: z.string().optional(),
 });
 
-export const GraphInstagramAccountSchema = z.object({ id: GraphId, username: z.string().optional() });
+export const GraphInstagramAccountSchema = z.object({
+  id: GraphId,
+  username: z.string().optional(),
+});
 
 export const GraphAccountSchema = z.object({
   id: GraphId,
@@ -140,14 +143,18 @@ export const GraphFeedPostSchema = z.object({
         .array(
           z.object({
             type: z.string().optional(),
-            media: z.object({ image: z.object({ src: z.string().optional() }).optional() }).optional(),
+            media: z
+              .object({ image: z.object({ src: z.string().optional() }).optional() })
+              .optional(),
           }),
         )
         .optional(),
     })
     .optional(),
   comments: edgeOf(GraphCommentSchema).optional(),
-  reactions: z.object({ summary: z.object({ total_count: GraphCount.optional() }).optional() }).optional(),
+  reactions: z
+    .object({ summary: z.object({ total_count: GraphCount.optional() }).optional() })
+    .optional(),
   comment_summary: z
     .object({ summary: z.object({ total_count: GraphCount.optional() }).optional() })
     .optional(),
@@ -159,10 +166,18 @@ export const GraphMessageAttachmentSchema = z.object({
   name: z.string().optional(),
   mime_type: z.string().optional(),
   image_data: z
-    .object({ url: z.string().optional(), width: GraphCount.optional(), height: GraphCount.optional() })
+    .object({
+      url: z.string().optional(),
+      width: GraphCount.optional(),
+      height: GraphCount.optional(),
+    })
     .optional(),
   video_data: z
-    .object({ url: z.string().optional(), width: GraphCount.optional(), height: GraphCount.optional() })
+    .object({
+      url: z.string().optional(),
+      width: GraphCount.optional(),
+      height: GraphCount.optional(),
+    })
     .optional(),
   file_url: z.string().optional(),
 });
@@ -174,7 +189,9 @@ export const GraphConversationMessageSchema = z.object({
   from: GraphActorSchema.optional(),
   to: z.object({ data: z.array(GraphActorSchema).optional() }).optional(),
   attachments: edgeOf(GraphMessageAttachmentSchema).optional(),
-  reply_to: z.object({ mid: z.string().optional(), is_self_reply: z.boolean().optional() }).optional(),
+  reply_to: z
+    .object({ mid: z.string().optional(), is_self_reply: z.boolean().optional() })
+    .optional(),
   shares: edgeOf(
     z.object({
       link: z.string().optional(),
@@ -340,7 +357,9 @@ export const GraphMentionedCommentRepliesEnvelopeSchema = z.object({
     .object({
       media: z
         .object({
-          comments: z.object({ data: z.array(GraphMentionedCommentReplySchema).optional() }).optional(),
+          comments: z
+            .object({ data: z.array(GraphMentionedCommentReplySchema).optional() })
+            .optional(),
         })
         .optional(),
     })
@@ -418,9 +437,7 @@ export const GraphChannelProfileSchema = z.object({
   emails: z.array(z.string()).optional(),
   single_line_address: z.string().optional(),
   /** A Page's picture arrives nested, unlike Instagram's flat url. */
-  picture: z
-    .object({ data: z.object({ url: z.string().optional() }).optional() })
-    .optional(),
+  picture: z.object({ data: z.object({ url: z.string().optional() }).optional() }).optional(),
 });
 
 export const GraphPageDetailSchema = z.object({

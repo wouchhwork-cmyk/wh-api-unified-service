@@ -46,7 +46,8 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
        * either — it asks for `comments`, never `replies`.
        */
       if (href.includes('replies')) return Promise.resolve(json(400, NESTED_ERROR));
-      if (href.includes('comments.limit')) return Promise.resolve(json(200, { mentioned_comment: {} }));
+      if (href.includes('comments.limit'))
+        return Promise.resolve(json(200, { mentioned_comment: {} }));
       return Promise.resolve(
         json(200, {
           mentioned_comment: {
@@ -77,7 +78,9 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
      * once, refused, and asked again without it.
      */
     expect(calls.filter((href) => href.includes('replies'))).toHaveLength(1);
-    expect(calls.filter((href) => !href.includes('replies') && !href.includes('comments.limit'))).toHaveLength(1);
+    expect(
+      calls.filter((href) => !href.includes('replies') && !href.includes('comments.limit')),
+    ).toHaveLength(1);
   });
 
   it('asks only once when the mention IS top-level', async () => {
@@ -86,14 +89,17 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
       const href = String(url);
       calls.push(href);
       // The post's comment section is a separate call with its own shape.
-      if (href.includes('comments.limit')) return Promise.resolve(json(200, { mentioned_comment: {} }));
+      if (href.includes('comments.limit'))
+        return Promise.resolve(json(200, { mentioned_comment: {} }));
       return Promise.resolve(
         json(200, {
           mentioned_comment: {
             id: 'C_TOP',
             text: '@ai_automation_demo wating on you man',
             username: 'genzrelics',
-            replies: { data: [{ id: 'R_1', text: 'what happned ?', timestamp: 'T', like_count: 0 }] },
+            replies: {
+              data: [{ id: 'R_1', text: 'what happned ?', timestamp: 'T', like_count: 0 }],
+            },
             media: { id: 'M_1', permalink: 'https://instagram.com/p/X/', username: 'snots.dale' },
           },
         }),
@@ -119,7 +125,9 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
      */
     vi.stubGlobal('fetch', () =>
       Promise.resolve(
-        json(400, { error: { message: 'Invalid OAuth access token', type: 'OAuthException', code: 190 } }),
+        json(400, {
+          error: { message: 'Invalid OAuth access token', type: 'OAuthException', code: 190 },
+        }),
       ),
     );
 
@@ -141,9 +149,19 @@ describe('resolveInstagramMention — a mention inside a reply', () => {
 describe('a mention thread, named from what we already hold', () => {
   const REPLIES = [
     { platformId: 'C_STRANGER', text: 'ooo', timestamp: 'T1', likeCount: 0 },
-    { platformId: 'C_OURS_OUT', text: '@genzrelics i am seeing you', timestamp: 'T2', likeCount: 0 },
+    {
+      platformId: 'C_OURS_OUT',
+      text: '@genzrelics i am seeing you',
+      timestamp: 'T2',
+      likeCount: 0,
+    },
     { platformId: 'C_OURS_IN', text: '@ai_automation_demo 👏', timestamp: 'T3', likeCount: 0 },
-    { platformId: 'C_THIS', text: '@ai_automation_demo so you exist', timestamp: 'T4', likeCount: 0 },
+    {
+      platformId: 'C_THIS',
+      text: '@ai_automation_demo so you exist',
+      timestamp: 'T4',
+      likeCount: 0,
+    },
   ];
 
   /** Mirrors the controller's shaping rule, which is the thing under test. */

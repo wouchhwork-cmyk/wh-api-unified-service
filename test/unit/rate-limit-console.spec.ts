@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  RateLimitService,
-  type RateLimitOverview,
-} from '@/modules/platform/rate-limit.service';
+import { RateLimitService, type RateLimitOverview } from '@/modules/platform/rate-limit.service';
 import type {
   ProviderApiUsageRepository,
   ProviderUsageCurrentRow,
@@ -69,12 +66,28 @@ describe('the rate-limit console view', () => {
        * to move with it.
        */
       const view = await overviewOf([
-        row({ scopeKey: 'meta:app', meter: MetaUsageMeter.App, callPct: 60, product: null,
-              providerScopeId: null, enterpriseId: null, enterpriseName: null,
-              enterpriseRefId: null, channelId: null }),
-        row({ scopeKey: 'meta:unknown', meter: MetaUsageMeter.Unknown, callPct: null,
-              product: null, providerScopeId: null, enterpriseId: null,
-              enterpriseName: null, enterpriseRefId: null, channelId: null }),
+        row({
+          scopeKey: 'meta:app',
+          meter: MetaUsageMeter.App,
+          callPct: 60,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
+        row({
+          scopeKey: 'meta:unknown',
+          meter: MetaUsageMeter.Unknown,
+          callPct: null,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
       ]);
 
       expect(view.app?.usedPercent).toBe(60);
@@ -84,9 +97,17 @@ describe('the rate-limit console view', () => {
     it('still shows the headerless calls, rather than hiding them', async () => {
       // They are calls we really made. They just belong to no pool.
       const view = await overviewOf([
-        row({ scopeKey: 'meta:unknown', meter: MetaUsageMeter.Unknown, callPct: null,
-              product: null, providerScopeId: null, enterpriseId: null,
-              enterpriseName: null, enterpriseRefId: null, channelId: null }),
+        row({
+          scopeKey: 'meta:unknown',
+          meter: MetaUsageMeter.Unknown,
+          callPct: null,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
       ]);
 
       expect(view.app).toBeNull();
@@ -96,43 +117,45 @@ describe('the rate-limit console view', () => {
 
   describe('when a pool counts as throttled', () => {
     it('is throttled while it is STILL being refused', async () => {
-      const view = await overviewOf([row({ latestThrottledCalls: 2, recentThrottledCalls: 2, dayThrottledCalls: 2 })]);
+      const view = await overviewOf([
+        row({ latestThrottledCalls: 2, recentThrottledCalls: 2, dayThrottledCalls: 2 }),
+      ]);
 
       expect(view.enterprises[0]?.pools[0]?.status).toBe('throttled');
     });
 
-  /*
-   * E11. Status read the NEWEST bucket alone, so a pool still being refused on
-   * one endpoint while another succeeded opened a fresh bucket with no
-   * refusals and went back to reading healthy — mid-throttle, on the screen
-   * whose only job is to say whether a pool is in trouble.
-   *
-   * The day total cannot replace it: one refusal at breakfast painted a pool
-   * red until the next morning, which is alarm fatigue by construction.
-   */
-  it('still reads throttled when refusals were minutes ago, not seconds', async () => {
-    const view = await overviewOf([
-      row({
-        // The newest minute succeeded — a different endpoint, same pool.
-        latestThrottledCalls: 0,
-        recentThrottledCalls: 3,
-        callPct: 4,
-      }),
-    ]);
+    /*
+     * E11. Status read the NEWEST bucket alone, so a pool still being refused on
+     * one endpoint while another succeeded opened a fresh bucket with no
+     * refusals and went back to reading healthy — mid-throttle, on the screen
+     * whose only job is to say whether a pool is in trouble.
+     *
+     * The day total cannot replace it: one refusal at breakfast painted a pool
+     * red until the next morning, which is alarm fatigue by construction.
+     */
+    it('still reads throttled when refusals were minutes ago, not seconds', async () => {
+      const view = await overviewOf([
+        row({
+          // The newest minute succeeded — a different endpoint, same pool.
+          latestThrottledCalls: 0,
+          recentThrottledCalls: 3,
+          callPct: 4,
+        }),
+      ]);
 
-    expect(view.attention).toHaveLength(1);
-    expect(view.attention[0]?.status).toBe('throttled');
-  });
+      expect(view.attention).toHaveLength(1);
+      expect(view.attention[0]?.status).toBe('throttled');
+    });
 
-  it('reads healthy once the refusals have aged out of the short window', async () => {
-    // The control. Without it this is just "always red", which is the failure
-    // the newest-minute rule was introduced to fix.
-    const view = await overviewOf([
-      row({ latestThrottledCalls: 0, recentThrottledCalls: 0, dayThrottledCalls: 9, callPct: 4 }),
-    ]);
+    it('reads healthy once the refusals have aged out of the short window', async () => {
+      // The control. Without it this is just "always red", which is the failure
+      // the newest-minute rule was introduced to fix.
+      const view = await overviewOf([
+        row({ latestThrottledCalls: 0, recentThrottledCalls: 0, dayThrottledCalls: 9, callPct: 4 }),
+      ]);
 
-    expect(view.attention).toHaveLength(0);
-  });
+      expect(view.attention).toHaveLength(0);
+    });
 
     it('is NOT throttled because of a refusal earlier in the day', async () => {
       /*
@@ -176,9 +199,16 @@ describe('the rate-limit console view', () => {
 
     it('keeps the app pool on its hourly window', async () => {
       const view = await overviewOf([
-        row({ scopeKey: 'meta:app', meter: MetaUsageMeter.App, product: null,
-              providerScopeId: null, enterpriseId: null, enterpriseName: null,
-              enterpriseRefId: null, channelId: null }),
+        row({
+          scopeKey: 'meta:app',
+          meter: MetaUsageMeter.App,
+          product: null,
+          providerScopeId: null,
+          enterpriseId: null,
+          enterpriseName: null,
+          enterpriseRefId: null,
+          channelId: null,
+        }),
       ]);
 
       expect(view.app?.windowMinutes).toBe(60);

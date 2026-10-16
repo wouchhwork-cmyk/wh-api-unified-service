@@ -71,7 +71,12 @@ describe('one business cannot reach another', () => {
       .post('/api/v1/enterprises/signup')
       .send({
         business: { name, email: `hello@${slug}.test`, city: 'Pune' },
-        owner: { firstName: owner, lastName: 'Owner', email: `${owner}@${slug}.test`, password: PASSWORD },
+        owner: {
+          firstName: owner,
+          lastName: 'Owner',
+          email: `${owner}@${slug}.test`,
+          password: PASSWORD,
+        },
       })
       .expect(201);
     const verified = await http()
@@ -152,10 +157,7 @@ describe('one business cannot reach another', () => {
     it('cannot archive another business’s role', async () => {
       const theirs = await roleRefId(rival, 'agent');
 
-      await http()
-        .post(`/api/v1/roles/${theirs}/archive`)
-        .set(auth(acme.token))
-        .expect(404);
+      await http().post(`/api/v1/roles/${theirs}/archive`).set(auth(acme.token)).expect(404);
     });
 
     it('leaves the other business’s role untouched after every attempt', async () => {
@@ -167,7 +169,9 @@ describe('one business cannot reach another', () => {
       const before = await http().get('/api/v1/roles').set(auth(rival.token)).expect(200);
       const beforeRole = (before.body.data as { refId: string }[]).find((r) => r.refId === theirs);
 
-      await http().patch(`/api/v1/roles/${theirs}`).set(auth(acme.token))
+      await http()
+        .patch(`/api/v1/roles/${theirs}`)
+        .set(auth(acme.token))
         .send({ name: 'hijacked', level: 5, permissions: [] });
       await http().post(`/api/v1/roles/${theirs}/archive`).set(auth(acme.token));
 
@@ -531,10 +535,7 @@ describe('one business cannot reach another', () => {
     });
 
     it('requesting a feature does not touch the other business', async () => {
-      await http()
-        .post('/api/v1/features/post_insights/request')
-        .set(auth(acme.token))
-        .expect(204);
+      await http().post('/api/v1/features/post_insights/request').set(auth(acme.token)).expect(204);
 
       const theirs = await http().get('/api/v1/features').set(auth(rival.token)).expect(200);
       const feature = (theirs.body.data as { key: string; status: string | null }[]).find(

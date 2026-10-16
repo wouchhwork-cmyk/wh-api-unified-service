@@ -261,10 +261,9 @@ describe('deleting a comment', () => {
     body: string | null;
   }> => {
     const rows: { is_deleted: boolean; platform_deleted_at: Date | null; body: string | null }[] =
-      await db.query(
-        `SELECT is_deleted, platform_deleted_at, body FROM messages WHERE id = $1`,
-        [messageId],
-      );
+      await db.query(`SELECT is_deleted, platform_deleted_at, body FROM messages WHERE id = $1`, [
+        messageId,
+      ]);
     const row = rows[0];
     return {
       isDeleted: row?.is_deleted ?? false,

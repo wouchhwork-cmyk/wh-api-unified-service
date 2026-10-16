@@ -332,7 +332,6 @@ export class MessageRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-
   /**
    * Records moderation WE performed, rather than moderation the platform told
    * us about.

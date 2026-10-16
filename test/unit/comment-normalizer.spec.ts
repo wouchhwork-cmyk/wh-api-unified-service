@@ -527,7 +527,11 @@ describe('normalizeComment — a media comment', () => {
       value: {
         ...base,
         text: 'Thanks for reaching out!',
-        from: { id: 'IG_US', username: 'ai_automation_demo', self_ig_scoped_id: '1623436959518312' },
+        from: {
+          id: 'IG_US',
+          username: 'ai_automation_demo',
+          self_ig_scoped_id: '1623436959518312',
+        },
       },
     });
 

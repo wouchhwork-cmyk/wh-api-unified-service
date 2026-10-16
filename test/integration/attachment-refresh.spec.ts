@@ -162,11 +162,15 @@ describe('refreshing expired attachment links', () => {
 
       await attachments.refreshSourceUrls(enterpriseId, [{ id, sourceUrl: FRESH }]);
 
-      const rows: { source_url: string; sort_order: number; media_kind: string; metadata: unknown }[] =
-        await db.query(
-          `SELECT source_url, sort_order, media_kind, metadata FROM message_attachments WHERE id = $1`,
-          [id],
-        );
+      const rows: {
+        source_url: string;
+        sort_order: number;
+        media_kind: string;
+        metadata: unknown;
+      }[] = await db.query(
+        `SELECT source_url, sort_order, media_kind, metadata FROM message_attachments WHERE id = $1`,
+        [id],
+      );
       expect(rows[0]?.source_url).toBe(FRESH);
       expect(rows[0]?.sort_order).toBe(3);
       expect(rows[0]?.media_kind).toBe('image');

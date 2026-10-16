@@ -77,12 +77,14 @@ async function main(): Promise<void> {
      * grant can be seen to have existed and restored by hand if withdrawing it
      * turns out to have been wrong.
      */
-    const { rowCount } = await ds.query(
-      `UPDATE role_permissions SET is_deleted = true, updated_at = now()
+    const { rowCount } = await ds
+      .query(
+        `UPDATE role_permissions SET is_deleted = true, updated_at = now()
         WHERE id = ANY($1::bigint[]) AND is_deleted = false
         RETURNING id`,
-      [stale.map((row) => row.id)],
-    ).then((rows: unknown[]) => ({ rowCount: rows.length }));
+        [stale.map((row) => row.id)],
+      )
+      .then((rows: unknown[]) => ({ rowCount: rows.length }));
 
     console.log(`\nwithdrawn ${rowCount} grant(s). Sessions already issued keep their claims`);
     console.log('until they are refreshed, so this takes full effect as tokens roll over.');

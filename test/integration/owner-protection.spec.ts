@@ -208,9 +208,7 @@ describe('the last owner', () => {
       let secondAcquired = false;
       const contender = db
         .transaction(async (manager) => {
-          await RequestContext.runInTransaction(manager, () =>
-            roles.lockOwnerRole(enterpriseId),
-          );
+          await RequestContext.runInTransaction(manager, () => roles.lockOwnerRole(enterpriseId));
           secondAcquired = true;
         })
         .catch(() => {

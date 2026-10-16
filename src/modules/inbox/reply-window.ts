@@ -50,9 +50,7 @@ const REPLY_EVENT_TYPE: Readonly<Record<ConversationKind, OutboundEventType | nu
  * delivered as a message — a story reply included. A comment can be answered
  * years later.
  */
-const WINDOWED_KINDS: ReadonlySet<ConversationKind> = new Set([
-  ConversationKind.DirectMessage,
-]);
+const WINDOWED_KINDS: ReadonlySet<ConversationKind> = new Set([ConversationKind.DirectMessage]);
 
 /** What sending a reply to this conversation would enqueue, or null if nothing can. */
 export function replyEventTypeFor(kind: ConversationKind): OutboundEventType | null {

@@ -33,9 +33,9 @@ describe('which kind of tag this is', () => {
   describe('from a webhook, where Meta tells us', () => {
     it('reads a comment tag from comment_id', () => {
       // Real delivery: event 1740.
-      expect(
-        fromWebhook({ media_id: '18109176776162616', comment_id: '17949640701295733' }),
-      ).toBe(MentionKind.Comment);
+      expect(fromWebhook({ media_id: '18109176776162616', comment_id: '17949640701295733' })).toBe(
+        MentionKind.Comment,
+      );
     });
 
     it('reads a caption tag from its ABSENCE', () => {
@@ -92,9 +92,9 @@ describe('which kind of tag this is', () => {
        * a post that mentions the business, where the other way round would
        * quietly downgrade a real mention to a tag nobody is told about.
        */
-      expect(fromTagsWalk('shoutout to ai_automation_demo for the help', 'ai_automation_demo')).toBe(
-        MentionKind.Caption,
-      );
+      expect(
+        fromTagsWalk('shoutout to ai_automation_demo for the help', 'ai_automation_demo'),
+      ).toBe(MentionKind.Caption);
     });
 
     it('falls back to tagged when we do not know our own handle', () => {

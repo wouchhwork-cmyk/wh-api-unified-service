@@ -92,7 +92,6 @@ export function deliverableChange(
   };
 }
 
-
 /**
  * Fans a conversation change out to the browsers watching it.
  *

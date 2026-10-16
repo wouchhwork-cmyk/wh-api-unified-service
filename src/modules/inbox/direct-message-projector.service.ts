@@ -110,7 +110,11 @@ interface MessagingEvent {
    * event rather than a message, and conflating them would put a row in the
    * inbox that nobody said anything in.
    */
-  readonly optin?: { readonly type?: string; readonly payload?: string; readonly notification_messages_token?: string };
+  readonly optin?: {
+    readonly type?: string;
+    readonly payload?: string;
+    readonly notification_messages_token?: string;
+  };
   /** How the customer arrived — an ad, an ig link, a ref parameter. */
   readonly referral?: {
     readonly ref?: string;
@@ -215,7 +219,10 @@ export class DirectMessageProjectorService {
      * here.
      */
     if (!message?.mid && event.optin) {
-      return { projected: false, reason: 'a messaging opt-in, which is consent rather than a message' };
+      return {
+        projected: false,
+        reason: 'a messaging opt-in, which is consent rather than a message',
+      };
     }
 
     if (!message?.mid) return { projected: false, reason: 'the event carries no message id' };

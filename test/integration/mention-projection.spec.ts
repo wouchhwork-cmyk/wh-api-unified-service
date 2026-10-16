@@ -239,7 +239,7 @@ describe('instagram mention projection', () => {
     expect(rows[0]?.post_id).not.toBeNull();
   });
 
-  it('still files a tag on somebody else\'s post as a mention', async () => {
+  it("still files a tag on somebody else's post as a mention", async () => {
     // The control: no posts row for that media, so it is not ours.
     const outcome = await projector(async () => RESOLUTION).projectMention(
       enterpriseId,

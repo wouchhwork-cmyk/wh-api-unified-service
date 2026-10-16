@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
-import { QueueMetricsRepository, type QueueGauge } from '@/database/repositories/queue-metrics.repository';
+import {
+  QueueMetricsRepository,
+  type QueueGauge,
+} from '@/database/repositories/queue-metrics.repository';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /**

@@ -91,9 +91,7 @@ describe('Graph responses are validated, not cast', () => {
       respondWith({ data: [{ id: '1', caption: { secret: 'a customer wrote this' } }] });
       const client = new GraphApiClient(config);
 
-      const error = await client
-        .listInstagramMedia('IG', 'token')
-        .catch((cause: unknown) => cause);
+      const error = await client.listInstagramMedia('IG', 'token').catch((cause: unknown) => cause);
 
       const message = (error as GraphApiError).message;
       expect(message).toContain('caption');

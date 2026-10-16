@@ -551,5 +551,4 @@ export class ConversationRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), conversationId, JSON.stringify(patch)],
     );
   }
-
 }

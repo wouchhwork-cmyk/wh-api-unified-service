@@ -18,11 +18,7 @@ import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
 import { RequestContext } from '@/shared/context';
-import {
-  permissionFor,
-  visibleKinds,
-  type ConversationAction,
-} from '@/shared/rbac';
+import { permissionFor, visibleKinds, type ConversationAction } from '@/shared/rbac';
 import { clampLimit } from '@/shared/utils/page-limit';
 import { isExpiringMediaUrl, toWebhookAttachments } from './attachment-normalizer';
 import {
@@ -60,9 +56,7 @@ import { CLOSED_TO_REPLIES, evaluateReplyWindow, replyEventTypeFor } from './rep
  * mention has no single participant to scope the request by. StoryReply is a
  * message thread with a different label, so it belongs here.
  */
-const RESYNCABLE_KINDS: ReadonlySet<ConversationKind> = new Set([
-  ConversationKind.DirectMessage,
-]);
+const RESYNCABLE_KINDS: ReadonlySet<ConversationKind> = new Set([ConversationKind.DirectMessage]);
 
 export interface ReplyInput {
   readonly conversationRefId: string;
@@ -393,7 +387,8 @@ export class InboxService {
     if (conversation.conversationKind !== ConversationKind.Mention) return;
 
     const metadata = conversation.contextMetadata ?? {};
-    const mediaId = typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
+    const mediaId =
+      typeof metadata.mentionedMediaId === 'string' ? metadata.mentionedMediaId : null;
     if (!mediaId) return;
 
     const refreshedAt =
@@ -424,7 +419,6 @@ export class InboxService {
     metadata: Record<string, unknown>,
     mediaId: string,
   ): Promise<void> {
-
     const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
     if (!channel?.effectiveAccessToken || !channel.platformChannelId) return;
     // A channel already known to need re-auth would spend a call to be told so.
@@ -1033,13 +1027,16 @@ export class InboxService {
                   message: input.body,
                 }
               : eventType === OutboundEventType.CommentReply
-              ? { commentId: stripThreadPrefix(conversation.platformThreadId), message: input.body }
-              : {
-                  message: input.body,
-                  ...(replyTarget?.platformMessageId
-                    ? { replyToPlatformMessageId: replyTarget.platformMessageId }
-                    : {}),
-                },
+                ? {
+                    commentId: stripThreadPrefix(conversation.platformThreadId),
+                    message: input.body,
+                  }
+                : {
+                    message: input.body,
+                    ...(replyTarget?.platformMessageId
+                      ? { replyToPlatformMessageId: replyTarget.platformMessageId }
+                      : {}),
+                  },
           scheduledAt: null,
         });
 
@@ -1220,9 +1217,7 @@ export class InboxService {
     }
     if (conversation.postId === null) {
       throw new AppException(ErrorCode.ReplyNotSupported, {
-        details: [
-          { field: 'action', issue: 'Instagram allows this only on a post you own' },
-        ],
+        details: [{ field: 'action', issue: 'Instagram allows this only on a post you own' }],
       });
     }
 
@@ -1276,9 +1271,7 @@ export class InboxService {
        */
       if (target.deletedOnPlatform) {
         throw new AppException(ErrorCode.InvalidStateTransition, {
-          details: [
-            { field: 'action', issue: 'this comment is already gone from the platform' },
-          ],
+          details: [{ field: 'action', issue: 'this comment is already gone from the platform' }],
         });
       }
 

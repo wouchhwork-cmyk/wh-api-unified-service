@@ -40,16 +40,28 @@ async function main(): Promise<void> {
     }[];
     error?: { message?: string };
   };
-  if (body.error) { console.log('refused:', body.error.message); }
-  else {
+  if (body.error) {
+    console.log('refused:', body.error.message);
+  } else {
     for (const m of body.data ?? []) {
-      console.log(`\n${m.id}  ${m.media_type}  ${String(m.timestamp).slice(0, 10)}  comments=${m.comments_count ?? 0}`);
-      console.log(`  caption: ${String(m.caption ?? '').slice(0, 55).replace(/\n/g, ' ')}`);
+      console.log(
+        `\n${m.id}  ${m.media_type}  ${String(m.timestamp).slice(0, 10)}  comments=${m.comments_count ?? 0}`,
+      );
+      console.log(
+        `  caption: ${String(m.caption ?? '')
+          .slice(0, 55)
+          .replace(/\n/g, ' ')}`,
+      );
       for (const c of m.comments?.data ?? []) {
-        console.log(`  COMMENT ${c.id}  @${c.username ?? '?'}  hidden=${c.hidden}  "${String(c.text ?? '').slice(0, 34)}"`);
+        console.log(
+          `  COMMENT ${c.id}  @${c.username ?? '?'}  hidden=${c.hidden}  "${String(c.text ?? '').slice(0, 34)}"`,
+        );
       }
     }
   }
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

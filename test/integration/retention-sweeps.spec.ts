@@ -65,11 +65,7 @@ describe('retention sweeps', () => {
   });
 
   describe('sessions', () => {
-    async function seed(
-      label: string,
-      expiresAt: string,
-      revokedAt: string | null,
-    ): Promise<void> {
+    async function seed(label: string, expiresAt: string, revokedAt: string | null): Promise<void> {
       await db.query(
         `INSERT INTO sessions (identity_id, refresh_token_hash, expires_at, revoked_at)
          VALUES ($1, $2, $3, $4)`,

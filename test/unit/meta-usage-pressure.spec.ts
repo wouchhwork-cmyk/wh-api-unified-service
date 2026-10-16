@@ -34,7 +34,10 @@ const silentLogger = () =>
 
 const collector = (): MetaUsageCollector =>
   new MetaUsageCollector(
-    { record: vi.fn(), resolveOwners: vi.fn().mockResolvedValue([]) } as unknown as ProviderApiUsageRepository,
+    {
+      record: vi.fn(),
+      resolveOwners: vi.fn().mockResolvedValue([]),
+    } as unknown as ProviderApiUsageRepository,
     silentLogger(),
   );
 
@@ -58,15 +61,27 @@ describe('MetaUsageCollector.pressure', () => {
   it('reports the worst of the three meters', () => {
     // Any one of them being full refuses the call, so the worst is the truth.
     const usage = collector();
-    usage.observe({ readings: [reading({ callPct: 12, cpuPct: 91, timePct: 40 })], throttled: false, failed: false });
+    usage.observe({
+      readings: [reading({ callPct: 12, cpuPct: 91, timePct: 40 })],
+      throttled: false,
+      failed: false,
+    });
 
     expect(usage.pressure()).toBe(91);
   });
 
   it('reports the worst pool, not the last one seen', () => {
     const usage = collector();
-    usage.observe({ readings: [reading({ providerScopeId: 'a', callPct: 95 })], throttled: false, failed: false });
-    usage.observe({ readings: [reading({ providerScopeId: 'b', callPct: 5 })], throttled: false, failed: false });
+    usage.observe({
+      readings: [reading({ providerScopeId: 'a', callPct: 95 })],
+      throttled: false,
+      failed: false,
+    });
+    usage.observe({
+      readings: [reading({ providerScopeId: 'b', callPct: 5 })],
+      throttled: false,
+      failed: false,
+    });
 
     expect(usage.pressure()).toBe(95);
   });

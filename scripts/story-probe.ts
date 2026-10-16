@@ -33,4 +33,7 @@ async function main(): Promise<void> {
   console.log('asset_id in link  :', link.match(/asset_id=(\d+)/)?.[1]);
   await ds.destroy();
 }
-void main().catch((e: unknown) => { console.error(e instanceof Error ? e.message : e); process.exit(1); });
+void main().catch((e: unknown) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

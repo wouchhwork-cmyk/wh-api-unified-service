@@ -46,7 +46,6 @@ import { BasePoller } from './base-poller';
 import { splitPersonName } from '@/shared/utils/person-name';
 import { toWebhookAttachments } from '@/modules/inbox/attachment-normalizer';
 
-
 /**
  * The kinds this worker can actually walk. Anything else is paused rather than
  * silently routed to the wrong walk.

@@ -55,7 +55,10 @@ async function main(): Promise<void> {
       body,
     },
   );
-  const result = (await response.json()) as { id?: string; error?: { message?: string; code?: number } };
+  const result = (await response.json()) as {
+    id?: string;
+    error?: { message?: string; code?: number };
+  };
 
   console.log(
     `POST /mentions  ${commentId ? 'WITH comment_id (reply under it)' : 'media_id only (comment on post)'}` +

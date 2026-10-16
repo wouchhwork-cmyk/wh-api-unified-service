@@ -16,11 +16,7 @@ const NEVER_ACCEPTED = false;
 describe('changing an employee’s status', () => {
   describe('into active', () => {
     it('refuses an invite the person has not accepted', () => {
-      const denial = mayChangeStatus(
-        EmployeeStatus.Invited,
-        EmployeeStatus.Active,
-        NEVER_ACCEPTED,
-      );
+      const denial = mayChangeStatus(EmployeeStatus.Invited, EmployeeStatus.Active, NEVER_ACCEPTED);
 
       expect(denial).toEqual({ kind: 'acceptance-required' });
     });
@@ -42,17 +38,13 @@ describe('changing an employee’s status', () => {
 
     it('allows reinstating somebody who really did work here', () => {
       // The legitimate case this must not break: suspended, then brought back.
-      expect(
-        mayChangeStatus(EmployeeStatus.Suspended, EmployeeStatus.Active, ACCEPTED),
-      ).toBeNull();
+      expect(mayChangeStatus(EmployeeStatus.Suspended, EmployeeStatus.Active, ACCEPTED)).toBeNull();
     });
   });
 
   describe('into suspended', () => {
     it('allows suspending an active employee', () => {
-      expect(
-        mayChangeStatus(EmployeeStatus.Active, EmployeeStatus.Suspended, ACCEPTED),
-      ).toBeNull();
+      expect(mayChangeStatus(EmployeeStatus.Active, EmployeeStatus.Suspended, ACCEPTED)).toBeNull();
     });
 
     it('allows cancelling an outstanding invite', () => {
@@ -78,9 +70,9 @@ describe('changing an employee’s status', () => {
     });
 
     it('is refused even where the transition would otherwise be blocked', () => {
-      expect(
-        mayChangeStatus(EmployeeStatus.Active, EmployeeStatus.Active, NEVER_ACCEPTED),
-      ).toEqual({ kind: 'already-in-status', status: EmployeeStatus.Active });
+      expect(mayChangeStatus(EmployeeStatus.Active, EmployeeStatus.Active, NEVER_ACCEPTED)).toEqual(
+        { kind: 'already-in-status', status: EmployeeStatus.Active },
+      );
     });
   });
 

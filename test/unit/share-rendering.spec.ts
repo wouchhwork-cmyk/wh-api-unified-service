@@ -30,9 +30,7 @@ describe('deciding how to render a share', () => {
      * invisible. Reported from live traffic on 26 Sep.
      */
     expect(
-      renderAsFor(
-        attachment({ sourceUrl: CDN_IMAGE, metadata: { platformType: 'ig_post' } }),
-      ),
+      renderAsFor(attachment({ sourceUrl: CDN_IMAGE, metadata: { platformType: 'ig_post' } })),
     ).toBe('image');
   });
 

@@ -46,7 +46,9 @@ async function main(): Promise<void> {
     `https://graph.facebook.com/${config.meta.graphApiVersion}/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
   );
   const info = (await debug.json()) as { data?: { app_id?: string; application?: string } };
-  console.log(`\ntoken belongs to app   ${info.data?.app_id ?? '(unknown)'} ${info.data?.application ?? ''}`);
+  console.log(
+    `\ntoken belongs to app   ${info.data?.app_id ?? '(unknown)'} ${info.data?.application ?? ''}`,
+  );
 
   await ds.destroy();
 }

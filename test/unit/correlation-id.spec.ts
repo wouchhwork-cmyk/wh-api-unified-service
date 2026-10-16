@@ -117,9 +117,9 @@ describe('correlation id', () => {
     });
 
     it('prefers x-correlation-id when both are sent', () => {
-      expect(
-        readClientTraceId({ 'x-correlation-id': 'first', 'x-request-id': 'second' }),
-      ).toBe('first');
+      expect(readClientTraceId({ 'x-correlation-id': 'first', 'x-request-id': 'second' })).toBe(
+        'first',
+      );
     });
   });
 });

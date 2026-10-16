@@ -242,9 +242,7 @@ export class RoleRepository extends BaseRepository {
    * ours to do, so this REPORTS rather than repairs — the failure it replaces
    * is one nobody could see at all.
    */
-  async findShadowedSystemRoles(): Promise<
-    { enterpriseId: number; name: string }[]
-  > {
+  async findShadowedSystemRoles(): Promise<{ enterpriseId: number; name: string }[]> {
     return this.query(
       `SELECT r.enterprise_id AS "enterpriseId", r.name
          FROM roles r
@@ -412,10 +410,10 @@ export class RoleRepository extends BaseRepository {
     roleIds: readonly number[];
     grantedByEmployeeId: number | null;
   }): Promise<void> {
-    await this.query(
-      `DELETE FROM employee_roles WHERE enterprise_id = $1 AND employee_id = $2`,
-      [this.requireEnterprise(input.enterpriseId), input.employeeId],
-    );
+    await this.query(`DELETE FROM employee_roles WHERE enterprise_id = $1 AND employee_id = $2`, [
+      this.requireEnterprise(input.enterpriseId),
+      input.employeeId,
+    ]);
     if (input.roleIds.length === 0) return;
 
     await this.guard(async () => {
@@ -579,7 +577,12 @@ export class RoleRepository extends BaseRepository {
           AND r.is_deleted = false
           AND r.status = $3
         GROUP BY r.id, r.level, r.name`,
-      [this.requireEnterprise(enterpriseId), employeeId, RoleStatus.Active, PermissionStatus.Active],
+      [
+        this.requireEnterprise(enterpriseId),
+        employeeId,
+        RoleStatus.Active,
+        PermissionStatus.Active,
+      ],
     );
 
     const codes = new Set<string>();

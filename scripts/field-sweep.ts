@@ -18,21 +18,66 @@ import { TokenCipherService } from '../src/shared/crypto/token-cipher.service';
 
 const CANDIDATES: Record<string, readonly string[]> = {
   ig: [
-    'username', 'name', 'biography', 'website', 'profile_picture_url',
-    'followers_count', 'follows_count', 'media_count', 'ig_id', 'shopping_product_tag_eligibility',
-    'has_profile_pic', 'is_published', 'legacy_instagram_user_id', 'owner_business',
+    'username',
+    'name',
+    'biography',
+    'website',
+    'profile_picture_url',
+    'followers_count',
+    'follows_count',
+    'media_count',
+    'ig_id',
+    'shopping_product_tag_eligibility',
+    'has_profile_pic',
+    'is_published',
+    'legacy_instagram_user_id',
+    'owner_business',
   ],
   page: [
-    'name', 'about', 'category', 'category_list', 'link', 'username', 'website',
-    'fan_count', 'followers_count', 'picture', 'cover', 'emails', 'phone',
-    'single_line_address', 'location', 'hours', 'is_published', 'verification_status',
-    'new_like_count', 'rating_count', 'overall_star_rating', 'were_here_count',
-    'talking_about_count', 'engagement', 'connected_instagram_account', 'description',
+    'name',
+    'about',
+    'category',
+    'category_list',
+    'link',
+    'username',
+    'website',
+    'fan_count',
+    'followers_count',
+    'picture',
+    'cover',
+    'emails',
+    'phone',
+    'single_line_address',
+    'location',
+    'hours',
+    'is_published',
+    'verification_status',
+    'new_like_count',
+    'rating_count',
+    'overall_star_rating',
+    'were_here_count',
+    'talking_about_count',
+    'engagement',
+    'connected_instagram_account',
+    'description',
   ],
   post: [
-    'caption', 'media_type', 'media_product_type', 'media_url', 'permalink', 'thumbnail_url',
-    'timestamp', 'username', 'like_count', 'comments_count', 'is_comment_enabled',
-    'children', 'owner', 'shortcode', 'alt_text', 'boost_eligibility_info',
+    'caption',
+    'media_type',
+    'media_product_type',
+    'media_url',
+    'permalink',
+    'thumbnail_url',
+    'timestamp',
+    'username',
+    'like_count',
+    'comments_count',
+    'is_comment_enabled',
+    'children',
+    'owner',
+    'shortcode',
+    'alt_text',
+    'boost_eligibility_info',
   ],
 };
 
@@ -58,7 +103,11 @@ async function main(): Promise<void> {
 
   const node =
     process.argv[3] ??
-    (kind === 'ig' ? ig[0]?.platform_channel_id : kind === 'page' ? fb[0]?.platform_channel_id : post[0]?.platform_post_id);
+    (kind === 'ig'
+      ? ig[0]?.platform_channel_id
+      : kind === 'page'
+        ? fb[0]?.platform_channel_id
+        : post[0]?.platform_post_id);
   const token = new TokenCipherService(config as never).decrypt(fb[0]?.access_token as string);
   const proof = createHmac('sha256', config.meta.appSecret).update(token).digest('hex');
 

@@ -800,7 +800,6 @@ export class AuthService {
           : null,
     };
   }
-
 }
 
 function toEmploymentDto(employment: EmploymentSummary): Employment {

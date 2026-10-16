@@ -480,7 +480,10 @@ export class MetaUsageCollector implements OnModuleInit, OnApplicationShutdown {
     return this.owners;
   }
 
-  private toRow(bucket: PendingBucket, owners: ReadonlyMap<string, CachedOwner>): ProviderUsageBucket {
+  private toRow(
+    bucket: PendingBucket,
+    owners: ReadonlyMap<string, CachedOwner>,
+  ): ProviderUsageBucket {
     const direct = bucket.providerScopeId ? owners.get(bucket.providerScopeId) : undefined;
     const channelId = direct?.channelId ?? null;
     const enterpriseId = direct?.enterpriseId ?? this.inferEnterprise(bucket, owners);

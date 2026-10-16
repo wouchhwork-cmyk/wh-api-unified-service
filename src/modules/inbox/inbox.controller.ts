@@ -22,12 +22,7 @@ import { RawResponse } from '@/shared/decorators/raw-response.decorator';
 import { SkipTimeout } from '@/shared/decorators/skip-timeout.decorator';
 import { DEFAULT_PAGE_SIZE, SSE_HEARTBEAT_MS, SSE_MAX_STREAM_MS } from '@/shared/constants';
 import { InboxEventsService } from './inbox-events.service';
-import {
-  ConversationKind,
-  ConversationStatus,
-  MediaKind,
-  MessageDirection,
-} from '@/shared/enums';
+import { ConversationKind, ConversationStatus, MediaKind, MessageDirection } from '@/shared/enums';
 import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import { evaluateReplyWindow } from './reply-window';
 import type { ActorContext } from '@/shared/context';
@@ -733,9 +728,7 @@ function toMessage(
       typeof row.metadata.replyToStoryUrl === 'string'
         ? {
             storyId:
-              typeof row.metadata.replyToStoryId === 'string'
-                ? row.metadata.replyToStoryId
-                : null,
+              typeof row.metadata.replyToStoryId === 'string' ? row.metadata.replyToStoryId : null,
             url:
               typeof row.metadata.replyToStoryUrl === 'string'
                 ? row.metadata.replyToStoryUrl
@@ -892,8 +885,8 @@ function toMentionContext(
      * loop and never branch. The cover stays in `mediaUrl` either way, so a
      * client that ignores this is still correct.
      */
-    carousel: (Array.isArray(details.children) ? details.children : [])
-      .map((child): Record<string, unknown> => {
+    carousel: (Array.isArray(details.children) ? details.children : []).map(
+      (child): Record<string, unknown> => {
         const slide = (typeof child === 'object' && child !== null ? child : {}) as Record<
           string,
           unknown
@@ -906,7 +899,8 @@ function toMentionContext(
           mediaUrl: asText(slide.mediaUrl),
           thumbnailUrl: asText(slide.thumbnailUrl),
         };
-      }),
+      },
+    ),
     /*
      * WHETHER THOSE LINKS DIE, and how fresh they are.
      *
@@ -921,9 +915,7 @@ function toMentionContext(
      * which never expires. Message attachments already carry the same `expires`
      * signal; a mention had none.
      */
-    mediaExpires: isExpiringMediaUrl(
-      asText(details.thumbnailUrl) ?? asText(details.mediaUrl),
-    ),
+    mediaExpires: isExpiringMediaUrl(asText(details.thumbnailUrl) ?? asText(details.mediaUrl)),
     mediaRefreshedAt: asText(metadata.postDetailsRefreshedAt),
     /*
      * HOW they tagged us: `caption`, `comment`, or `tagged`.
@@ -1093,24 +1085,25 @@ function toParentComment(
   };
 }
 
-function toConversationSummary(row: {
-  refId: string;
-  conversationKind: string;
-  subject: string | null;
-  postId: number | null;
-  status: string;
-  unreadCount: number;
-  messageCount: number;
-  lastMessageAt: Date | null;
-  lastInboundAt: Date | null;
-  platform: string;
-  customerRefId: string | null;
-  customerDisplayName: string | null;
-  customerAvatarUrl: string | null;
-  customerProfile: Record<string, unknown>;
-  contextMetadata?: Record<string, unknown>;
-  assignedToRefId: string | null;
-  assignedToName: string | null;
+function toConversationSummary(
+  row: {
+    refId: string;
+    conversationKind: string;
+    subject: string | null;
+    postId: number | null;
+    status: string;
+    unreadCount: number;
+    messageCount: number;
+    lastMessageAt: Date | null;
+    lastInboundAt: Date | null;
+    platform: string;
+    customerRefId: string | null;
+    customerDisplayName: string | null;
+    customerAvatarUrl: string | null;
+    customerProfile: Record<string, unknown>;
+    contextMetadata?: Record<string, unknown>;
+    assignedToRefId: string | null;
+    assignedToName: string | null;
   },
   known: KnownAuthors = NO_KNOWN_AUTHORS,
   parentMention: ParentMention = null,

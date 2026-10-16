@@ -69,7 +69,10 @@ describe('MetaUsageCollector', () => {
 
   const only = (scopeKey: string): ProviderUsageBucket => {
     const found = written.find((bucket) => bucket.scopeKey === scopeKey);
-    if (!found) throw new Error(`no bucket for ${scopeKey}; got ${written.map((b) => b.scopeKey).join(', ')}`);
+    if (!found)
+      throw new Error(
+        `no bucket for ${scopeKey}; got ${written.map((b) => b.scopeKey).join(', ')}`,
+      );
     return found;
   };
 
@@ -126,10 +129,7 @@ describe('MetaUsageCollector', () => {
     it('counts a call against every pool the response named', async () => {
       // One Instagram read reports under the business AND the account; both
       // pools genuinely were drawn on.
-      ok([
-        reading({ providerScopeId: 'BUSINESS' }),
-        reading({ providerScopeId: 'IG_ACCOUNT' }),
-      ]);
+      ok([reading({ providerScopeId: 'BUSINESS' }), reading({ providerScopeId: 'IG_ACCOUNT' })]);
       await collector.flush();
 
       expect(written).toHaveLength(2);
@@ -183,7 +183,9 @@ describe('MetaUsageCollector', () => {
       // The failure above, from the console's point of view: the app gauge must
       // still read 60% after an unrelated inbox call times out.
       collector.observe({
-        readings: [reading({ meter: MetaUsageMeter.App, providerScopeId: null, product: null, callPct: 60 })],
+        readings: [
+          reading({ meter: MetaUsageMeter.App, providerScopeId: null, product: null, callPct: 60 }),
+        ],
         throttled: false,
         failed: false,
       });

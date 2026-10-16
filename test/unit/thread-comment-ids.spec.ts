@@ -61,8 +61,8 @@ describe('collecting the comment ids in a mention thread', () => {
   });
 
   it('drops entries carrying no platform id', () => {
-    expect(
-      threadCommentIds({ replyThread: [comment('KEEP'), { text: 'no id' }, null] }),
-    ).toEqual(['KEEP']);
+    expect(threadCommentIds({ replyThread: [comment('KEEP'), { text: 'no id' }, null] })).toEqual([
+      'KEEP',
+    ]);
   });
 });

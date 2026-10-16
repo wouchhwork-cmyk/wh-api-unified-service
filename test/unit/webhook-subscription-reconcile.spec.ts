@@ -191,9 +191,7 @@ describe('WebhookSubscriptionService.reconcileAll', () => {
     // What Meta returns for a Page with no subscription — and also the state left
     // behind by a subscribe call that failed at connect and was never retried.
     // Nothing on the first read; the full policy on the read-back.
-    graph.listSubscribedFields
-      .mockResolvedValueOnce([])
-      .mockResolvedValue([...SUBSCRIBED_FIELDS]);
+    graph.listSubscribedFields.mockResolvedValueOnce([]).mockResolvedValue([...SUBSCRIBED_FIELDS]);
 
     const summary = await service.reconcileAll();
 

@@ -10,10 +10,7 @@ import {
 } from '@/shared/contracts/catalogue/catalogue.contract';
 import type { CustomerDirectoryRow } from '@/database/repositories/customer.repository';
 import type { PostFeedRow } from '@/database/repositories/post.repository';
-import {
-  isExpiredMediaUrl,
-  mediaUrlExpiresAt,
-} from '@/modules/inbox/attachment-normalizer';
+import { isExpiredMediaUrl, mediaUrlExpiresAt } from '@/modules/inbox/attachment-normalizer';
 import { CatalogueService } from './catalogue.service';
 import { DEFAULT_PAGE_SIZE } from '@/shared/constants';
 

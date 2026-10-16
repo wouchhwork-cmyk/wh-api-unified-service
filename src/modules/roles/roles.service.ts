@@ -1,9 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import {
-  RoleRepository,
-  type RoleDetailRow,
-} from '@/database/repositories/role.repository';
+import { RoleRepository, type RoleDetailRow } from '@/database/repositories/role.repository';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { TransactionManager } from '@/database/transaction';
 import { AuditService } from '@/modules/audit';
@@ -194,8 +191,7 @@ export class RolesService {
         details: [
           {
             field: 'name',
-            issue:
-              'this name belongs to a built-in role and cannot be reused — choose another',
+            issue: 'this name belongs to a built-in role and cannot be reused — choose another',
           },
         ],
       });

@@ -20,11 +20,7 @@ import {
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 import { RequestContext } from '@/shared/context';
 import { AppException, ErrorCode } from '@/shared/errors';
-import {
-  RateLimitService,
-  type RateLimitOverview,
-  type UsagePoint,
-} from './rate-limit.service';
+import { RateLimitService, type RateLimitOverview, type UsagePoint } from './rate-limit.service';
 import {
   PlatformService,
   type EnterpriseDetail,
@@ -160,15 +156,16 @@ export class PlatformController {
       'own — staff have no signup route, so an admin who narrowed themselves out of the console ' +
       'would have no way back.',
   })
-  async setStaffRoles(
-    @Param('refId') refId: string,
-    @Body() body: unknown,
-  ): Promise<void> {
+  async setStaffRoles(@Param('refId') refId: string, @Body() body: unknown): Promise<void> {
     const actor = RequestContext.actor();
     if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
 
     const parsed = PlatformStaffRolesSchema.parse(body);
-    await this.platform.setStaffRoles(actor.staffId, RefIdParamSchema.parse(refId), parsed.roleRefIds);
+    await this.platform.setStaffRoles(
+      actor.staffId,
+      RefIdParamSchema.parse(refId),
+      parsed.roleRefIds,
+    );
   }
 
   @Get('overview')

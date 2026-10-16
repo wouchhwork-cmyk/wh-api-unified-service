@@ -376,7 +376,11 @@ describe('a mime type is evidence, and ends the guessing', () => {
    * arrive as `file`, and the code said so in a comment while dropping the
    * field that proved it.
    */
-  const withMime = (type: string, mime: string | undefined, url = 'https://lookaside.fbsbx.com/x') =>
+  const withMime = (
+    type: string,
+    mime: string | undefined,
+    url = 'https://lookaside.fbsbx.com/x',
+  ) =>
     normalizeAttachments([
       { type, payload: { url, ...(mime === undefined ? {} : { mime_type: mime }) } },
     ]).attachments[0];

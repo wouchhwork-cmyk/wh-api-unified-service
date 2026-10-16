@@ -13,11 +13,7 @@ import { Permission } from '@/shared/enums';
 /** An actor the scope guard has already proven belongs to a business. */
 type ScopedActor = ActorContext & { enterpriseId: number };
 import { AppException, ErrorCode } from '@/shared/errors';
-import {
-  RolesService,
-  type PermissionGroupView,
-  type RoleView,
-} from './roles.service';
+import { RolesService, type PermissionGroupView, type RoleView } from './roles.service';
 
 /**
  * A business defining what its own people may do.
@@ -43,7 +39,9 @@ export class RolesController {
       'Both are reported rather than filtered out: hiding an unavailable permission makes a role ' +
       'that already grants it look corrupt, and hides what buying the feature back would restore.',
   })
-  async permissions(@CurrentScopedActor() actor: ScopedActor): Promise<readonly PermissionGroupView[]> {
+  async permissions(
+    @CurrentScopedActor() actor: ScopedActor,
+  ): Promise<readonly PermissionGroupView[]> {
     return this.roles.permissionCatalogue(actor.enterpriseId, actor.employeeId);
   }
 
@@ -68,11 +66,12 @@ export class RolesController {
       'The level must be strictly below your own, and the permissions must be ones you hold ' +
       'yourself. The owner level is reserved and cannot be created.',
   })
-  async create(
-    @CurrentScopedActor() actor: ScopedActor,
-    @Body() body: unknown,
-  ): Promise<RoleView> {
-    return this.roles.create(actor.enterpriseId, this.actingEmployee(actor), CreateRoleSchema.parse(body));
+  async create(@CurrentScopedActor() actor: ScopedActor, @Body() body: unknown): Promise<RoleView> {
+    return this.roles.create(
+      actor.enterpriseId,
+      this.actingEmployee(actor),
+      CreateRoleSchema.parse(body),
+    );
   }
 
   @Patch(':refId')
