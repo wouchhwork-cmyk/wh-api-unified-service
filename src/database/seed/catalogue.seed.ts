@@ -658,7 +658,12 @@ async function seedRolePermissions(
 function report(
   summaries: readonly Summary[],
   insertedByRole: ReadonlyMap<string, number>,
-  reconciled?: { rolesAdded: number; grantsAdded: number; levelsCorrected: number },
+  reconciled?: {
+    rolesAdded: number;
+    grantsAdded: number;
+    levelsCorrected: number;
+    shadowedTemplates: { enterpriseId: number; name: string }[];
+  },
 ): void {
   const width = Math.max(...summaries.map((summary) => summary.table.length));
 
@@ -690,6 +695,21 @@ function report(
     console.log(`    roles added       ${reconciled.rolesAdded}`);
     console.log(`    grants added      ${reconciled.grantsAdded}`);
     console.log(`    levels corrected  ${reconciled.levelsCorrected}`);
+
+    /*
+     * THE ONE THAT NEEDS A HUMAN. A tenant whose own role sits on a template's
+     * name can never receive that template — names are unique per tenant, so
+     * there is nowhere to put it. Renaming somebody's role is not a seed's
+     * decision, so this is printed and left: it was previously a skip nobody
+     * could see, which is how a business ends up permanently missing a role.
+     */
+    if (reconciled.shadowedTemplates.length > 0) {
+      console.log('\n  NOT reconciled — a tenant role is sitting on a template name');
+      for (const shadow of reconciled.shadowedTemplates) {
+        console.log(`    enterprise ${shadow.enterpriseId}: "${shadow.name}"`);
+      }
+      console.log('    these businesses will not receive the system role of that name');
+    }
   }
 }
 
@@ -718,6 +738,17 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
   rolesAdded: number;
   grantsAdded: number;
   levelsCorrected: number;
+  /**
+   * Tenants whose own role NAME shadows a system template, so that template can
+   * never reach them (todo E15).
+   *
+   * Reported, not repaired. Role names are unique per tenant, so the template
+   * cannot be inserted beside the custom role, and renaming somebody's role is
+   * not a seed's decision to make. What this fixes is the silence: the skip
+   * below has always been correct and invisible, and a tenant missing a system
+   * role for ever with nothing to notice is the actual defect.
+   */
+  shadowedTemplates: { enterpriseId: number; name: string }[];
 }> {
   /*
    * 1. A system role a tenant never received, because it did not exist when
@@ -755,6 +786,28 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
      ON CONFLICT DO NOTHING
      RETURNING id`,
     [RoleStatus.Active, RoleScope.Enterprise],
+  );
+
+  /*
+   * The roles step above skips on NAME, which is right — the unique index
+   * leaves it no choice — but a skip because the template already arrived and
+   * a skip because a custom role is sitting on the name are different events,
+   * and only one of them is fine. This separates them.
+   */
+  const shadowedTemplates = await run<{ enterpriseId: number; name: string }>(
+    manager,
+    `SELECT r.enterprise_id AS "enterpriseId", r.name
+       FROM roles r
+       JOIN roles t
+         ON t.enterprise_id IS NULL
+        AND t.is_system = true
+        AND t.is_deleted = false
+        AND t.name = r.name
+      WHERE r.enterprise_id IS NOT NULL
+        AND r.is_system = false
+        AND r.is_deleted = false
+      ORDER BY r.enterprise_id, r.name`,
+    [],
   );
 
   // 2. A grant the template has and the tenant's copy does not.
@@ -809,6 +862,7 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
     rolesAdded: roles.length,
     grantsAdded: grants.length,
     levelsCorrected: levels.length,
+    shadowedTemplates,
   };
 }
 
@@ -816,7 +870,13 @@ export interface SeedReport {
   readonly summaries: readonly Summary[];
   readonly insertedByRole: ReadonlyMap<string, number>;
   /** What reconciling existing tenants against the templates changed. */
-  readonly reconciled: { rolesAdded: number; grantsAdded: number; levelsCorrected: number };
+  readonly reconciled: {
+    rolesAdded: number;
+    grantsAdded: number;
+    levelsCorrected: number;
+    /** Tenants a template cannot reach, because their own role holds its name. */
+    shadowedTemplates: { enterpriseId: number; name: string }[];
+  };
 }
 
 /**

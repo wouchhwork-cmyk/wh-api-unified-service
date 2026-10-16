@@ -158,7 +158,24 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       Sessions are keyed on the identity and `switchEnterprise` is a token
       exchange rather than a new login, so there is nothing narrower to revoke
       without giving sessions an enterprise and reworking the switch.
-- [ ] **E15. A tenant can permanently miss a future system role** — S
+- [x] **E15. A tenant can permanently miss a future system role** — DONE 17 Oct 2026
+      Two halves, because the problem has two.
+
+      FORWARD: creating a role whose name belongs to a system template is now
+      refused at the API. Role names are unique per tenant, so taking one does
+      not put a custom role beside the template — it makes the template
+      unreceivable for ever.
+
+      BACKWARD: the collisions that already exist cannot be repaired here
+      (there is nowhere to put the template, and renaming somebody's role is
+      not a seed's decision), so `reconcileTenantSystemRoles` REPORTS them.
+      `shadowedTemplates` names every tenant and role, and the seed prints it
+      under "NOT reconciled". The defect was never the skip — the skip is
+      forced by the unique index — it was that nobody could see it.
+
+      The guard only knows templates that exist NOW; one invented later can
+      still be shadowed, which is exactly what the report is for.
+- [ ] ~~E15 (original entry)~~ — S
       `reconcileTenantSystemRoles` step 1 skips a template whose NAME already
       exists in the tenant, regardless of `is_system`. A business that creates
       a custom role called, say, `supervisor` will never receive a system role

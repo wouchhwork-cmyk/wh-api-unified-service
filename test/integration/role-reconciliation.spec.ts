@@ -95,7 +95,12 @@ describe('reconciling a tenant against the role templates', () => {
       await reconcileTenantSystemRoles(db.manager);
       const second = await reconcileTenantSystemRoles(db.manager);
 
-      expect(second).toEqual({ rolesAdded: 0, grantsAdded: 0, levelsCorrected: 0 });
+      expect(second).toEqual({
+        rolesAdded: 0,
+        grantsAdded: 0,
+        levelsCorrected: 0,
+        shadowedTemplates: [],
+      });
     });
   });
 
@@ -193,6 +198,62 @@ describe('reconciling a tenant against the role templates', () => {
       );
       expect(after[0]).toMatchObject({ level: 35, is_system: false });
       expect(await grantCount(customId)).toBe(0);
+    });
+
+    /*
+     * E15. The roles step skips on NAME, which the unique index leaves it no
+     * choice about — but a skip because the template already arrived and a skip
+     * because a CUSTOM role is sitting on the name are different events, and
+     * only one of them is fine. The second left a business permanently without
+     * a system role and said nothing at all.
+     */
+    it('reports a tenant role sitting on a template name, rather than skipping in silence', async () => {
+      const template: { name: string }[] = await db.query(
+        `SELECT name FROM roles
+          WHERE enterprise_id IS NULL AND is_system = true AND scope = 'enterprise'
+          LIMIT 1`,
+      );
+      const shadowed = template[0]?.name as string;
+
+      // A second business, so the name is free here to be taken by a custom
+      // role before the template ever reaches it.
+      const latecomer = await seedEnterprise(db, 'Latecomer', 'latecomer');
+      await db.query(
+        `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+         VALUES ($1, 'enterprise', $2, 'Ours, and in the way', false, 'active', 35)`,
+        [latecomer, shadowed],
+      );
+
+      const result = await reconcileTenantSystemRoles(db.manager);
+
+      expect(result.shadowedTemplates).toContainEqual({
+        enterpriseId: latecomer,
+        name: shadowed,
+      });
+
+      // And it is still NOT created, because it cannot be: names are unique
+      // per tenant. Reporting is the fix; renaming somebody's role is not a
+      // seed's decision to make.
+      const theirs: { is_system: boolean }[] = await db.query(
+        `SELECT is_system FROM roles WHERE enterprise_id = $1 AND name = $2`,
+        [latecomer, shadowed],
+      );
+      expect(theirs).toHaveLength(1);
+      expect(theirs[0]?.is_system).toBe(false);
+    });
+
+    it('reports nothing when every tenant role name is its own', async () => {
+      // The control: a custom name that shadows nothing must not be listed, or
+      // the report is noise and nobody reads it.
+      await db.query(
+        `INSERT INTO roles (enterprise_id, scope, name, description, is_system, status, level)
+         VALUES ($1, 'enterprise', 'Weekend cover', 'Ours', false, 'active', 35)`,
+        [enterpriseId],
+      );
+
+      const result = await reconcileTenantSystemRoles(db.manager);
+
+      expect(result.shadowedTemplates).toEqual([]);
     });
 
     it('does not reach into another business', async () => {

@@ -157,6 +157,29 @@ export class RolesService {
       });
     }
 
+    /*
+     * RESERVED, because role names are unique per tenant and taking one costs
+     * more than it looks. A business that names a custom role after a system
+     * template makes that template unreceivable for ever: reconciliation skips
+     * on the name, the unique index would refuse the insert anyway, and the
+     * tenant simply never gets the role — silently, with nothing to notice
+     * (todo E15).
+     *
+     * Refused at creation, where it is a sentence, rather than discovered
+     * later when it is a migration.
+     */
+    if (await this.roles.isSystemTemplateName(request.name)) {
+      throw new AppException(ErrorCode.ValidationFailed, {
+        details: [
+          {
+            field: 'name',
+            issue:
+              'this name belongs to a built-in role and cannot be reused — choose another',
+          },
+        ],
+      });
+    }
+
     const created = await this.tx.runInTransaction(async () => {
       const role = await this.roles.createRole({
         enterpriseId,

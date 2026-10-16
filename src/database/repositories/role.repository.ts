@@ -210,6 +210,56 @@ export class RoleRepository extends BaseRepository {
    * service refuses to edit system roles — and would be overwritten by the
    * template reconciliation if the name ever collided.
    */
+  /**
+   * Whether a name is one of the platform's system TEMPLATES.
+   *
+   * A tenant role may not take it. Not because the name is precious, but
+   * because role names are unique per tenant: a business that calls a custom
+   * role `supervisor` makes a future system role of that name unreceivable —
+   * reconciliation skips on the name, the unique index would refuse the
+   * insert, and the tenant silently never gets it (todo E15).
+   *
+   * Checked against the templates that exist NOW, which cannot cover a
+   * template invented later. That residue is reported by the reconciler rather
+   * than prevented here; nothing can reserve a name that does not exist yet.
+   */
+  async isSystemTemplateName(name: string): Promise<boolean> {
+    const rows = await this.query<{ one: number }>(
+      `SELECT 1 AS one FROM roles
+        WHERE enterprise_id IS NULL AND is_system = true AND is_deleted = false
+          AND lower(name) = lower($1)
+        LIMIT 1`,
+      [name],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Tenants whose own role shadows a system template, so the template can
+   * never reach them.
+   *
+   * The already-broken cases E15 describes. Renaming somebody's role is not
+   * ours to do, so this REPORTS rather than repairs — the failure it replaces
+   * is one nobody could see at all.
+   */
+  async findShadowedSystemRoles(): Promise<
+    { enterpriseId: number; name: string }[]
+  > {
+    return this.query(
+      `SELECT r.enterprise_id AS "enterpriseId", r.name
+         FROM roles r
+         JOIN roles t
+           ON t.enterprise_id IS NULL
+          AND t.is_system = true
+          AND t.is_deleted = false
+          AND t.name = r.name
+        WHERE r.enterprise_id IS NOT NULL
+          AND r.is_system = false
+          AND r.is_deleted = false
+        ORDER BY r.enterprise_id, r.name`,
+    );
+  }
+
   async createRole(input: {
     enterpriseId: number;
     name: string;

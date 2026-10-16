@@ -299,6 +299,40 @@ describe('a business defines its own roles', () => {
       await http().post('/api/v1/roles').set(bearer(ownerToken)).send(body).expect(201);
       await http().post('/api/v1/roles').set(bearer(ownerToken)).send(body).expect(422);
     });
+
+    /*
+     * E15, and the name matters: `support` is a template this tenant does NOT
+     * hold, which is the whole case. A template it already has is caught by the
+     * ordinary duplicate check one line earlier; the dangerous one is a
+     * template that has not arrived yet, because taking its name makes it
+     * UNRECEIVABLE for ever. Role names are unique per tenant, so
+     * reconciliation skips, the unique index would refuse the insert anyway,
+     * and the business silently never gets a role it should have.
+     *
+     * Refused at creation, where it costs a sentence, rather than discovered
+     * later when it costs a migration.
+     */
+    it('refuses a name that belongs to a built-in role', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'support', level: 30, permissions: ['conversations.view'] })
+        .expect(422);
+      expect(refused.body.error.details[0].issue).toMatch(/built-in/i);
+    });
+
+    it('still allows a name of the business’s own choosing', async () => {
+      // The control: the guard must refuse template names, not unusual ones.
+      const { ownerToken } = await onboardedBusiness();
+
+      await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'Weekend supervisor', level: 30, permissions: ['conversations.view'] })
+        .expect(201);
+    });
   });
 
   describe('editing a role', () => {

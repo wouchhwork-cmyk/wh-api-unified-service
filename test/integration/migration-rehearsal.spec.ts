@@ -199,6 +199,12 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
   it('is idempotent, so a re-run of the seed changes nothing', async () => {
     const again = await db.transaction((manager) => seedCatalogue(manager));
 
-    expect(again.reconciled).toEqual({ rolesAdded: 0, grantsAdded: 0, levelsCorrected: 0 });
+    expect(again.reconciled).toEqual({
+      rolesAdded: 0,
+      grantsAdded: 0,
+      levelsCorrected: 0,
+      // Nothing shadowed: the rehearsal's tenants take no template names.
+      shadowedTemplates: [],
+    });
   });
 });
