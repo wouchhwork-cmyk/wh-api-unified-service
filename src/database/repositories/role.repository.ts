@@ -260,6 +260,22 @@ export class RoleRepository extends BaseRepository {
     );
   }
 
+  /**
+   * How many roles this business has defined, built-in ones included.
+   *
+   * Counted rather than tracked: a counter on `enterprises` would be one more
+   * thing to keep in step, and this is read once per role creation — not on a
+   * hot path.
+   */
+  async countForEnterprise(enterpriseId: number): Promise<number> {
+    const rows = await this.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM roles
+        WHERE enterprise_id = $1 AND is_deleted = false`,
+      [this.requireEnterprise(enterpriseId)],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async createRole(input: {
     enterpriseId: number;
     name: string;

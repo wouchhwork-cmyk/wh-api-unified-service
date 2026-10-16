@@ -537,3 +537,22 @@ export const META_USAGE_PRESSURE_WINDOW_MS = 5 * 60 * 1000;
  * reply must not be slowed down to protect a backfill.
  */
 export const META_USAGE_SOFT_LIMIT_PCT = 80;
+
+/**
+ * How many roles one business may define.
+ *
+ * THE ONE SHARED RESOURCE A TENANT COULD STILL GROW WITHOUT LIMIT.
+ * `role_permissions` is joined on EVERY authenticated request by
+ * `listEffectivePermissions`, so roles are not merely that tenant's own
+ * clutter: a business creating them in bulk makes authorisation slower for
+ * everybody on the instance. Pages, bodies, sessions and SSE streams were all
+ * bounded; this was not.
+ *
+ * Fifty is far above any plausible org chart — the system ships four — and far
+ * below a number that could affect the join. It is a stop on a runaway, not a
+ * product decision about how businesses should organise themselves.
+ *
+ * The four built-in roles count towards it, because they are rows in the same
+ * table doing the same work.
+ */
+export const MAX_ROLES_PER_ENTERPRISE = 50;

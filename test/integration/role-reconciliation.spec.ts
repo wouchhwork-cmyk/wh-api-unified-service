@@ -100,6 +100,7 @@ describe('reconciling a tenant against the role templates', () => {
         grantsAdded: 0,
         levelsCorrected: 0,
         shadowedTemplates: [],
+        staleGrants: [],
       });
     });
   });
@@ -254,6 +255,52 @@ describe('reconciling a tenant against the role templates', () => {
       const result = await reconcileTenantSystemRoles(db.manager);
 
       expect(result.shadowedTemplates).toEqual([]);
+    });
+
+    /*
+     * E10. Reconciliation is additive by design — withdrawing a permission
+     * takes it from people using it right now, which is a migration somebody
+     * decides to run. What was missing is that nothing REPORTED the drift, so
+     * a template losing a permission was invisible for ever.
+     */
+    it('reports a grant the template dropped, and does not remove it', async () => {
+      const template = await db.query(
+        `SELECT id, name FROM roles
+          WHERE enterprise_id IS NULL AND is_system = true AND scope = 'enterprise'
+            AND name = 'agent'
+          LIMIT 1`,
+      );
+      const templateId = Number((template as { id: string }[])[0]?.id);
+
+      // Withdraw one grant from the TEMPLATE only. The tenant keeps its copy.
+      await db.query(
+        `UPDATE role_permissions SET is_deleted = true
+          WHERE id = (
+            SELECT id FROM role_permissions
+             WHERE role_id = $1 AND is_deleted = false LIMIT 1
+          )
+          `,
+        [templateId],
+      );
+      const result = await reconcileTenantSystemRoles(db.manager);
+
+      // The tenant's agent role now holds exactly one grant its template does
+      // not, and the report names it.
+      expect(result.staleGrants).toHaveLength(1);
+      expect(result.staleGrants[0]).toMatchObject({ enterpriseId, roleName: 'agent' });
+      expect(result.staleGrants[0]?.code).toBeTruthy();
+
+      // STILL THERE. Reporting is the fix; removing is a decision somebody
+      // makes deliberately with scripts/prune-stale-grants.ts.
+      const kept: { count: string }[] = await db.query(
+        `SELECT count(*)::text AS count
+           FROM roles r
+           JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+           JOIN permissions p ON p.id = rp.permission_id
+          WHERE r.enterprise_id = $1 AND r.name = 'agent' AND p.code = $2`,
+        [enterpriseId, result.staleGrants[0]?.code],
+      );
+      expect(Number(kept[0]?.count)).toBe(1);
     });
 
     it('does not reach into another business', async () => {

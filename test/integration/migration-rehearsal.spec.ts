@@ -205,6 +205,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
       levelsCorrected: 0,
       // Nothing shadowed: the rehearsal's tenants take no template names.
       shadowedTemplates: [],
+      staleGrants: [],
     });
   });
 });

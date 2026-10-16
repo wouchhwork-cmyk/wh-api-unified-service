@@ -15,6 +15,7 @@ import {
   SystemRole,
 } from '@/shared/enums';
 import { RequestContext } from '@/shared/context';
+import { MAX_ROLES_PER_ENTERPRISE } from '@/shared/constants';
 import { AppException, ErrorCode } from '@/shared/errors';
 import {
   explainDenial,
@@ -149,6 +150,26 @@ export class RolesService {
   ): Promise<RoleView> {
     const authority = await this.authorityOf(enterpriseId, actingEmployeeId);
     this.assertMayDefine(authority, request.level, request.permissions);
+
+    /*
+     * A CAP, because this is the one shared resource a tenant could grow
+     * without limit. `role_permissions` is joined on every authenticated
+     * request to resolve permissions, so roles are not just this business's own
+     * clutter — enough of them makes authorisation slower for everybody.
+     *
+     * Checked before the name lookup so a business at the ceiling is told the
+     * real reason rather than being sent away to pick another name.
+     */
+    if ((await this.roles.countForEnterprise(enterpriseId)) >= MAX_ROLES_PER_ENTERPRISE) {
+      throw new AppException(ErrorCode.ValidationFailed, {
+        details: [
+          {
+            field: 'name',
+            issue: `a business may define at most ${MAX_ROLES_PER_ENTERPRISE} roles — archive one that is no longer used`,
+          },
+        ],
+      });
+    }
 
     const existing = await this.roles.findByNameInEnterprise(enterpriseId, request.name);
     if (existing) {

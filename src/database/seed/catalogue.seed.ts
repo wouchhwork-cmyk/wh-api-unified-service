@@ -663,6 +663,7 @@ function report(
     grantsAdded: number;
     levelsCorrected: number;
     shadowedTemplates: { enterpriseId: number; name: string }[];
+    staleGrants: { enterpriseId: number; roleName: string; code: string }[];
   },
 ): void {
   const width = Math.max(...summaries.map((summary) => summary.table.length));
@@ -710,6 +711,20 @@ function report(
       }
       console.log('    these businesses will not receive the system role of that name');
     }
+
+    /*
+     * DRIFT THE OTHER WAY, and the seed deliberately does not fix it.
+     * Withdrawing a permission takes it from people using it right now, which
+     * is a migration somebody decides to run — not something a boot-time seed
+     * does on their behalf. Printed so the decision is at least possible.
+     */
+    if (reconciled.staleGrants.length > 0) {
+      console.log('\n  stale — a template dropped these and tenants still hold them');
+      for (const stale of reconciled.staleGrants) {
+        console.log(`    enterprise ${stale.enterpriseId}: ${stale.roleName} → ${stale.code}`);
+      }
+      console.log('    run scripts/prune-stale-grants.ts --apply to withdraw them');
+    }
   }
 }
 
@@ -749,6 +764,17 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
    * role for ever with nothing to notice is the actual defect.
    */
   shadowedTemplates: { enterpriseId: number; name: string }[];
+  /**
+   * Grants a tenant's system role still holds that its template no longer does
+   * (todo E10).
+   *
+   * REPORTED, NEVER REMOVED HERE. Reconciliation is additive on purpose:
+   * taking a permission away from a live tenant takes it from people who are
+   * using it right now, and that deserves a considered migration rather than
+   * happening as a side effect of a boot-time seed. `scripts/prune-stale-grants.ts`
+   * is the deliberate path.
+   */
+  staleGrants: { enterpriseId: number; roleName: string; code: string }[];
 }> {
   /*
    * 1. A system role a tenant never received, because it did not exist when
@@ -810,6 +836,37 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
     [],
   );
 
+  /*
+   * The MIRROR of step 2 below, and deliberately only a report. A permission
+   * withdrawn from a template lingers on every tenant that already had it, and
+   * until now nothing anywhere said so — the seed printed what it added and
+   * stayed silent about what had drifted the other way.
+   */
+  const staleGrants = await run<{ enterpriseId: number; roleName: string; code: string }>(
+    manager,
+    `SELECT r.enterprise_id AS "enterpriseId", r.name AS "roleName", p.code
+       FROM roles r
+       JOIN role_permissions rp ON rp.role_id = r.id AND rp.is_deleted = false
+       JOIN permissions p ON p.id = rp.permission_id
+       JOIN roles t
+         ON t.enterprise_id IS NULL
+        AND t.is_system = true
+        AND t.is_deleted = false
+        AND t.name = r.name
+        AND t.scope = r.scope
+      WHERE r.enterprise_id IS NOT NULL
+        AND r.is_system = true
+        AND r.is_deleted = false
+        AND NOT EXISTS (
+          SELECT 1 FROM role_permissions trp
+           WHERE trp.role_id = t.id
+             AND trp.permission_id = rp.permission_id
+             AND trp.is_deleted = false
+        )
+      ORDER BY r.enterprise_id, r.name, p.code`,
+    [],
+  );
+
   // 2. A grant the template has and the tenant's copy does not.
   const grants = await run<{ role_id: number }>(
     manager,
@@ -863,6 +920,7 @@ export async function reconcileTenantSystemRoles(manager: EntityManager): Promis
     grantsAdded: grants.length,
     levelsCorrected: levels.length,
     shadowedTemplates,
+    staleGrants,
   };
 }
 
@@ -876,6 +934,8 @@ export interface SeedReport {
     levelsCorrected: number;
     /** Tenants a template cannot reach, because their own role holds its name. */
     shadowedTemplates: { enterpriseId: number; name: string }[];
+    /** Grants a template has withdrawn that tenants still hold. */
+    staleGrants: { enterpriseId: number; roleName: string; code: string }[];
   };
 }
 

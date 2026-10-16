@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { MAX_ROLES_PER_ENTERPRISE } from '@/shared/constants';
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -321,6 +322,42 @@ describe('a business defines its own roles', () => {
         .send({ name: 'support', level: 30, permissions: ['conversations.view'] })
         .expect(422);
       expect(refused.body.error.details[0].issue).toMatch(/built-in/i);
+    });
+
+    /*
+     * E12. Roles are not merely a tenant's own clutter: `role_permissions` is
+     * joined on every authenticated request to resolve permissions, so a
+     * business creating them in bulk slows authorisation for everybody on the
+     * instance. It was the one shared resource a tenant could still grow
+     * without limit — pages, bodies, sessions and SSE streams were all bounded.
+     */
+    it('refuses to define more roles than a business may hold', async () => {
+      const { ownerToken } = await onboardedBusiness();
+
+      // Fill to the ceiling. The built-in roles count, because they are rows in
+      // the same table doing the same work.
+      const existing = await http()
+        .get('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .expect(200);
+      const headroom = MAX_ROLES_PER_ENTERPRISE - (existing.body.data as unknown[]).length;
+
+      for (let n = 0; n < headroom; n += 1) {
+        await http()
+          .post('/api/v1/roles')
+          .set(bearer(ownerToken))
+          .send({ name: `Shift ${n}`, level: 30, permissions: ['conversations.view'] })
+          .expect(201);
+      }
+
+      const refused = await http()
+        .post('/api/v1/roles')
+        .set(bearer(ownerToken))
+        .send({ name: 'One too many', level: 30, permissions: ['conversations.view'] })
+        .expect(422);
+      // The real reason, not a name complaint: a business at the ceiling must
+      // not be sent away to think of a different name.
+      expect(refused.body.error.details[0].issue).toMatch(/at most/i);
     });
 
     it('still allows a name of the business’s own choosing', async () => {

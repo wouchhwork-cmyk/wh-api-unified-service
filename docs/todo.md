@@ -123,14 +123,37 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
       The invite form offers every role; the server then refuses one above the
       inviter's level with a clear message. `GET /roles` carries `assignable`
       and is the endpoint to move that form to.
-- [ ] **E10. Removing a permission from a template never reaches tenants** — S
+- [x] **E10. Removing a permission from a template never reaches tenants** — DONE 17 Oct 2026
+      The additive-only design was right and stays. What was missing is that
+      nothing REPORTED the drift, so a withdrawn permission was invisible for
+      ever — the seed printed what it added and said nothing about what had
+      drifted the other way.
+
+      `staleGrants` now names every tenant, role and code a template no longer
+      defines, and the seed prints them. Removal is `scripts/prune-stale-grants.ts`,
+      which reports by default and writes only with `--apply`, soft-deleting so
+      a withdrawal made in error can be put back. Sessions already issued keep
+      their claims until refreshed, which the script says.
+
+      Still never automatic: taking a permission away takes it from people
+      using it right now, and that is a moment somebody chooses.
+- [ ] ~~E10 (original entry)~~ — S
       Reconciliation is additive on purpose: taking a permission away from a
       live tenant removes something people are using right now, and deserves a
       considered migration rather than a side effect of a boot-time seed. So a
       withdrawn permission lingers on older tenants until somebody removes it
       deliberately.
 
-- [ ] **E12. No per-tenant cap on how many roles a business may create** — S
+- [x] **E12. No per-tenant cap on how many roles a business may create** — DONE 17 Oct 2026
+      `MAX_ROLES_PER_ENTERPRISE = 50`, checked before the name lookup so a
+      business at the ceiling is told the real reason instead of being sent
+      away to think of another name. Built-in roles count, being rows in the
+      same table doing the same work.
+
+      Fifty is far above any plausible org chart (the system ships four) and
+      far below a number that could affect the join — a stop on a runaway, not
+      a product opinion about how businesses organise themselves.
+- [ ] ~~E12 (original entry)~~ — S
       `limits.ts` bounds pages, bodies and SSE streams; nothing bounds roles or
       their permission rows. `role_permissions` is joined on EVERY request by
       `listEffectivePermissions`, so one business creating roles in bulk slows
