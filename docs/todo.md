@@ -77,6 +77,22 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## D. Structure
 
+- [ ] **D2. Four unused repository methods** — S — found in the round-4 review.
+      `customer.searchByName`, `syncJobs.listForChannel`, `enterprise.isActive`
+      and `channels.markStatus` have no caller and no test anywhere.
+
+      NOT removed, deliberately. Each reads like a capability somebody meant to
+      reach — `markStatus` in particular is the only way to move a channel to
+      `error`, which nothing currently does — and deleting an intent I cannot
+      ask about is worse than recording it. A fifth, `role.findShadowedSystemRoles`,
+      WAS removed: it was added in this session's E15 work and then duplicated
+      inline in the seed, so its intent was mine to judge.
+
+      (`customer.findByIdentifier` and `enterprise.slugExists` look unused by
+      the same search and are not: both are called from inside their own
+      repository. They would be better as `private`.)
+
+
 - [ ] **D1. `handleCallback` is a god method** — M — ~150 lines over eight concerns.
 
 ---
