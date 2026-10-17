@@ -33,6 +33,21 @@ export const CONSTRAINT_ERROR: Readonly<Record<string, ErrorCode>> = {
   enterprises_slug_uniq: ErrorCode.EnterpriseSlugTaken,
   enterprises_email_uniq: ErrorCode.EnterpriseEmailAlreadyRegistered,
   enterprise_employees_enterprise_identity_uniq: ErrorCode.EmployeeAlreadyExists,
+  /*
+   * BACKSTOPS FOR CHECKS THAT CAN RACE.
+   *
+   * Both of these are refused by an application check first — one Page per
+   * business (A2), and an address already in use — so neither fires on the
+   * ordinary path. They fire when two requests pass the same check before
+   * either writes, and without a mapping that lands as a 500 on a conflict the
+   * caller could have been told about plainly.
+   *
+   * `channels.upsert` conflicts on (platform, platform_channel_id,
+   * provider_connection_id), a different key, so this one is genuinely left to
+   * the constraint.
+   */
+  channels_enterprise_platform_uniq: ErrorCode.ChannelAlreadyConnected,
+  staff_members_identity_uniq: ErrorCode.EmployeeAlreadyExists,
   roles_enterprise_name_uniq: ErrorCode.RoleNameTaken,
   roles_global_name_uniq: ErrorCode.RoleNameTaken,
   enterprise_features_uniq: ErrorCode.FeatureAlreadyRequested,
