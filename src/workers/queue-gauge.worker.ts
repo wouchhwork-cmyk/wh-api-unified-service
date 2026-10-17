@@ -30,6 +30,12 @@ export class QueueGaugeWorker {
     @InjectPinoLogger(QueueGaugeWorker.name) private readonly logger: PinoLogger,
   ) {}
 
+  /*
+   * The interval lives HERE and nowhere else. A QUEUE_GAUGE_INTERVAL_MS
+   * constant used to sit beside it in limits.ts, unused — two statements of
+   * the same fact, one of which could start lying the moment this decorator
+   * changed.
+   */
   @Cron(CronExpression.EVERY_MINUTE)
   async sample(): Promise<void> {
     let gauges: QueueGauge[];
