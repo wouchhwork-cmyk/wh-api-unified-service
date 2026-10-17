@@ -1,3 +1,4 @@
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '@/shared/constants';
 import { MediaKind, MessageKind } from '@/shared/enums';
 import type { GraphMessageAttachment } from '@/modules/connections/graph/graph.types';
 
@@ -311,11 +312,32 @@ export function normalizeAttachments(
     return { attachments: [], messageKind: MessageKind.Text, isStoryMention: false };
   }
 
-  const isStoryMention = attachments.some(
+  /*
+   * MAX_ATTACHMENTS_PER_MESSAGE, which was declared and applied nowhere — the
+   * same shape as MAX_WEBHOOK_BODY_BYTES before it, a limit that existed only
+   * as a number.
+   *
+   * The exposure is small and worth stating rather than overselling: a
+   * delivery is HMAC-verified, so this is not attacker-controlled, and the
+   * body is already capped at 512 KiB. What it guards is one message turning
+   * into thousands of attachment rows that the thread endpoint would then
+   * select and a browser would then try to render.
+   *
+   * TRUNCATION IS REPORTED, NOT SILENT. The standing rule here is to keep
+   * everything Meta gives, because a field not captured on arrival usually
+   * cannot be captured later — so dropping some quietly would be the wrong
+   * kind of safe. `truncatedFrom` records what arrived, on the first
+   * attachment's metadata, where it travels with the message rather than
+   * living only in a log line nobody reads.
+   */
+  const kept = attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
+  const truncatedFrom = attachments.length > kept.length ? attachments.length : null;
+
+  const isStoryMention = kept.some(
     (attachment) => attachment.type?.trim().toLowerCase() === STORY_MENTION_TYPE,
   );
 
-  const normalized = attachments.map((attachment, index): NormalizedAttachment => {
+  const normalized = kept.map((attachment, index): NormalizedAttachment => {
     const type = attachment.type?.trim().toLowerCase() ?? null;
     // Meta puts a shared story's link under its own key; everything else uses
     // `url`. Both are the same thing to us.
@@ -328,6 +350,8 @@ export function normalizeAttachments(
     // feature needs and cannot recover once thrown away.
     if (type) metadata.platformType = type;
     if (assetId) metadata.assetId = assetId;
+    // On the first one only: how many actually arrived, when we kept fewer.
+    if (index === 0 && truncatedFrom !== null) metadata.truncatedFrom = truncatedFrom;
     if (attachment.payload?.sticker_id !== undefined) {
       metadata.stickerId = String(attachment.payload.sticker_id);
     }
