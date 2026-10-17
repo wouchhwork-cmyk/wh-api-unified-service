@@ -192,7 +192,13 @@ describe('SendReconciliationService.reconcileAll', () => {
 
     const summary = await service.reconcileAll();
 
-    expect(graph.listMentionedMediaComments).toHaveBeenCalledWith(IG_USER_ID, 'media-1', TOKEN);
+    expect(graph.listMentionedMediaComments).toHaveBeenCalledWith(
+      IG_USER_ID,
+      'media-1',
+      TOKEN,
+      undefined,
+      false, // a failed read must not read as 'never landed'
+    );
     expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ landed: 1 });
   });
@@ -208,7 +214,12 @@ describe('SendReconciliationService.reconcileAll', () => {
 
     const summary = await service.reconcileAll();
 
-    expect(graph.listCommentReplies).toHaveBeenCalledWith('parent-comment', TOKEN);
+    expect(graph.listCommentReplies).toHaveBeenCalledWith(
+      'parent-comment',
+      TOKEN,
+      undefined,
+      false, // a failed read must not read as 'never landed'
+    );
     expect(summary).toMatchObject({ landed: 1 });
   });
 
@@ -278,6 +289,24 @@ describe('SendReconciliationService.reconcileAll', () => {
     await service.reconcileAll();
 
     expect(messages.recordDelivery).not.toHaveBeenCalled();
+  });
+
+  /*
+   * A FAILED READ IS NOT AN ANSWER. The read-back calls swallow errors by
+   * default — right for the mention-context caller they were written for, and
+   * wrong here, where an empty list settles the send as `lost`. A timeout
+   * would have marked a live comment lost, which is the one verdict that
+   * invites an agent to post it a second time.
+   */
+  it('does not settle a send as lost when the read-back itself failed', async () => {
+    graph.listMentionedPostComments!.mockRejectedValue(new Error('graph timed out'));
+
+    const summary = await service.reconcileAll();
+
+    // Left unresolved for the next sweep rather than concluded either way.
+    expect(summary).toMatchObject({ landed: 0, lost: 0, unknown: 0 });
+    expect(outbound.markReadBackResolved).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('keeps going when one send cannot be read back', async () => {

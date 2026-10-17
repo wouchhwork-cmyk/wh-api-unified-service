@@ -27,6 +27,19 @@ export interface SendReconcileSummary {
   readonly unknown: number;
 }
 
+/**
+ * The read-back calls swallow failures by default, which suits the caller they
+ * were written for and NOT this one.
+ *
+ * Here an empty list is an answer — "Meta says this reply never landed" — and
+ * settles the send as `lost`. Swallowed, a timeout or a 5xx would produce that
+ * same empty list and mark a LIVE comment lost, which is the one verdict that
+ * invites an agent to post it twice. Letting the error through leaves the row
+ * unresolved for the next sweep instead, which is what reconcileAll's own
+ * catch already does.
+ */
+const DO_NOT_SWALLOW = false;
+
 /** What the payload of a reply send carries, as much of it as matters here. */
 interface ReplyPayload {
   readonly mediaId?: unknown;
@@ -203,7 +216,9 @@ export class SendReconciliationService {
        * CHANNEL row id, so the fallback would have asked Instagram about a
        * number from our database and believed the empty answer.
        */
-      return commentId ? this.graph.listCommentReplies(commentId, token) : null;
+      return commentId
+        ? this.graph.listCommentReplies(commentId, token, undefined, DO_NOT_SWALLOW)
+        : null;
     }
 
     /*
@@ -212,8 +227,24 @@ export class SendReconciliationService {
      * that comment, a CAPTION mention has no comment at all and our reply is a
      * top-level comment on the post.
      */
-    if (commentId) return this.graph.listMentionedPostComments(instagramUserId, commentId, token);
-    return mediaId ? this.graph.listMentionedMediaComments(instagramUserId, mediaId, token) : null;
+    if (commentId) {
+      return this.graph.listMentionedPostComments(
+        instagramUserId,
+        commentId,
+        token,
+        undefined,
+        DO_NOT_SWALLOW,
+      );
+    }
+    return mediaId
+      ? this.graph.listMentionedMediaComments(
+          instagramUserId,
+          mediaId,
+          token,
+          undefined,
+          DO_NOT_SWALLOW,
+        )
+      : null;
   }
 
   /**

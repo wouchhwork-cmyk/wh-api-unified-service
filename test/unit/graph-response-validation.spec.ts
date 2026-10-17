@@ -100,6 +100,44 @@ describe('Graph responses are validated, not cast', () => {
     });
   });
 
+  /*
+   * THE READ-BACK CALLS SWALLOW BY DEFAULT, AND MUST BE ABLE NOT TO.
+   *
+   * They were written for mention context, where a refusal must not fail a
+   * projection, so they answer a failure with an empty list. The send
+   * reconciler reads that same empty list as "Meta says this reply never
+   * landed" and settles the send as lost — so swallowed, a timeout would mark
+   * a LIVE comment lost, which is the one verdict that invites a duplicate.
+   */
+  describe('a failed read-back can be told apart from an empty one', () => {
+    const failWith = (status: number): void => {
+      vi.stubGlobal('fetch', () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { message: 'nope', code: 1 } }), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      );
+    };
+
+    it('answers a failure with an empty list by default', async () => {
+      failWith(500);
+      const client = new GraphApiClient(config);
+
+      await expect(client.listCommentReplies('COMMENT_1', 'token')).resolves.toEqual([]);
+    });
+
+    it('throws instead when the caller says not to swallow', async () => {
+      failWith(500);
+      const client = new GraphApiClient(config);
+
+      await expect(
+        client.listCommentReplies('COMMENT_1', 'token', undefined, false),
+      ).rejects.toThrow();
+    });
+  });
+
   describe('ordinary Meta looseness still passes', () => {
     it('accepts unknown fields, which Meta adds on its own schedule', async () => {
       // A schema that rejected these would break on Meta's release cycle

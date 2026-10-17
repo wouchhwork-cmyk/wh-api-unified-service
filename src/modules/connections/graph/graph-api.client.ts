@@ -977,6 +977,16 @@ export class GraphApiClient {
      * well a second earlier. Expired links then stayed expired.
      */
     timeoutMs?: number,
+    /*
+     * WHETHER A FAILURE IS AN ANSWER. Swallowing suits the caller this was
+     * written for — mention context, where a refusal must not fail a
+     * projection — and is wrong for the send reconciler, where an empty list
+     * means "Meta says this reply never landed" and settles the send as lost.
+     * A timeout would then mark a LIVE comment lost, which is the one verdict
+     * that invites a duplicate. Callers reasoning about the ABSENCE of a
+     * result pass false and handle the throw.
+     */
+    swallowErrors = true,
   ): Promise<ResolvedMentionReply[]> {
     try {
       const result = await this.request('GET', instagramUserId, {
@@ -988,12 +998,10 @@ export class GraphApiClient {
         },
       });
       return toResolvedReplies(result.mentioned_comment?.media?.comments?.data);
-    } catch {
-      /*
-       * Deliberately swallowed. This is context, not the mention: a refusal
-       * here must not fail a projection or send it back for another attempt
-       * against Meta.
-       */
+    } catch (error) {
+      // Context, not the mention: a refusal must not fail a projection. Unless
+      // the caller is reasoning about absence — see swallowErrors.
+      if (!swallowErrors) throw error;
       return [];
     }
   }
@@ -1010,6 +1018,8 @@ export class GraphApiClient {
     mediaId: string,
     accessToken: string,
     timeoutMs?: number,
+    /** See listMentionedPostComments: an empty list is an ANSWER to some callers. */
+    swallowErrors = true,
   ): Promise<ResolvedMentionReply[]> {
     try {
       const result = await this.request('GET', instagramUserId, {
@@ -1021,8 +1031,8 @@ export class GraphApiClient {
         },
       });
       return toResolvedReplies(result.mentioned_media?.comments?.data);
-    } catch {
-      // Context, not the mention itself — see listMentionedPostComments.
+    } catch (error) {
+      if (!swallowErrors) throw error;
       return [];
     }
   }
@@ -1038,6 +1048,8 @@ export class GraphApiClient {
     commentId: string,
     accessToken: string,
     timeoutMs?: number,
+    /** See listMentionedPostComments: an empty list is an ANSWER to some callers. */
+    swallowErrors = true,
   ): Promise<ResolvedMentionReply[]> {
     try {
       const result = await this.request('GET', `${commentId}/replies`, {
@@ -1047,7 +1059,8 @@ export class GraphApiClient {
         params: { fields: 'id,text,timestamp,like_count' },
       });
       return toResolvedReplies(result.data);
-    } catch {
+    } catch (error) {
+      if (!swallowErrors) throw error;
       return [];
     }
   }
