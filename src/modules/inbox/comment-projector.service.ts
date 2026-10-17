@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { MAX_CONVERSATION_SUBJECT_CHARS } from '@/shared/constants';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import {
@@ -426,7 +427,8 @@ export class CommentProjectorService {
         platform,
         conversationKind,
         platformThreadId: composeThreadKey(conversationKind, comment.rootCommentId),
-        subject: normalizeOptionalText(comment.text)?.slice(0, 500) ?? null,
+        subject:
+          normalizeOptionalText(comment.text)?.slice(0, MAX_CONVERSATION_SUBJECT_CHARS) ?? null,
         /*
          * WHAT THIS THREAD IS ABOUT, and for a mention it is not optional
          * decoration: answering a mention needs the media id, and Meta's

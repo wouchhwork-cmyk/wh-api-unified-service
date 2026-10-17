@@ -19,7 +19,19 @@ export const MAX_WEBHOOK_BODY_BYTES = 524_288; // 512 KiB
 export const MAX_MESSAGE_BODY_CHARS = 5_000;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
-/** Inline ledger payload cap; larger bodies spill to object storage (schema.md §23 req 7). */
+/**
+ * Inline ledger payload cap; larger bodies spill to object storage
+ * (schema.md §23 req 7).
+ *
+ * NOT YET APPLIED, and said here so the number is not mistaken for a rule in
+ * force. `inbound_events.payload_storage_key` and its outbound twin exist and
+ * nothing writes them, so every payload is stored inline however large.
+ *
+ * The exposure is bounded rather than open: a delivery is capped at
+ * MAX_WEBHOOK_BODY_BYTES, so an inline payload cannot exceed that. What is
+ * missing is the spill, which needs somewhere to spill TO — a storage backend
+ * this service does not yet have. Tracked as todo E21.
+ */
 export const MAX_INLINE_PAYLOAD_BYTES = 65_536; // 64 KiB
 
 /** Client-supplied idempotency keys. */
@@ -307,9 +319,6 @@ export const READ_PATH_PLATFORM_BUDGET_MS = 1_500;
  */
 export const CUSTOMER_AVATAR_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** How often the queue gauge is sampled and logged. */
-export const QUEUE_GAUGE_INTERVAL_MS = 60_000;
-
 /**
  * How often a Page's webhook subscription is read back and compared against
  * SUBSCRIBED_FIELDS.
@@ -556,3 +565,22 @@ export const META_USAGE_SOFT_LIMIT_PCT = 80;
  * table doing the same work.
  */
 export const MAX_ROLES_PER_ENTERPRISE = 50;
+
+/**
+ * How much of a comment's text becomes the conversation's subject line.
+ *
+ * A subject is a label in a list, not the content — the message itself is
+ * stored in full and is what an agent reads. Five hundred is generous for a
+ * label and short enough that a very long comment cannot bloat every list
+ * query that selects it.
+ */
+export const MAX_CONVERSATION_SUBJECT_CHARS = 500;
+
+/**
+ * Pages per call when listing the Facebook Pages a person administers.
+ *
+ * Meta's default is 25, and this endpoint is walked with a cursor anyway —
+ * asking for a hundred means an agency with many Pages is discovered in one
+ * round trip rather than four, and the response is small either way.
+ */
+export const GRAPH_ACCOUNTS_PER_PAGE = 100;

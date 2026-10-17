@@ -181,6 +181,7 @@ export class PlatformService {
       });
 
       if (wanted.length > 0) {
+        // Already inside the transaction this method opens.
         await this.staff.replaceStaffRoles({
           staffId: staff.staffId,
           roleIds: wanted.map((role) => role.id),
@@ -408,11 +409,20 @@ export class PlatformService {
     const wanted = options.filter((option) => roleRefIds.includes(option.refId));
     if (wanted.length !== roleRefIds.length) throw new AppException(ErrorCode.RoleNotFound);
 
-    await this.staff.replaceStaffRoles({
-      staffId: target.id,
-      roleIds: wanted.map((role) => role.id),
-      grantedByStaffId: actingStaffId,
-    });
+    /*
+     * ONE TRANSACTION, because replaceStaffRoles is a DELETE then an INSERT.
+     * Without one, an insert that fails leaves this person holding NO staff
+     * roles at all — every permission stripped by a request that was only
+     * meant to change which ones they had, with no error path that puts them
+     * back. `createStaff` above has always been wrapped; this was not.
+     */
+    await this.tx.runInTransaction(() =>
+      this.staff.replaceStaffRoles({
+        staffId: target.id,
+        roleIds: wanted.map((role) => role.id),
+        grantedByStaffId: actingStaffId,
+      }),
+    );
 
     await this.audit.record({
       action: AuditAction.RoleGranted,

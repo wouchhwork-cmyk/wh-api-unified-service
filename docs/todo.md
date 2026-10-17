@@ -77,6 +77,35 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## D. Structure
 
+- [ ] **E21. Ledger payloads never spill to object storage** — M
+      `inbound_events.payload_storage_key` and its outbound twin exist in the
+      schema, `MAX_INLINE_PAYLOAD_BYTES` names the threshold, and nothing
+      writes either. Every payload is stored inline however large
+      (schema.md §23 req 7 is therefore unmet).
+
+      Bounded rather than open: a delivery cannot exceed MAX_WEBHOOK_BODY_BYTES
+      (512 KiB), so this is ledger bloat, not an unbounded row. Doing it needs
+      somewhere to spill TO — a storage backend this service does not have — so
+      it is a decision before it is a change. The constant now says so in
+      limits.ts rather than reading as a rule in force.
+
+
+- [ ] **D2. Four unused repository methods** — S — found in the round-4 review.
+      `customer.searchByName`, `syncJobs.listForChannel`, `enterprise.isActive`
+      and `channels.markStatus` have no caller and no test anywhere.
+
+      NOT removed, deliberately. Each reads like a capability somebody meant to
+      reach — `markStatus` in particular is the only way to move a channel to
+      `error`, which nothing currently does — and deleting an intent I cannot
+      ask about is worse than recording it. A fifth, `role.findShadowedSystemRoles`,
+      WAS removed: it was added in this session's E15 work and then duplicated
+      inline in the seed, so its intent was mine to judge.
+
+      (`customer.findByIdentifier` and `enterprise.slugExists` look unused by
+      the same search and are not: both are called from inside their own
+      repository. They would be better as `private`.)
+
+
 - [ ] **D1. `handleCallback` is a god method** — M — ~150 lines over eight concerns.
 
 ---

@@ -6,6 +6,7 @@ import {
   isStableMediaUrl,
   normalizeAttachments,
 } from '@/modules/inbox/attachment-normalizer';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '@/shared/constants';
 import { MediaKind, MessageKind } from '@/shared/enums';
 
 /**
@@ -303,6 +304,47 @@ describe('normalizing a message attachment', () => {
  * because the client retries a failed image as a video. That retry was working
  * by accident; the flag makes it deliberate.
  */
+describe('a delivery carrying more attachments than we keep', () => {
+  /*
+   * MAX_ATTACHMENTS_PER_MESSAGE was declared and applied nowhere — a limit
+   * that existed only as a number, the same shape as MAX_WEBHOOK_BODY_BYTES
+   * before it. One message could become thousands of attachment rows that the
+   * thread endpoint then selects and a browser then tries to render.
+   */
+  const many = (count: number) =>
+    Array.from({ length: count }, (_unused, index) => ({
+      type: 'image',
+      payload: { url: `https://cdn.test/${index}.jpg` },
+    }));
+
+  it('keeps no more than the limit', () => {
+    const media = normalizeAttachments(many(MAX_ATTACHMENTS_PER_MESSAGE + 15));
+
+    expect(media.attachments).toHaveLength(MAX_ATTACHMENTS_PER_MESSAGE);
+  });
+
+  /*
+   * NOT SILENTLY. The standing rule here is to keep everything Meta gives,
+   * because a field not captured on arrival usually cannot be captured later,
+   * so a quiet truncation would be the wrong kind of safe.
+   */
+  it('records how many actually arrived', () => {
+    const media = normalizeAttachments(many(MAX_ATTACHMENTS_PER_MESSAGE + 15));
+
+    expect(media.attachments[0]?.metadata).toMatchObject({
+      truncatedFrom: MAX_ATTACHMENTS_PER_MESSAGE + 15,
+    });
+  });
+
+  it('says nothing when everything fitted', () => {
+    // The marker has to mean something, so it must be absent in the ordinary
+    // case rather than always present and usually meaningless.
+    const media = normalizeAttachments(many(2));
+
+    expect(media.attachments[0]?.metadata).not.toHaveProperty('truncatedFrom');
+  });
+});
+
 describe('a story mention does not claim to know what it is', () => {
   const storyMention = [
     {

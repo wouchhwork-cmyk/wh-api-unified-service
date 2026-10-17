@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { Platform } from '@/shared/enums';
+import { ErrorCode } from '@/shared/errors';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /**
@@ -126,6 +127,26 @@ describe('one Page, one connection, per business', () => {
       const second = await connectionFor(enterpriseId, 'fb-user-two');
 
       await expect(addChannel(enterpriseId, second)).rejects.toThrow();
+    });
+
+    /*
+     * AND IT SAYS WHICH CONFLICT IT WAS. The constraint was unmapped, so the
+     * race the service's own check cannot close — two requests passing it
+     * before either writes — surfaced as a 500 about nothing in particular,
+     * on a conflict the caller could have been told about plainly.
+     *
+     * `channels.upsert` conflicts on a DIFFERENT key (platform,
+     * platform_channel_id, provider_connection_id), so this rule is genuinely
+     * left to the constraint rather than absorbed by an ON CONFLICT clause.
+     */
+    it('reports that conflict as CHANNEL_ALREADY_CONNECTED, not an internal error', async () => {
+      const enterpriseId = await seedEnterprise(db, 'Acme', 'acme');
+      await addChannel(enterpriseId, await connectionFor(enterpriseId, 'fb-user-one'));
+      const second = await connectionFor(enterpriseId, 'fb-user-two');
+
+      await expect(addChannel(enterpriseId, second)).rejects.toMatchObject({
+        code: ErrorCode.ChannelAlreadyConnected,
+      });
     });
 
     it('still lets two businesses connect the same Page', async () => {

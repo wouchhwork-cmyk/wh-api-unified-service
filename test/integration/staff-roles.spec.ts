@@ -3,6 +3,8 @@ import type { DataSource } from 'typeorm';
 import { PermissionRepository } from '@/database/repositories/permission.repository';
 import { StaffMemberRepository } from '@/database/repositories/staff-member.repository';
 import { Permission, SystemRole } from '@/shared/enums';
+import type { PinoLogger } from 'nestjs-pino';
+import { TransactionManager } from '@/database/transaction';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
 
 /**
@@ -71,6 +73,59 @@ describe('staff roles', () => {
     );
     return Number(rows[0]?.id);
   };
+
+  /*
+   * replaceStaffRoles is a DELETE followed by an INSERT. Without a
+   * transaction, an insert that fails leaves the person holding NO staff roles
+   * at all — every permission stripped by a request that was only meant to
+   * change which ones they had, and no error path that puts them back.
+   *
+   * The failure used here is the one the method's own comment relies on: the
+   * composite foreign key on (role_id, role_scope) refuses an
+   * ENTERPRISE-scoped role, so passing one is a realistic insert failure
+   * rather than an invented id.
+   */
+  describe('replacing roles is all-or-nothing', () => {
+    const enterpriseRoleId = async (): Promise<number> => {
+      const rows: { id: string }[] = await db.query(
+        `SELECT id FROM roles WHERE enterprise_id IS NULL AND scope = 'enterprise' LIMIT 1`,
+      );
+      return Number(rows[0]?.id);
+    };
+
+    it('leaves the existing roles in place when the new ones cannot be written', async () => {
+      const staffId = await seedStaff('atomic@wouchh.test', false);
+      await staff.replaceStaffRoles({
+        staffId,
+        roleIds: [await roleId(SystemRole.Ops)],
+        grantedByStaffId: null,
+      });
+      const before = await permissions.listStaffPermissions(staffId, enterpriseId);
+      expect(before.length).toBeGreaterThan(0);
+
+      const enterpriseRole = await enterpriseRoleId();
+      const silent = {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+        debug: () => undefined,
+      } as unknown as PinoLogger;
+      const tx = new TransactionManager(db, silent);
+      await expect(
+        tx.runInTransaction(() =>
+          staff.replaceStaffRoles({
+            staffId,
+            roleIds: [enterpriseRole],
+            grantedByStaffId: null,
+          }),
+        ),
+      ).rejects.toThrow();
+
+      // Still exactly what they had. The delete rolled back with the insert.
+      const after = await permissions.listStaffPermissions(staffId, enterpriseId);
+      expect(after.sort()).toEqual(before.sort());
+    });
+  });
 
   describe('the grant that could not previously exist', () => {
     it('gives a scoped staff member exactly what their role grants', async () => {

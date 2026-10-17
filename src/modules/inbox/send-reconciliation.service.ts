@@ -27,6 +27,19 @@ export interface SendReconcileSummary {
   readonly unknown: number;
 }
 
+/**
+ * The read-back calls swallow failures by default, which suits the caller they
+ * were written for and NOT this one.
+ *
+ * Here an empty list is an answer — "Meta says this reply never landed" — and
+ * settles the send as `lost`. Swallowed, a timeout or a 5xx would produce that
+ * same empty list and mark a LIVE comment lost, which is the one verdict that
+ * invites an agent to post it twice. Letting the error through leaves the row
+ * unresolved for the next sweep instead, which is what reconcileAll's own
+ * catch already does.
+ */
+const DO_NOT_SWALLOW = false;
+
 /** What the payload of a reply send carries, as much of it as matters here. */
 interface ReplyPayload {
   readonly mediaId?: unknown;
@@ -145,6 +158,19 @@ export class SendReconciliationService {
     }
 
     const candidates = await this.readBack(send, payload, channel.platformChannelId, token);
+
+    /*
+     * NULL IS NOT AN EMPTY LIST. "We looked and found nothing" and "we had
+     * nothing to look WITH" are different facts, and only the first one
+     * justifies `lost`. Conflating them meant a send whose payload named no
+     * comment or media was reported as never having landed — the one verdict
+     * that invites an agent to post a live comment a second time.
+     */
+    if (candidates === null) {
+      await this.resolve(send, 'unknown', null);
+      return 'unknown';
+    }
+
     const match = this.findMatch(candidates, sentText, send.lastErrorAt);
 
     if (match) {
@@ -160,20 +186,39 @@ export class SendReconciliationService {
     return 'lost';
   }
 
-  /** The right edge for the kind of reply this was. */
+  /**
+   * The right edge for the kind of reply this was.
+   *
+   * Returns NULL when there is nothing to look with — a payload naming no
+   * comment and no media. That is not the same as an empty list, and the
+   * caller must not read it as one: an empty list means Meta was asked and
+   * answered, and only that supports a verdict of `lost`.
+   */
   private async readBack(
     send: AmbiguousSend,
     payload: ReplyPayload,
     instagramUserId: string,
     token: string,
-  ): Promise<ResolvedMentionReply[]> {
-    const mediaId = typeof payload.mediaId === 'string' ? payload.mediaId : null;
-    const commentId = typeof payload.commentId === 'string' ? payload.commentId : null;
+  ): Promise<ResolvedMentionReply[] | null> {
+    // Empty strings are treated as absent: a blank id addresses nothing, and
+    // asking Meta about it would answer "not found" for the wrong reason.
+    const str = (value: unknown): string | null =>
+      typeof value === 'string' && value.trim() !== '' ? value : null;
+    const mediaId = str(payload.mediaId);
+    const commentId = str(payload.commentId);
 
     if (send.eventType === OutboundEventType.CommentReply) {
-      // Our own media: the reply sits under the comment it answered.
-      const parent = commentId ?? send.destinationId;
-      return parent ? this.graph.listCommentReplies(parent, token) : [];
+      /*
+       * Our own media: the reply sits under the comment it answered.
+       *
+       * NO FALLBACK TO destinationId, which this used to have and which was
+       * wrong by construction — for a reply that field holds our internal
+       * CHANNEL row id, so the fallback would have asked Instagram about a
+       * number from our database and believed the empty answer.
+       */
+      return commentId
+        ? this.graph.listCommentReplies(commentId, token, undefined, DO_NOT_SWALLOW)
+        : null;
     }
 
     /*
@@ -182,8 +227,24 @@ export class SendReconciliationService {
      * that comment, a CAPTION mention has no comment at all and our reply is a
      * top-level comment on the post.
      */
-    if (commentId) return this.graph.listMentionedPostComments(instagramUserId, commentId, token);
-    return mediaId ? this.graph.listMentionedMediaComments(instagramUserId, mediaId, token) : [];
+    if (commentId) {
+      return this.graph.listMentionedPostComments(
+        instagramUserId,
+        commentId,
+        token,
+        undefined,
+        DO_NOT_SWALLOW,
+      );
+    }
+    return mediaId
+      ? this.graph.listMentionedMediaComments(
+          instagramUserId,
+          mediaId,
+          token,
+          undefined,
+          DO_NOT_SWALLOW,
+        )
+      : null;
   }
 
   /**

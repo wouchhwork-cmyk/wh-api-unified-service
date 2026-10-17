@@ -255,6 +255,66 @@ describe('deleting a comment', () => {
     messageId = Number(message[0]?.id);
   });
 
+  /*
+   * TWO IDENTICAL REPLIES, TWO ECHOES, ARRIVING TOGETHER.
+   *
+   * claimPendingOutbound matches on BODY, because an echo carries no
+   * idempotency key and the pending row carries no platform id — the text is
+   * the only thing the two have in common. So two identical replies sent in
+   * quick succession are two rows it cannot tell apart.
+   *
+   * Without a lock on its subselect, two echoes arriving together can select
+   * the same oldest unstamped row: one stamping is lost, and the row left
+   * unstamped is then stored a SECOND time by the projector as a message it
+   * has never seen — the duplication the method exists to prevent.
+   *
+   * WHAT THIS TEST DOES AND DOES NOT PROVE. It pins the observable contract —
+   * two echoes, two rows, an id each — and it does NOT reproduce the
+   * interleaving. Removing `FOR UPDATE SKIP LOCKED` leaves it green, because
+   * two single statements through one pool do not reliably overlap the way two
+   * processes do. The lock is reasoned from the read-committed semantics
+   * rather than demonstrated here, and it is the pattern every other claim in
+   * this codebase already uses. Said plainly so nobody reads this as evidence
+   * the race is covered.
+   */
+  it('stamps two identical replies with one id each, not one id twice', async () => {
+    const insertPending = async (): Promise<number> => {
+      const row: { id: string }[] = await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, customer_id, direction, message_kind,
+            body, status)
+         VALUES ($1,$2,$3,'outbound','text','On my way','pending')
+         RETURNING id`,
+        [enterpriseId, conversationId, customerId],
+      );
+      return Number(row[0]?.id);
+    };
+
+    const first = await insertPending();
+    const second = await insertPending();
+    expect(first).not.toBe(second);
+
+    const [a, b] = await Promise.all([
+      messages.claimPendingOutbound(enterpriseId, conversationId, 'On my way', 'MID_ECHO_A'),
+      messages.claimPendingOutbound(enterpriseId, conversationId, 'On my way', 'MID_ECHO_B'),
+    ]);
+
+    // Each echo found a row of its own. Before the lock they competed for the
+    // same one and the loser had nowhere to land.
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(a).not.toBe(b);
+
+    const stampedRows: { platform_message_id: string }[] = await db.query(
+      `SELECT platform_message_id FROM messages
+        WHERE conversation_id = $1 AND direction = 'outbound'
+          AND platform_message_id IS NOT NULL
+        ORDER BY platform_message_id`,
+      [conversationId],
+    );
+    expect(stampedRows.map((row) => row.platform_message_id)).toEqual(['MID_ECHO_A', 'MID_ECHO_B']);
+  });
+
   const stored = async (): Promise<{
     isDeleted: boolean;
     platformDeletedAt: Date | null;

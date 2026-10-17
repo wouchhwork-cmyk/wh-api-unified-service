@@ -251,6 +251,12 @@ export class StaffMemberRepository extends BaseRepository {
    * enterprise-scoped role cannot be inserted here at all, so this method does
    * not need to check the scope — the database refuses it. That is the point of
    * the constraint rather than a happy accident.
+   *
+   * MUST BE CALLED INSIDE A TRANSACTION, and the caller opens one. This is a
+   * DELETE followed by an INSERT: without one, an insert that fails leaves the
+   * staff member holding NO roles at all — every permission stripped by a
+   * request that was meant to adjust them, and no error path that puts them
+   * back. The tenant-side equivalent has always been wrapped; this was not.
    */
   async replaceStaffRoles(input: {
     staffId: number;

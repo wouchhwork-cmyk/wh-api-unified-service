@@ -235,30 +235,6 @@ export class RoleRepository extends BaseRepository {
   }
 
   /**
-   * Tenants whose own role shadows a system template, so the template can
-   * never reach them.
-   *
-   * The already-broken cases E15 describes. Renaming somebody's role is not
-   * ours to do, so this REPORTS rather than repairs — the failure it replaces
-   * is one nobody could see at all.
-   */
-  async findShadowedSystemRoles(): Promise<{ enterpriseId: number; name: string }[]> {
-    return this.query(
-      `SELECT r.enterprise_id AS "enterpriseId", r.name
-         FROM roles r
-         JOIN roles t
-           ON t.enterprise_id IS NULL
-          AND t.is_system = true
-          AND t.is_deleted = false
-          AND t.name = r.name
-        WHERE r.enterprise_id IS NOT NULL
-          AND r.is_system = false
-          AND r.is_deleted = false
-        ORDER BY r.enterprise_id, r.name`,
-    );
-  }
-
-  /**
    * How many roles this business has defined, built-in ones included.
    *
    * Counted rather than tracked: a counter on `enterprises` would be one more

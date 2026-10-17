@@ -192,7 +192,13 @@ describe('SendReconciliationService.reconcileAll', () => {
 
     const summary = await service.reconcileAll();
 
-    expect(graph.listMentionedMediaComments).toHaveBeenCalledWith(IG_USER_ID, 'media-1', TOKEN);
+    expect(graph.listMentionedMediaComments).toHaveBeenCalledWith(
+      IG_USER_ID,
+      'media-1',
+      TOKEN,
+      undefined,
+      false, // a failed read must not read as 'never landed'
+    );
     expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ landed: 1 });
   });
@@ -208,8 +214,68 @@ describe('SendReconciliationService.reconcileAll', () => {
 
     const summary = await service.reconcileAll();
 
-    expect(graph.listCommentReplies).toHaveBeenCalledWith('parent-comment', TOKEN);
+    expect(graph.listCommentReplies).toHaveBeenCalledWith(
+      'parent-comment',
+      TOKEN,
+      undefined,
+      false, // a failed read must not read as 'never landed'
+    );
     expect(summary).toMatchObject({ landed: 1 });
+  });
+
+  /*
+   * "WE LOOKED AND FOUND NOTHING" vs "WE HAD NOTHING TO LOOK WITH".
+   *
+   * These were the same answer — an empty list — and the second was reported
+   * as `lost`, which is the one verdict that invites an agent to post a live
+   * comment a second time. A payload naming no comment and no media cannot
+   * disprove anything.
+   */
+  it('reports unknown when the payload names nothing to look up', async () => {
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({ payload: { message: BODY } }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(summary).toMatchObject({ unknown: 1, lost: 0, landed: 0 });
+    // And nothing was asked of Meta, because there was nothing to ask about.
+    expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
+    expect(graph.listMentionedMediaComments).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank id as absent rather than asking about it', async () => {
+    // An empty string addresses nothing; querying it would answer "not found"
+    // for the wrong reason and settle the send as lost.
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({ payload: { mediaId: '', commentId: '  ', message: BODY } }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(summary).toMatchObject({ unknown: 1, lost: 0 });
+    expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
+  });
+
+  /*
+   * A comment reply used to fall back to `destinationId` when its payload
+   * named no comment — and for a reply that field holds our internal CHANNEL
+   * row id, so it asked Instagram about a number from our own database and
+   * believed the empty answer.
+   */
+  it('never asks Instagram about our internal channel id', async () => {
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({
+        eventType: OutboundEventType.CommentReply,
+        destinationId: String(CHANNEL_ID),
+        payload: { message: BODY },
+      }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(graph.listCommentReplies).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ unknown: 1, lost: 0 });
   });
 
   /*
@@ -223,6 +289,24 @@ describe('SendReconciliationService.reconcileAll', () => {
     await service.reconcileAll();
 
     expect(messages.recordDelivery).not.toHaveBeenCalled();
+  });
+
+  /*
+   * A FAILED READ IS NOT AN ANSWER. The read-back calls swallow errors by
+   * default — right for the mention-context caller they were written for, and
+   * wrong here, where an empty list settles the send as `lost`. A timeout
+   * would have marked a live comment lost, which is the one verdict that
+   * invites an agent to post it a second time.
+   */
+  it('does not settle a send as lost when the read-back itself failed', async () => {
+    graph.listMentionedPostComments!.mockRejectedValue(new Error('graph timed out'));
+
+    const summary = await service.reconcileAll();
+
+    // Left unresolved for the next sweep rather than concluded either way.
+    expect(summary).toMatchObject({ landed: 0, lost: 0, unknown: 0 });
+    expect(outbound.markReadBackResolved).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('keeps going when one send cannot be read back', async () => {
