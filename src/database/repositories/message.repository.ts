@@ -466,6 +466,23 @@ export class MessageRepository extends BaseRepository {
              AND COALESCE(body, '') = COALESCE($3, '')
            ORDER BY id
            LIMIT 1
+           /*
+            * LOCKED, AND SKIPPED IF SOMEBODY ELSE HOLDS IT.
+            *
+            * The match is on BODY, so two identical replies sent in quick
+            * succession are two pending rows this subselect cannot tell apart.
+            * Their echoes arrive together, both picked the same oldest
+            * unstamped row, and one of the two stampings was lost — leaving a
+            * pending row with no platform id, which the projector then stores
+            * a SECOND time as a message it has never seen. Exactly the
+            * duplication this method exists to prevent.
+            *
+            * SKIP LOCKED rather than waiting: the second echo wants the NEXT
+            * unstamped row, not this one. Waiting would hand it the same row
+            * after the first commits, where platform_message_id IS NULL no
+            * longer holds and it would match nothing at all.
+            */
+           FOR UPDATE SKIP LOCKED
         )
         RETURNING id`,
       [
