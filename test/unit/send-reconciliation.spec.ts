@@ -213,6 +213,61 @@ describe('SendReconciliationService.reconcileAll', () => {
   });
 
   /*
+   * "WE LOOKED AND FOUND NOTHING" vs "WE HAD NOTHING TO LOOK WITH".
+   *
+   * These were the same answer — an empty list — and the second was reported
+   * as `lost`, which is the one verdict that invites an agent to post a live
+   * comment a second time. A payload naming no comment and no media cannot
+   * disprove anything.
+   */
+  it('reports unknown when the payload names nothing to look up', async () => {
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({ payload: { message: BODY } }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(summary).toMatchObject({ unknown: 1, lost: 0, landed: 0 });
+    // And nothing was asked of Meta, because there was nothing to ask about.
+    expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
+    expect(graph.listMentionedMediaComments).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank id as absent rather than asking about it', async () => {
+    // An empty string addresses nothing; querying it would answer "not found"
+    // for the wrong reason and settle the send as lost.
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({ payload: { mediaId: '', commentId: '  ', message: BODY } }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(summary).toMatchObject({ unknown: 1, lost: 0 });
+    expect(graph.listMentionedPostComments).not.toHaveBeenCalled();
+  });
+
+  /*
+   * A comment reply used to fall back to `destinationId` when its payload
+   * named no comment — and for a reply that field holds our internal CHANNEL
+   * row id, so it asked Instagram about a number from our own database and
+   * believed the empty answer.
+   */
+  it('never asks Instagram about our internal channel id', async () => {
+    outbound.listAmbiguousAwaitingReadBack!.mockResolvedValue([
+      sendRow({
+        eventType: OutboundEventType.CommentReply,
+        destinationId: String(CHANNEL_ID),
+        payload: { message: BODY },
+      }),
+    ]);
+
+    const summary = await service.reconcileAll();
+
+    expect(graph.listCommentReplies).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ unknown: 1, lost: 0 });
+  });
+
+  /*
    * The ledger is written first and will not apply twice. If it reports that
    * somebody else resolved the row, the message must NOT be written again.
    */

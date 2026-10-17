@@ -5,6 +5,7 @@ import {
   PLATFORM_REQUEST_TIMEOUT_MS,
   SYNC_COMMENTS_PER_POST,
   SYNC_MESSAGES_PER_CONVERSATION,
+  GRAPH_ACCOUNTS_PER_PAGE,
   MENTION_POST_COMMENTS_KEPT,
   SYNC_PAGE_SIZE,
 } from '@/shared/constants';
@@ -239,7 +240,7 @@ export class GraphApiClient {
       accessToken: userAccessToken,
       params: {
         fields: 'id,name,access_token,category,instagram_business_account{id,username}',
-        limit: '100',
+        limit: String(GRAPH_ACCOUNTS_PER_PAGE),
         ...(after ? { after } : {}),
       },
     });

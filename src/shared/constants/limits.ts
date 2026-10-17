@@ -556,3 +556,22 @@ export const META_USAGE_SOFT_LIMIT_PCT = 80;
  * table doing the same work.
  */
 export const MAX_ROLES_PER_ENTERPRISE = 50;
+
+/**
+ * How much of a comment's text becomes the conversation's subject line.
+ *
+ * A subject is a label in a list, not the content — the message itself is
+ * stored in full and is what an agent reads. Five hundred is generous for a
+ * label and short enough that a very long comment cannot bloat every list
+ * query that selects it.
+ */
+export const MAX_CONVERSATION_SUBJECT_CHARS = 500;
+
+/**
+ * Pages per call when listing the Facebook Pages a person administers.
+ *
+ * Meta's default is 25, and this endpoint is walked with a cursor anyway —
+ * asking for a hundred means an agency with many Pages is discovered in one
+ * round trip rather than four, and the response is small either way.
+ */
+export const GRAPH_ACCOUNTS_PER_PAGE = 100;
