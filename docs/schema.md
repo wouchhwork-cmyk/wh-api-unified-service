@@ -100,7 +100,12 @@ The redundancy between the parts and the E.164 string is deliberate and controll
 
 ### Every table has
 
-`id` · `created_at` · `updated_at` (trigger-maintained) · `is_deleted`. Tables addressed by a client also have `ref_id` (UUIDv4, `gen_random_uuid()`), exposed in code and APIs as `refId` — **the numeric `id` is never sent to a client**. The ledger tables have no `ref_id` by design; they are internal.
+`id` · `created_at` · `updated_at` (trigger-maintained) · `is_deleted`. Tables addressed by a client also have `ref_id` (UUIDv4, `gen_random_uuid()`), exposed in code and APIs as `refId` — **the numeric `id` is never sent to a client**. The **transport** ledgers (§23 `inbound_events`, §24 `outbound_events`) have no `ref_id` by design; they are internal.
+
+**The test is "does a client hold a handle and act on it", not "is the table append-only".** Two clarifications that have already been needed:
+
+- **Read ≠ addressed.** `message_attachments` (§22), `customer_engagements` (§18) and `customer_identifiers` (§17) are all read by clients and have **no** `ref_id` — you reach them through their parent and never act on one directly.
+- **A transport ledger is not a financial ledger.** The exemption above is about transport: nobody reverses a webhook delivery. A ledger that moves **value** is different — an entry gets reversed, disputed, and quoted back by support, so it needs a handle. `reward_ledger_entries` ([`reward-programs-design.md`](./reward-programs-design.md) §8.8) therefore **does** carry `ref_id`, because `adjust` and `reverses_entry_id` each address one specific entry. Applying the rule by the word "ledger" rather than by the test would have got that backwards.
 
 ### Soft delete vs uniqueness
 

@@ -76,6 +76,32 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## B. Safety and correctness of the integration
 
+- [ ] **B4. Verify what `feed` actually delivers for likes and shares** — S
+  `mapChangeField` says Facebook's `feed` field covers "posts, photos, videos,
+  shares, likes and comments, discriminated by `value.item`" — that comment was
+  written when routing the whole field to the comment projector turned out to be
+  a bug. But **`item: 'like'` is handled nowhere.** The string appears in `src/`
+  only as `like_count`. A like change routes to the post projector, `toPostKind`
+  falls through to `PostKind.Text`, and whoever liked the post is discarded.
+
+  VERIFY FIRST, FIX SECOND. Before writing any handler, confirm against live
+  traffic what we are actually sent: does a `like` change arrive at all on our
+  current subscription; does it carry `from` (who liked it) or only `post_id`;
+  what `verb` accompanies a like and an unlike; and does the same hold for
+  `share`. The comment in the code asserts likes are covered, and that assertion
+  has never been checked against a real delivery.
+
+  Record the answer in `docs/platform-limitations.md` in the usual form — what
+  we expected, what actually happens, how it was verified — whichever way it
+  goes. "Meta does not give us the actor on a like" is as useful a result as a
+  working handler, and right now nobody knows which it is.
+
+  Two things known already: this path is **Facebook only**, and likes are
+  **retractable**, so anything built on it needs the `remove` verb handled or
+  it is free money. Blocks `post_like` / `post_share` in
+  [`reward-programs-design.md`](./reward-programs-design.md) §6.4; the fix
+  itself is backlog §8.2.
+
 - [x] **B2. System roles are never reconciled** — 22 Sep — `1fc8604`.
   Reconciliation runs at the end of every seed: adds a missing role, adds a
   missing grant, corrects a drifted level. Additive except the level, which is
