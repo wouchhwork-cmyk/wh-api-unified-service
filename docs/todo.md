@@ -18,6 +18,34 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## A. Correctness — wrong answers today
 
+- [ ] **A6. Every integration was tested against PUBLIC accounts only** — TOP
+  PRIORITY, added 19 Oct 2026
+  Every flow we have verified end to end — comments, replies, mentions, story
+  mentions, DMs, post and media reads, profile lookups, permalinks — was
+  exercised against **open, public Instagram and Facebook accounts**. We have
+  never run any of them against a **private** account, so we do not actually
+  know how Meta behaves on the other side of that boundary. Nothing here is a
+  known defect; the point is that it is an untested half of the product.
+
+  WHAT TO FIND OUT, per flow: does the webhook still arrive at all; does the
+  payload carry the same fields or a reduced set; does the Graph read succeed,
+  403, or return a stub; does a permalink resolve; does profile data come back
+  or come back empty; and does anything that worked at connect time stop
+  working when an account is switched to private afterwards.
+
+  That last case is the one most likely to bite us — a business account going
+  private mid-life, with data already in our DB, is a state transition nothing
+  in the code anticipates today.
+
+  Test BOTH directions: our connected account private, and the counterparty
+  (the commenter, the mentioner, the sender) private. They are different
+  permission surfaces and may fail differently.
+
+  Record the results in `docs/platform-limitations.md` the way the other
+  platform walls are recorded — what we expected, what actually happened, how
+  it was verified — and open follow-up items only for what turns out to be
+  genuinely broken rather than merely different.
+
 - [ ] **A5. `posts.media` refresh does not scale** — S
   `RefreshPostMetrics` does 200 channels per daily tick, so above 200 active
   channels a channel is reached every `ceil(N/200)` days — longer than the ~35h
