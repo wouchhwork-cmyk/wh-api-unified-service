@@ -537,6 +537,86 @@ replicas, refresh-token rotation.
 
 ---
 
+## 8. Reward programs
+
+Follow-on work for [`reward-programs-design.md`](./reward-programs-design.md).
+Both items are seams the design ships deliberately, not omissions — the
+surrounding system works without them.
+
+### 8.1 The award factor engine — M/L
+
+**What exists.** `UP_TO` rules declare a cap. A `FactorProvider` returns a value
+in `[0, 1]` and the award is `round(cap × factor)`, computed in basis points
+with the provider's output clamped to `[0, 10000]` at the boundary. V1 registers
+one implementation, **`constant_one`**, which returns `1.0` — so every `UP_TO`
+award pays the full cap and behaves exactly like `FIXED`.
+
+**What is missing.** The engine that returns a real factor. It is a pure
+function of the award context, which is what makes it safe to defer: nothing
+upstream or downstream changes when it lands.
+
+```ts
+interface FactorProvider {
+  readonly code: string;                        // stored per award
+  factor(ctx: AwardContext): Promise<number>;   // [0, 1]
+}
+```
+
+**Open before it can be built**, and these are product questions rather than
+engineering ones:
+
+- **What does it measure?** Content quality, sentiment, reach, follower count,
+  customer history, time since last award — or a weighted mix.
+- **Per-trigger or global?** A factor for a story mention and a factor for a DM
+  are probably not the same function.
+- **Who configures it?** A fixed platform algorithm, or something the enterprise
+  tunes per program.
+- **Is it explainable?** The award already snapshots `factor_bp`, the provider
+  code and the evaluation timestamp. If the engine becomes a weighted model, the
+  snapshot needs the inputs too, or "why did I only get 12 of 20 points?" has no
+  answer.
+
+**Two constraints the design already fixes**, which the engine must respect:
+
+1. **It runs at grant time**, at the end of the hold — not at event time. That
+   is what gives engagement metrics time to settle.
+2. **A zero factor must not consume the cap slot.** The award records
+   `SKIPPED_ZERO_FACTOR` and the counter is released with
+   `GREATEST(used - 1, 0)`. `constant_one` cannot reach this path, so **it needs
+   a test written now**, while the path is reasoned about, rather than when the
+   real provider first returns zero in production.
+
+**What blocks a signal-based engine.** Insights and `business_discovery` both
+refuse with Graph `#10` — the app does not hold those permissions. So there is
+no reach, no impressions, and no follower count for the person interacting with
+us. A story someone else posted has **no readable metric at all**. An engine
+scoring on reach needs a permission conversation before it needs code.
+
+### 8.2 Likes and shares are received and thrown away — S
+
+`feed` carries likes and shares alongside comments, discriminated by
+`value.item` — our own comment in `meta-webhook.service.ts` says so. But
+**`item: 'like'` is modelled nowhere**: the string does not appear in `src/`
+outside `like_count`. The change routes to the post projector, `toPostKind`
+falls through to `PostKind.Text`, and the fact that a specific person liked a
+specific post is discarded.
+
+We are told who liked a post and we keep none of it. That is a standing-rule
+violation — capture every field the platform gives us, because a field not
+captured on arrival usually cannot be captured later.
+
+**Cost is small**: read the actor and verb off a `like` feed change and record
+it. **Value is not** — "someone liked my post" is the first reward trigger an
+enterprise will ask for, and `POST_LIKE` cannot be offered in the UI until this
+exists.
+
+Two caveats for whoever picks it up: this path is **Facebook only**, and likes
+are **retractable**, so the trigger needs reversal on the `remove` verb or it is
+free money. Shares carry the same shape with the extra wrinkle that visibility
+depends on the sharer's audience.
+
+---
+
 ## Suggested order
 
 1. **§1.1** — tests over the inbox path. Everything else is safer once the largest

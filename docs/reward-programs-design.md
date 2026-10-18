@@ -105,112 +105,184 @@ effects over letting the rule mutate a wallet directly (study §8).
 
 ---
 
-## 3. Triggers — and what Meta actually gives us
+## 3. Triggers — the catalogue, audited against the handlers
 
-### 3.1 The catalogue
+### 3.1 What we actually subscribe to and consume
 
-| Trigger | Source | Notes |
-| ------- | ------ | ----- |
-| `STORY_MENTION` | story mention webhook | They mentioned us in a story |
-| `COMMENT_ON_OWN_POST` | `messages` on a `posts` row we own | |
-| `COMMENT_ON_MENTIONED_POST` | mentioned-media comment flow | Comment on someone else's post that tags us |
-| `POST_TAGGING_US` | `mention` webhook | They posted and tagged our account |
-| `POST_CAPTION_MENTION` | `mention` webhook | Our handle in their caption |
-| `DM_INBOUND` | `messages`, inbound | |
+This is taken from `SUBSCRIBED_FIELDS` in `graph-api.client.ts` and the
+projectors that consume each one, not from the product description. The first
+draft of this catalogue was written from memory of the feature and missed more
+than half of it.
 
-Plus `trigger_filters jsonb` — restrict to specific channels, require a keyword,
-require a minimum content age, first-time-only.
+| Subscribed field | Consumed by | Is it a customer action? | Reward trigger |
+| ---------------- | ----------- | ------------------------ | -------------- |
+| `messages` | DM projector | Yes | `DM_INBOUND`, `STORY_REPLY`, `STORY_MENTION` |
+| `message_reactions` | `handleReaction` | Yes | `MESSAGE_REACTION` |
+| `messaging_postbacks` | `postbackAsMessage` | Yes — tapped a button | `POSTBACK_TAPPED` |
+| `messaging_optins` | DM projector | Yes — gave consent | `OPTIN_GRANTED` |
+| `messaging_referrals` | `platformFacts.referral` | Yes — arrived via ad / ref / QR | `REFERRAL_ENTRY` |
+| `feed` (`item=comment`) | comment projector | Yes | `COMMENT_ON_OWN_POST` |
+| `feed` (`item=like`) | **routed to post projector, not modelled** | Yes | `POST_LIKE` — see §3.4 |
+| `feed` (`item=share`) | post projector | Yes | `POST_SHARE` — see §3.4 |
+| `feed` (other items) | post projector | No — our own publishing | — |
+| `mention` | mention flow | Yes | `POST_TAGGING_US`, `POST_CAPTION_MENTION`, `COMMENT_ON_MENTIONED_POST` |
+| `message_echoes` | DM projector | **No — that is us** | Never |
+| `message_reads` | subscribed | **No — a read receipt** | Never, see §3.3 |
+| `message_edits` | `handleEdit` | Yes, but not new engagement | Never, see §3.3 |
 
-### 3.2 Two capability constraints, both real
+Instagram arrives on the app-level `instagram` object with `comments`,
+`mentions` and `messages`, routed through the same projectors.
 
-**`POST_CAPTION_MENTION` may never fire.** Caption mentions depend on mention
-monitoring, which is [`todo.md`](./todo.md) **E8** — parked as a commercial
-decision, not a technical one. The rule type should exist and simply award
-nothing until that is resolved, rather than being absent from the UI and
-appearing later as a schema change.
+### 3.2 The catalogue
 
-**Private accounts are untested, and this feature is where it hurts.**
-[`todo.md`](./todo.md) **A6**: every flow we have verified ran against public
-accounts. If a private account posts a story mentioning an enterprise and Meta
-sends us nothing, the reward silently never fires — and the customer complains
-to the enterprise, who complains to us, about a reward we were never told to
-give. **A6 is a prerequisite for trusting this feature, not adjacent work.**
+| Trigger | Source | Note |
+| ------- | ------ | ---- |
+| `DM_INBOUND` | `messages` | |
+| `STORY_REPLY` | `messages`, `MessageKind.StoryReply` | They replied to **our** story |
+| `STORY_MENTION` | `messages`, attachment `story_mention` | They mentioned us in **their** story |
+| `MESSAGE_REACTION` | `message_reactions` | They reacted to something we sent |
+| `POSTBACK_TAPPED` | `messaging_postbacks` | Ice breaker or template button. Filterable on `payload` |
+| `OPTIN_GRANTED` | `messaging_optins` | A consent event, not a message |
+| `REFERRAL_ENTRY` | `messaging_referrals` | Filterable on `ref`, `source`, `type`, `ad_id` |
+| `COMMENT_ON_OWN_POST` | `feed` / `comments` | `is_reply` filter separates top-level from replies |
+| `COMMENT_ON_MENTIONED_POST` | `mention` | Comment on someone else's post that tags us |
+| `POST_TAGGING_US` | `mention` | |
+| `POST_CAPTION_MENTION` | `mention` | Inert until E8 — see §3.3 |
+| `POST_LIKE` | `feed` `item=like` | **Needs work first — §3.4** |
+| `POST_SHARE` | `feed` `item=share` | **Needs work first — §3.4** |
 
-### 3.3 The signal problem — this changes the formula design
+**`REFERRAL_ENTRY` deserves attention.** `messaging_referrals` carries `ref`,
+`source`, `type` and `ad_id`, and we already store the whole object on
+`platformFacts`. That is the primitive behind "scan this QR code in store and
+get 50 points" and "message us from this ad for a welcome reward" — two of the
+most common loyalty mechanics in existence — and it needs no new integration
+work at all. It was missing from the first draft of this document and is
+probably the most valuable trigger in the list.
 
-`UP_TO` awards need a signal to scale against. Here is what we can actually
-read, checked against `graph-api.client.ts` rather than assumed:
+**`POSTBACK_TAPPED` is the other quiet one.** A postback carries a `payload` set
+when the button was defined, so a rule can match a specific button. That makes
+"tap here to claim" a first-class flow rather than something built out of
+keyword matching on free text.
 
-**Available:** `posts.like_count`, `posts.comment_count`, `posts.share_count`,
-`posts.view_count`, and `like_count` on an individual comment.
+### 3.3 What is deliberately excluded, and why
 
-**Not available:** insights, `business_discovery` and hashtag search all refuse
-with Graph error `#10` — they need permissions this app has not been granted,
-and asking for them fails the whole request. So there is **no reach, no
-impressions, no views on someone else's content, and no follower count for the
-person interacting with us.**
+Not every consumed event should be able to earn.
 
-Mapped onto the triggers:
+- **`message_echoes`** — the sender is us. Rewarding it would pay the customer
+  for our own activity.
+- **`message_reads`** — a read receipt is not an achievement, and it is
+  trivially farmable by opening a thread repeatedly. It is also the weakest
+  signal of intent we hold.
+- **`message_edits`** — editing is not new engagement, and allowing it to earn
+  creates a re-trigger attack: post once, edit fifty times. The unique index in
+  §4.1 would stop a *repeat* award for the same rule, but the right answer is
+  that the trigger should not exist.
+- **Post verbs other than `add`** — `edit`, `hide` and `remove` are reversal
+  signals, not earning signals. See §3.5.
+- **`PermissionChange`** — infrastructure, not customer activity.
+- **`POST_CAPTION_MENTION`** fires only if mention monitoring is resolved
+  ([`todo.md`](./todo.md) **E8**, parked as a commercial decision). The rule type
+  should exist and award nothing rather than appear later as a schema change.
 
-| Trigger | Usable signals | Formula viable? |
-| ------- | -------------- | --------------- |
-| `COMMENT_ON_OWN_POST` | comment `like_count`, parent post counts, text length | **Yes** |
-| `COMMENT_ON_MENTIONED_POST` | comment `like_count`, mentioned media counts | **Yes** |
-| `POST_TAGGING_US` | media `like_count`, `comments_count` | **Yes** |
-| `POST_CAPTION_MENTION` | media `like_count`, `comments_count` | Yes, if E8 is resolved |
-| `STORY_MENTION` | **none** — it is someone else's story and we cannot read its metrics | **No** |
-| `DM_INBOUND` | message length only | **Not meaningfully** |
+### 3.4 Likes and shares need work before they can earn
 
-**The headline example in the request — "someone posts an Instagram story about
-me, give them up to 20 points" — is the one case where the formula cannot
-work.** We have no number to scale against. The rule must degrade to a fixed
-award, and the UI should not offer a formula for `STORY_MENTION` at all rather
-than offering one that silently always returns the floor.
+The webhook already arrives. `feed` covers "posts, photos, videos, shares,
+likes and comments, discriminated by `value.item`" — that is a comment in our
+own `meta-webhook.service.ts`, written when routing the whole field to the
+comment projector turned out to be a bug.
 
-This belongs in [`platform-limitations.md`](./platform-limitations.md) once A6
-confirms the surrounding behaviour.
+But **`item: 'like'` is not modelled anywhere.** The string appears nowhere in
+`src/` outside `like_count`. A like change is routed to the post projector,
+where `toPostKind` falls through to `PostKind.Text`, and the event is treated as
+a change to the post rather than as a person having liked it. **We are told who
+liked a post and we throw away the fact.**
 
-### 3.4 When the formula is evaluated
+That is a small, self-contained piece of work — capture the actor and the verb
+from a `like` feed change — and it unlocks the single most obvious reward
+trigger an enterprise will ask for on day one. It should be scoped before anyone
+promises `POST_LIKE` in the UI. The same is true of `share`, with the extra
+caveat that Facebook's share visibility depends on the sharer's audience.
 
-Engagement counts are near zero at the moment a comment or post arrives; likes
-accrue over hours. Evaluating at event time would award the floor to almost
-everyone and make the formula decorative.
+Two caveats worth stating before anyone builds the rule: a like is **Facebook
+only** on this path, and likes are **retractable**, so `POST_LIKE` needs
+`ON_CONTENT_DELETED`-style reversal on the `remove` verb or it is free money.
 
-**So the formula is evaluated at grant time — the end of the hold period — not
-at event time.** The hold then serves two purposes at once: it is the reversal
-window for deleted content, and it is the settling time for the metric. A rule
-with `hold_hours = 0` evaluates immediately and accepts a low number.
+### 3.5 Reversal signals already exist
 
-The values used are snapshotted onto the award (§6.4), because the metric moves
-and an award that cannot be explained six months later is an award the
-enterprise cannot defend to its customer.
+`extractVerb` pulls `add` / `edit` / `hide` / `remove` off a feed change and
+makes the verb part of the dedup key, and `applyModeration` already applies the
+result to a stored comment.
 
-### 3.5 The formula itself — a rate table, not an expression language
+So the deletion signal my reversal policy needs is not new work — it is a
+consumer of something already flowing:
+
+| Verb | Meaning | Reward consequence |
+| ---- | ------- | ------------------ |
+| `add` | created | the earning event |
+| `edit` | content changed | none — see §3.3 |
+| `hide` | **the enterprise hid it** | reverse: they judged it unwanted |
+| `remove` | **deleted** | reverse: the thing we paid for is gone |
+
+`hide` is the interesting one. An enterprise hiding a comment is an explicit
+judgement that it was not the engagement they wanted, and it is the cheapest
+abuse signal available — it costs them a click they were going to make anyway.
+
+### 3.6 The award factor
+
+`UP_TO` rules declare a **cap**. A separate factor provider returns a value in
+`[0, 1]`, and the award is that fraction of the cap:
 
 ```
-amount = clamp(base + rate × signal_value, floor, cap)
+award = round(cap × factor)        factor ∈ [0, 1]
 ```
 
-Four numbers and a signal name. No parser, no evaluator, no sandbox.
+**V1 ships `constant_one`, which returns 1.0** — so `UP_TO` awards the full cap
+and behaves identically to `FIXED`. The real provider is a rule engine that
+lands later and returns a genuine factor.
 
-This is deliberate, and it is what the market actually ships. Eagle Eye
-configures earn and burn as declarative rate structures with **zero expression
-evaluation** and covers the large majority of retail programs that way
-(study §2b). Talon.One, which does ship an expression language, states its
-safety property as *"no recursion, no infinite loops"* — and no vendor in the
-entire study publishes its rule DSL in an API reference, because rule authoring
-is a UI concern (study §18).
+This is the same seam as forwarding (§7), and it is a better design than the
+rate table that was here before, for three reasons:
 
-A rate table is auditable, diffable, renderable in a form, and cannot hang a
-request. If a genuine need for conditional logic appears later, it arrives as a
-second rule with a filter — not as an interpreter on the hot path.
+1. **It removes the signal problem entirely.** The previous design scaled the
+   award against a platform metric, and the metrics we can read do not cover the
+   triggers that matter — insights and `business_discovery` both refuse with
+   Graph `#10`, so a story someone else posted has no readable reach at all.
+   `STORY_MENTION` had to be excluded from variable awards. With a factor
+   provider, the trigger needs no signal and nothing is excluded.
+2. **The cap is the only number the enterprise configures.** "Up to 20 points"
+   means exactly that, in one column, with no base, rate, floor or
+   missing-signal policy to reason about.
+3. **The provider can become arbitrarily clever without touching anything
+   here.** Content quality, sentiment, reach when we can finally read it,
+   customer history — all of it lands behind one interface that returns a
+   number between zero and one.
 
-**When the signal is missing** — a private account, deleted content, a Graph
-error — the rule declares what happens: `on_signal_missing` ∈
-`{ USE_FLOOR, USE_BASE, SKIP }`, defaulting to `USE_FLOOR`. Silence is not an
-option; an award that quietly becomes zero is a support ticket.
+**Integer arithmetic, as everywhere else in this design.** The factor is carried
+as basis points, `factor_bp ∈ [0, 10000]`:
 
----
+```
+award = (cap × factor_bp + 5000) / 10000      -- integer division, round half up
+```
+
+The provider's output is **clamped to `[0, 10000]` on the way in**. A provider
+returning 1.5 must not award 30 points against a cap of 20, and the clamp
+belongs at the boundary rather than in the provider, because the provider is the
+thing most likely to change.
+
+**Evaluated at grant time**, not event time — the end of the hold period — so a
+future provider that reads engagement has had time for the numbers to settle.
+`factor_bp`, the provider code and the evaluation timestamp are snapshotted onto
+the award, because an award nobody can explain is an award the enterprise cannot
+defend to its customer.
+
+**A zero factor does not consume the cap slot.** If a provider decides an
+interaction is worth nothing, the customer has not earned, and burning their
+once-per-lifetime slot would be the wrong outcome. The award records
+`SKIPPED_ZERO_FACTOR` and the counter is released with the same
+`GREATEST(used - 1, 0)` decrement used for reversal. With `constant_one` this
+path is unreachable in V1, which is a good reason to test it now rather than
+when the real provider makes it live.
+
 
 ## 4. Uniqueness and concurrency — the core of the design
 
@@ -324,7 +396,56 @@ I get my points?"* is a question the enterprise will be asked, and
 
 ## 5. Value mechanics
 
-### 5.1 The ledger is the record; the balance is a projection
+### 5.1 One customer holds several balances at once
+
+A customer may hold a **points balance and one or more currency wallets
+simultaneously** — 340 points, ₹250, and $12, all at the same time. This is the
+normal case, not an edge case, and the schema is shaped for it from the start
+rather than growing into it.
+
+```
+customer 8812 ──┬── wallet  POINTS            balance 340
+                ├── wallet  CURRENCY / INR    balance 25000   (= ₹250.00)
+                └── wallet  CURRENCY / USD    balance   1200   (= $12.00)
+```
+
+The uniqueness key is `(enterprise_id, customer_id, wallet_kind, currency_code)`,
+so a customer gets exactly one wallet per kind per currency and as many as the
+programs they participate in require (§6.5).
+
+**The two scales are different, and `wallet_kind` is what says which.**
+
+| Kind | `amount` means | Scale |
+| ---- | -------------- | ----- |
+| `POINTS` | **whole points** | No minor unit. 340 is 340 points, never 3.40 |
+| `CURRENCY` | **minor units** | 25000 with `INR` is ₹250.00 |
+
+Both are `BIGINT`. Neither is ever a float, a `NUMERIC`, or a value the
+application divides before storing.
+
+**Three invariants that follow, and they are not negotiable:**
+
+1. **Never net across wallets.** There is no "total balance". A customer with
+   340 points and ₹250 has two numbers, and any screen, API response or export
+   that collapses them into one is wrong. Points are not currency and two
+   currencies are not each other.
+2. **Minor-unit scale comes from the currency, never from a constant.** The
+   ISO 4217 exponent is 0 for JPY, KRW and VND, 2 for INR and USD, and 3 for
+   KWD and BHD. A hardcoded ×100 is wrong for a meaningful share of the world
+   and will be wrong silently (study §13.3). Formatting reads the exponent; it
+   is never assumed.
+3. **No implicit FX.** Nothing in this design converts one currency into
+   another. A rule awards in a stated currency and it lands in that wallet. If
+   cross-currency ever becomes a requirement it arrives as explicit postings
+   with the rate stored on the transaction — not as a division somewhere in a
+   service.
+
+**Where the currency is decided.** A rule carries `currency_code` for
+`CURRENCY` rewards, defaulting from its program. That allows an enterprise
+operating in two countries to run programs in ₹ and $ without either a second
+tenant or a wallet that lies about what it holds.
+
+### 5.2 The ledger is the record; the balance is a projection
 
 `reward_ledger_entries` is append-only and is the system of record.
 `reward_wallets.balance` is a materialised projection written **in the same
@@ -340,7 +461,7 @@ Enforcement is layered, because each layer alone is defeatable (study §2.2): no
 UPDATE or DELETE path to entries exists in the repository, and a
 `BEFORE UPDATE OR DELETE` trigger raises. Corrections are reversing entries.
 
-### 5.2 Conversion — 30 points becomes ₹500
+### 5.3 Conversion — 30 points becomes ₹500
 
 Burn and earn across two wallets, in one transaction, never a balance edit:
 
@@ -366,7 +487,7 @@ if auto-conversion runs before a tier or threshold check, it can consume the
 balance that would have qualified the customer for something else. We have no
 tiers in V1, so this is a note for whoever adds them, not a present bug.
 
-### 5.3 Items are an entitlement, not a balance
+### 5.4 Items are an entitlement, not a balance
 
 A free portion of fries is not a number that goes up. It is an issued right with
 a lifecycle: `ISSUED → RESERVED → REDEEMED`, or `EXPIRED` / `REVOKED`.
@@ -392,7 +513,7 @@ unguessable and never derivable from the customer or the item: the study records
 a 2014 case where a user replaced his referral code with a memorable one, seeded
 it publicly, and collected over $50,000 (study §7.7).
 
-### 5.4 Closed loop as a system property, not a policy
+### 5.5 Closed loop as a system property, not a policy
 
 The money model is **enterprise liability, redeemable only with that
 enterprise**. That keeps it outside the RBI PPI framework — value is redeemable
@@ -448,8 +569,9 @@ partial unique indexes, UTC timestamps.
 | name | VARCHAR(120) | NOT NULL |
 | status | VARCHAR(16) | `DRAFT` / `ACTIVE` / `PAUSED` / `ENDED` |
 | timezone | VARCHAR(64) | NOT NULL — resolves `period_key`. Defaults from the enterprise |
-| currency_code | CHAR(3) | For currency rewards |
+| default_currency_code | CHAR(3) | Default for currency rules. A rule may state another |
 | budget_minor | BIGINT | NULL = uncapped |
+| budget_currency_code | CHAR(3) | Which currency the budget is counted in |
 | spent_minor | BIGINT | NOT NULL DEFAULT 0 |
 | starts_at / ends_at | TIMESTAMPTZ | |
 | is_deleted, created_at, updated_at | | |
@@ -474,10 +596,9 @@ CREATE UNIQUE INDEX reward_programs_name_uniq
 | points | INTEGER | for `POINTS` |
 | amount_minor | BIGINT | for `CURRENCY` |
 | item_ref_id | VARCHAR(64) | for `ITEM` |
-| signal_name | VARCHAR(40) | `UP_TO` only — must be valid for this trigger |
-| formula_base / formula_rate_num / formula_rate_den | INTEGER | integer arithmetic only |
-| formula_floor / formula_cap | INTEGER | the "up to" ceiling |
-| on_signal_missing | VARCHAR(12) | `USE_FLOOR` / `USE_BASE` / `SKIP` |
+| award_cap | INTEGER | `UP_TO` only — the ceiling the factor is applied to |
+| factor_provider_code | VARCHAR(40) | NOT NULL DEFAULT `'constant_one'` |
+| currency_code | CHAR(3) | `CURRENCY` rewards; defaults from the program (§5.1) |
 | cap_scope | VARCHAR(10) | `LIFETIME`/`DAY`/`WEEK`/`MONTH`/`YEAR`/`NONE` |
 | cap_count | INTEGER | NOT NULL DEFAULT 1 |
 | budget_cost_minor | BIGINT | NOT NULL DEFAULT 0 — what this award costs the budget |
@@ -496,10 +617,11 @@ CREATE INDEX reward_rules_trigger_idx
   WHERE is_active = true AND is_deleted = false;
 ```
 
-**Rate as a numerator and denominator**, not a float: "1 point per 10 likes" is
-`rate_num = 1, rate_den = 10`, evaluated in integer arithmetic. A `NUMERIC` rate
-invites rounding drift into a value calculation, and the market study is
-unambiguous that floats have no place in one (study §13.3).
+**No formula columns, by design.** A variable award is a cap plus a provider
+code; the arithmetic lives in one place (§3.6) and the provider is swappable
+without a migration. `factor_bp` is an integer in basis points because a
+`NUMERIC` or float factor would put rounding drift into a value calculation, and
+the market study is unambiguous that floats have no place in one (study §13.3).
 
 **Rules are versioned because awards reference them.** Editing a rule in place
 would silently rewrite the explanation of every past award. A change writes a
@@ -543,7 +665,9 @@ Rows older than the longest active `cap_scope` are sweepable — except
 | points / amount_minor | | the **final** computed values |
 | currency_code | CHAR(3) | |
 | item_ref_id | VARCHAR(64) | |
-| signal_snapshot | JSONB | the values the formula used, and when they were read |
+| factor_bp | INTEGER | `0..10000`, post-clamp. NULL for `FIXED` |
+| factor_provider_code | VARCHAR(40) | which provider produced it |
+| factor_computed_at | TIMESTAMPTZ | when — the metric moves, the snapshot must not |
 | hold_until | TIMESTAMPTZ | |
 | granted_at / reversed_at | TIMESTAMPTZ | |
 | reason_code | VARCHAR(40) | why skipped, or why reversed |
@@ -551,7 +675,7 @@ Rows older than the longest active `cap_scope` are sweepable — except
 | is_deleted, created_at, updated_at | | |
 
 **States:** `HELD` → `GRANTED` → `REVERSED`, with the terminal non-grants
-`SKIPPED_CAP`, `SKIPPED_BUDGET`, `SKIPPED_SIGNAL`, `EXPIRED`.
+`SKIPPED_CAP`, `SKIPPED_BUDGET`, `SKIPPED_ZERO_FACTOR`, `EXPIRED`.
 
 ```sql
 CREATE UNIQUE INDEX reward_awards_source_uniq
@@ -574,8 +698,8 @@ CREATE INDEX reward_awards_customer_idx
 | ------ | ---- | ----- |
 | id | BIGSERIAL | PK |
 | enterprise_id, customer_id | BIGINT | NOT NULL, composite FK |
-| wallet_kind | VARCHAR(16) | `POINTS` / `CURRENCY` |
-| currency_code | CHAR(3) | NULL for points |
+| wallet_kind | VARCHAR(16) | `POINTS` / `CURRENCY` — decides how `balance` is read |
+| currency_code | CHAR(3) | NULL for points; ISO 4217 for currency |
 | balance | BIGINT | NOT NULL DEFAULT 0 — projection |
 | pending_balance | BIGINT | NOT NULL DEFAULT 0 — held, not yet spendable |
 | lifetime_earned | BIGINT | NOT NULL DEFAULT 0 — never decremented |
@@ -605,7 +729,7 @@ arrives, has somewhere to live that spending does not reduce.
 | id | BIGSERIAL | PK |
 | enterprise_id, wallet_id | BIGINT | NOT NULL |
 | entry_type | VARCHAR(20) | `EARN`/`BURN`/`CONVERT_OUT`/`CONVERT_IN`/`REVERSAL`/`ADJUST`/`TRANSFER_IN`/`TRANSFER_OUT` |
-| amount | BIGINT | NOT NULL, **signed** |
+| amount | BIGINT | NOT NULL, **signed**. Whole points or minor units — the wallet's kind decides (§5.1) |
 | balance_after | BIGINT | NOT NULL — the projection at this point, for audit |
 | award_id | BIGINT | provenance |
 | rule_id, rule_version | | which rule caused this |
@@ -817,7 +941,7 @@ a schema change.
 | ---- | -- |
 | Programs, rules, versioning | **Built** |
 | Trigger catalogue + normaliser | **Built** — `POST_CAPTION_MENTION` present but inert until E8 |
-| Formula evaluation + signal registry | **Built** — not offered for `STORY_MENTION` or `DM_INBOUND` (§3.3) |
+| Award factor | **Seam + `constant_one` provider** returning 1.0 — real engine deferred, backlog §8.1 |
 | Frequency caps, program budget | **Built** |
 | Points wallet + ledger | **Built** |
 | Currency wallet + ledger | **Built** |
@@ -825,12 +949,13 @@ a schema change.
 | Entitlements | **Rows written**, catalogue and redemption deferred |
 | Forwarding | **Seam + `noop` provider**, real driver deferred |
 | Reversal, holds, negative balance | **Built** |
+| `POST_LIKE` / `POST_SHARE` triggers | **Not built** — the webhook arrives but a like is not modelled, backlog §8.2 |
 | Review queue / fraud detection | **Not built** — hook preserved |
 | Tiers, expiry, breakage accounting | **Not built** — see the market study if they arrive |
 
 Deliberately **not** built, and enforced by tests asserting the path is absent:
 cash-out, customer-to-customer transfer, cross-enterprise wallets, third-party
-settlement (§5.4).
+settlement (§5.5).
 
 ### 10.1 Suggested build order
 
@@ -840,7 +965,9 @@ settlement (§5.4).
 2. **Trigger normaliser + event catalogue.** Mapping real `messages` and `posts`
    rows to normalised events, with no rules attached yet.
 3. **Rules, caps, the award state machine.** Points only, fixed amounts.
-4. **Formula evaluation + the signal registry.**
+4. **The factor seam** — `FactorProvider`, `constant_one`, the clamp, the
+   snapshot on the award, and the zero-factor release path tested even though
+   `constant_one` cannot reach it.
 5. **Currency, conversion, entitlement rows.**
 6. **Forwarding seam + `noop`.**
 7. **FE:** program and rule builder, customer balance view, award history.
@@ -859,9 +986,9 @@ forwarding and item redemption stubbed.
 
 **Still open:**
 
-1. **`STORY_MENTION` cannot carry a formula** (§3.3). Confirm a fixed award is
-   acceptable for the trigger most likely to be used, or decide whether this
-   justifies revisiting the Instagram permission scope.
+1. **What the factor engine should actually measure** (§3.6). The seam is
+   defined and `constant_one` ships; the inputs, the weighting and whether it is
+   per-trigger or global are open. Recorded as backlog §8.1.
 2. **`budget_cost_minor` for points and items** — what does the enterprise
    consider a 20-point award to cost? Without an answer the budget guards only
    currency.
