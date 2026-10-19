@@ -68,7 +68,7 @@ interface BenefitHandlerBase<K extends RewardBenefitKind> {
 }
 
 /** Has a compensator, and the type makes it REQUIRED rather than hoped for. */
-type CompensableHandler<K extends RewardBenefitKind> = BenefitHandlerBase<K> & {
+export type CompensableBenefitHandler<K extends RewardBenefitKind> = BenefitHandlerBase<K> & {
   readonly reversibility: Reversibility.Compensable;
   /**
    * Idempotent: re-running with the same applied row is a success no-op.
@@ -90,15 +90,22 @@ type CompensableHandler<K extends RewardBenefitKind> = BenefitHandlerBase<K> & {
  * half-written: you cannot quietly add a compensator to it and leave the
  * reversibility flag saying otherwise.
  */
-type PivotHandler<K extends RewardBenefitKind> = BenefitHandlerBase<K> & {
+export type PivotBenefitHandler<K extends RewardBenefitKind> = BenefitHandlerBase<K> & {
   readonly reversibility: Reversibility.Pivot;
   readonly irreversibleBecause: string;
   compensate?: never;
 };
 
+/**
+ * A handler is one or the other, never both and never neither.
+ *
+ * A class cannot `implements` a union, so a handler declares the BRANCH it is —
+ * which is the point: picking `CompensableBenefitHandler` and omitting
+ * `compensate` fails in the handler's own file, not somewhere downstream.
+ */
 export type BenefitHandler<K extends RewardBenefitKind> =
-  | CompensableHandler<K>
-  | PivotHandler<K>;
+  | CompensableBenefitHandler<K>
+  | PivotBenefitHandler<K>;
 
 /**
  * THE COMPLETENESS CHECK.

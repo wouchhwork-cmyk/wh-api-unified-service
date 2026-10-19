@@ -55,15 +55,17 @@ export class RewardEntitlementRepository extends BaseRepository {
     const { affected } = await this.mutate(
       `UPDATE reward_entitlements SET status = $3
         WHERE id = $1 AND enterprise_id = $2 AND status = $4`,
-      [entitlementId, enterpriseId, RewardEntitlementStatus.Revoked, RewardEntitlementStatus.Issued],
+      [
+        entitlementId,
+        enterpriseId,
+        RewardEntitlementStatus.Revoked,
+        RewardEntitlementStatus.Issued,
+      ],
     );
     return affected > 0;
   }
 
-  async listForCustomer(
-    enterpriseId: number,
-    customerId: number,
-  ): Promise<RewardEntitlementRow[]> {
+  async listForCustomer(enterpriseId: number, customerId: number): Promise<RewardEntitlementRow[]> {
     return this.query<RewardEntitlementRow>(
       `SELECT id, ref_id AS "refId", item_ref AS "itemRef", status,
               redemption_code AS "redemptionCode", issued_at AS "issuedAt",
