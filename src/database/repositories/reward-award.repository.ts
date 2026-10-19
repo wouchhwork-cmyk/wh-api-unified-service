@@ -3,6 +3,7 @@ import {
   RewardAwardStatus,
   RewardBenefitKind,
   RewardBenefitStatus,
+  RewardEntryKind,
   type RewardWalletKind,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
@@ -347,58 +348,78 @@ export class RewardAwardRepository extends BaseRepository {
   }
 
   /**
-   * What a program has actually done.
+   * What every program has done, in ONE query.
    *
-   * TWO QUERIES, not one. Awards grouped by status answers "how often did this
-   * fire, and how often did it refuse"; value grouped by wallet answers "what
-   * did it cost". Forcing them into one statement would multiply the award
-   * counts by the number of benefit rows, which is the classic fan-out that
-   * makes a dashboard quietly wrong.
+   * Grouped by program rather than fetched per program: a page showing fifty
+   * programs was issuing a hundred and one queries, which is the N+1 the house
+   * rules forbid outright.
    */
-  async programActivity(
+  async activityByProgram(
     enterpriseId: number,
-    programId: number,
-  ): Promise<{ status: RewardAwardStatus; awards: number; customers: number }[]> {
+  ): Promise<
+    { programId: number; status: RewardAwardStatus; awards: number; customers: number }[]
+  > {
     return this.query(
-      `SELECT status,
+      `SELECT program_id AS "programId",
+              status,
               COUNT(*)::int AS awards,
               COUNT(DISTINCT customer_id)::int AS customers
          FROM reward_awards
-        WHERE enterprise_id = $1 AND program_id = $2 AND is_deleted = false
-        GROUP BY status
-        ORDER BY status`,
-      [enterpriseId, programId],
+        WHERE enterprise_id = $1 AND is_deleted = false
+        GROUP BY program_id, status
+        ORDER BY program_id, status`,
+      [enterpriseId],
     );
   }
 
   /**
-   * Net value a program has granted, per wallet kind and currency.
+   * Net value every program put into customers' hands.
    *
-   * NET, and deliberately: SUM over the entries includes reversals, so a
-   * clawed-back award stops counting. A gross figure would tell a business it
-   * had spent money it got back, which is the number nobody wants.
+   * ALSO ONE QUERY, for the same reason.
    *
-   * Never summed ACROSS currencies — points and each currency come back as
-   * their own row, because a total across them would be meaningless.
+   * TWO ENTRY KINDS ARE EXCLUDED, and the exclusions are the point:
+   *
+   *   - `convert_out` is the customer SPENDING their own points, not the
+   *     program taking them away. Including it made a program whose rule
+   *     converts points report a negative points figure — points it never
+   *     granted — while the program that originally granted them looked
+   *     untouched. Two programs, one customer, and a number that reads like a
+   *     bug in both.
+   *   - `adjust` is a human moving value by hand. It is a real movement and it
+   *     belongs in the audit trail and on the ledger, but attributing it to a
+   *     program's performance would credit a rule for a support gesture.
+   *
+   * `reversal` IS included, so the figure is net: a clawed-back award stops
+   * counting. A gross number would tell a business it spent money it got back.
+   *
+   * `net` comes back as a STRING. int8 exceeds what a JS number holds safely,
+   * so the driver hands back text and the caller converts deliberately rather
+   * than being handed a silently-rounded figure.
    */
-  async programValue(
-    enterpriseId: number,
-    programId: number,
-  ): Promise<{ walletKind: RewardWalletKind; currencyCode: string | null; net: number }[]> {
+  async valueByProgram(enterpriseId: number): Promise<
+    {
+      programId: number;
+      walletKind: RewardWalletKind;
+      currencyCode: string | null;
+      net: string;
+    }[]
+  > {
     return this.query(
-      `SELECT w.wallet_kind AS "walletKind",
+      `SELECT a.program_id AS "programId",
+              w.wallet_kind AS "walletKind",
               w.currency_code AS "currencyCode",
-              COALESCE(SUM(l.amount), 0)::bigint AS net
+              COALESCE(SUM(l.amount), 0)::text AS net
          FROM reward_ledger_entries l
          JOIN reward_awards a
            ON a.id = l.award_id AND a.enterprise_id = l.enterprise_id
          JOIN reward_wallets w
            ON w.id = l.wallet_id AND w.enterprise_id = l.enterprise_id
-        WHERE l.enterprise_id = $1 AND a.program_id = $2
+        WHERE l.enterprise_id = $1
           AND a.is_deleted = false
-        GROUP BY w.wallet_kind, w.currency_code
-        ORDER BY w.wallet_kind, w.currency_code NULLS FIRST`,
-      [enterpriseId, programId],
+          AND l.entry_kind NOT IN ($2, $3)
+        GROUP BY a.program_id, w.wallet_kind, w.currency_code
+        ORDER BY a.program_id, w.wallet_kind, w.currency_code NULLS FIRST`,
+      [enterpriseId, RewardEntryKind.ConvertOut, RewardEntryKind.Adjust],
     );
   }
 

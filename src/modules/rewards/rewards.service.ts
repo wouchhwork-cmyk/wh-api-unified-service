@@ -98,47 +98,59 @@ export class RewardsService {
   /**
    * The dashboard: what every program has actually done.
    *
-   * Entitlements are counted separately from ledger value because they are not
-   * value — an issued right is a promise, not a balance, and folding it into a
-   * money figure would overstate what a program has spent.
+   * THREE QUERIES TOTAL, whatever the program count — the list, the activity
+   * grouped by program, and the value grouped by program. Fetching per program
+   * made a fifty-program page issue a hundred and one.
+   *
+   * Entitlements are deliberately absent from the value figures. An issued
+   * right is a promise, not a balance, and folding it into a money total would
+   * overstate what a program has spent.
    */
   async programDashboard(enterpriseId: number) {
-    const programs = await this.programs.list(enterpriseId, DEFAULT_PAGE);
+    const [programs, activity, value] = await Promise.all([
+      this.programs.list(enterpriseId, DEFAULT_PAGE),
+      this.awards.activityByProgram(enterpriseId),
+      this.awards.valueByProgram(enterpriseId),
+    ]);
 
-    return Promise.all(
-      programs.map(async (program) => {
-        const [activity, value] = await Promise.all([
-          this.awards.programActivity(enterpriseId, program.id),
-          this.awards.programValue(enterpriseId, program.id),
-        ]);
+    return programs.map((program) => {
+      const rows = activity.filter((row) => row.programId === program.id);
+      const granted = rows.find((row) => row.status === RewardAwardStatus.Granted);
+      const held = rows.find((row) => row.status === RewardAwardStatus.Held);
+      const reversed = rows.find((row) => row.status === RewardAwardStatus.Reversed);
 
-        const granted = activity.find((row) => row.status === RewardAwardStatus.Granted);
-        const held = activity.find((row) => row.status === RewardAwardStatus.Held);
-        const reversed = activity.find((row) => row.status === RewardAwardStatus.Reversed);
-
-        return {
-          refId: program.refId,
-          name: program.name,
-          status: program.status,
-          budgetMinor: program.budgetMinor,
-          budgetCurrencyCode: program.budgetCurrencyCode,
-          spentMinor: program.spentMinor,
-          awardsGranted: granted?.awards ?? 0,
-          awardsHeld: held?.awards ?? 0,
-          awardsReversed: reversed?.awards ?? 0,
-          /** Rewarded at least once. Counted on granted awards only. */
-          customersRewarded: granted?.customers ?? 0,
-          /*
-           * Every status, including the refusals. A program granting 12 and
-           * refusing 400 is working as configured, and that is a thing the
-           * business needs to see rather than a thing to hide.
-           */
-          byStatus: activity,
-          /** Net of reversals, never summed across currencies. */
-          value,
-        };
-      }),
-    );
+      return {
+        refId: program.refId,
+        name: program.name,
+        status: program.status,
+        budgetMinor: program.budgetMinor,
+        budgetCurrencyCode: program.budgetCurrencyCode,
+        spentMinor: program.spentMinor,
+        awardsGranted: granted?.awards ?? 0,
+        awardsHeld: held?.awards ?? 0,
+        awardsReversed: reversed?.awards ?? 0,
+        /** Rewarded at least once. Counted on granted awards only. */
+        customersRewarded: granted?.customers ?? 0,
+        /*
+         * Every status, including the refusals. A program granting 12 and
+         * refusing 400 is working as configured, and that is a thing the
+         * business needs to see rather than a thing to hide.
+         */
+        byStatus: rows.map((row) => ({ status: row.status, awards: row.awards })),
+        /*
+         * Net of reversals, never summed across currencies, and NEVER
+         * summed across programs — `net` stays a string all the way to the
+         * client for the reason the repository gives.
+         */
+        value: value
+          .filter((row) => row.programId === program.id)
+          .map((row) => ({
+            walletKind: row.walletKind,
+            currencyCode: row.currencyCode,
+            net: row.net,
+          })),
+      };
+    });
   }
 
   /* ------------------------------------------------------------------ */
