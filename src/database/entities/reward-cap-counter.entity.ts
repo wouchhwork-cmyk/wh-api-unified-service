@@ -40,7 +40,7 @@ export class RewardCapCounter extends BaseEntity {
   @Column({ type: 'text' })
   periodKey!: string;
 
-  @Column({ type: 'int' })
+  @Column({ type: 'int', default: 0 })
   used!: number;
 
   /** Snapshotted at first claim, so changing the rule cannot retro-grant a slot. */

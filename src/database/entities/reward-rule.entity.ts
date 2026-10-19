@@ -1,5 +1,10 @@
 import { Column, Entity } from 'typeorm';
-import { RewardCapScope, RewardReversalPolicy, RewardTriggerKind } from '@/shared/enums';
+import {
+  CONSTANT_ONE_FACTOR_PROVIDER,
+  RewardCapScope,
+  RewardReversalPolicy,
+  RewardTriggerKind,
+} from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
 import { PublicEntity } from './base.entity';
 
@@ -24,7 +29,7 @@ export class RewardRule extends PublicEntity {
   @Column({ type: 'bigint', transformer: bigintTransformer })
   programId!: number;
 
-  @Column({ type: 'int' })
+  @Column({ type: 'int', default: 1 })
   version!: number;
 
   /** NULL for v1 of a rule. */
@@ -39,10 +44,10 @@ export class RewardRule extends PublicEntity {
   triggerConfig!: Record<string, unknown>;
 
   /** Which factor decides an `up_to` benefit. V1 ships `constant_one`. */
-  @Column({ type: 'varchar', length: 40 })
+  @Column({ type: 'varchar', length: 40, default: CONSTANT_ONE_FACTOR_PROVIDER })
   factorProviderCode!: string;
 
-  @Column({ type: 'varchar', length: 10 })
+  @Column({ type: 'varchar', length: 10, default: RewardCapScope.None })
   capScope!: RewardCapScope;
 
   @Column({ type: 'int', default: 1 })

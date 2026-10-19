@@ -29,7 +29,11 @@ export async function createTestDataSource(): Promise<DataSource> {
  */
 export async function truncateTenantData(dataSource: DataSource): Promise<void> {
   await dataSource.query(`
-    TRUNCATE audit_logs, message_attachments, messages, conversations, posts,
+    TRUNCATE reward_entitlements, reward_ledger_entries, reward_wallets,
+             reward_award_benefits, reward_awards, reward_cap_counters,
+             reward_rule_conditions, reward_rule_benefits, reward_rules,
+             reward_programs,
+             audit_logs, message_attachments, messages, conversations, posts,
              customer_engagements, customer_identifiers, customers,
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,
