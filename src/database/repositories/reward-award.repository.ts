@@ -279,6 +279,32 @@ export class RewardAwardRepository extends BaseRepository {
     );
   }
 
+  /**
+   * A customer's award history, INCLUDING the ones that granted nothing.
+   *
+   * Skipped awards are the point: "why didn't I get my points?" is answered by
+   * a row saying skipped_cap with its period key, rather than by an absence
+   * somebody has to investigate.
+   */
+  async listForCustomer(
+    enterpriseId: number,
+    customerId: number,
+    limit: number,
+  ): Promise<RewardAwardRow[]> {
+    return this.query<RewardAwardRow>(
+      `SELECT id, ref_id AS "refId", program_id AS "programId", rule_id AS "ruleId",
+              rule_version AS "ruleVersion", customer_id AS "customerId", status,
+              period_key AS "periodKey", held_until AS "heldUntil",
+              occurred_at_utc AS "occurredAtUtc", reason_code AS "reasonCode",
+              factor_basis_points AS "factorBasisPoints"
+         FROM reward_awards
+        WHERE enterprise_id = $1 AND customer_id = $2 AND is_deleted = false
+        ORDER BY created_at DESC, id DESC
+        LIMIT $3`,
+      [enterpriseId, customerId, limit],
+    );
+  }
+
   /* ---------------------------------------------------------------------
    * Applied benefits — what the award actually did, and how to undo it
    * ------------------------------------------------------------------ */
