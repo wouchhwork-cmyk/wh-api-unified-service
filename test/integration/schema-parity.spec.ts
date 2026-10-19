@@ -221,10 +221,16 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
        * percentages and counts, one keeping a role's level in range, and one
        * pinning a staff-role grant to a staff-scoped role.
        *
+       * Five more from the reward schema, each tying COLUMNS together rather
+       * than listing allowed values — a house account has no customer, a points
+       * wallet has no currency, an `up_to` benefit has a cap and a `fixed` one
+       * does not, a factor stays inside 0..10000, and a cap counter never
+       * exceeds its own cap.
+       *
        * Counted rather than merely compared so that a constraint quietly
        * disappearing from BOTH paths still fails here.
        */
-      expect(fromMigration.checks).toHaveLength(8);
+      expect(fromMigration.checks).toHaveLength(13);
     } finally {
       await synced.destroy();
       await migrated.destroy();

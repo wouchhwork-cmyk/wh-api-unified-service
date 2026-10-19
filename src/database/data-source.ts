@@ -19,6 +19,7 @@ import { RoleLevels1758200000000 } from './migrations/1758200000000-RoleLevels';
 import { StaffRoles1758300000000 } from './migrations/1758300000000-StaffRoles';
 import { ModerationDeadLetterLookup1758400000000 } from './migrations/1758400000000-ModerationDeadLetterLookup';
 import { RolePermissionsTenantKey1758500000000 } from './migrations/1758500000000-RolePermissionsTenantKey';
+import { RewardPrograms1758600000000 } from './migrations/1758600000000-RewardPrograms';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -83,6 +84,7 @@ export function buildDataSourceOptions(
       StaffRoles1758300000000,
       ModerationDeadLetterLookup1758400000000,
       RolePermissionsTenantKey1758500000000,
+      RewardPrograms1758600000000,
     ],
     migrationsTableName: 'schema_migrations',
 

@@ -90,6 +90,9 @@ const FEATURE_BY_RESOURCE: Readonly<Record<PermissionResource, FeatureKey | null
   [PermissionResource.Mentions]: FeatureKey.UnifiedInbox,
   [PermissionResource.Posts]: FeatureKey.PostInsights,
   [PermissionResource.Customers]: FeatureKey.CustomerDirectory,
+  // Reward programs are not gated behind a feature flag yet. When they are,
+  // this is the one place that changes.
+  [PermissionResource.Rewards]: null,
   [PermissionResource.Channels]: null,
   [PermissionResource.Employees]: null,
   [PermissionResource.Roles]: null,
@@ -133,6 +136,10 @@ const PERMISSION_SCOPES: Readonly<Record<Permission, PermissionScope>> = {
   [Permission.CustomersView]: PermissionScope.Both,
   [Permission.CustomersManage]: PermissionScope.Enterprise,
 
+  [Permission.RewardsView]: PermissionScope.Both,
+  [Permission.RewardsManage]: PermissionScope.Enterprise,
+  [Permission.RewardsAdjust]: PermissionScope.Enterprise,
+
   [Permission.EmployeesView]: PermissionScope.Both,
   [Permission.EmployeesInvite]: PermissionScope.Enterprise,
   [Permission.EmployeesManage]: PermissionScope.Enterprise,
@@ -175,6 +182,9 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
 
   [Permission.CustomersView]: 'See customer records and their platform identifiers.',
   [Permission.CustomersManage]: 'Edit, merge, and archive customer records.',
+  [Permission.RewardsView]: 'See reward programs, rules, balances, and award history.',
+  [Permission.RewardsManage]: 'Create and edit reward programs, rules, and budgets.',
+  [Permission.RewardsAdjust]: "Manually credit or debit a customer's reward balance.",
 
   [Permission.EmployeesView]: 'See the people who belong to this enterprise.',
   [Permission.EmployeesInvite]: 'Invite a person to this enterprise.',

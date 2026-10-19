@@ -6,6 +6,7 @@ import {
   applyPostTableObjects,
   applyPreTableObjects,
 } from './schema-objects';
+import { applyRewardObjects } from './reward-objects';
 
 /** Postgres says the object is already there. Under a sync that is the goal. */
 const ALREADY_EXISTS = new Set([
@@ -127,6 +128,12 @@ export async function syncSchema(
    * needs `roles_id_scope_uniq`, and that needs `roles` to exist.
    */
   await applyLateTableObjects(tolerant);
+
+  /*
+   * The reward schema. Last because its composite foreign keys reference
+   * `customers (id, enterprise_id)`, which the post-table set installs.
+   */
+  await applyRewardObjects(tolerant);
 
   const stamped = await stampMigrationsAsApplied(dataSource);
   return { applied, existing, stamped };
