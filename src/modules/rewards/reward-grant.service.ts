@@ -45,11 +45,18 @@ export class RewardGrantService {
     for (const award of due) {
       const enterpriseId = (award as unknown as { enterpriseId: number }).enterpriseId;
       try {
-        await this.tx.runInTransaction(async () => {
+        const didGrant = await this.tx.runInTransaction(async () => {
+          /*
+           * Another instance may already be granting this one. The sweep listed
+           * it a moment ago and nothing stopped a second worker listing it too.
+           */
+          const mine = await this.awards.lockHeldAward(enterpriseId, award.id);
+          if (!mine) return false;
+
           const rule = await this.rules.findById(enterpriseId, award.ruleId);
-          if (!rule) return;
+          if (!rule) return false;
           const program = await this.programs.findById(enterpriseId, rule.programId);
-          if (!program) return;
+          if (!program) return false;
 
           const benefits = await this.rules.loadBenefits(
             enterpriseId,
@@ -69,8 +76,9 @@ export class RewardGrantService {
             benefits,
             budgetCost: benefits.reduce((sum, b) => sum + b.budgetCostMinor, 0),
           });
+          return true;
         });
-        granted += 1;
+        if (didGrant) granted += 1;
       } catch (error) {
         this.logger.error(`granting held award ${award.id} failed: ${(error as Error).message}`);
       }

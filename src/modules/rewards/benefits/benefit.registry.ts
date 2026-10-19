@@ -53,6 +53,21 @@ export class BenefitRegistry {
     return this.handlers[kind];
   }
 
+  /**
+   * For a kind that came out of the DATABASE, where the type cannot vouch for it.
+   *
+   * `get` is honest for a kind parsed from the union — it exists by
+   * construction. A `benefit_kind` read from a stored row is a string that was
+   * valid when it was written and may name something this build no longer has,
+   * so this returns `undefined` rather than pretending otherwise.
+   */
+  tryGet(kind: string): BenefitHandler<RewardBenefitKind> | undefined {
+    if (!Object.values(RewardBenefitKind).includes(kind as RewardBenefitKind)) {
+      return undefined;
+    }
+    return this.handlers[kind as RewardBenefitKind];
+  }
+
   /** Whether the factor may scale this kind. 0.6 of a free coffee is nothing. */
   isScalable(kind: RewardBenefitKind): boolean {
     return this.handlers[kind].scalable;

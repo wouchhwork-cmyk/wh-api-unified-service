@@ -243,6 +243,30 @@ export class RewardAwardRepository extends BaseRepository {
     );
   }
 
+  /**
+   * Takes this award, or reports that somebody else has it.
+   *
+   * Called INSIDE the per-award transaction, because a lock taken outside one
+   * is released before the work starts. SKIP LOCKED means a second worker gets
+   * nothing rather than waiting, and the status re-check closes the window
+   * between the sweep listing the award and this lock being taken.
+   *
+   * Without it the sweep leans on the benefit idempotency index to stop a
+   * double grant: the second worker would do the work, fail on the unique
+   * index, roll back, and log an error on every tick. Correct by accident is
+   * not the same as correct.
+   */
+  async lockHeldAward(enterpriseId: number, awardId: number): Promise<boolean> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM reward_awards
+        WHERE id = $1 AND enterprise_id = $2
+          AND status = $3 AND is_deleted = false
+        FOR UPDATE SKIP LOCKED`,
+      [awardId, enterpriseId, RewardAwardStatus.Held],
+    );
+    return rows.length > 0;
+  }
+
   /** The grant sweep: held awards whose hold has elapsed. */
   async claimDueHeldAwards(limit: number): Promise<RewardAwardRow[]> {
     return this.query<RewardAwardRow>(
