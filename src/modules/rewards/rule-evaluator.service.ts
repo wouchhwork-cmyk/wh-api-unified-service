@@ -8,10 +8,17 @@ import { RewardBenefitConfigSchema } from '@/shared/contracts/rewards/reward.con
 import {
   RewardAwardMode,
   RewardAwardStatus,
+  RewardBenefitKind,
   RewardCapScope,
   type RewardTriggerKind,
 } from '@/shared/enums';
 import { BenefitDispatcher } from './benefit-dispatcher.service';
+
+/** The benefit kinds whose payload carries a currency. */
+const CURRENCY_BEARING_KINDS: ReadonlySet<RewardBenefitKind> = new Set([
+  RewardBenefitKind.GrantCurrency,
+  RewardBenefitKind.ConvertValue,
+]);
 import { ConditionRegistry } from './conditions/condition.registry';
 import { FactorEvaluator, scaleByFactor } from './factor.provider';
 import { derivePeriodKey } from './period-key.util';
@@ -271,7 +278,12 @@ export class RuleEvaluatorService {
      * too. Unreachable with `constant_one`, which is exactly why it is tested
      * now rather than when a real provider first returns zero in production.
      */
-    if (needsFactor && factor.basisPoints === 0) {
+    const worthless =
+      needsFactor &&
+      (factor.basisPoints === 0 ||
+        input.benefits.some((b) => this.scalesToNothing(b, factor.basisPoints)));
+
+    if (worthless) {
       await this.awards.releaseBudget({
         enterpriseId: input.enterpriseId,
         programId: input.rule.programId,
@@ -289,7 +301,7 @@ export class RuleEvaluatorService {
         enterpriseId: input.enterpriseId,
         awardId: input.awardId,
         status: RewardAwardStatus.SkippedZeroFactor,
-        reasonCode: 'factor_zero',
+        reasonCode: factor.basisPoints === 0 ? 'factor_zero' : 'factor_scaled_to_zero',
         periodKey: input.periodKey,
       });
       return;
@@ -352,9 +364,24 @@ export class RuleEvaluatorService {
     defaultCurrencyCode: string | null,
   ): Record<string, unknown> {
     const config = { ...stored.config };
-    if (config.currencyCode === undefined && defaultCurrencyCode !== null) {
+
+    /*
+     * The program's default currency fills in only for the kinds that TAKE a
+     * currency.
+     *
+     * Injecting it everywhere put `currencyCode` into a points payload, and
+     * the schemas are strictObject, so every points rule inside a program with
+     * a default currency threw at grant time — which is the ordinary
+     * configuration, not an exotic one.
+     */
+    if (
+      config.currencyCode === undefined &&
+      defaultCurrencyCode !== null &&
+      CURRENCY_BEARING_KINDS.has(stored.benefitKind as RewardBenefitKind)
+    ) {
       config.currencyCode = defaultCurrencyCode;
     }
+
     if (
       stored.awardMode !== RewardAwardMode.UpTo ||
       basisPoints === null ||
@@ -367,6 +394,24 @@ export class RuleEvaluatorService {
     if ('points' in config) return { ...config, points: scaled };
     if ('minorUnits' in config) return { ...config, minorUnits: scaled };
     return config;
+  }
+
+  /**
+   * Did the factor scale this benefit down to nothing?
+   *
+   * A cap of 1 with a factor of 0.4 rounds to zero, and the schemas require a
+   * positive amount — so without this the award would THROW on a payload that
+   * is simply not worth granting. It is the same situation as a zero factor
+   * and takes the same path: nothing is awarded, and the cap slot is handed
+   * back because the customer did not earn.
+   */
+  private scalesToNothing(
+    stored: { awardMode: RewardAwardMode; awardCap: number | null },
+    basisPoints: number | null,
+  ): boolean {
+    if (stored.awardMode !== RewardAwardMode.UpTo) return false;
+    if (basisPoints === null || stored.awardCap === null) return false;
+    return scaleByFactor(stored.awardCap, basisPoints) < 1;
   }
 
   private async releaseCap(
