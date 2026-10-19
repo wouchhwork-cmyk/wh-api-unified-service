@@ -20,6 +20,7 @@ import { BenefitDispatcher } from './benefit-dispatcher.service';
 import { ConstantOneFactorProvider, FactorEvaluator } from './factor.provider';
 import { RewardsController } from './rewards.controller';
 import { RewardsService } from './rewards.service';
+import { RewardGrantService } from './reward-grant.service';
 import { RuleEvaluatorService } from './rule-evaluator.service';
 
 /**
@@ -43,6 +44,7 @@ import { RuleEvaluatorService } from './rule-evaluator.service';
 
     RewardsService,
     RuleEvaluatorService,
+    RewardGrantService,
     BenefitDispatcher,
     BenefitRegistry,
     ConditionRegistry,
@@ -56,7 +58,7 @@ import { RuleEvaluatorService } from './rule-evaluator.service';
     CustomerTenureCondition,
     ContentMatchCondition,
   ],
-  exports: [RuleEvaluatorService],
+  exports: [RuleEvaluatorService, RewardGrantService],
 })
 export class RewardsModule implements OnModuleInit {
   constructor(

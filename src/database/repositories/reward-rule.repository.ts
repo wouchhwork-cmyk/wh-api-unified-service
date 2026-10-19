@@ -236,6 +236,16 @@ export class RewardRuleRepository extends BaseRepository {
     }
   }
 
+  /** By numeric id, for the worker paths that already hold one. */
+  async findById(enterpriseId: number, id: number): Promise<RewardRuleRow | null> {
+    const rows = await this.query<RewardRuleRow>(
+      `SELECT ${RULE_COLUMNS} FROM reward_rules r
+        WHERE r.enterprise_id = $1 AND r.id = $2 AND r.is_deleted = false`,
+      [enterpriseId, id],
+    );
+    return rows[0] ?? null;
+  }
+
   async findByRefId(enterpriseId: number, refId: string): Promise<RewardRuleRow | null> {
     const rows = await this.query<RewardRuleRow>(
       `SELECT ${RULE_COLUMNS} FROM reward_rules r

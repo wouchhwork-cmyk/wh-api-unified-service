@@ -30,6 +30,8 @@ import { QueueListenerService } from './queue-listener.service';
 import { RefreshSchedulerWorker } from './refresh-scheduler.worker';
 import { SweeperWorker } from './sweeper.worker';
 import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reconciler.worker';
+import { RewardsModule } from '@/modules/rewards/rewards.module';
+import { RewardGrantWorker } from './reward-grant.worker';
 import { SendReconcilerWorker } from './send-reconciler.worker';
 
 /**
@@ -59,6 +61,9 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     // The projectors run here; the same code the API imports, in a process that
     // serves no traffic.
     InboxModule,
+    // Reward programs: the grant sweep and the content-deletion reversal both
+    // run here, for the same reason the projectors do.
+    RewardsModule,
   ],
   providers: [
     InboundEventRepository,
@@ -95,6 +100,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     WebhookSubscriptionService,
     WebhookSubscriptionReconcilerWorker,
     SendReconcilerWorker,
+    RewardGrantWorker,
   ],
 })
 export class WorkersModule {}
