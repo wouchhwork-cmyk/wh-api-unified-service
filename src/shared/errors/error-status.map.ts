@@ -38,6 +38,9 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.ConnectionNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ChannelNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.CustomerNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.RewardProgramNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.RewardRuleNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.RewardWalletNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ConversationNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.MessageNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.PostNotFound]: HttpStatus.NOT_FOUND,
@@ -69,6 +72,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
 
   // 422 — the request was understood but is not valid
   [ErrorCode.ValidationFailed]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [ErrorCode.RewardBenefitNotScalable]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.InvalidEmail]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.InvalidMobile]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.CredentialRequired]: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -99,6 +103,11 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
  * account-enumeration oracle (schema.md §11–12).
  */
 export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
+  [ErrorCode.RewardProgramNotFound]: 'That reward program does not exist.',
+  [ErrorCode.RewardRuleNotFound]: 'That reward rule does not exist.',
+  [ErrorCode.RewardWalletNotFound]: 'That balance does not exist.',
+  [ErrorCode.RewardBenefitNotScalable]:
+    'That reward cannot be an "up to" amount, because it is not divisible. Choose a fixed amount.',
   [ErrorCode.AuthInvalidCredentials]: 'The email, mobile, or password is incorrect.',
   [ErrorCode.AuthCodeInvalid]: 'That code is not correct.',
   [ErrorCode.AuthCodeExpired]: 'That code has expired. Request a new one.',

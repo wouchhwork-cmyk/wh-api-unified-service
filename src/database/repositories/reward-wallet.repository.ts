@@ -224,7 +224,18 @@ export class RewardWalletRepository extends BaseRepository {
   }
 
   /** A customer's balances. Several at once is the normal case, never netted. */
-  async listCustomerWallets(enterpriseId: number, customerId: number): Promise<RewardWalletRow[]> {
+  /**
+   * A customer's balances.
+   *
+   * Bounded by the unique index to one per kind per currency, so the limit is
+   * a backstop rather than a page size — but a business trading in thirty
+   * currencies would otherwise return thirty rows to a screen that shows two.
+   */
+  async listCustomerWallets(
+    enterpriseId: number,
+    customerId: number,
+    limit: number,
+  ): Promise<RewardWalletRow[]> {
     return this.query<RewardWalletRow>(
       `SELECT id, ref_id AS "refId", wallet_kind AS "walletKind",
               currency_code AS "currencyCode", balance,
@@ -232,8 +243,9 @@ export class RewardWalletRepository extends BaseRepository {
          FROM reward_wallets
         WHERE enterprise_id = $1 AND customer_id = $2
           AND account_kind = 'customer' AND is_deleted = false
-        ORDER BY wallet_kind, currency_code NULLS FIRST`,
-      [enterpriseId, customerId],
+        ORDER BY wallet_kind, currency_code NULLS FIRST
+        LIMIT $3`,
+      [enterpriseId, customerId, limit],
     );
   }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { RewardAwardRepository } from '@/database/repositories/reward-award.repository';
 import { RewardEntitlementRepository } from '@/database/repositories/reward-entitlement.repository';
@@ -24,9 +24,12 @@ import {
   RewardWalletKind,
 } from '@/shared/enums';
 import { RequestContext } from '@/shared/context';
+import { AppException, ErrorCode } from '@/shared/errors';
 import { BenefitRegistry } from './benefits/benefit.registry';
 
 const DEFAULT_PAGE = 50;
+/** A backstop on tenant-controlled lists, not a page size. */
+const MAX_ROWS = 200;
 
 /**
  * Everything a human does to a reward program.
@@ -78,7 +81,7 @@ export class RewardsService {
 
   async setProgramStatus(enterpriseId: number, refId: string, status: RewardProgramStatus) {
     const moved = await this.programs.setStatus(enterpriseId, refId, status);
-    if (!moved) throw new NotFoundException('reward program not found');
+    if (!moved) throw new AppException(ErrorCode.RewardProgramNotFound);
 
     const program = await this.programs.findByRefId(enterpriseId, refId);
     await this.audit.record({
@@ -103,7 +106,7 @@ export class RewardsService {
    */
   async createRule(enterpriseId: number, input: CreateRewardRuleInput) {
     const program = await this.programs.findByRefId(enterpriseId, input.programRefId);
-    if (!program) throw new NotFoundException('reward program not found');
+    if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
 
     this.assertBenefitsAreCoherent(input);
 
@@ -177,28 +180,29 @@ export class RewardsService {
       if (benefit.awardMode !== RewardAwardMode.UpTo) continue;
 
       if (!this.benefits.isScalable(benefit.benefitKind)) {
-        throw new UnprocessableEntityException(
-          `${benefit.benefitKind} cannot be "up to" — it is not divisible, ` +
-            'so a factor has nothing to scale',
-        );
+        throw new AppException(ErrorCode.RewardBenefitNotScalable, {
+          details: [{ field: 'benefits', issue: `${benefit.benefitKind} cannot be "up to"` }],
+        });
       }
       if (benefit.awardCap === null) {
-        throw new UnprocessableEntityException(
-          `${benefit.benefitKind} is "up to" and needs an awardCap for the factor to scale`,
-        );
+        throw new AppException(ErrorCode.ValidationFailed, {
+          details: [
+            { field: 'awardCap', issue: 'an "up to" benefit needs a cap for the factor to scale' },
+          ],
+        });
       }
     }
   }
 
   async listRules(enterpriseId: number, programRefId: string) {
     const program = await this.programs.findByRefId(enterpriseId, programRefId);
-    if (!program) throw new NotFoundException('reward program not found');
-    return this.rules.listForProgram(enterpriseId, program.id);
+    if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
+    return this.rules.listForProgram(enterpriseId, program.id, MAX_ROWS);
   }
 
   async setRuleActive(enterpriseId: number, refId: string, isActive: boolean) {
     const moved = await this.rules.setActive(enterpriseId, refId, isActive);
-    if (!moved) throw new NotFoundException('reward rule not found');
+    if (!moved) throw new AppException(ErrorCode.RewardRuleNotFound);
 
     const rule = await this.rules.findByRefId(enterpriseId, refId);
     await this.audit.record({
@@ -223,11 +227,11 @@ export class RewardsService {
    */
   async getCustomerBalances(enterpriseId: number, customerRefId: string) {
     const customer = await this.customers.findByRefId(enterpriseId, customerRefId);
-    if (!customer) throw new NotFoundException('customer not found');
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
 
     const [wallets, entitlements] = await Promise.all([
-      this.wallets.listCustomerWallets(enterpriseId, customer.id),
-      this.entitlements.listForCustomer(enterpriseId, customer.id),
+      this.wallets.listCustomerWallets(enterpriseId, customer.id, MAX_ROWS),
+      this.entitlements.listForCustomer(enterpriseId, customer.id, MAX_ROWS),
     ]);
 
     return { customerRefId, wallets, entitlements };
@@ -236,7 +240,7 @@ export class RewardsService {
   async getWalletStatement(enterpriseId: number, customerRefId: string, walletRefId: string) {
     const { wallets } = await this.getCustomerBalances(enterpriseId, customerRefId);
     const wallet = wallets.find((w) => w.refId === walletRefId);
-    if (!wallet) throw new NotFoundException('wallet not found');
+    if (!wallet) throw new AppException(ErrorCode.RewardWalletNotFound);
 
     const entries = await this.wallets.listEntries(enterpriseId, wallet.id, DEFAULT_PAGE);
     return { wallet, entries };
@@ -256,7 +260,7 @@ export class RewardsService {
    */
   async adjustBalance(enterpriseId: number, input: AdjustRewardBalanceInput) {
     const customer = await this.customers.findByRefId(enterpriseId, input.customerRefId);
-    if (!customer) throw new NotFoundException('customer not found');
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
 
     const actor = RequestContext.actor();
 
@@ -317,7 +321,7 @@ export class RewardsService {
    */
   async listAwards(enterpriseId: number, customerRefId: string) {
     const customer = await this.customers.findByRefId(enterpriseId, customerRefId);
-    if (!customer) throw new NotFoundException('customer not found');
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
 
     return this.awards.listForCustomer(enterpriseId, customer.id, DEFAULT_PAGE);
   }

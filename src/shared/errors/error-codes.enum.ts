@@ -69,6 +69,20 @@ export enum ErrorCode {
   ConnectionNotFound = 'CONNECTION_NOT_FOUND',
   ChannelNotFound = 'CHANNEL_NOT_FOUND',
   CustomerNotFound = 'CUSTOMER_NOT_FOUND',
+
+  /* REWARD PROGRAMS. */
+  RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',
+  RewardRuleNotFound = 'REWARD_RULE_NOT_FOUND',
+  RewardWalletNotFound = 'REWARD_WALLET_NOT_FOUND',
+  /**
+   * The benefit cannot be "up to".
+   *
+   * Its own code rather than a generic validation failure because the caller
+   * can act on it: a free coffee is not divisible, so a factor has nothing to
+   * scale, and the fix is to pick a fixed amount rather than to correct a
+   * field's format.
+   */
+  RewardBenefitNotScalable = 'REWARD_BENEFIT_NOT_SCALABLE',
   ConversationNotFound = 'CONVERSATION_NOT_FOUND',
   MessageNotFound = 'MESSAGE_NOT_FOUND',
   PostNotFound = 'POST_NOT_FOUND',

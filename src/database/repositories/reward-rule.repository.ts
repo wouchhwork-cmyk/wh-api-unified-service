@@ -255,12 +255,25 @@ export class RewardRuleRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-  async listForProgram(enterpriseId: number, programId: number): Promise<RewardRuleRow[]> {
+  /**
+   * Rules in a program, bounded.
+   *
+   * A program is not expected to carry hundreds of rules — the catalogue
+   * evidence is that these stay small — but "not expected to" is not a limit,
+   * and an unbounded SELECT on a tenant-controlled table is how one business
+   * makes a page slow for everyone.
+   */
+  async listForProgram(
+    enterpriseId: number,
+    programId: number,
+    limit: number,
+  ): Promise<RewardRuleRow[]> {
     return this.query<RewardRuleRow>(
       `SELECT ${RULE_COLUMNS} FROM reward_rules r
         WHERE r.enterprise_id = $1 AND r.program_id = $2 AND r.is_deleted = false
-        ORDER BY r.priority, r.id`,
-      [enterpriseId, programId],
+        ORDER BY r.priority, r.id
+        LIMIT $3`,
+      [enterpriseId, programId, limit],
     );
   }
 

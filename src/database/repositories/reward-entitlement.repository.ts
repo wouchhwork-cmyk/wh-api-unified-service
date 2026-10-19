@@ -65,15 +65,21 @@ export class RewardEntitlementRepository extends BaseRepository {
     return affected > 0;
   }
 
-  async listForCustomer(enterpriseId: number, customerId: number): Promise<RewardEntitlementRow[]> {
+  /** A customer's issued rights, bounded and newest first. */
+  async listForCustomer(
+    enterpriseId: number,
+    customerId: number,
+    limit: number,
+  ): Promise<RewardEntitlementRow[]> {
     return this.query<RewardEntitlementRow>(
       `SELECT id, ref_id AS "refId", item_ref AS "itemRef", status,
               redemption_code AS "redemptionCode", issued_at AS "issuedAt",
               expires_at AS "expiresAt"
          FROM reward_entitlements
         WHERE enterprise_id = $1 AND customer_id = $2 AND is_deleted = false
-        ORDER BY issued_at DESC, id DESC`,
-      [enterpriseId, customerId],
+        ORDER BY issued_at DESC, id DESC
+        LIMIT $3`,
+      [enterpriseId, customerId, limit],
     );
   }
 }
