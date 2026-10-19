@@ -1,4 +1,3 @@
-import type { EntityManager } from 'typeorm';
 import type { RewardBenefitConfig } from '@/shared/contracts/rewards/reward.contract';
 import type { RewardBenefitKind, Reversibility } from '@/shared/enums';
 
@@ -17,13 +16,13 @@ export type BenefitOf<K extends RewardBenefitKind> = Extract<RewardBenefit, { be
 /**
  * What a handler needs, and deliberately all it needs.
  *
- * `manager` is the ambient transaction. Every DB benefit in one award commits
- * or none does, and that costs no plumbing because repositories resolve the
- * ambient transaction per call — so a handler does not take, pass, or know
- * about an EntityManager beyond handing it back to a repository.
+ * NO EntityManager. Every database benefit in one award commits or none does,
+ * and that costs no plumbing: repositories resolve the ambient transaction per
+ * call, so a handler never takes, passes or knows about one. Threading a
+ * manager through here would be ceremony that also invites a handler to open
+ * its own transaction and quietly break the all-or-nothing guarantee.
  */
 export interface BenefitContext {
-  readonly manager: EntityManager;
   readonly enterpriseId: number;
   readonly customerId: number;
   readonly awardId: number;
