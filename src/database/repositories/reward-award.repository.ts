@@ -17,6 +17,18 @@ export interface RewardAwardRow {
   readonly factorBasisPoints: number | null;
 }
 
+/**
+ * A row from the cross-tenant grant sweep.
+ *
+ * The sweep is the ONE query here with no tenant predicate, because a worker
+ * serves every business at once. That makes `enterpriseId` the most important
+ * column it returns — every call made with this row scopes by it — so it is
+ * declared rather than cast in at the call site.
+ */
+export interface DueRewardAwardRow extends RewardAwardRow {
+  readonly enterpriseId: number;
+}
+
 export interface CreateAwardInput {
   readonly enterpriseId: number;
   readonly programId: number;
@@ -268,8 +280,8 @@ export class RewardAwardRepository extends BaseRepository {
   }
 
   /** The grant sweep: held awards whose hold has elapsed. */
-  async claimDueHeldAwards(limit: number): Promise<RewardAwardRow[]> {
-    return this.query<RewardAwardRow>(
+  async claimDueHeldAwards(limit: number): Promise<DueRewardAwardRow[]> {
+    return this.query<DueRewardAwardRow>(
       `SELECT id, ref_id AS "refId", program_id AS "programId", rule_id AS "ruleId",
               rule_version AS "ruleVersion", customer_id AS "customerId", status,
               period_key AS "periodKey", held_until AS "heldUntil",

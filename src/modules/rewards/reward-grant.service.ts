@@ -43,7 +43,7 @@ export class RewardGrantService {
     let granted = 0;
 
     for (const award of due) {
-      const enterpriseId = (award as unknown as { enterpriseId: number }).enterpriseId;
+      const { enterpriseId } = award;
       try {
         const didGrant = await this.tx.runInTransaction(async () => {
           /*
