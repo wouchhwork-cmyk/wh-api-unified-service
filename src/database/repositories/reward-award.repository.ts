@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { RewardAwardStatus, RewardBenefitKind, RewardBenefitStatus } from '@/shared/enums';
+import {
+  RewardAwardStatus,
+  RewardBenefitKind,
+  RewardBenefitStatus,
+  type RewardWalletKind,
+} from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 export interface RewardAwardRow {
@@ -338,6 +343,62 @@ export class RewardAwardRepository extends BaseRepository {
         ORDER BY created_at DESC, id DESC
         LIMIT $3`,
       [enterpriseId, customerId, limit],
+    );
+  }
+
+  /**
+   * What a program has actually done.
+   *
+   * TWO QUERIES, not one. Awards grouped by status answers "how often did this
+   * fire, and how often did it refuse"; value grouped by wallet answers "what
+   * did it cost". Forcing them into one statement would multiply the award
+   * counts by the number of benefit rows, which is the classic fan-out that
+   * makes a dashboard quietly wrong.
+   */
+  async programActivity(
+    enterpriseId: number,
+    programId: number,
+  ): Promise<{ status: RewardAwardStatus; awards: number; customers: number }[]> {
+    return this.query(
+      `SELECT status,
+              COUNT(*)::int AS awards,
+              COUNT(DISTINCT customer_id)::int AS customers
+         FROM reward_awards
+        WHERE enterprise_id = $1 AND program_id = $2 AND is_deleted = false
+        GROUP BY status
+        ORDER BY status`,
+      [enterpriseId, programId],
+    );
+  }
+
+  /**
+   * Net value a program has granted, per wallet kind and currency.
+   *
+   * NET, and deliberately: SUM over the entries includes reversals, so a
+   * clawed-back award stops counting. A gross figure would tell a business it
+   * had spent money it got back, which is the number nobody wants.
+   *
+   * Never summed ACROSS currencies — points and each currency come back as
+   * their own row, because a total across them would be meaningless.
+   */
+  async programValue(
+    enterpriseId: number,
+    programId: number,
+  ): Promise<{ walletKind: RewardWalletKind; currencyCode: string | null; net: number }[]> {
+    return this.query(
+      `SELECT w.wallet_kind AS "walletKind",
+              w.currency_code AS "currencyCode",
+              COALESCE(SUM(l.amount), 0)::bigint AS net
+         FROM reward_ledger_entries l
+         JOIN reward_awards a
+           ON a.id = l.award_id AND a.enterprise_id = l.enterprise_id
+         JOIN reward_wallets w
+           ON w.id = l.wallet_id AND w.enterprise_id = l.enterprise_id
+        WHERE l.enterprise_id = $1 AND a.program_id = $2
+          AND a.is_deleted = false
+        GROUP BY w.wallet_kind, w.currency_code
+        ORDER BY w.wallet_kind, w.currency_code NULLS FIRST`,
+      [enterpriseId, programId],
     );
   }
 

@@ -874,6 +874,20 @@
         "tags": ["rewards"]
       }
     },
+    "/api/v1/rewards/dashboard": {
+      "get": {
+        "description": "Awards granted, held and reversed, customers rewarded, and net value per wallet. Value is NET of reversals and is never summed across currencies. Refusals are included: a program granting 12 and refusing 400 is working as configured, and that is worth seeing.",
+        "operationId": "RewardsController_dashboard_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What every program has actually done",
+        "tags": ["rewards"]
+      }
+    },
     "/api/v1/rewards/programs/{refId}/status": {
       "patch": {
         "description": "Status is the SWITCH, not the schedule. A program scheduled for next month is active with a future start date; there is no \"scheduled\" status because the date says it.",

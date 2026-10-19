@@ -37,6 +37,20 @@ export class RewardsController {
     return { items: programs.map(toProgramSummary) };
   }
 
+  @Get('dashboard')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'What every program has actually done',
+    description:
+      'Awards granted, held and reversed, customers rewarded, and net value per wallet. Value ' +
+      'is NET of reversals and is never summed across currencies. Refusals are included: a ' +
+      'program granting 12 and refusing 400 is working as configured, and that is worth seeing.',
+  })
+  async dashboard(@CurrentScopedActor() actor: ScopedActorContext) {
+    const items = await this.rewards.programDashboard(actor.enterpriseId);
+    return { items };
+  }
+
   @Post('programs')
   @RequirePermission(Permission.RewardsManage)
   @ApiOperation({

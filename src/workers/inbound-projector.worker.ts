@@ -11,9 +11,11 @@ import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
 import type {
+  ProjectedReversalFacts,
   ProjectedTriggerFacts,
   ProjectionOutcome,
 } from '@/modules/inbox/comment-projector.service';
+import { RewardGrantService } from '@/modules/rewards/reward-grant.service';
 import { RuleEvaluatorService } from '@/modules/rewards/rule-evaluator.service';
 import { ConversationKind, RewardTriggerKind } from '@/shared/enums';
 
@@ -81,6 +83,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
     private readonly rewards: RuleEvaluatorService,
+    private readonly rewardGrants: RewardGrantService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(InboundProjectorWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -179,6 +182,7 @@ export class InboundProjectorWorker extends BasePoller {
         if (outcome.projected) {
           await this.inbound.markProcessed(event.id, this.leaseOwner);
           await this.offerToRewards(outcome.trigger);
+          await this.reverseRewards(outcome.reversal);
         } else {
           // Not an error: the event was understood and deliberately not
           // projected — an echo of our own send, a like rather than a comment,
@@ -260,6 +264,36 @@ export class InboundProjectorWorker extends BasePoller {
       this.logger.warn(
         { err: error, sourceRefId: trigger.sourceRefId },
         'reward evaluation failed for a projected event',
+      );
+    }
+  }
+  /**
+   * The content behind an award was removed or hidden. Take the award back.
+   *
+   * Only rules that asked for it react — reversalPolicy is per rule, because
+   * whether a deleted comment should cost the customer their points is a
+   * business decision rather than a platform fact.
+   *
+   * Same placement and same reasoning as offerToRewards: after the event is
+   * processed, and never able to fail it. A reversal that does not happen is
+   * recoverable from the award row; a projection that does not happen is a
+   * customer's message missing from the inbox.
+   */
+  private async reverseRewards(reversal: ProjectedReversalFacts | undefined): Promise<void> {
+    if (!reversal) return;
+
+    try {
+      const reversed = await this.rewardGrants.reverseForDeletedContent(reversal);
+      if (reversed > 0) {
+        this.logger.info(
+          { sourceRefId: reversal.sourceRefId, reversed, reason: reversal.reasonCode },
+          'reward awards reversed for removed content',
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, sourceRefId: reversal.sourceRefId },
+        'reward reversal failed for removed content',
       );
     }
   }

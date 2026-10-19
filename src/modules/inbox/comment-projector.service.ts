@@ -40,6 +40,19 @@ export interface ProjectionOutcome {
    * nothing was projected.
    */
   readonly trigger?: ProjectedTriggerFacts;
+  /**
+   * The content behind an award has gone. Carried out for the same reason the
+   * trigger is: reversing is a reaction, not part of the projection.
+   */
+  readonly reversal?: ProjectedReversalFacts;
+}
+
+/** Content that was removed or hidden, and the award it may have earned. */
+export interface ProjectedReversalFacts {
+  readonly enterpriseId: number;
+  readonly sourceRefKind: 'message' | 'post';
+  readonly sourceRefId: number;
+  readonly reasonCode: 'content_removed' | 'content_hidden';
 }
 
 /** The facts a downstream reaction needs, with no inbox types attached. */
@@ -252,7 +265,35 @@ export class CommentProjectorService {
 
     // No text: an edit's new body is the customer's words.
     this.logger.debug({ enterpriseId, action: moderation.action }, 'comment moderation applied');
-    return { projected: true };
+
+    /*
+     * An EDIT is not a reversal — editing is not new engagement and it is not
+     * the content disappearing either. An UNHIDE is deliberately not one
+     * either: reversal is terminal, because re-granting would need a cap slot
+     * the customer has already consumed and hide/unhide cycling would be a
+     * farming loop. Restoring value is a manual adjustment with a named actor.
+     */
+    const reasonCode =
+      moderation.action === 'removed'
+        ? ('content_removed' as const)
+        : moderation.action === 'hidden'
+          ? ('content_hidden' as const)
+          : null;
+
+    if (!reasonCode) return { projected: true };
+
+    const messageId = await this.messages.findIdByPlatformId(enterpriseId, moderation.commentId);
+    if (messageId === null) return { projected: true };
+
+    return {
+      projected: true,
+      reversal: {
+        enterpriseId,
+        sourceRefKind: 'message',
+        sourceRefId: messageId,
+        reasonCode,
+      },
+    };
   }
 
   /**

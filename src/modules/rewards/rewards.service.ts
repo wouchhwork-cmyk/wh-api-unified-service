@@ -19,6 +19,7 @@ import {
   AuditEntityType,
   CONSTANT_ONE_FACTOR_PROVIDER,
   RewardAwardMode,
+  RewardAwardStatus,
   RewardEntryKind,
   type RewardProgramStatus,
   RewardWalletKind,
@@ -92,6 +93,52 @@ export class RewardsService {
       changes: { status },
     });
     return program;
+  }
+
+  /**
+   * The dashboard: what every program has actually done.
+   *
+   * Entitlements are counted separately from ledger value because they are not
+   * value — an issued right is a promise, not a balance, and folding it into a
+   * money figure would overstate what a program has spent.
+   */
+  async programDashboard(enterpriseId: number) {
+    const programs = await this.programs.list(enterpriseId, DEFAULT_PAGE);
+
+    return Promise.all(
+      programs.map(async (program) => {
+        const [activity, value] = await Promise.all([
+          this.awards.programActivity(enterpriseId, program.id),
+          this.awards.programValue(enterpriseId, program.id),
+        ]);
+
+        const granted = activity.find((row) => row.status === RewardAwardStatus.Granted);
+        const held = activity.find((row) => row.status === RewardAwardStatus.Held);
+        const reversed = activity.find((row) => row.status === RewardAwardStatus.Reversed);
+
+        return {
+          refId: program.refId,
+          name: program.name,
+          status: program.status,
+          budgetMinor: program.budgetMinor,
+          budgetCurrencyCode: program.budgetCurrencyCode,
+          spentMinor: program.spentMinor,
+          awardsGranted: granted?.awards ?? 0,
+          awardsHeld: held?.awards ?? 0,
+          awardsReversed: reversed?.awards ?? 0,
+          /** Rewarded at least once. Counted on granted awards only. */
+          customersRewarded: granted?.customers ?? 0,
+          /*
+           * Every status, including the refusals. A program granting 12 and
+           * refusing 400 is working as configured, and that is a thing the
+           * business needs to see rather than a thing to hide.
+           */
+          byStatus: activity,
+          /** Net of reversals, never summed across currencies. */
+          value,
+        };
+      }),
+    );
   }
 
   /* ------------------------------------------------------------------ */

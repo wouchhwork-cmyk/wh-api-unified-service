@@ -322,6 +322,22 @@ export async function applyRewardObjects(run: SqlRunner): Promise<void> {
       WHERE is_deleted = false
   `);
 
+  // The programme dashboard: awards grouped by status, per program.
+  await run(`
+    CREATE INDEX reward_awards_program_idx
+      ON reward_awards (enterprise_id, program_id, status)
+      WHERE is_deleted = false
+  `);
+
+  // The same dashboard's value side, which joins the ledger back to the award
+  // that caused the entry. Without it that is a sequential scan of the largest
+  // table in the feature.
+  await run(`
+    CREATE INDEX reward_ledger_award_idx
+      ON reward_ledger_entries (enterprise_id, award_id)
+      WHERE award_id IS NOT NULL
+  `);
+
   // Reversal lookup: find the award for a deleted comment.
   await run(`
     CREATE INDEX reward_awards_source_lookup_idx
