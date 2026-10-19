@@ -31,6 +31,28 @@ import type { CanonicalComment, CommentModeration } from './comment-normalizer';
 export interface ProjectionOutcome {
   readonly projected: boolean;
   readonly reason?: string;
+  /**
+   * What was projected, for anything that reacts to it.
+   *
+   * Carried OUT of the projection rather than acted on inside it: the reward
+   * engine opens its own transaction per rule, and a reward failing must never
+   * roll back the customer's message appearing in the inbox. Absent when
+   * nothing was projected.
+   */
+  readonly trigger?: ProjectedTriggerFacts;
+}
+
+/** The facts a downstream reaction needs, with no inbox types attached. */
+export interface ProjectedTriggerFacts {
+  readonly enterpriseId: number;
+  readonly customerId: number;
+  readonly channelId: number | null;
+  readonly sourceRefKind: 'message' | 'post';
+  readonly sourceRefId: number;
+  /** WHEN THEY ACTED, from the platform — not when we projected it. */
+  readonly occurredAtUtc: Date;
+  readonly content: string | null;
+  readonly conversationKind: ConversationKind;
 }
 
 /**
@@ -517,7 +539,19 @@ export class CommentProjectorService {
         'comment projected',
       );
 
-      return { projected: true };
+      return {
+        projected: true,
+        trigger: {
+          enterpriseId,
+          customerId: customer.customerId,
+          channelId,
+          sourceRefKind: 'message',
+          sourceRefId: inserted.id,
+          occurredAtUtc: occurredAt,
+          content: comment.text ?? null,
+          conversationKind,
+        },
+      };
     });
   }
 }

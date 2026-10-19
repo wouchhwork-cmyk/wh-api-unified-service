@@ -10,6 +10,28 @@ import { MAX_PROJECTION_ATTEMPTS } from '@/shared/constants';
 import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
+import type {
+  ProjectedTriggerFacts,
+  ProjectionOutcome,
+} from '@/modules/inbox/comment-projector.service';
+import { RuleEvaluatorService } from '@/modules/rewards/rule-evaluator.service';
+import { ConversationKind, RewardTriggerKind } from '@/shared/enums';
+
+/**
+ * Which reward trigger a projected conversation represents.
+ *
+ * A comment on OUR post and a comment on somebody else's that tags us are
+ * different things to an enterprise writing a rule — one is engagement on
+ * their own content, the other is reach into somebody else's audience — so
+ * they are separate triggers rather than one with a flag.
+ *
+ * A kind absent from this map simply does not drive rewards.
+ */
+const TRIGGER_FOR_CONVERSATION: Partial<Record<ConversationKind, RewardTriggerKind>> = {
+  [ConversationKind.CommentThread]: RewardTriggerKind.CommentOnOwnPost,
+  [ConversationKind.Mention]: RewardTriggerKind.CommentOnMentionedPost,
+  [ConversationKind.DirectMessage]: RewardTriggerKind.DirectMessageInbound,
+};
 
 /**
  * Projects ledger rows into the domain.
@@ -44,10 +66,7 @@ interface ProjectionContext {
   readonly attemptCount: number;
 }
 
-type Projector = (
-  context: ProjectionContext,
-  payload: unknown,
-) => Promise<{ projected: boolean; reason?: string }>;
+type Projector = (context: ProjectionContext, payload: unknown) => Promise<ProjectionOutcome>;
 
 @Injectable()
 export class InboundProjectorWorker extends BasePoller {
@@ -61,6 +80,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly comments: CommentProjectorService,
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
+    private readonly rewards: RuleEvaluatorService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(InboundProjectorWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -158,6 +178,7 @@ export class InboundProjectorWorker extends BasePoller {
 
         if (outcome.projected) {
           await this.inbound.markProcessed(event.id, this.leaseOwner);
+          await this.offerToRewards(outcome.trigger);
         } else {
           // Not an error: the event was understood and deliberately not
           // projected — an echo of our own send, a like rather than a comment,
@@ -195,5 +216,51 @@ export class InboundProjectorWorker extends BasePoller {
     }
 
     return claimed.length;
+  }
+  /**
+   * Offers a projected event to the reward engine.
+   *
+   * AFTER the projection is marked processed, and deliberately so. The reward
+   * engine opens its own transaction per rule, and a rule misbehaving must
+   * never hold up — or roll back — the customer's message appearing in the
+   * inbox. The inbox is the product; rewards are a reaction to it.
+   *
+   * The cost of that choice is honest: a crash between marking processed and
+   * this call loses the reward for that event. The alternative is worse —
+   * coupling a customer's message to a reward rule's correctness — and the
+   * ledger's exactly-once index means a replay of the whole event is safe if
+   * recovery is ever wanted.
+   */
+  private async offerToRewards(trigger: ProjectedTriggerFacts | undefined): Promise<void> {
+    if (!trigger) return;
+
+    const triggerKind = TRIGGER_FOR_CONVERSATION[trigger.conversationKind];
+    if (!triggerKind) return;
+
+    try {
+      await this.rewards.onTriggerEvent({
+        enterpriseId: trigger.enterpriseId,
+        customerId: trigger.customerId,
+        triggerKind,
+        sourceRefKind: trigger.sourceRefKind,
+        sourceRefId: trigger.sourceRefId,
+        channelId: trigger.channelId,
+        occurredAtUtc: trigger.occurredAtUtc,
+        content: trigger.content,
+        /*
+         * Not fetched. The tenure condition needs it, and loading a customer
+         * row for every projected event to serve a condition most rules do not
+         * use is the wrong trade — the condition fails closed without it,
+         * which is the safe direction.
+         */
+        customerFirstSeenAt: null,
+      });
+    } catch (error) {
+      // Never fails the projection. The event is already processed.
+      this.logger.warn(
+        { err: error, sourceRefId: trigger.sourceRefId },
+        'reward evaluation failed for a projected event',
+      );
+    }
   }
 }

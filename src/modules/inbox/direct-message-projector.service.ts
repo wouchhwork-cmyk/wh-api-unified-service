@@ -513,7 +513,19 @@ export class DirectMessageProjectorService {
         { enterpriseId, conversationId: conversation.id, newCustomer: customer.created },
         'direct message projected',
       );
-      return { projected: true };
+      return {
+        projected: true,
+        trigger: {
+          enterpriseId,
+          customerId: customer.customerId,
+          channelId,
+          sourceRefKind: 'message',
+          sourceRefId: inserted.id,
+          occurredAtUtc: occurredAt,
+          content: message.text ?? null,
+          conversationKind: ConversationKind.DirectMessage,
+        },
+      };
     });
   }
 
