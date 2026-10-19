@@ -423,7 +423,7 @@ UNIQUE (enterprise_id, lower(name)) WHERE is_deleted = false
 | version | INTEGER | **never edited in place** — awards point at a version |
 | supersedes_rule_id | BIGINT | |
 | trigger_kind | VARCHAR(40) | `RewardTriggerKind` |
-| config | JSONB | channel ids, keyword, `ref`, postback `payload` |
+| trigger_config | JSONB | **strict**, two keys — §8.2.1 |
 | factor_provider_code | VARCHAR(40) | DEFAULT `'constant_one'`. One factor per award |
 | cap_scope | VARCHAR(10) | `CapScope` |
 | cap_count | INTEGER | DEFAULT 1 |
@@ -435,6 +435,28 @@ UNIQUE (enterprise_id, lower(name)) WHERE is_deleted = false
 UNIQUE (enterprise_id, program_id, id, version)
 INDEX  (enterprise_id, trigger_kind, priority, id) WHERE is_active AND NOT is_deleted
 ```
+
+#### 8.2.1 What a trigger config may say
+
+Two keys. Not an open bag.
+
+```ts
+RewardTriggerConfigSchema = z.strictObject({
+  channelIds:       z.array(positiveInt).min(1).max(50).optional(),  // absent = every channel
+  minPointsBalance: positiveInt.optional(),                          // balance trigger ONLY
+})
+```
+
+Strict, and refused in both directions: `minPointsBalance` is **required** on
+`points_balance_reached` and **rejected** on every other trigger. An open record
+let a business save `{"postbackPayload":"WELCOME"}`, see it stored, see it read
+back, and never learn the engine ignored it.
+
+| | |
+| --- | --- |
+| absent `channelIds` | every channel the business owns |
+| event with **no channel** vs a channel list | **no match** — "no channel" is not "any channel" |
+| threshold rule, balance unknown | **no match** — fails closed, so only the producer can fire it |
 
 ### 8.3 `reward_rule_benefits` — what a rule awards
 
@@ -803,8 +825,11 @@ temptation is to do both in one place.
 
 ### 9.3 Evaluation
 
-Gates 1–3 are SQL — they narrow which rules are worth loading. Gate 4 runs in
-the condition registry, in TypeScript, against the loaded rule.
+Gates 1–3 are SQL — they narrow which rules are worth loading. Gate 3 has a
+**second half** in TypeScript (the trigger *config*, §8.2.1: SQL matched the
+kind, this matches what the business narrowed it to), judged before the
+transaction opens. Gate 4 runs in the condition registry against the loaded
+rule.
 
 ```sql
 -- gates 1-3: which rules could possibly apply to this event
@@ -822,6 +847,9 @@ SELECT r.*
 ```
 
 ```ts
+// gate 3b: the rule's own narrowing — pure, no database
+if (!matchesTriggerConfig(parse(rule.triggerConfig), event)) continue;
+
 // gate 4: flat AND over the rule's conditions
 for (const condition of rule.conditions) {          // ordered, cheap ones first
   const handler = CONDITION_HANDLERS[condition.kind];   // Record<Kind, Handler> — total
@@ -1428,7 +1456,24 @@ Bitemporal. The window and the cap were judged against `occurred_at` (§9.1).
 
 ### 16.8 Balance hits 70 → the conversion rule fires
 
-Rule 75, trigger `points_balance_reached`. `floor(70 / 30) = 2`.
+Rule 75, trigger `points_balance_reached`, `trigger_config = {"minPointsBalance": 30}`.
+`floor(70 / 30) = 2`.
+
+**What raises it.** Every credit that moves a points balance — Priya's comment
+above — offers the new balance back to the threshold rules, *after* its
+transaction commits. The source ref is the **award that credited**, so the
+exactly-once index deduplicates for free: one threshold award per crediting
+award per rule, however many times the job is retried, while her next crossing
+arrives under its own award and is judged afresh.
+
+Three properties this buys, none of them free if the offer were made inside the
+grant's transaction:
+
+| | |
+| --- | --- |
+| after the commit | nesting *joins* the ambient transaction with no savepoint — a threshold rule that threw would poison the grant that earned the points |
+| held awards too | a 24h hold credits hours later; the deferred granter makes the same offer |
+| never recursive | a threshold rule cannot fire another. Nothing grants points from a crossing today, but the day somebody writes that rule it is an unbounded loop spending a real budget |
 
 ```
 reward_ledger_entries                     group_ref pairs the legs
@@ -1616,7 +1661,7 @@ Median across seven real OSS commits: 7 files, 1 of them logic.
 | `reward_rule_benefits` + `reward_award_benefits`, 1:N | **built** |
 | Typed handler registry + compensator pairing | **built** |
 | Three validation layers (write / read / CI drift) | **built** |
-| 11 of 13 triggers | **built** (`post_caption_mention` inert until E8) |
+| 12 of 14 triggers | **built** (`post_caption_mention` inert until E8) |
 | `post_like` / `post_share` | **blocked** — verify `todo.md` B4, then backlog §8.2 |
 | Frequency caps, program budget | **built** |
 | Points wallet + ledger | **built** |

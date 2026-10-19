@@ -3,7 +3,7 @@ import { RewardAwardRepository } from '@/database/repositories/reward-award.repo
 import { RewardProgramRepository } from '@/database/repositories/reward-program.repository';
 import { RewardRuleRepository } from '@/database/repositories/reward-rule.repository';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
-import { RewardAwardStatus, RewardReversalPolicy } from '@/shared/enums';
+import { RewardAwardStatus, RewardReversalPolicy, RewardTriggerKind } from '@/shared/enums';
 import { BenefitDispatcher } from './benefit-dispatcher.service';
 import { RuleEvaluatorService } from './rule-evaluator.service';
 
@@ -17,6 +17,23 @@ const GRANT_BATCH_SIZE = 100;
  * take the award back, and it is the settling time for the factor, because
  * engagement counts are near zero when a comment first arrives.
  */
+/**
+ * What one held award's transaction decided.
+ *
+ * A shape rather than a boolean because the caller needs three facts and only
+ * one of them is "did it grant": whether points moved, and under which trigger,
+ * decide whether a threshold offer follows and whether it would recurse.
+ */
+type GrantOutcome =
+  | { readonly granted: false }
+  | {
+      readonly granted: true;
+      readonly creditedPoints: boolean;
+      readonly triggerKind: RewardTriggerKind;
+    };
+
+const NOT_GRANTED: GrantOutcome = { granted: false };
+
 @Injectable()
 export class RewardGrantService {
   private readonly logger = new Logger(RewardGrantService.name);
@@ -44,19 +61,20 @@ export class RewardGrantService {
 
     for (const award of due) {
       const { enterpriseId } = award;
+      let credited: RewardTriggerKind | null = null;
       try {
-        const didGrant = await this.tx.runInTransaction(async () => {
+        const outcome = await this.tx.runInTransaction(async (): Promise<GrantOutcome> => {
           /*
            * Another instance may already be granting this one. The sweep listed
            * it a moment ago and nothing stopped a second worker listing it too.
            */
           const mine = await this.awards.lockHeldAward(enterpriseId, award.id);
-          if (!mine) return false;
+          if (!mine) return NOT_GRANTED;
 
           const rule = await this.rules.findById(enterpriseId, award.ruleId);
-          if (!rule) return false;
+          if (!rule) return NOT_GRANTED;
           const program = await this.programs.findById(enterpriseId, rule.programId);
-          if (!program) return false;
+          if (!program) return NOT_GRANTED;
 
           const benefits = await this.rules.loadBenefits(
             enterpriseId,
@@ -64,7 +82,7 @@ export class RewardGrantService {
             award.ruleVersion,
           );
 
-          await this.evaluator.grant({
+          const creditedPoints = await this.evaluator.grant({
             enterpriseId,
             awardId: award.id,
             customerId: award.customerId,
@@ -76,11 +94,39 @@ export class RewardGrantService {
             benefits,
             budgetCost: benefits.reduce((sum, b) => sum + b.budgetCostMinor, 0),
           });
-          return true;
+          return { granted: true, creditedPoints, triggerKind: rule.triggerKind };
         });
-        if (didGrant) granted += 1;
+
+        if (!outcome.granted) continue;
+        granted += 1;
+        if (outcome.creditedPoints) credited = outcome.triggerKind;
       } catch (error) {
         this.logger.error(`granting held award ${award.id} failed: ${(error as Error).message}`);
+        continue;
+      }
+
+      /*
+       * The same offer the immediate path makes, for the same reason and in the
+       * same place: AFTER the commit. A held award credits points hours later,
+       * and a threshold rule that could only see immediate grants would be half
+       * a feature.
+       *
+       * Its own try, so a failed offer is not logged as a failed grant — the
+       * grant is committed and counted by this point.
+       */
+      if (credited === null) continue;
+      try {
+        await this.evaluator.offerBalanceThresholds({
+          enterpriseId,
+          customerId: award.customerId,
+          occurredAtUtc: award.occurredAtUtc,
+          awardId: award.id,
+          grantingTriggerKind: credited,
+        });
+      } catch (error) {
+        this.logger.error(
+          `threshold offer after held award ${award.id} failed: ${(error as Error).message}`,
+        );
       }
     }
 

@@ -231,12 +231,30 @@ const BenefitInputSchema = z.intersection(
   }),
 );
 
+/**
+ * What a trigger matches on, beyond its kind.
+ *
+ * STRICT, and deliberately small. The previous shape was an open record
+ * documented as "matched" and matched by NOTHING: a business could save
+ * `{"postbackPayload":"WELCOME"}`, see it stored, see it read back, and never
+ * learn that the engine ignored it. Two keys are honoured, so two keys are
+ * accepted — anything else is a 400 rather than a rule that quietly fires on
+ * everything.
+ */
+export const RewardTriggerConfigSchema = z.strictObject({
+  /** Only these channels. ABSENT MEANS EVERY CHANNEL the business owns. */
+  channelIds: z.array(z.number().int().positive()).min(1).max(50).optional(),
+  /** `points_balance_reached` only, and required there — see the refinements. */
+  minPointsBalance: z.number().int().positive().max(10_000_000).optional(),
+});
+export type RewardTriggerConfig = z.infer<typeof RewardTriggerConfigSchema>;
+
 export const CreateRewardRuleSchema = z
   .strictObject({
     programRefId: z.uuid(),
     triggerKind: z.enum(RewardTriggerKind),
-    /** Channel ids, a postback payload, a referral `ref`. Matched, never summed. */
-    triggerConfig: z.record(z.string().max(60), z.unknown()).default({}),
+    /** Narrows the trigger. Matched, never summed. */
+    triggerConfig: RewardTriggerConfigSchema.default({}),
     capScope: z.enum(RewardCapScope).default(RewardCapScope.None),
     capCount: z.number().int().positive().max(1000).default(1),
     /** Doubles as the reversal window and the factor's settling time. */
@@ -256,7 +274,34 @@ export const CreateRewardRuleSchema = z
   .refine((v) => v.capScope !== RewardCapScope.None || v.capCount === 1, {
     message: 'capCount only means something with a capScope',
     path: ['capCount'],
-  });
+  })
+  /*
+   * BOTH DIRECTIONS, and both are real mistakes. A threshold trigger with no
+   * threshold would fire at any balance above zero and drain the budget; a
+   * threshold on any other trigger reads as a condition the engine will never
+   * apply.
+   */
+  .refine(
+    (v) =>
+      (v.triggerKind === RewardTriggerKind.PointsBalanceReached) ===
+      (v.triggerConfig.minPointsBalance !== undefined),
+    {
+      message:
+        'minPointsBalance is required for points_balance_reached and means nothing on any other trigger',
+      path: ['triggerConfig', 'minPointsBalance'],
+    },
+  )
+  /* A balance crossing happens in no channel, so scoping one to a channel
+   * would silently match nothing. */
+  .refine(
+    (v) =>
+      v.triggerKind !== RewardTriggerKind.PointsBalanceReached ||
+      v.triggerConfig.channelIds === undefined,
+    {
+      message: 'points_balance_reached is not a channel event and cannot be scoped to channels',
+      path: ['triggerConfig', 'channelIds'],
+    },
+  );
 
 export const UpdateRewardRuleSchema = CreateRewardRuleSchema;
 

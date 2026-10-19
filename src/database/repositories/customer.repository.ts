@@ -81,6 +81,23 @@ export class CustomerRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * When we first saw this customer, by internal id.
+   *
+   * Fetched LAZILY by the reward evaluator — only when a rule actually carries
+   * a tenure condition. Loading it on every projected event to serve a
+   * condition most rules do not use would be a query per message for nothing.
+   */
+  async findFirstSeenAt(enterpriseId: number, customerId: number): Promise<Date | null> {
+    const rows = await this.query<{ firstSeenAt: Date | null }>(
+      `SELECT first_seen_at AS "firstSeenAt"
+         FROM customers
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [enterpriseId, customerId],
+    );
+    return rows[0]?.firstSeenAt ?? null;
+  }
+
   async findByIdentifier(input: ResolveIdentifierInput): Promise<CustomerResolution | null> {
     const rows = await this.query<{ customer_id: number; id: number }>(
       `SELECT customer_id, id

@@ -258,6 +258,9 @@ export class InboundProjectorWorker extends BasePoller {
          * which is the safe direction.
          */
         customerFirstSeenAt: null,
+        /* An inbound message knows nothing about a balance; only a credit
+         * does, and that is what produces the threshold event. */
+        pointsBalance: null,
       });
     } catch (error) {
       // Never fails the projection. The event is already processed.

@@ -223,7 +223,26 @@ export class RewardWalletRepository extends BaseRepository {
     return found;
   }
 
-  /** A customer's balances. Several at once is the normal case, never netted. */
+  /** One wallet, without creating it. Returns null when they have none. */
+  async findCustomerWallet(
+    enterpriseId: number,
+    customerId: number,
+    walletKind: RewardWalletKind,
+    currencyCode: string | null,
+  ): Promise<RewardWalletRow | null> {
+    const rows = await this.query<RewardWalletRow>(
+      `SELECT id, ref_id AS "refId", wallet_kind AS "walletKind",
+              currency_code AS "currencyCode", balance,
+              pending_balance AS "pendingBalance", lifetime_earned AS "lifetimeEarned"
+         FROM reward_wallets
+        WHERE enterprise_id = $1 AND customer_id = $2 AND wallet_kind = $3
+          AND currency_code IS NOT DISTINCT FROM $4
+          AND account_kind = 'customer' AND is_deleted = false`,
+      [enterpriseId, customerId, walletKind, currencyCode],
+    );
+    return rows[0] ?? null;
+  }
+
   /**
    * A customer's balances.
    *
