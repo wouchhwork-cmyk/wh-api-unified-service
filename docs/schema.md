@@ -556,7 +556,7 @@ Catalogue of product features. Seeded by us.
 CREATE UNIQUE INDEX features_key_uniq ON features (key) WHERE is_deleted = false;
 ```
 
-**V1 features:** `unified_inbox` (DMs), `comment_management` (comments and replies), `post_insights` (posts and their metrics), `customer_directory` (the people who interacted).
+**V1 features:** `unified_inbox` (DMs), `comment_management` (comments and replies), `post_insights` (posts and their metrics), `customer_directory` (the people who interacted), `reward_programs` (points, value and benefits — gated because a wallet balance is a liability the business carries, so it is sold rather than self-served).
 
 ## 10. `enterprise_features`
 

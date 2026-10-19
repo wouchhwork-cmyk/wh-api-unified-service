@@ -1589,7 +1589,17 @@ Two records, two jobs. The audit row answers *"who touched this account?"*; the
 ledger entry answers *"why is the balance what it is?"* and must stand alone
 when Finance reads the ledger without the audit table beside it.
 
-Needs an RBAC permission of its own — §21 Q3.
+**Both gates, and they are not the same gate.**
+
+| | |
+| --- | --- |
+| gate 1 — commercial | `reward_programs` in `features`. A platform admin switches it on per business. A wallet balance is a liability the business carries, so rewards is sold, never self-served |
+| gate 2 — role | `rewards.view`, `rewards.manage`, `rewards.adjust`. Adjust is separate because rewriting a rule changes what everyone earns next, while an adjustment moves one named customer's money now |
+
+Rewards shipped with gate 2 only — the permissions pointed at no feature, so any
+owner could reach it and the admin console had nothing to switch. Granting the
+feature is what opens the endpoints; revoking closes them and leaves the ledger,
+because the rows are a liability rather than a licence.
 
 ---
 
@@ -1726,7 +1736,7 @@ typed columns; flat AND conditions over a boolean tree; typed registry over
 | - | -------- |
 | 1 | **What should the factor engine measure?** Inputs, weighting, per-trigger or global. Backlog §8.1. A reach-based answer needs a Meta permission conversation first — `#10` blocks it today |
 | 2 | **`budget_cost_minor` for points/items** — what does the enterprise consider a 20-point award to cost? Without it the budget guards only currency |
-| 3 | **Who may `adjust` a balance**, under which permission. The entry type exists; the RBAC entry does not |
+| 3 | ~~**Who may `adjust` a balance**, under which permission**~~ — answered: `rewards.adjust`, behind the `reward_programs` feature (§17) |
 | 4 | **Retention.** Ledger entries are financial records and should outlive the 30-day transport window. Awards and counters probably follow the customer |
 | 5 | **Does the customer ever see their own balance?** Nothing here surfaces it to them — it is an enterprise-facing view. A customer-facing one is a separate authenticated surface |
 | 6 | **Does `award_mode` earn its place?** Two values, and the columns already say which: `award_cap` set ⟹ variable. Dropping it removes a redundant column and an invalid combination |
