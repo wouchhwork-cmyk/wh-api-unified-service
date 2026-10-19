@@ -121,6 +121,32 @@ export class RewardGrantService {
 
       try {
         await this.tx.runInTransaction(async () => {
+          /*
+           * THE BUDGET COMES BACK FOR A HELD AWARD TOO.
+           *
+           * It is claimed at EVENT time, before the hold, so an award that was
+           * never granted has still committed budget. Releasing only on
+           * `granted` leaked it permanently — a business whose customers post
+           * and then delete would watch its budget drain to awards nobody
+           * ever received.
+           */
+          const benefits = await this.rules.loadBenefits(
+            input.enterpriseId,
+            award.ruleId,
+            award.ruleVersion,
+          );
+          await this.awards.releaseBudget({
+            enterpriseId: input.enterpriseId,
+            programId: rule.programId,
+            costMinor: benefits.reduce((sum, b) => sum + b.budgetCostMinor, 0),
+          });
+
+          /*
+           * Only a GRANTED award has anything to compensate. A held one wrote
+           * no ledger entry and issued no entitlement, so there is nothing to
+           * reverse — and asking the dispatcher to reverse nothing would log a
+           * warning for every deleted comment that never earned.
+           */
           if (award.status === RewardAwardStatus.Granted) {
             await this.dispatcher.compensateAward({
               enterpriseId: input.enterpriseId,
@@ -129,17 +155,6 @@ export class RewardGrantService {
               ruleId: award.ruleId,
               ruleVersion: award.ruleVersion,
               occurredAtUtc: award.occurredAtUtc,
-            });
-
-            const benefits = await this.rules.loadBenefits(
-              input.enterpriseId,
-              award.ruleId,
-              award.ruleVersion,
-            );
-            await this.awards.releaseBudget({
-              enterpriseId: input.enterpriseId,
-              programId: rule.programId,
-              costMinor: benefits.reduce((sum, b) => sum + b.budgetCostMinor, 0),
             });
           }
 
