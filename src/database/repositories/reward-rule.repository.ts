@@ -1,0 +1,266 @@
+import { Injectable } from '@nestjs/common';
+import {
+  RewardAwardMode,
+  RewardBenefitKind,
+  RewardCapScope,
+  RewardConditionKind,
+  RewardReversalPolicy,
+  RewardTriggerKind,
+} from '@/shared/enums';
+import { BaseRepository } from './base.repository';
+
+export interface RewardRuleBenefitRow {
+  readonly benefitIndex: number;
+  readonly benefitKind: RewardBenefitKind;
+  readonly benefitSchemaVersion: number;
+  readonly awardMode: RewardAwardMode;
+  readonly awardCap: number | null;
+  readonly budgetCostMinor: number;
+  readonly config: Record<string, unknown>;
+}
+
+export interface RewardRuleConditionRow {
+  readonly conditionIndex: number;
+  readonly conditionKind: RewardConditionKind;
+  readonly conditionSchemaVersion: number;
+  readonly config: Record<string, unknown>;
+}
+
+export interface RewardRuleRow {
+  readonly id: number;
+  readonly refId: string;
+  readonly enterpriseId: number;
+  readonly programId: number;
+  readonly version: number;
+  readonly triggerKind: RewardTriggerKind;
+  readonly triggerConfig: Record<string, unknown>;
+  readonly factorProviderCode: string;
+  readonly capScope: RewardCapScope;
+  readonly capCount: number;
+  readonly holdHours: number;
+  readonly reversalPolicy: RewardReversalPolicy;
+  readonly priority: number;
+  readonly isActive: boolean;
+}
+
+/** A rule plus the two child sets it owns. One aggregate, one repository. */
+export interface LoadedRewardRule extends RewardRuleRow {
+  readonly benefits: RewardRuleBenefitRow[];
+  readonly conditions: RewardRuleConditionRow[];
+}
+
+const RULE_COLUMNS = `r.id, r.ref_id AS "refId", r.enterprise_id AS "enterpriseId",
+       r.program_id AS "programId", r.version, r.trigger_kind AS "triggerKind",
+       r.trigger_config AS "triggerConfig", r.factor_provider_code AS "factorProviderCode",
+       r.cap_scope AS "capScope", r.cap_count AS "capCount", r.hold_hours AS "holdHours",
+       r.reversal_policy AS "reversalPolicy", r.priority, r.is_active AS "isActive"`;
+
+@Injectable()
+export class RewardRuleRepository extends BaseRepository {
+  /**
+   * Which rules could possibly apply to this event.
+   *
+   * Gates 1 to 3 only — the program switch, the campaign dates, and the rule's
+   * own active flag. Conditions are gate 4 and run in TypeScript against the
+   * loaded rule, because a condition is a pure function over an already-loaded
+   * event and does not belong in a claim query.
+   *
+   * THE DATES ARE JUDGED AGAINST `occurredAt`, never now(). A webhook four
+   * minutes late, a backfill replayed the next morning, a queue that backed up:
+   * all of them would push a legitimate action outside the campaign if we
+   * judged by arrival. They commented at 20:58 on Tuesday; that is the fact.
+   */
+  async findMatchingRules(input: {
+    enterpriseId: number;
+    triggerKind: RewardTriggerKind;
+    occurredAt: Date;
+  }): Promise<RewardRuleRow[]> {
+    return this.query<RewardRuleRow>(
+      `SELECT ${RULE_COLUMNS}
+         FROM reward_rules r
+         JOIN reward_programs p
+           ON p.id = r.program_id AND p.enterprise_id = r.enterprise_id
+        WHERE r.enterprise_id = $1
+          AND r.trigger_kind = $2
+          AND r.is_active = true AND r.is_deleted = false
+          AND p.status = 'active' AND p.is_deleted = false
+          AND (p.starts_at IS NULL OR $3::timestamptz >= p.starts_at)
+          AND (p.ends_at IS NULL OR $3::timestamptz < p.ends_at)
+        ORDER BY r.priority, r.id`,
+      [input.enterpriseId, input.triggerKind, input.occurredAt],
+    );
+  }
+
+  async loadBenefits(
+    enterpriseId: number,
+    ruleId: number,
+    ruleVersion: number,
+  ): Promise<RewardRuleBenefitRow[]> {
+    return this.query<RewardRuleBenefitRow>(
+      `SELECT benefit_index AS "benefitIndex", benefit_kind AS "benefitKind",
+              benefit_schema_version AS "benefitSchemaVersion",
+              award_mode AS "awardMode", award_cap AS "awardCap",
+              budget_cost_minor AS "budgetCostMinor", config
+         FROM reward_rule_benefits
+        WHERE enterprise_id = $1 AND rule_id = $2 AND rule_version = $3
+          AND is_deleted = false
+        ORDER BY benefit_index`,
+      [enterpriseId, ruleId, ruleVersion],
+    );
+  }
+
+  async loadConditions(
+    enterpriseId: number,
+    ruleId: number,
+    ruleVersion: number,
+  ): Promise<RewardRuleConditionRow[]> {
+    return this.query<RewardRuleConditionRow>(
+      `SELECT condition_index AS "conditionIndex", condition_kind AS "conditionKind",
+              condition_schema_version AS "conditionSchemaVersion", config
+         FROM reward_rule_conditions
+        WHERE enterprise_id = $1 AND rule_id = $2 AND rule_version = $3
+          AND is_deleted = false
+        ORDER BY condition_index`,
+      [enterpriseId, ruleId, ruleVersion],
+    );
+  }
+
+  /**
+   * Writes a rule and its two child sets.
+   *
+   * Caller runs this inside a transaction: a rule whose benefits failed to
+   * insert would award nothing while appearing configured, which is worse than
+   * not existing.
+   */
+  async insertRule(input: {
+    enterpriseId: number;
+    programId: number;
+    version: number;
+    supersedesRuleId: number | null;
+    triggerKind: RewardTriggerKind;
+    triggerConfig: Record<string, unknown>;
+    factorProviderCode: string;
+    capScope: RewardCapScope;
+    capCount: number;
+    holdHours: number;
+    reversalPolicy: RewardReversalPolicy;
+    priority: number;
+  }): Promise<RewardRuleRow> {
+    const { rows } = await this.mutate<RewardRuleRow>(
+      `INSERT INTO reward_rules
+              (enterprise_id, program_id, version, supersedes_rule_id, trigger_kind,
+               trigger_config, factor_provider_code, cap_scope, cap_count,
+               hold_hours, reversal_policy, priority)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)
+       RETURNING id, ref_id AS "refId", enterprise_id AS "enterpriseId",
+                 program_id AS "programId", version, trigger_kind AS "triggerKind",
+                 trigger_config AS "triggerConfig",
+                 factor_provider_code AS "factorProviderCode",
+                 cap_scope AS "capScope", cap_count AS "capCount",
+                 hold_hours AS "holdHours", reversal_policy AS "reversalPolicy",
+                 priority, is_active AS "isActive"`,
+      [
+        input.enterpriseId,
+        input.programId,
+        input.version,
+        input.supersedesRuleId,
+        input.triggerKind,
+        JSON.stringify(input.triggerConfig),
+        input.factorProviderCode,
+        input.capScope,
+        input.capCount,
+        input.holdHours,
+        input.reversalPolicy,
+        input.priority,
+      ],
+    );
+    const row = rows[0];
+    if (!row) throw new Error('insertRule returned no row');
+    return row;
+  }
+
+  async insertBenefits(
+    enterpriseId: number,
+    ruleId: number,
+    ruleVersion: number,
+    benefits: readonly {
+      benefitKind: RewardBenefitKind;
+      awardMode: RewardAwardMode;
+      awardCap: number | null;
+      budgetCostMinor: number;
+      config: Record<string, unknown>;
+    }[],
+  ): Promise<void> {
+    for (const [index, benefit] of benefits.entries()) {
+      await this.mutate(
+        `INSERT INTO reward_rule_benefits
+                (enterprise_id, rule_id, rule_version, benefit_index, benefit_kind,
+                 award_mode, award_cap, budget_cost_minor, config)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+        [
+          enterpriseId,
+          ruleId,
+          ruleVersion,
+          index,
+          benefit.benefitKind,
+          benefit.awardMode,
+          benefit.awardCap,
+          benefit.budgetCostMinor,
+          JSON.stringify(benefit.config),
+        ],
+      );
+    }
+  }
+
+  async insertConditions(
+    enterpriseId: number,
+    ruleId: number,
+    ruleVersion: number,
+    conditions: readonly { conditionKind: RewardConditionKind; config: Record<string, unknown> }[],
+  ): Promise<void> {
+    for (const [index, condition] of conditions.entries()) {
+      await this.mutate(
+        `INSERT INTO reward_rule_conditions
+                (enterprise_id, rule_id, rule_version, condition_index,
+                 condition_kind, config)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          enterpriseId,
+          ruleId,
+          ruleVersion,
+          index,
+          condition.conditionKind,
+          JSON.stringify(condition.config),
+        ],
+      );
+    }
+  }
+
+  async findByRefId(enterpriseId: number, refId: string): Promise<RewardRuleRow | null> {
+    const rows = await this.query<RewardRuleRow>(
+      `SELECT ${RULE_COLUMNS} FROM reward_rules r
+        WHERE r.enterprise_id = $1 AND r.ref_id = $2 AND r.is_deleted = false`,
+      [enterpriseId, refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async listForProgram(enterpriseId: number, programId: number): Promise<RewardRuleRow[]> {
+    return this.query<RewardRuleRow>(
+      `SELECT ${RULE_COLUMNS} FROM reward_rules r
+        WHERE r.enterprise_id = $1 AND r.program_id = $2 AND r.is_deleted = false
+        ORDER BY r.priority, r.id`,
+      [enterpriseId, programId],
+    );
+  }
+
+  /** Switching a rule off. The versions stay; awards under them still resolve. */
+  async setActive(enterpriseId: number, refId: string, isActive: boolean): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE reward_rules SET is_active = $3
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false`,
+      [enterpriseId, refId, isActive],
+    );
+    return affected > 0;
+  }
+}
