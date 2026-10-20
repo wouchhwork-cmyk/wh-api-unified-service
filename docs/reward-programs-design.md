@@ -1671,8 +1671,9 @@ Median across seven real OSS commits: 7 files, 1 of them logic.
 | `reward_rule_benefits` + `reward_award_benefits`, 1:N | **built** |
 | Typed handler registry + compensator pairing | **built** |
 | Three validation layers (write / read / CI drift) | **built** |
-| 12 of 14 triggers | **built** (`post_caption_mention` inert until E8) |
+| **4 of 14 triggers** have a producer | `comment_on_own_post`, `comment_on_mentioned_post`, `direct_message_inbound`, `points_balance_reached`. **The other ten cannot fire** — see below |
 | `post_like` / `post_share` | **blocked** — verify `todo.md` B4, then backlog §8.2 |
+| `story_mention`, `story_reply`, `message_reaction`, `postback_tapped`, `opt_in_granted`, `referral_entry`, `post_tagging_us` | **NO PRODUCER.** Configurable in the portal, saved, listed, and silently inert. The projector derives the trigger from the CONVERSATION KIND (`TRIGGER_FOR_CONVERSATION`), which knows three kinds, so a story mention and a story reply both arrive as `direct_message_inbound` and the specific trigger never happens |
 | Frequency caps, program budget | **built** |
 | Points wallet + ledger | **built** |
 | Currency wallets, multi-currency | **built** |
