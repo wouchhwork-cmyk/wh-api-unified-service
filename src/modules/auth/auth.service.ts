@@ -14,6 +14,7 @@ import {
   ActorKind,
   AuditAction,
   AuditEntityType,
+  AuditStatus,
   DeliveryChannel,
   EmployeeKind,
   EmployeeStatus,
@@ -94,6 +95,24 @@ export class AuthService {
     // timing oracle this is meant to remove.
     if (!identity) {
       await this.hasher.verifyPassword(await this.decoyHash(), request.password);
+      /*
+       * A FAILURE AGAINST NO ACCOUNT, and it still earns a row: repeated
+       * attempts from one address against addresses that do not exist is what
+       * credential stuffing looks like, and the IP is on the row.
+       *
+       * `entityId` is null because there is genuinely no subject, and the
+       * credential that was tried is NOT recorded — writing it would put an
+       * address or a phone number, quite possibly a real person's, into the
+       * audit trail on the say-so of an unauthenticated caller.
+       */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: null,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'no_such_credential', credentialKind: credential.kind },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -123,6 +142,14 @@ export class AuthService {
        * running: counting further would only let a third party keep extending
        * somebody else's lockout.
        */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'locked' },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -132,6 +159,19 @@ export class AuthService {
         MAX_FAILED_LOGINS,
         LOGIN_LOCK_DURATION_MS,
       );
+      /*
+       * The reason is ours to keep, not the caller's to learn: the response
+       * stays the single generic error, while the row says which of the three
+       * failures this was. That asymmetry is the point of auditing it.
+       */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'bad_password' },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -313,6 +353,32 @@ export class AuthService {
     const staffRecord = await this.staff.findActiveByIdentity(identity.id);
 
     await this.identities.recordSuccessfulLogin(identity.id);
+
+    /*
+     * THE TRAIL HAD EXITS AND NO ENTRANCES. `logout` was recorded and `login`
+     * never was, so the audit log could show a session ending that it had no
+     * record of beginning — and a successful sign-in is the single event an
+     * incident review starts from.
+     *
+     * Recorded HERE because every successful login converges on this method,
+     * whether it needed a second factor or not. Recording it at the two call
+     * sites instead would miss one the first time a third appears.
+     *
+     * THE ACTOR IS `system` AND THE SUBJECT IS THE ENTITY. There is no JWT yet
+     * — the session is being created by this very call — so the guard chain has
+     * built no ActorContext. `entity_id` names the identity that signed in,
+     * which is the question this row answers. IP and user-agent come from the
+     * request context on their own.
+     *
+     * NO CREDENTIAL, EVER: not the address, not the number, not a masked form
+     * of either. The identity id is the whole of what is recorded.
+     */
+    await this.audit.record({
+      action: AuditAction.Login,
+      entityType: AuditEntityType.Identity,
+      entityId: identity.id,
+      enterpriseId: null,
+    });
 
     /*
      * ANY of our own people get a session with no enterprise — not only the

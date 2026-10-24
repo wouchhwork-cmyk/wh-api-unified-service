@@ -730,4 +730,85 @@ describe('a business defines its own roles', () => {
       expect(byName.get('agent')).toMatchObject({ editable: false, assignable: true });
     });
   });
+  /**
+   * A role REPLACE can take roles away, and the trail has to say so.
+   *
+   * This recorded `role_granted` unconditionally, with metadata listing only
+   * the NEW set — so stripping somebody of every role wrote `role_granted`
+   * with `roles: []` and left no trace of what they lost. An auditor reading
+   * that row draws the opposite conclusion from what happened, which is worse
+   * than having no row at all.
+   */
+  describe('what the audit trail says about a role change', () => {
+    const auditRows = (): Promise<
+      { action: string; changes: Record<string, unknown>; metadata: Record<string, unknown> }[]
+    > =>
+      db.query(
+        `SELECT action, changes, metadata FROM audit_logs
+          WHERE entity_type = 'enterprise_employee'
+            AND action IN ('role_granted', 'role_revoked')
+          ORDER BY id`,
+      );
+
+    it('records a revocation as a revocation, naming what was taken', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+      const manager = await roleRefId(ownerToken, 'manager');
+
+      // agent -> manager: one role gained, one lost, in a single call.
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [manager] })
+        .expect(204);
+
+      const rows = await auditRows();
+      const revoked = rows.find((r) => r.action === 'role_revoked');
+      const granted = rows.find((r) => r.action === 'role_granted');
+
+      expect(revoked).toBeDefined();
+      expect(revoked?.metadata?.revoked).toEqual(['agent']);
+      expect(granted?.metadata?.granted).toEqual(['manager']);
+
+      /* BOTH rows carry the whole before/after, so neither has to be read
+       * alongside the other to be understood. */
+      expect(revoked?.changes).toEqual({ roles: { from: ['agent'], to: ['manager'] } });
+    });
+
+    /**
+     * A pure removal writes a revocation and NOTHING else.
+     *
+     * Stripping every role is not reachable here — the contract requires at
+     * least one, because an employee with none is indistinguishable from a
+     * half-finished invitation, and removing access is what suspension is for.
+     * Narrowing two roles to one is the reachable shape of the same thing, and
+     * it is the shape that used to be recorded as a grant.
+     */
+    it('records only a revocation when a role is taken and none is given', async () => {
+      const { ownerToken } = await onboardedBusiness();
+      const person = await member(ownerToken, 'Junior', 'junior@bluebottle.test', 'agent');
+      const manager = await roleRefId(ownerToken, 'manager');
+      const agent = await roleRefId(ownerToken, 'agent');
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [agent, manager] })
+        .expect(204);
+
+      await http()
+        .post(`/api/v1/roles/employees/${person.refId}`)
+        .set(bearer(ownerToken))
+        .send({ roleRefIds: [agent] })
+        .expect(204);
+
+      const rows = await auditRows();
+      /* THE DEFECT, pinned: the last call took `manager` away and used to be
+       * recorded as `role_granted` naming only what remained. */
+      const last = rows.at(-1);
+      expect(last?.action).toBe('role_revoked');
+      expect(last?.metadata?.revoked).toEqual(['manager']);
+      expect(last?.changes).toEqual({ roles: { from: ['agent', 'manager'], to: ['agent'] } });
+    });
+  });
 });

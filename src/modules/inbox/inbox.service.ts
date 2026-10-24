@@ -1075,6 +1075,33 @@ export class InboxService {
         });
       }
 
+      /*
+       * SOMEBODY SPOKE AS THE BRAND, and nothing recorded who.
+       *
+       * A reply goes out under the business's name to its customer. An
+       * internal note does not, and is marked as such rather than given its
+       * own action — the distinction a reader needs is "did the customer see
+       * this", which `internalNote` answers.
+       *
+       * THE MESSAGE BODY IS NEVER RECORDED. It is the business's words to a
+       * named customer, so it is content, and `changes` carries no content.
+       * The message id is here; the message is in the inbox.
+       *
+       * In the transaction, like the moderation path: a reply that rolls back
+       * leaves no row claiming it was sent.
+       */
+      await this.audit.record({
+        action: AuditAction.Replied,
+        entityType: AuditEntityType.Message,
+        entityId: message.id,
+        enterpriseId: actor.enterpriseId,
+        metadata: {
+          conversationId: conversation.id,
+          internalNote: input.internalNote,
+          platform: conversation.platform,
+        },
+      });
+
       this.logger.info(
         { conversationId: conversation.id, internalNote: input.internalNote },
         'reply queued',
@@ -1368,6 +1395,38 @@ export class InboxService {
        * the ledger, which is where the disagreement surfaces.
        */
       await this.messages.applyOwnModeration({ enterpriseId, messageId: target.id, action });
+
+      /*
+       * HIDING OR DELETING A CUSTOMER'S COMMENT WAS NOT RECORDED AT ALL.
+       *
+       * An agent could remove a customer's words from a public post and the
+       * only trace was an outbound ledger row with no human on it. This is
+       * precisely the "who did that, and when" question the trail exists for.
+       *
+       * INSIDE the transaction, deliberately: `AuditService` joins the ambient
+       * one, so a moderation that rolls back takes its audit row with it
+       * rather than leaving a record of something that never happened.
+       *
+       * The action names what was actually done — `unhidden` is not `hidden`
+       * — and `changes` carries the transition either way.
+       */
+      await this.audit.record({
+        action:
+          action === 'delete'
+            ? AuditAction.Deleted
+            : action === 'hide'
+              ? AuditAction.Hidden
+              : AuditAction.Unhidden,
+        entityType: AuditEntityType.Message,
+        entityId: target.id,
+        enterpriseId,
+        changes:
+          action === 'delete'
+            ? { deletedOnPlatform: { from: false, to: true } }
+            : { hiddenOnPlatform: { from: target.isHiddenOnPlatform, to: action === 'hide' } },
+        /* The comment's TEXT is never recorded — it is the customer's words. */
+        metadata: { conversationId: conversation.id, platform: conversation.platform },
+      });
 
       return { messageRefId, action };
     });

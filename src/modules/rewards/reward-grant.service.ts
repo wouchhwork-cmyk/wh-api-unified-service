@@ -3,7 +3,14 @@ import { RewardAwardRepository } from '@/database/repositories/reward-award.repo
 import { RewardProgramRepository } from '@/database/repositories/reward-program.repository';
 import { RewardRuleRepository } from '@/database/repositories/reward-rule.repository';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
-import { RewardAwardStatus, RewardReversalPolicy, RewardTriggerKind } from '@/shared/enums';
+import {
+  AuditAction,
+  AuditEntityType,
+  RewardAwardStatus,
+  RewardReversalPolicy,
+  RewardTriggerKind,
+} from '@/shared/enums';
+import { AuditService } from '@/modules/audit';
 import { BenefitDispatcher } from './benefit-dispatcher.service';
 import { RuleEvaluatorService } from './rule-evaluator.service';
 
@@ -45,6 +52,7 @@ export class RewardGrantService {
     private readonly evaluator: RuleEvaluatorService,
     private readonly dispatcher: BenefitDispatcher,
     private readonly tx: TransactionManager,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -202,6 +210,29 @@ export class RewardGrantService {
             enterpriseId: input.enterpriseId,
             awardId: award.id,
             reasonCode: input.reasonCode,
+          });
+
+          /*
+           * THE PLATFORM TOOK VALUE BACK. The counterpart to the grant, and
+           * the more important of the two to record: a customer whose points
+           * disappeared is owed an answer, and "the comment you earned them
+           * for was deleted" is it.
+           *
+           * `system` again, and accurately — this runs in the projector worker
+           * off a platform webhook, with no human anywhere in the stack.
+           */
+          await this.audit.record({
+            action: AuditAction.Reversed,
+            entityType: AuditEntityType.RewardAward,
+            entityId: award.id,
+            enterpriseId: input.enterpriseId,
+            changes: { status: { from: award.status, to: RewardAwardStatus.Reversed } },
+            metadata: {
+              customerId: award.customerId,
+              ruleId: award.ruleId,
+              ruleVersion: award.ruleVersion,
+              reasonCode: input.reasonCode,
+            },
           });
         });
         reversed += 1;

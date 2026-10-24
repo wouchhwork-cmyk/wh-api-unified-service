@@ -9,6 +9,8 @@ import { EnterpriseRepository } from '@/database/repositories/enterprise.reposit
 import type { ProviderConnector } from './provider-connector';
 import { TokenCipherService } from '@/shared/crypto';
 import {
+  AuditAction,
+  AuditEntityType,
   ChannelKind,
   ChannelStatus,
   EnterpriseStatus,
@@ -20,6 +22,7 @@ import {
   TokenStatus,
 } from '@/shared/enums';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { AuditService } from '@/modules/audit';
 import { GraphApiClient } from './graph/graph-api.client';
 import { GraphApiError } from './graph/graph-api.error';
 import { mapGraphError } from './graph/graph-error.mapper';
@@ -65,6 +68,7 @@ export class MetaConnectionService implements ProviderConnector {
     private readonly cipher: TokenCipherService,
     private readonly config: AppConfigService,
     private readonly tx: TransactionManager,
+    private readonly audit: AuditService,
     @InjectPinoLogger(MetaConnectionService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -298,6 +302,37 @@ export class MetaConnectionService implements ProviderConnector {
       },
       'meta connection established',
     );
+
+    /*
+     * A BUSINESS'S ACCOUNTS CAME UNDER OUR CONTROL. That is the event this
+     * trail exists for, and it was not recorded at all.
+     *
+     * THE ACTOR IS `system`, AND THAT IS ACCURATE RATHER THAN A SHORTCUT. This
+     * route is @Public: it carries no JWT, so the guard chain never builds an
+     * ActorContext and `AuditService` correctly falls back to the system actor.
+     * The signed, single-use state is what authenticated it, and the employee
+     * it was minted for goes in `metadata` — the honest shape for "we know who
+     * started this, but not from a session".
+     *
+     * Deliberately NOT forged into the actor columns: the service reads the
+     * actor from ambient context precisely so no caller can name one, and a
+     * route-specific exception would be the hole that rule exists to close.
+     *
+     * No token, no page name, no scope string — a count of what was connected
+     * is the audit fact; the credentials are not.
+     */
+    await this.audit.record({
+      action: AuditAction.Connected,
+      entityType: AuditEntityType.ProviderConnection,
+      entityId: persisted.connection.id,
+      enterpriseId,
+      metadata: {
+        initiatedByEmployeeId: employeeId,
+        pageCount: usablePages.length,
+        instagramCount: persisted.instagramCount,
+        errorCount: discovered.partialFailures + subscribeFailures,
+      },
+    });
 
     return {
       connectionRefId: persisted.connection.refId,

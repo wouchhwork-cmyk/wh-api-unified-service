@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
 import {
   ISO_MONDAY,
   ISO_SUNDAY,
@@ -11,7 +12,6 @@ import {
   RewardTriggerKind,
   RewardWalletKind,
 } from '@/shared/enums';
-import { MAX_PAGE_SIZE } from '@/shared/constants';
 
 /**
  * Reward programs — the wire contract.
@@ -206,6 +206,20 @@ export const CreateRewardProgramSchema = z
  * returns exactly that status, which is how the portal's "archived" view asks
  * for the retired ones without a second endpoint.
  */
+/**
+ * How many versions of a program to return.
+ *
+ * BOUNDED, with a default, because an unbounded history read is a table scan
+ * waiting for the first program that has been edited a thousand times. Coerced
+ * from the query string, which arrives as text or not at all.
+ */
+export const HistoryLimitSchema = z.coerce
+  .number()
+  .int()
+  .positive()
+  .max(MAX_PAGE_SIZE)
+  .default(DEFAULT_PAGE_SIZE);
+
 export const RewardProgramQuerySchema = z.strictObject({
   status: z.enum(RewardProgramStatus).optional(),
 });

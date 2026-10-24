@@ -8,6 +8,8 @@ import { ProviderConnectionRepository } from '@/database/repositories/provider-c
 import { GraphApiClient } from './graph/graph-api.client';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
 import { TokenCipherService } from '@/shared/crypto';
+import { AuditService } from '@/modules/audit';
+import { AuditAction, AuditEntityType, ConnectionStatus } from '@/shared/enums';
 
 export interface StartedConnection {
   readonly provider: Provider;
@@ -120,6 +122,7 @@ export class ConnectionsService {
     private readonly graph: GraphApiClient,
     private readonly cipher: TokenCipherService,
     private readonly tx: TransactionManager,
+    private readonly audit: AuditService,
     @InjectPinoLogger(ConnectionsService.name) private readonly logger: PinoLogger,
   ) {
     this.connectors = new Map(connectors.map((connector) => [connector.provider, connector]));
@@ -165,6 +168,25 @@ export class ConnectionsService {
       const count = await this.channels.disconnectForConnection(enterpriseId, connection.id);
       await this.connections.revoke(enterpriseId, connection.id);
       return count;
+    });
+
+    /*
+     * AFTER the commit, because an audit row claiming a disconnect that rolled
+     * back is worse than none — and the record exists for a reason: this
+     * withdraws a business's authority over its own Instagram, clears live
+     * tokens and stops every future delivery. Nothing recorded who did it.
+     *
+     * The channel count travels with it: "they disconnected" and "they
+     * disconnected eleven channels" are different events to whoever reads this
+     * later. Names and tokens stay out of `changes`.
+     */
+    await this.audit.record({
+      action: AuditAction.Disconnected,
+      entityType: AuditEntityType.ProviderConnection,
+      entityId: connection.id,
+      enterpriseId,
+      changes: { status: { from: connection.status, to: ConnectionStatus.Revoked } },
+      metadata: { channelsDisconnected: disconnected },
     });
 
     this.logger.info(

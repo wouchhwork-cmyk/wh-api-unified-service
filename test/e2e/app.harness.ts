@@ -82,7 +82,7 @@ export async function createTestApp(): Promise<TestApp> {
 /** Clears tenant data, keeping the seeded catalogue signup depends on. */
 export async function resetTenantData(db: DataSource): Promise<void> {
   await db.query(`
-    TRUNCATE audit_logs, message_attachments, messages, conversations, posts,
+    TRUNCATE entity_versions, audit_logs, message_attachments, messages, conversations, posts,
              customer_engagements, customer_identifiers, customers,
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,

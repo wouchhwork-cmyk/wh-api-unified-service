@@ -6,6 +6,7 @@ import {
   AdjustRewardBalanceSchema,
   CreateRewardProgramSchema,
   CreateRewardRuleSchema,
+  HistoryLimitSchema,
   RewardProgramQuerySchema,
   UpdateRewardProgramStatusSchema,
 } from '@/shared/contracts/rewards/reward.contract';
@@ -92,6 +93,29 @@ export class RewardsController {
     const { status } = UpdateRewardProgramStatusSchema.parse(body);
     const program = await this.rewards.setProgramStatus(actor.enterpriseId, refId, status);
     return program ? toProgramSummary(program) : null;
+  }
+
+  @Get('programs/:refId/versions')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'What this program has looked like, version by version',
+    description:
+      'Every change to a program appends a version holding its WHOLE configuration at that ' +
+      'moment, not a diff — so reconstructing what was running last March is reading one row ' +
+      'rather than replaying every edit since. An award made then was decided by the program ' +
+      'as it stood then, which is why this exists alongside the audit log: the audit log says ' +
+      'who changed it, this says what it became. Newest first. The forwarding credential is ' +
+      'never recorded.',
+  })
+  async programVersions(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refIdParam: string,
+    @Query('limit') limitParam?: string,
+  ) {
+    const refId = RefIdParamSchema.parse(refIdParam);
+    const limit = HistoryLimitSchema.parse(limitParam);
+    const versions = await this.rewards.programHistory(actor.enterpriseId, refId, limit);
+    return { items: versions.map(toVersionSummary) };
   }
 
   /* ---------------------------------------------------------------- */
@@ -193,6 +217,31 @@ export class RewardsController {
       occurredAt: entry.occurredAtUtc,
     };
   }
+}
+
+/**
+ * A version as the client sees it.
+ *
+ * The actor's NUMERIC ids are not sent — `actorKind` and `isImpersonated`
+ * answer "was this us or them" without handing out internal identifiers, which
+ * is the same line every other response in this controller draws.
+ */
+function toVersionSummary(version: {
+  version: number;
+  snapshot: Record<string, unknown>;
+  changeSummary: Record<string, unknown>;
+  actorKind: string;
+  isImpersonated: boolean;
+  createdAt: Date;
+}) {
+  return {
+    version: version.version,
+    snapshot: version.snapshot,
+    changed: version.changeSummary,
+    actorKind: version.actorKind,
+    isImpersonated: version.isImpersonated,
+    at: version.createdAt,
+  };
 }
 
 /** The numeric id never leaves the server. Only refId does. */

@@ -9,6 +9,7 @@
  */
 
 import { AuditLog } from './audit-log.entity';
+import { EntityVersion } from './entity-version.entity';
 import { Channel } from './channel.entity';
 import { Conversation } from './conversation.entity';
 import { CustomerEngagement } from './customer-engagement.entity';
@@ -49,6 +50,7 @@ import { RewardEntitlement } from './reward-entitlement.entity';
 
 export { BaseEntity, PublicEntity } from './base.entity';
 export { AuditLog } from './audit-log.entity';
+export { EntityVersion } from './entity-version.entity';
 export { Channel } from './channel.entity';
 export { Conversation } from './conversation.entity';
 export { CustomerEngagement } from './customer-engagement.entity';
@@ -127,4 +129,5 @@ export const ENTITIES = [
   RewardWallet,
   RewardLedgerEntry,
   RewardEntitlement,
+  EntityVersion,
 ];

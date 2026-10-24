@@ -12,6 +12,14 @@ export enum AuditAction {
   Replied = 'replied',
   Assigned = 'assigned',
   Hidden = 'hidden',
+  /*
+   * ITS OWN ACTION, not `hidden` reused or `updated` as a catch-all.
+   *
+   * Recording an unhide as `hidden` is the same defect as recording a role
+   * revocation as a grant: the row states the opposite of what happened, and
+   * an auditor filtering on it is misled rather than merely underserved.
+   */
+  Unhidden = 'unhidden',
   RoleGranted = 'role_granted',
   RoleRevoked = 'role_revoked',
   FeatureRequested = 'feature_requested',
@@ -27,6 +35,13 @@ export enum AuditAction {
    * not "what changed" but "who moved money, for whom, and why".
    */
   Adjusted = 'adjusted',
+  /**
+   * A rule granted value to a customer. No human decided it — a webhook
+   * arrived, a rule matched, a worker applied it — so the actor is `system`.
+   */
+  Granted = 'granted',
+  /** Value taken back after the content behind an award was removed or hidden. */
+  Reversed = 'reversed',
 }
 
 export enum AuditEntityType {
@@ -46,15 +61,23 @@ export enum AuditEntityType {
   /*
    * REWARD PROGRAMS. A rule decides who receives value, so editing one is a
    * money decision.
-   *
-   * Only the CONFIG is audited. An award has no human actor — it is caused by a
-   * rule, from a webhook, in a worker — and AuditService falls back to
-   * ActorKind.System where there is no request context. Auditing awards would
-   * produce millions of rows all saying `system`, drowning the handful that
-   * name a person. The ledger's provenance is the system-caused trail.
    */
   RewardProgram = 'reward_program',
   RewardRule = 'reward_rule',
+  /**
+   * AN AWARD THE SYSTEM MADE BY ITSELF.
+   *
+   * This was deliberately left out once, on the argument that millions of rows
+   * saying `system` would drown the handful that name a person. The premise was
+   * right and the conclusion was wrong: granting a customer value IS an action
+   * the platform took, and "why does this customer have 340 points" is a
+   * question the trail has to answer whether or not a human was involved.
+   *
+   * The drowning is solved where it belongs — `audit_logs_human_idx` is partial
+   * on `actor_kind <> 'system'`, so "what did people do" never pays for the
+   * volume of what the engine did.
+   */
+  RewardAward = 'reward_award',
   /** A manual balance adjustment: a human moving value for one named customer. */
   RewardWallet = 'reward_wallet',
 }

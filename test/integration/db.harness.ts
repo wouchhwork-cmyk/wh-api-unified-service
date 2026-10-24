@@ -33,7 +33,7 @@ export async function truncateTenantData(dataSource: DataSource): Promise<void> 
              reward_award_benefits, reward_awards, reward_cap_counters,
              reward_rule_conditions, reward_rule_benefits, reward_rules,
              reward_programs,
-             audit_logs, message_attachments, messages, conversations, posts,
+             entity_versions, audit_logs, message_attachments, messages, conversations, posts,
              customer_engagements, customer_identifiers, customers,
              verifications, outbound_events, inbound_events, sync_jobs,
              channels, provider_connections, sessions, enterprise_features,

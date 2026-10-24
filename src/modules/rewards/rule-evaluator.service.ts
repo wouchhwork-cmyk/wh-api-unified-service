@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
+import { AuditService } from '@/modules/audit';
 import { RewardAwardRepository } from '@/database/repositories/reward-award.repository';
 import type { RewardRuleRow } from '@/database/repositories/reward-rule.repository';
 import { RewardRuleRepository } from '@/database/repositories/reward-rule.repository';
@@ -11,6 +12,8 @@ import {
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { RewardWalletRepository } from '@/database/repositories/reward-wallet.repository';
 import {
+  AuditAction,
+  AuditEntityType,
   RewardAwardMode,
   RewardAwardStatus,
   RewardBenefitKind,
@@ -78,6 +81,7 @@ export class RuleEvaluatorService {
     private readonly factors: FactorEvaluator,
     private readonly dispatcher: BenefitDispatcher,
     private readonly tx: TransactionManager,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -486,6 +490,39 @@ export class RuleEvaluatorService {
       factorProviderCode: needsFactor ? input.rule.factorProviderCode : null,
       factorInputs: factor.inputs,
       periodKey: input.periodKey,
+    });
+
+    /*
+     * THE PLATFORM GAVE SOMEBODY SOMETHING, AND THAT IS AN ACTION TOO.
+     *
+     * `AuditService` reads the actor from ambient context and finds none here
+     * — a webhook arrived, a worker claimed it, no human is in the call stack
+     * — so the row records `ActorKind.System`. That is the accurate answer
+     * rather than a missing one, and it is the whole point of recording it:
+     * "nobody decided this, a rule did" is what the customer is owed when they
+     * ask why their balance moved.
+     *
+     * Inside the grant's transaction, so an award that rolls back takes its
+     * audit row with it.
+     *
+     * WHICH RULE AND WHICH VERSION, because a rule is versioned and edited
+     * rules do not rewrite the awards they already made — the version here is
+     * what makes the decision reconstructable months later.
+     */
+    await this.audit.record({
+      action: AuditAction.Granted,
+      entityType: AuditEntityType.RewardAward,
+      entityId: input.awardId,
+      enterpriseId: input.enterpriseId,
+      metadata: {
+        customerId: input.customerId,
+        ruleId: input.rule.id,
+        ruleVersion: input.rule.version,
+        programId: input.rule.programId,
+        triggerKind: input.rule.triggerKind,
+        benefitKinds: input.benefits.map((b) => b.benefitKind),
+        factorBasisPoints: factor.basisPoints,
+      },
     });
 
     /*

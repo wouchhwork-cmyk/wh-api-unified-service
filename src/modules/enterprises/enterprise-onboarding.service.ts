@@ -7,6 +7,8 @@ import { RoleRepository } from '@/database/repositories/role.repository';
 import { TransactionManager } from '@/database/transaction';
 import { SecretHashService } from '@/shared/crypto';
 import {
+  AuditAction,
+  AuditEntityType,
   DeliveryChannel,
   EnterpriseStatus,
   EmployeeKind,
@@ -25,6 +27,7 @@ import {
   normalizeUrl,
   type NormalizedMobile,
 } from '@/shared/utils/normalize';
+import { AuditService } from '@/modules/audit';
 import type { SignupRequest, SignupResponse } from '@/shared/contracts/enterprises/signup.contract';
 import { VerificationService, type PendingOtpDelivery } from '../auth/verification.service';
 
@@ -46,6 +49,7 @@ export class EnterpriseOnboardingService {
     private readonly hasher: SecretHashService,
     private readonly verifications: VerificationService,
     private readonly tx: TransactionManager,
+    private readonly audit: AuditService,
     @InjectPinoLogger(EnterpriseOnboardingService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -140,6 +144,27 @@ export class EnterpriseOnboardingService {
       deliveryChannel: owner.email ? DeliveryChannel.Email : DeliveryChannel.Sms,
       requestedIp: meta.ipAddress,
       requestedUserAgent: meta.userAgent,
+    });
+
+    /*
+     * A TENANT CAME INTO EXISTENCE, and nothing recorded it.
+     *
+     * The actor is `system` because this route is public by necessity — the
+     * person signing up has no account yet, which is the point of signing up.
+     * The enterprise is the subject and the owner's employment id is the
+     * attribution available.
+     *
+     * NO OWNER CREDENTIAL. Not the email, not the mobile, not the name: all of
+     * it is PII belonging to a person who has not yet verified. The slug and
+     * the ids are the audit facts.
+     */
+    await this.audit.record({
+      action: AuditAction.Created,
+      entityType: AuditEntityType.Enterprise,
+      entityId: created.enterprise.id,
+      enterpriseId: created.enterprise.id,
+      changes: { status: { from: null, to: EnterpriseStatus.PendingActivation } },
+      metadata: { slug, ownerEmployeeId: created.employee.id },
     });
 
     this.logger.info({ enterpriseId: created.enterprise.id, slug }, 'enterprise onboarded');

@@ -8,6 +8,7 @@ import { RewardRuleRepository } from '@/database/repositories/reward-rule.reposi
 import { RewardWalletRepository } from '@/database/repositories/reward-wallet.repository';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
 import { AuditService } from '@/modules/audit/audit.service';
+import { EntityVersionService } from '@/modules/audit/entity-version.service';
 import type {
   AdjustRewardBalanceInput,
   CreateRewardProgramInput,
@@ -50,12 +51,41 @@ export class RewardsService {
     private readonly customers: CustomerRepository,
     private readonly benefits: BenefitRegistry,
     private readonly audit: AuditService,
+    private readonly versions: EntityVersionService,
     private readonly tx: TransactionManager,
   ) {}
 
   /* ------------------------------------------------------------------ */
   /* Programs                                                            */
   /* ------------------------------------------------------------------ */
+
+  /**
+   * What goes into a program's version history.
+   *
+   * STATED, NOT SERIALISED. `forwardConfig` is deliberately absent: it holds a
+   * CREDENTIAL REFERENCE, and the history is append-only, so a secret written
+   * there could never be taken back out. Listing the fields by hand is what
+   * keeps that from happening the day somebody adds a column.
+   */
+  private static snapshotOf(program: {
+    name: string;
+    status: string;
+    timezone: string;
+    defaultCurrencyCode: string | null;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    forwardProviderCode: string | null;
+  }): Record<string, unknown> {
+    return {
+      name: program.name,
+      status: program.status,
+      timezone: program.timezone,
+      defaultCurrencyCode: program.defaultCurrencyCode,
+      startsAt: program.startsAt?.toISOString() ?? null,
+      endsAt: program.endsAt?.toISOString() ?? null,
+      forwardProviderCode: program.forwardProviderCode,
+    };
+  }
 
   async createProgram(enterpriseId: number, input: CreateRewardProgramInput) {
     const program = await this.programs.create({ enterpriseId, ...input });
@@ -71,6 +101,19 @@ export class RewardsService {
        * right, auditing its value is not.
        */
       changes: { name: program.name, timezone: program.timezone },
+    });
+
+    /*
+     * VERSION 1 — the state the program began in.
+     *
+     * Without it the history would start at the first EDIT, and "what did this
+     * look like originally" would be the one question it could not answer.
+     */
+    await this.versions.record({
+      entityType: AuditEntityType.RewardProgram,
+      entityId: program.id,
+      enterpriseId,
+      snapshot: RewardsService.snapshotOf(program),
     });
 
     return program;
@@ -107,7 +150,40 @@ export class RewardsService {
       enterpriseId,
       changes: { status },
     });
+
+    /*
+     * A STATUS CHANGE IS A NEW VERSION, not a footnote to the last one.
+     *
+     * Switching a program on is what makes its rules start awarding, so "when
+     * did this become active" is a money question. The version row carries the
+     * whole configuration at that moment, so the answer does not depend on
+     * replaying every earlier diff.
+     */
+    if (program) {
+      await this.versions.record({
+        entityType: AuditEntityType.RewardProgram,
+        entityId: program.id,
+        enterpriseId,
+        snapshot: RewardsService.snapshotOf(program),
+      });
+    }
+
     return program;
+  }
+
+  /**
+   * What this program has looked like, newest first.
+   *
+   * THE PROGRAM IS RESOLVED FIRST, and that is the tenant check. `refId` is
+   * the only handle a client has, and looking it up scoped to the enterprise is
+   * what makes a version history unreachable across tenants — the version table
+   * is addressed by a NUMERIC id that never leaves the server.
+   */
+  async programHistory(enterpriseId: number, refId: string, limit: number) {
+    const program = await this.programs.findByRefId(enterpriseId, refId);
+    if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
+
+    return this.versions.history(enterpriseId, AuditEntityType.RewardProgram, program.id, limit);
   }
 
   /**

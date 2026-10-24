@@ -401,8 +401,18 @@ describe('the platform admin console', () => {
       is_impersonated: boolean;
       changes: Record<string, unknown>;
     }[] = await db.query(
+      /*
+       * STAFF ROWS ONLY, which is what this test is about.
+       *
+       * Onboarding the business also writes its own rows now — a signup, and
+       * the login behind `adminToken()` — and both are correctly attributed to
+       * `system`, because neither has an authenticated session at the moment it
+       * happens. Asserting over the whole table would make this test fail every
+       * time another legitimate action starts being recorded, which is the
+       * opposite of what it is for.
+       */
       `SELECT action, entity_type, actor_staff_id, actor_kind, is_impersonated, changes
-         FROM audit_logs ORDER BY id`,
+         FROM audit_logs WHERE actor_kind = 'staff' ORDER BY id`,
     );
 
     expect(rows).toHaveLength(2);

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditModule } from '@/modules/audit';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
@@ -15,6 +16,7 @@ import { PageDiscoveryService } from './page-discovery.service';
 import { PROVIDER_CONNECTORS } from './provider-connector';
 
 @Module({
+  imports: [AuditModule],
   controllers: [ConnectionsController, MetaWebhookController],
   providers: [
     GraphApiClient,

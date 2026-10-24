@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { AuditLogRepository } from './repositories/audit-log.repository';
+import { EntityVersionRepository } from './repositories/entity-version.repository';
 import { EnterpriseEmployeeRepository } from './repositories/enterprise-employee.repository';
 import { EnterpriseFeatureRepository } from './repositories/enterprise-feature.repository';
 import { EnterpriseRepository } from './repositories/enterprise.repository';
@@ -17,6 +18,7 @@ import { TransactionManager } from './transaction';
 const PROVIDERS = [
   TransactionManager,
   AuditLogRepository,
+  EntityVersionRepository,
   EnterpriseRepository,
   EnterpriseFeatureRepository,
   EnterpriseEmployeeRepository,

@@ -386,7 +386,7 @@ export class RolesService {
      */
     const keepsOwner = roles.some((role) => role.name === (SystemRole.Owner as string));
 
-    await this.tx.runInTransaction(async () => {
+    const held = await this.tx.runInTransaction(async () => {
       /*
        * THE LAST OWNER STAYS AN OWNER, decided inside the transaction and
        * behind a lock.
@@ -398,24 +398,32 @@ export class RolesService {
        * read "one other owner remains" and both commit; the lock on the owner
        * role serialises them.
        *
-       * Only asked when the role is actually being taken away. Somebody keeping
+       * Only taken when the role is actually being taken away. Somebody keeping
        * it, or never having had it, cannot reduce the count.
        */
-      if (!keepsOwner) {
-        await this.roles.lockOwnerRole(enterpriseId);
-        const held = await this.roles.listRoleNamesForEmployee(enterpriseId, employee.employeeId);
-        if (held.includes(SystemRole.Owner)) {
-          const others = await this.roles.countOtherActiveOwners(enterpriseId, employee.employeeId);
-          if (others === 0) {
-            throw new AppException(ErrorCode.ValidationFailed, {
-              details: [
-                {
-                  field: 'roleRefIds',
-                  issue: 'this is the last owner; make somebody else an owner first',
-                },
-              ],
-            });
-          }
+      if (!keepsOwner) await this.roles.lockOwnerRole(enterpriseId);
+
+      /*
+       * The roles held BEFORE the replace, read unconditionally because the
+       * audit record always needs them even though the owner guard below only
+       * sometimes does.
+       *
+       * AFTER the lock, never before it: under concurrency two demotions must
+       * not both read an owner that is on their way out.
+       */
+      const previous = await this.roles.listRoleNamesForEmployee(enterpriseId, employee.employeeId);
+
+      if (!keepsOwner && previous.includes(SystemRole.Owner)) {
+        const others = await this.roles.countOtherActiveOwners(enterpriseId, employee.employeeId);
+        if (others === 0) {
+          throw new AppException(ErrorCode.ValidationFailed, {
+            details: [
+              {
+                field: 'roleRefIds',
+                issue: 'this is the last owner; make somebody else an owner first',
+              },
+            ],
+          });
         }
       }
 
@@ -425,16 +433,57 @@ export class RolesService {
         roleIds: roles.map((role) => role.id),
         grantedByEmployeeId: actingEmployeeId,
       });
+
+      return previous;
     });
 
-    await this.audit.record({
-      action: AuditAction.RoleGranted,
-      entityType: AuditEntityType.EnterpriseEmployee,
-      entityId: employee.employeeId,
-      enterpriseId,
-      metadata: { roles: roles.map((role) => role.name) },
-    });
-    this.logger.info({ enterpriseId, roleCount: roles.length }, 'employee roles replaced');
+    /*
+     * A REPLACE CAN TAKE ROLES AWAY, AND THE AUDIT TRAIL HAS TO SAY SO.
+     *
+     * This recorded `role_granted` unconditionally, with metadata listing only
+     * the NEW set — so stripping somebody of every role wrote `role_granted`
+     * with `roles: []` and no trace of what they lost. An auditor reading that
+     * row draws the opposite conclusion from what happened, which is worse than
+     * having no row at all.
+     *
+     * Both directions are recorded, as separate rows when one call does both,
+     * so "show me every revocation" is a query on `action` rather than a diff
+     * somebody has to reconstruct. Each row carries the whole before/after:
+     * role NAMES, which are the business's own words and neither PII nor a
+     * secret.
+     */
+    const before = [...held].sort();
+    const after = roles.map((role) => role.name).sort();
+    const added = after.filter((name) => !before.includes(name));
+    const removed = before.filter((name) => !after.includes(name));
+    const changes = { roles: { from: before, to: after } };
+
+    if (removed.length > 0) {
+      await this.audit.record({
+        action: AuditAction.RoleRevoked,
+        entityType: AuditEntityType.EnterpriseEmployee,
+        entityId: employee.employeeId,
+        enterpriseId,
+        changes,
+        metadata: { revoked: removed },
+      });
+    }
+
+    if (added.length > 0) {
+      await this.audit.record({
+        action: AuditAction.RoleGranted,
+        entityType: AuditEntityType.EnterpriseEmployee,
+        entityId: employee.employeeId,
+        enterpriseId,
+        changes,
+        metadata: { granted: added },
+      });
+    }
+
+    this.logger.info(
+      { enterpriseId, roleCount: roles.length, granted: added.length, revoked: removed.length },
+      'employee roles replaced',
+    );
   }
 
   private assertMayDefine(
