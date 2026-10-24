@@ -14,6 +14,7 @@ import { RewardWalletRepository } from '@/database/repositories/reward-wallet.re
 import {
   AuditAction,
   AuditEntityType,
+  CURRENCY_BEARING_BENEFITS,
   RewardAwardMode,
   RewardAwardStatus,
   RewardBenefitKind,
@@ -28,12 +29,6 @@ import { ConditionRegistry } from './conditions/condition.registry';
 import { FactorEvaluator, scaleByFactor } from './factor.provider';
 import { derivePeriodKey } from './period-key.util';
 import { matchesTriggerConfig } from './trigger-match.util';
-
-/** The benefit kinds whose payload carries a currency. */
-const CURRENCY_BEARING_KINDS: ReadonlySet<RewardBenefitKind> = new Set([
-  RewardBenefitKind.GrantCurrency,
-  RewardBenefitKind.ConvertValue,
-]);
 
 /**
  * A customer did something. This decides whether it earns anything.
@@ -283,7 +278,7 @@ export class RuleEvaluatorService {
       enterpriseId: event.enterpriseId,
       customerId: event.customerId,
       occurredAtUtc: event.occurredAtUtc,
-      timezone: program.timezone,
+      timezone: program.enterpriseTimezone,
       content: event.content,
       customerFirstSeenAt,
     });
@@ -330,7 +325,30 @@ export class RuleEvaluatorService {
       return null;
     }
 
-    const periodKey = derivePeriodKey(event.occurredAtUtc, program.timezone, rule.capScope);
+    /*
+     * A CAP WITHOUT A TIMEZONE CANNOT BE ENFORCED, so nothing is awarded.
+     *
+     * "Once a day" needs to know where the day starts. Rule creation refuses
+     * a capped rule while the business has no timezone, so reaching here
+     * means it was cleared afterwards — and awarding without enforcing the
+     * cap would over-pay every customer who triggers it, which is the one
+     * direction that cannot be undone by setting the timezone later.
+     */
+    if (rule.capScope !== RewardCapScope.None && program.enterpriseTimezone === null) {
+      await this.awards.markSkipped({
+        enterpriseId: event.enterpriseId,
+        awardId: award.id,
+        status: RewardAwardStatus.SkippedCondition,
+        reasonCode: 'enterprise_timezone_not_set',
+        periodKey: null,
+      });
+      return null;
+    }
+
+    const periodKey =
+      program.enterpriseTimezone === null
+        ? null
+        : derivePeriodKey(event.occurredAtUtc, program.enterpriseTimezone, rule.capScope);
 
     if (rule.capScope !== RewardCapScope.None && periodKey) {
       const claimed = await this.awards.claimCapSlot({
@@ -373,8 +391,8 @@ export class RuleEvaluatorService {
       awardId: award.id,
       customerId: event.customerId,
       rule,
-      programTimezone: program.timezone,
-      defaultCurrencyCode: program.defaultCurrencyCode,
+      programTimezone: program.enterpriseTimezone,
+      defaultCurrencyCode: program.enterpriseCurrencyCode,
       periodKey,
       occurredAtUtc: event.occurredAtUtc,
       benefits,
@@ -398,7 +416,7 @@ export class RuleEvaluatorService {
     awardId: number;
     customerId: number;
     rule: RewardRuleRow;
-    programTimezone: string;
+    programTimezone: string | null;
     defaultCurrencyCode: string | null;
     periodKey: string | null;
     occurredAtUtc: Date;
@@ -567,7 +585,7 @@ export class RuleEvaluatorService {
     if (
       config.currencyCode === undefined &&
       defaultCurrencyCode !== null &&
-      CURRENCY_BEARING_KINDS.has(stored.benefitKind as RewardBenefitKind)
+      CURRENCY_BEARING_BENEFITS.has(stored.benefitKind as RewardBenefitKind)
     ) {
       config.currencyCode = defaultCurrencyCode;
     }

@@ -84,6 +84,19 @@ export enum RewardBenefitKind {
 }
 
 /**
+ * The benefit kinds whose payload carries a currency.
+ *
+ * ONE LIST. It was declared in the evaluator and about to be declared again
+ * beside the rule-creation guard — two copies of the same domain fact, which
+ * disagree the day somebody adds a third money benefit and updates one of
+ * them. It lives with the enum it is about.
+ */
+export const CURRENCY_BEARING_BENEFITS: ReadonlySet<RewardBenefitKind> = new Set([
+  RewardBenefitKind.GrantCurrency,
+  RewardBenefitKind.ConvertValue,
+]);
+
+/**
  * Whether a benefit can be undone.
  *
  * Two thirds of a mature loyalty engine is irreversible — Talon.One ships 42

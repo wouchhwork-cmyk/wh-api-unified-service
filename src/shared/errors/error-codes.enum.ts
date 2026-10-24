@@ -73,6 +73,23 @@ export enum ErrorCode {
   /* REWARD PROGRAMS. */
   RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',
   RewardProgramArchived = 'REWARD_PROGRAM_ARCHIVED',
+  /**
+   * A rule would grant money and nobody has said in what.
+   *
+   * Its own code rather than a validation failure, because the remedy is not
+   * "fix this field" — it is "go and set your business's currency", which is
+   * a different screen. The client needs to tell them that and take them
+   * there, and it can only do so if the refusal says which problem it is.
+   */
+  EnterpriseCurrencyNotSet = 'ENTERPRISE_CURRENCY_NOT_SET',
+
+  /**
+   * A rule needs to know where the day starts and nobody has said.
+   *
+   * Same shape as the currency above and for the same reason: the remedy is
+   * a different screen, so the refusal has to say which problem it is.
+   */
+  EnterpriseTimezoneNotSet = 'ENTERPRISE_TIMEZONE_NOT_SET',
   RewardRuleNotFound = 'REWARD_RULE_NOT_FOUND',
   RewardWalletNotFound = 'REWARD_WALLET_NOT_FOUND',
   /**

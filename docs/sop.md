@@ -59,6 +59,15 @@ does not know it was ever decided.
 - [ ] Staff reach does **not** bypass the feature gate.
 - → detail: `backend-design.md` §7.2, `schema.md` §5–10, `rbac-plan.md`
 
+## 4.1 A business fact belongs to the business
+
+- [ ] If a value describes the BUSINESS — its timezone, its currency, anything that answers "what does this mean here" — it lives on `enterprises` and everything reads it from there. **No feature keeps its own copy.** A copy taken at creation drifts, and two features then disagree with nothing to reconcile them.
+- [ ] **No silent default for a value nobody can guess.** The column is nullable, and NULL means "not chosen" — which is what makes it possible to ask. `timezone` defaulted to `Asia/Kolkata`, so a business in London had one it never picked; a currency default would pay somebody in rupees because nobody said otherwise.
+- [ ] A feature that NEEDS one refuses with **its own error code**, not a generic validation failure, because the remedy is a different screen and the client has to be able to offer it. A feature that does not need one never asks.
+- [ ] **Accepted values are a set, not a shape.** `/^[A-Z]{3}$/` accepts `XYZ`; a try/catch on `Intl` accepts `EST` and resolves it to `America/Panama`. Validate against an enumerated list, and **serve that same list to the client** so its dropdown and your validator cannot drift.
+- [ ] Fail closed at runtime too. A setting can be cleared after something depends on it, so the engine must refuse rather than guess — see `backend-design.md` §19.13.
+- → detail: `schema.md` §2, `backend-design.md` §19.13
+
 ## 5. Tenant scoping
 
 - [ ] `enterpriseId` comes from the token and is passed explicitly to every repository method.

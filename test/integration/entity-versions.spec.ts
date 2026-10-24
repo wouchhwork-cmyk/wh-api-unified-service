@@ -111,14 +111,14 @@ describe('entity version history', () => {
    * the complete state, with no replay of earlier rows required.
    */
   it('stores the whole state, not a diff', async () => {
-    await append(enterpriseId, 7, { name: 'Monsoon', status: 'draft', timezone: 'Asia/Kolkata' });
-    await append(enterpriseId, 7, { name: 'Monsoon', status: 'active', timezone: 'Asia/Kolkata' });
+    await append(enterpriseId, 7, { name: 'Monsoon', status: 'draft', currencyCode: 'INR' });
+    await append(enterpriseId, 7, { name: 'Monsoon', status: 'active', currencyCode: 'INR' });
 
     const latest = await versions.latest(enterpriseId, AuditEntityType.RewardProgram, 7);
     expect(latest?.snapshot).toEqual({
       name: 'Monsoon',
       status: 'active',
-      timezone: 'Asia/Kolkata',
+      currencyCode: 'INR',
     });
   });
 

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { AppException, ErrorCode } from '@/shared/errors';
 import { RewardWalletRepository } from '@/database/repositories/reward-wallet.repository';
 import {
   RewardBenefitKind,
@@ -34,11 +35,26 @@ export class GrantCurrencyBenefit
     benefit: BenefitOf<RewardBenefitKind.GrantCurrency>,
     ctx: BenefitContext,
   ): Promise<AppliedBenefit> {
+    /*
+     * BY NOW IT MUST BE KNOWN. The benefit may omit a currency — unstated
+     * means the business's — and the evaluator fills that in before
+     * dispatching. Reaching here without one means the business has no
+     * currency, which rule creation refuses; the way to arrive anyway is to
+     * CLEAR the business currency after a money rule already exists.
+     *
+     * Refused rather than defaulted. Opening a wallet in a currency nobody
+     * chose is the error this whole chain exists to prevent, and the
+     * evaluator's per-rule catch turns this into one skipped award with a
+     * named reason instead of a silent payment in the wrong money.
+     */
+    const currencyCode = benefit.config.currencyCode;
+    if (!currencyCode) throw new AppException(ErrorCode.EnterpriseCurrencyNotSet);
+
     const wallet = await this.wallets.ensureCustomerWallet({
       enterpriseId: ctx.enterpriseId,
       customerId: ctx.customerId,
       walletKind: RewardWalletKind.Currency,
-      currencyCode: benefit.config.currencyCode,
+      currencyCode,
     });
 
     const entry = await this.wallets.credit({

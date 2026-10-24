@@ -41,8 +41,8 @@ describe('the reward cap counter', () => {
     enterpriseId = await seedEnterprise(db, 'Cap Co', 'cap-co');
 
     const [program] = await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1, 'Social Rewards', 'Asia/Kolkata') RETURNING id`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1, 'Social Rewards') RETURNING id`,
       [enterpriseId],
     );
     programId = Number(program.id);

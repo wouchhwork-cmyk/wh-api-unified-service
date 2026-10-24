@@ -62,6 +62,15 @@ export class TimeWindowCondition implements ConditionHandler<RewardConditionKind
   readonly kind = RewardConditionKind.TimeWindow as const;
 
   check(condition: ConditionOf<RewardConditionKind.TimeWindow>, ctx: ConditionContext): boolean {
+    /*
+     * FAILS CLOSED with no timezone. "Tuesday 6pm to 9pm" has no meaning
+     * until somebody says where, and guessing a zone would silently open or
+     * close a happy hour by hours. Rule creation refuses a window while the
+     * business has no timezone; arriving here means it was cleared afterwards,
+     * and not awarding is the recoverable direction.
+     */
+    if (ctx.timezone === null) return false;
+
     const { isoDay, minutes } = localParts(ctx.occurredAtUtc, ctx.timezone);
 
     return condition.config.slots.some((slot) => {

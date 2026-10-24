@@ -48,8 +48,8 @@ describe('expiring lapsed entitlements', () => {
      * the real chain rather than inventing an orphan the schema would refuse.
      */
     const program: { id: string }[] = await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1,'Social Rewards','Asia/Kolkata') RETURNING id`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1,'Social Rewards') RETURNING id`,
       [enterpriseId],
     );
     const rule: { id: string }[] = await db.query(

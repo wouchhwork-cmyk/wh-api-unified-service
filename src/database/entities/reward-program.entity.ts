@@ -24,14 +24,6 @@ export class RewardProgram extends PublicEntity {
   @Column({ type: 'varchar', length: 16, default: RewardProgramStatus.Draft })
   status!: RewardProgramStatus;
 
-  /**
-   * Resolves `period_key` AND every time window. A Mumbai café's "once a day"
-   * must not reset at 05:30 local, and a recurring 6pm window must stay 6pm
-   * across a DST boundary.
-   */
-  @Column({ type: 'varchar', length: 64 })
-  timezone!: string;
-
   /** Default for currency benefits; a benefit may state another. */
   @Column({ type: 'char', length: 3, nullable: true })
   defaultCurrencyCode!: string | null;

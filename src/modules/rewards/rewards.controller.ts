@@ -67,7 +67,9 @@ export class RewardsController {
   @ApiOperation({
     summary: 'Create a reward program',
     description:
-      'A program starts as a draft. Its timezone resolves every cap period and every time ' +
+      'A program starts as a draft. Cap periods and time windows resolve in the BUSINESS’s ' +
+      'timezone, set once in business settings — a programme no longer carries its own, so ' +
+      'two of them can never disagree about when Tuesday starts. ' +
       'window, so it cannot be changed casually later.',
   })
   async createProgram(@CurrentScopedActor() actor: ScopedActorContext, @Body() body: unknown) {
@@ -249,7 +251,6 @@ function toProgramSummary(program: {
   refId: string;
   name: string;
   status: string;
-  timezone: string;
   startsAt: Date | null;
   endsAt: Date | null;
 }) {
@@ -257,7 +258,6 @@ function toProgramSummary(program: {
     refId: program.refId,
     name: program.name,
     status: program.status,
-    timezone: program.timezone,
     startsAt: program.startsAt,
     endsAt: program.endsAt,
   };

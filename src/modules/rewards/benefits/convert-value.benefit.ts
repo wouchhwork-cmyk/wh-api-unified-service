@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { AppException, ErrorCode } from '@/shared/errors';
 import { Injectable } from '@nestjs/common';
 import { RewardWalletRepository } from '@/database/repositories/reward-wallet.repository';
 import {
@@ -43,6 +44,11 @@ export class ConvertValueBenefit
     ctx: BenefitContext,
   ): Promise<AppliedBenefit> {
     const { burnPoints, grantMinor, currencyCode } = benefit.config;
+    /* See grant-currency: unstated means the business's, and the evaluator
+     * has already filled that in. Absent here means the business cleared it
+     * after this rule was written, and paying in a currency nobody chose is
+     * worse than not paying. */
+    if (!currencyCode) throw new AppException(ErrorCode.EnterpriseCurrencyNotSet);
 
     const pointsWallet = await this.wallets.ensureCustomerWallet({
       enterpriseId: ctx.enterpriseId,

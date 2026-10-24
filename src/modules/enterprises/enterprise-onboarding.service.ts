@@ -245,7 +245,6 @@ export class EnterpriseOnboardingService {
       mobileCallingCode: mobile?.callingCode ?? null,
       mobileNationalNumber: mobile?.nationalNumber ?? null,
       country: business.country.toUpperCase(),
-      timezone: business.timezone,
       websiteUrl: business.websiteUrl === undefined ? null : normalizeUrl(business.websiteUrl),
       city: normalizeOptionalText(business.city),
       state: normalizeOptionalText(business.state),

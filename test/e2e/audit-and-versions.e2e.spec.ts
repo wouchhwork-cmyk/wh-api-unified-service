@@ -144,11 +144,7 @@ describe('the audit trail and the version history, over HTTP', () => {
   it('records a program creation against the employee, and opens its history at version 1', async () => {
     const { auth } = await ownerWithRewards();
 
-    await http()
-      .post('/api/v1/rewards/programs')
-      .set(auth)
-      .send({ name: 'Monsoon', timezone: 'Asia/Kolkata', defaultCurrencyCode: 'INR' })
-      .expect(201);
+    await http().post('/api/v1/rewards/programs').set(auth).send({ name: 'Monsoon' }).expect(201);
 
     const rows = await audit(`entity_type = 'reward_program'`);
     expect(rows).toHaveLength(1);
@@ -177,7 +173,7 @@ describe('the audit trail and the version history, over HTTP', () => {
     const created = await http()
       .post('/api/v1/rewards/programs')
       .set(auth)
-      .send({ name: 'Monsoon', timezone: 'Asia/Kolkata', defaultCurrencyCode: 'INR' })
+      .send({ name: 'Monsoon' })
       .expect(201);
     const refId = created.body.data.refId as string;
 
@@ -248,11 +244,7 @@ describe('the audit trail and the version history, over HTTP', () => {
    */
   it('never writes the forwarding config into a snapshot', async () => {
     const { auth } = await ownerWithRewards();
-    await http()
-      .post('/api/v1/rewards/programs')
-      .set(auth)
-      .send({ name: 'Monsoon', timezone: 'Asia/Kolkata', defaultCurrencyCode: 'INR' })
-      .expect(201);
+    await http().post('/api/v1/rewards/programs').set(auth).send({ name: 'Monsoon' }).expect(201);
 
     const rows: { snapshot: Record<string, unknown> }[] = await db.query(
       `SELECT snapshot FROM entity_versions WHERE entity_type = 'reward_program'`,

@@ -589,7 +589,7 @@ describe('one business cannot reach another', () => {
       const program = await http()
         .post('/api/v1/rewards/programs')
         .set(auth(business.token))
-        .send({ name: 'Monsoon', timezone: 'Asia/Kolkata', defaultCurrencyCode: 'INR' })
+        .send({ name: 'Monsoon' })
         .expect(201);
       return program.body.data.refId as string;
     }

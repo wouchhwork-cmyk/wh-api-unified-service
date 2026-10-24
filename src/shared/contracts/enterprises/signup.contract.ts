@@ -28,7 +28,19 @@ export const SignupRequestSchema = z
           .length(2)
           .regex(/^[A-Za-z]{2}$/)
           .default('IN'),
-        timezone: z.string().trim().min(3).max(50).default('Asia/Kolkata'),
+        /*
+         * SIGNUP NO LONGER TAKES A TIMEZONE.
+         *
+         * It took one, validated as `min(3).max(50)` — which accepts "EST",
+         * "xxx" and most of the alphabet — and defaulted it to Asia/Kolkata.
+         * So every business that never thought about it was silently given a
+         * timezone, and one that typed an abbreviation was given a stored
+         * value nothing could resolve.
+         *
+         * It is set in business settings now, from the canonical IANA list,
+         * and until it is set it is NULL. Anything that needs to know what
+         * "today" means asks for it to be configured rather than guessing.
+         */
         city: z.string().trim().max(100).optional(),
         state: z.string().trim().max(100).optional(),
       })

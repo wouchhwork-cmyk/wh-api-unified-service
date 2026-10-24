@@ -1386,7 +1386,56 @@ already shipped and already wrong.
 - **A bare `throw new Error` made a deliberate per-tenant cap answer 500**, and
   `22P02` — a malformed uuid reaching a predicate — did the same.
 
-### 19.13 Still open
+### 19.13 Phase 4 — business-level settings, and two defaults that lied
+
+- **A business fact lived on each feature that used it.** `reward_programs`
+  carried its own `timezone` and `default_currency_code`, copied at creation
+  and never reconciled, so two programmes in one business could disagree about
+  when Tuesday starts and what money means. Both now live on `enterprises` and
+  are read from there — joined onto the programme row once, as
+  `enterpriseTimezone` and `enterpriseCurrencyCode`, so there is a single
+  resolution point rather than a lookup wherever somebody needs one.
+
+- **`timezone` defaulted to `Asia/Kolkata` and signup never asked.** A business
+  in London therefore had a timezone it never picked: "once a day" resetting at
+  half past six in the evening, correctly, for entirely the wrong reason, with
+  nothing on any screen to reveal it. The default is gone, the column is
+  nullable, and signup no longer takes one.
+
+- **Neither value has a safe default, so neither has one.** NULL means "not
+  chosen", which is what makes it possible to ASK. A rule that counts days — a
+  cap or a time window — is refused while there is no timezone; a rule that
+  grants money is refused while there is no currency. Each has its own error
+  code (`ENTERPRISE_TIMEZONE_NOT_SET`, `ENTERPRISE_CURRENCY_NOT_SET`, both 422)
+  rather than a generic validation failure, because the remedy is a different
+  screen and the client is expected to offer to take somebody there. **A points
+  rule with no cap and no window needs neither and is never asked.**
+
+- **Accepted values are a SET, not a shape.** The timezone must be a canonical
+  IANA zone the runtime lists, and abbreviations are refused — measured, not
+  assumed: `Intl` resolves `EST` to `America/Panama` and `IST` to
+  `Asia/Calcutta`, and a try/catch check would have stored both. The currency
+  must be an ISO 4217 code from the runtime's list; the previous
+  `/^[A-Z]{3}$/` is a description of what a currency code looks like rather
+  than a test of whether it is one, and accepted `XYZ`, `ABC` and `ZZZ`.
+
+- **The client reads the lists from the server.** `GET
+  /enterprises/settings/options` serves both, so the set somebody can choose
+  from and the set the validator accepts are the same object and cannot drift
+  — including when the runtime's timezone database updates.
+
+- **The runtime path fails closed as well as the write path.** A business can
+  clear a setting after a rule already depends on it. A cap whose period cannot
+  be derived skips the award rather than awarding without enforcing the cap; a
+  time window with no timezone matches nothing; a money benefit with no
+  resolvable currency refuses rather than opening a wallet in a currency
+  nobody chose.
+
+- **`enterprise.manage` is now enforced somewhere.** It was declared, seeded,
+  used by the role templates to separate owner from manager, and consulted by
+  no endpoint. The settings route is the first thing to require it.
+
+### 19.14 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is
   complete; in dev the code is logged, and in qa or prod a missing provider is

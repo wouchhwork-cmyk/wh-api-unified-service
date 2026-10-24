@@ -174,7 +174,7 @@ describe('reward programs behind the feature switch', () => {
     const refused = await http()
       .post('/api/v1/rewards/programs')
       .set(agentAuth)
-      .send({ name: 'Monsoon', timezone: 'Asia/Kolkata' })
+      .send({ name: 'Monsoon' })
       .expect(403);
 
     /* So the only thing left to refuse them is the role. */

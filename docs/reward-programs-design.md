@@ -399,12 +399,22 @@ is **acted upon**: adjusted today, and redeemed against later.
 | enterprise_id | BIGINT | NOT NULL |
 | name | VARCHAR(120) | |
 | status | VARCHAR(16) | `ProgramStatus` — the switch, **not** the schedule |
-| timezone | VARCHAR(64) | **resolves `period_key` AND every window**. Defaults from enterprise |
-| default_currency_code | CHAR(3) | rule may override |
 | forward_provider_code | VARCHAR(40) | NULL = keep value here. `'noop'` in V1 |
 | forward_config | JSONB | endpoint + mapping. **A secret reference, never a secret** |
 | starts_at | TIMESTAMPTZ | NULL = already running. **May be in the future** |
 | ends_at | TIMESTAMPTZ | NULL = no end |
+
+> **A PROGRAMME HAS NEITHER A TIMEZONE NOR A CURRENCY.** Both were columns here, taken at
+> creation and never reconciled — so two programmes in one business could disagree about when
+> Tuesday starts and about what money means, and a `period_key` derived from one would silently
+> differ from the same period derived from the other. They belong to the business
+> (`enterprises.timezone`, `enterprises.currency_code`) and are read from there by the evaluator,
+> joined onto the programme row once as `enterpriseTimezone` and `enterpriseCurrencyCode`.
+>
+> Both are NULLABLE, because "not chosen" is a real state. A rule that counts days — a cap, or a
+> time window — is refused while the business has no timezone, and a rule that grants money is
+> refused while it has no currency, each with its own error code so a client can name the remedy.
+> **A points rule with no cap and no window needs neither**, and is never asked for either.
 
 ```sql
 UNIQUE (enterprise_id, lower(name)) WHERE is_deleted = false

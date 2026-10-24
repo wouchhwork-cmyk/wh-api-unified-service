@@ -33,18 +33,57 @@ describe('resolved benefit payloads', () => {
     expect(good.success).toBe(true);
   });
 
-  it('requires a currency on a money payload', () => {
+  /**
+   * A money payload may omit its currency, and that now MEANS something:
+   * the business's own.
+   *
+   * This asserted the opposite — that a currency was required here — which
+   * made the business-level setting unable to be the answer to anything.
+   * Every benefit had to repeat it, and a business changing currency would
+   * have had to edit every rule it owns. A rule that omits it and belongs to
+   * a business with no currency is refused at CREATION with
+   * `ENTERPRISE_CURRENCY_NOT_SET`, which is a different layer's job.
+   */
+  it('lets a money payload omit its currency, meaning the business’s own', () => {
     const withoutCurrency = RewardBenefitConfigSchema.safeParse({
       benefitKind: RewardBenefitKind.GrantCurrency,
       config: { minorUnits: 5000 },
     });
-    expect(withoutCurrency.success).toBe(false);
+    expect(withoutCurrency.success).toBe(true);
 
     const withCurrency = RewardBenefitConfigSchema.safeParse({
       benefitKind: RewardBenefitKind.GrantCurrency,
       config: { minorUnits: 5000, currencyCode: 'INR' },
     });
     expect(withCurrency.success).toBe(true);
+  });
+
+  /**
+   * THE CHECK THAT USED TO BE A SHAPE. `/^[A-Z]{3}$/` describes what a
+   * currency code looks like rather than testing whether it is one, so `XYZ`
+   * was accepted and stored and a wallet could be opened in a currency that
+   * does not exist — with nothing downstream to reconcile it against.
+   */
+  it('refuses a three-letter code that is not a real currency', () => {
+    for (const code of ['XYZ', 'ABC', 'ZZZ']) {
+      const parsed = RewardBenefitConfigSchema.safeParse({
+        benefitKind: RewardBenefitKind.GrantCurrency,
+        config: { minorUnits: 5000, currencyCode: code },
+      });
+      expect(parsed.success, `${code} must be refused`).toBe(false);
+    }
+  });
+
+  /** Case is a typing convenience, not a different currency. */
+  it('accepts a real currency in any case and stores it upper', () => {
+    const parsed = RewardBenefitConfigSchema.safeParse({
+      benefitKind: RewardBenefitKind.GrantCurrency,
+      config: { minorUnits: 5000, currencyCode: 'inr' },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect((parsed.data.config as { currencyCode?: string }).currencyCode).toBe('INR');
+    }
   });
 
   /**

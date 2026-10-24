@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '@/shared/constants';
+import { CurrencyCodeSchema } from '@/shared/contracts/enterprises/settings.contract';
 import {
   ISO_MONDAY,
   ISO_SUNDAY,
@@ -38,12 +39,18 @@ import {
 
 /** Money is minor units and a currency, always travelling together. */
 const MinorUnitsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const CurrencyCodeSchema = z
-  .string()
-  .trim()
-  .toUpperCase()
-  .length(3)
-  .regex(/^[A-Z]{3}$/, 'ISO 4217 alphabetic code');
+/*
+ * THE SHARED ONE, checked against the ISO 4217 list rather than a shape.
+ *
+ * This file used to declare its own: `/^[A-Z]{3}$/`, which describes what a
+ * currency code looks like instead of testing whether it is one. `XYZ`, `ABC`
+ * and `ZZZ` were accepted and stored, and a wallet could be opened in a
+ * currency that does not exist.
+ *
+ * A benefit may still name a currency of its own — a promotion can pay in
+ * something other than the business's usual — so the field stays here. What
+ * changed is that it now has to be real.
+ */
 
 /* ========================================================================
  * Benefits — what the customer gets
@@ -56,7 +63,15 @@ export const GrantPointsConfigSchema = z.strictObject({
 
 export const GrantCurrencyConfigSchema = z.strictObject({
   minorUnits: MinorUnitsSchema.refine((v) => v > 0, 'must be positive'),
-  currencyCode: CurrencyCodeSchema,
+  /*
+   * OPTIONAL, and unstated means the business's own currency.
+   *
+   * Required here, the business setting could never be the answer to
+   * anything — every benefit would repeat it, and a business changing
+   * currency would have to edit every rule it owns. Stating one is for the
+   * case it exists for: a promotion paying in something other than the usual.
+   */
+  currencyCode: CurrencyCodeSchema.optional(),
 });
 
 export const IssueEntitlementConfigSchema = z.strictObject({
@@ -68,7 +83,8 @@ export const IssueEntitlementConfigSchema = z.strictObject({
 export const ConvertValueConfigSchema = z.strictObject({
   burnPoints: z.number().int().positive(),
   grantMinor: MinorUnitsSchema.refine((v) => v > 0, 'must be positive'),
-  currencyCode: CurrencyCodeSchema,
+  /* Optional for the same reason as `grant_currency` above. */
+  currencyCode: CurrencyCodeSchema.optional(),
 });
 
 /**
@@ -162,28 +178,18 @@ export type RewardConditionConfig = z.infer<typeof RewardConditionConfigSchema>;
  * Programs
  * ===================================================================== */
 
+/**
+ * A programme takes NEITHER a timezone NOR a currency any more.
+ *
+ * Both are facts about the BUSINESS, set once in business settings and read
+ * from there by everything. Taken per programme, they were copied at creation
+ * and never reconciled — so two programmes in one business could disagree
+ * about when Tuesday starts and about what money means, with nothing to say
+ * which was right.
+ */
 export const CreateRewardProgramSchema = z
   .strictObject({
     name: z.string().trim().min(1).max(120),
-    /**
-     * Resolves `period_key` AND every time window. Validated against the
-     * runtime's own zone list rather than a hardcoded array, so it cannot go
-     * stale when the tz database updates.
-     */
-    timezone: z
-      .string()
-      .trim()
-      .min(1)
-      .max(64)
-      .refine((tz) => {
-        try {
-          new Intl.DateTimeFormat('en-US', { timeZone: tz });
-          return true;
-        } catch {
-          return false;
-        }
-      }, 'not a recognised IANA timezone'),
-    defaultCurrencyCode: CurrencyCodeSchema.nullable().default(null),
     startsAt: z.coerce.date().nullable().default(null),
     endsAt: z.coerce.date().nullable().default(null),
   })

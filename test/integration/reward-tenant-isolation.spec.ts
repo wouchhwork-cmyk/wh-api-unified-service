@@ -30,8 +30,8 @@ describe('reward tenant isolation', () => {
   async function seedTenant(name: string, slug: string) {
     const enterpriseId = await seedEnterprise(db, name, slug);
     const [program] = await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1, 'Rewards', 'UTC') RETURNING id`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1, 'Rewards') RETURNING id`,
       [enterpriseId],
     );
     const [rule] = await db.query(
@@ -143,14 +143,14 @@ describe('reward tenant isolation', () => {
   /** A program name is unique per tenant, not globally. */
   it('lets two tenants use the same program name', async () => {
     await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1, 'Summer Campaign', 'UTC')`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1, 'Summer Campaign')`,
       [acme.enterpriseId],
     );
     await expect(
       db.query(
-        `INSERT INTO reward_programs (enterprise_id, name, timezone)
-         VALUES ($1, 'Summer Campaign', 'UTC')`,
+        `INSERT INTO reward_programs (enterprise_id, name)
+         VALUES ($1, 'Summer Campaign')`,
         [zenith.enterpriseId],
       ),
     ).resolves.toBeDefined();
@@ -158,14 +158,14 @@ describe('reward tenant isolation', () => {
 
   it('refuses a duplicate program name within one tenant', async () => {
     await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1, 'Summer Campaign', 'UTC')`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1, 'Summer Campaign')`,
       [acme.enterpriseId],
     );
     await expect(
       db.query(
-        `INSERT INTO reward_programs (enterprise_id, name, timezone)
-         VALUES ($1, 'summer campaign', 'UTC')`,
+        `INSERT INTO reward_programs (enterprise_id, name)
+         VALUES ($1, 'summer campaign')`,
         [acme.enterpriseId],
       ),
     ).rejects.toThrow();

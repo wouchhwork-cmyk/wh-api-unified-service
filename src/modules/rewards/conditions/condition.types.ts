@@ -20,7 +20,9 @@ export interface ConditionContext {
   /** When the customer ACTED. Never now(), never when we learned. */
   readonly occurredAtUtc: Date;
   /** The program's IANA zone. Every wall-clock comparison resolves through it. */
-  readonly timezone: string;
+  /** NULL = the business has not set one. A condition needing a calendar
+   * day fails CLOSED rather than guessing at one. */
+  readonly timezone: string | null;
   /** Comment body or post caption, where the trigger has one. */
   readonly content: string | null;
   /** First time we ever saw this customer, for tenure checks. */

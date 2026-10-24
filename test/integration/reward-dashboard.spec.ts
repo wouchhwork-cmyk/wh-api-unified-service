@@ -40,8 +40,8 @@ describe('the reward dashboard', () => {
     enterpriseId = await seedEnterprise(db, 'Dash Co', 'dash-co');
 
     const [program] = await db.query(
-      `INSERT INTO reward_programs (enterprise_id, name, timezone)
-       VALUES ($1, 'Rewards', 'UTC') RETURNING id`,
+      `INSERT INTO reward_programs (enterprise_id, name)
+       VALUES ($1, 'Rewards') RETURNING id`,
       [enterpriseId],
     );
     programId = Number(program.id);

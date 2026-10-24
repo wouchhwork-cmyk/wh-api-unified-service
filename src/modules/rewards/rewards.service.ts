@@ -17,6 +17,9 @@ import type {
 import {
   ActorKind,
   AuditAction,
+  CURRENCY_BEARING_BENEFITS,
+  RewardCapScope,
+  RewardConditionKind,
   AuditEntityType,
   CONSTANT_ONE_FACTOR_PROVIDER,
   RewardAwardMode,
@@ -70,8 +73,6 @@ export class RewardsService {
   private static snapshotOf(program: {
     name: string;
     status: string;
-    timezone: string;
-    defaultCurrencyCode: string | null;
     startsAt: Date | null;
     endsAt: Date | null;
     forwardProviderCode: string | null;
@@ -79,8 +80,6 @@ export class RewardsService {
     return {
       name: program.name,
       status: program.status,
-      timezone: program.timezone,
-      defaultCurrencyCode: program.defaultCurrencyCode,
       startsAt: program.startsAt?.toISOString() ?? null,
       endsAt: program.endsAt?.toISOString() ?? null,
       forwardProviderCode: program.forwardProviderCode,
@@ -109,7 +108,7 @@ export class RewardsService {
          * REFERENCE, so it is excluded entirely — auditing that it changed is
          * right, auditing its value is not.
          */
-        changes: { name: program.name, timezone: program.timezone },
+        changes: { name: program.name },
       });
 
       /*
@@ -270,6 +269,8 @@ export class RewardsService {
     if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
 
     this.assertBenefitsAreCoherent(input);
+    RewardsService.assertMoneyHasACurrency(input, program.enterpriseCurrencyCode);
+    RewardsService.assertCalendarRulesHaveATimezone(input, program.enterpriseTimezone);
 
     const rule = await this.tx.runInTransaction(async () => {
       const created = await this.rules.insertRule({
@@ -396,6 +397,82 @@ export class RewardsService {
    * is discrete. Only the handler knows, so the registry is asked — which is
    * what stops a factor of 0.6 producing six tenths of a coffee.
    */
+  /**
+   * A rule that grants money needs to know in what.
+   *
+   * A benefit may name its own currency — a promotion paying in something
+   * other than the usual — and when it does, this has nothing to say. When it
+   * does not, the answer is the business's currency, and a business that has
+   * never chosen one has no answer. Refused HERE rather than at grant time,
+   * because a rule saved today and silently skipped in three weeks is the
+   * worst version of this: the screen said it worked.
+   *
+   * ITS OWN ERROR CODE, not a validation failure, because the remedy is a
+   * different screen. The client is expected to recognise it, say so, and
+   * offer to take them to business settings — which it cannot do if the
+   * refusal only says "invalid".
+   *
+   * A POINTS RULE IS UNAFFECTED, deliberately. Points are not money and need
+   * no currency, so a business with none configured can still run a full
+   * points programme and is never asked a question it does not need to answer.
+   */
+  /**
+   * A rule that counts days needs to know where the day starts.
+   *
+   * Two things need a calendar: a frequency cap — "once a day" has to know
+   * when the day turns over — and a time window, because "Tuesday 6pm" means
+   * nothing without a place. A rule with neither needs no timezone and is
+   * never asked for one, exactly as a points rule is never asked for a
+   * currency.
+   *
+   * Refused at CREATION rather than at grant time. The runtime path fails
+   * closed too, which is right, but a rule saved today and silently skipping
+   * every event in three weeks is the version of this that nobody notices
+   * until the awards are missing.
+   */
+  private static assertCalendarRulesHaveATimezone(
+    input: CreateRewardRuleInput,
+    businessTimezone: string | null,
+  ): void {
+    if (businessTimezone !== null) return;
+
+    const reasons: string[] = [];
+    if (input.capScope !== RewardCapScope.None) {
+      reasons.push(
+        `a cap of "once per ${input.capScope}" needs to know when the period turns over`,
+      );
+    }
+    if (input.conditions.some((c) => c.conditionKind === RewardConditionKind.TimeWindow)) {
+      reasons.push('a time window needs to know what hour it is for this business');
+    }
+    if (reasons.length === 0) return;
+
+    throw new AppException(ErrorCode.EnterpriseTimezoneNotSet, {
+      details: reasons.map((issue) => ({ field: 'timezone', issue })),
+    });
+  }
+
+  private static assertMoneyHasACurrency(
+    input: CreateRewardRuleInput,
+    businessCurrency: string | null,
+  ): void {
+    if (businessCurrency !== null) return;
+
+    const unfunded = input.benefits.filter(
+      (benefit) =>
+        CURRENCY_BEARING_BENEFITS.has(benefit.benefitKind) &&
+        (benefit.config as { currencyCode?: string }).currencyCode === undefined,
+    );
+    if (unfunded.length === 0) return;
+
+    throw new AppException(ErrorCode.EnterpriseCurrencyNotSet, {
+      details: unfunded.map((benefit) => ({
+        field: 'benefits',
+        issue: `${benefit.benefitKind} needs a currency, and this business has not set one`,
+      })),
+    });
+  }
+
   private assertBenefitsAreCoherent(input: CreateRewardRuleInput): void {
     for (const benefit of input.benefits) {
       if (benefit.awardMode !== RewardAwardMode.UpTo) continue;

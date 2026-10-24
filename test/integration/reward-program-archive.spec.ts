@@ -39,8 +39,6 @@ describe('archiving a reward program', () => {
     programs.create({
       enterpriseId: tenant,
       name,
-      timezone: 'Asia/Kolkata',
-      defaultCurrencyCode: 'INR',
       startsAt: null,
       endsAt: null,
     });

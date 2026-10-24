@@ -211,7 +211,8 @@ The tenant. One row per business that signs up.
 | state       | VARCHAR(100) |                                             |                                    |
 | country     | VARCHAR(2)   | NOT NULL, DEFAULT 'IN'                      | ISO 3166-1 alpha-2                 |
 | pincode     | VARCHAR(10)  |                                             |                                    |
-| timezone    | VARCHAR(50)  | NOT NULL, DEFAULT 'Asia/Kolkata'            | Drives the business's reporting day |
+| timezone    | VARCHAR(50)  |                                             | **The one the whole product reads.** NULL = not chosen; see below |
+| currency_code | CHAR(3)    |                                             | ISO 4217. NULL = not chosen; a rule granting money is refused until it is |
 | status      | VARCHAR(30)  | NOT NULL, DEFAULT 'active'                  | `active` · `suspended`             |
 | is_deleted  | BOOLEAN      | NOT NULL, DEFAULT false                     |                                    |
 | created_at  | TIMESTAMPTZ  | NOT NULL, DEFAULT now()                     |                                    |
@@ -238,6 +239,34 @@ Login by a single credential cannot work if the same credential can appear on tw
 - `staff_members` — one row per **Wouchh employee**, for platform-wide reach that cannot be expressed as a list of employments.
 
 One person in three businesses is one `identities` row and three `enterprise_employees` rows.
+
+> **THE BUSINESS OWNS ITS TIMEZONE AND ITS CURRENCY, and nothing keeps a second copy.** Every
+> feature that needs to know what "today" or "6pm" or "money" means for a business reads these two
+> columns — reward cap periods, happy-hour windows, currency wallets, and whatever is added next.
+>
+> `reward_programs` used to carry its own `timezone` and `default_currency_code`, taken at
+> creation. Two programmes in one business could therefore disagree about when Tuesday starts and
+> what money means, with nothing to reconcile them. The copies were removed rather than
+> synchronised, because a copy that must be kept in sync is a copy that will not be.
+>
+> **BOTH ARE NULLABLE, and that is the deliberate part.** `timezone` was `NOT NULL DEFAULT
+> 'Asia/Kolkata'`, so a business in London had a timezone it never picked — "once a day" resetting
+> at half past six in the evening, correctly, for entirely the wrong reason, with nothing on any
+> screen to reveal it. Signup no longer asks and no longer defaults. A currency has no safe default
+> at all: paying somebody in rupees because nobody said otherwise is worse than refusing.
+>
+> So "not chosen" is representable, and the features that need one ask for it by name —
+> `ENTERPRISE_TIMEZONE_NOT_SET` and `ENTERPRISE_CURRENCY_NOT_SET`, both 422, each naming the
+> remedy so a client can offer to take somebody to the settings screen. A points rule with no cap
+> and no window needs neither and is never asked for either.
+>
+> **Accepted values are a set, not a shape.** The timezone must be a canonical IANA zone the
+> runtime lists; abbreviations are refused, because `Intl` resolves `EST` to `America/Panama` and
+> `IST` to `Asia/Calcutta`, and both would otherwise have been stored. The currency must be an ISO
+> 4217 code from the runtime's list; the old `/^[A-Z]{3}$/` accepted `XYZ`. `GET
+> /enterprises/settings/options` serves both lists, so a client's dropdown and the server's
+> validator are the same set.
+
 
 ## 2. `identities`
 
