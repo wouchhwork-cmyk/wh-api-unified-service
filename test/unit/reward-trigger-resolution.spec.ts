@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDirectMessageTrigger } from '@/modules/inbox/direct-message-projector.service';
+import {
+  buildPlatformFacts,
+  resolveDirectMessageTrigger,
+} from '@/modules/inbox/direct-message-projector.service';
 import { RewardTriggerKind } from '@/shared/enums';
 
 /**
@@ -90,5 +93,98 @@ describe('resolveDirectMessageTrigger', () => {
     expect(resolveDirectMessageTrigger({ isStoryMention: false })).toBe(
       RewardTriggerKind.DirectMessageInbound,
     );
+  });
+
+  /**
+   * FROM THE PAYLOAD, not from hand-written facts.
+   *
+   * The resolver's inputs are only as good as the extraction that feeds it, and
+   * the risk in all of this is the field names Meta uses — not the branching.
+   * Six story mentions and one story reply in the stored traffic were replayed
+   * through `buildPlatformFacts` and classified correctly; these cover the two
+   * shapes that have never once arrived, so they have no live evidence at all.
+   */
+  describe('from a whole messaging event', () => {
+    const triggerFor = (event: Record<string, unknown>, isStoryMention = false) =>
+      resolveDirectMessageTrigger(
+        buildPlatformFacts(
+          (event as { message?: Record<string, unknown> }).message ?? {},
+          event,
+          isStoryMention,
+        ),
+      );
+
+    /** An m.me link, an ad, or a QR code in the shop. Never yet observed live. */
+    it('reads an arrival from a referral payload', () => {
+      expect(
+        triggerFor({
+          sender: { id: '123' },
+          message: { mid: 'm1', text: 'hi' },
+          referral: { ref: 'AUTUMN', source: 'ADS', type: 'OPEN_THREAD', ad_id: '456' },
+        }),
+      ).toBe(RewardTriggerKind.ReferralEntry);
+    });
+
+    /** An ice breaker or template button. Never yet observed live. */
+    it('reads a postback payload', () => {
+      expect(
+        triggerFor({
+          sender: { id: '123' },
+          postback: { mid: 'm2', title: 'See the menu', payload: 'MENU' },
+        }),
+      ).toBe(RewardTriggerKind.PostbackTapped);
+    });
+
+    it('reads a quick reply as a tap', () => {
+      expect(
+        triggerFor({
+          sender: { id: '123' },
+          message: { mid: 'm3', text: 'Yes', quick_reply: { payload: 'YES' } },
+        }),
+      ).toBe(RewardTriggerKind.PostbackTapped);
+    });
+
+    /**
+     * THE SHAPE THAT ACTUALLY ARRIVES, taken from stored traffic: a story reply
+     * carries reply_to.story, and the ordinary reply fields sit beside it.
+     */
+    it('reads a story reply without being confused by the reply fields', () => {
+      expect(
+        triggerFor({
+          sender: { id: '123' },
+          message: {
+            mid: 'm4',
+            text: 'love this',
+            reply_to: {
+              mid: 'parent',
+              is_self_reply: false,
+              story: { id: '17900000000000000', url: 'https://example.test/s.jpg' },
+            },
+          },
+        }),
+      ).toBe(RewardTriggerKind.StoryReply);
+    });
+
+    /** A plain reply to a MESSAGE is not a story reply. */
+    it('does not treat an ordinary reply as a story reply', () => {
+      expect(
+        triggerFor({
+          sender: { id: '123' },
+          message: { mid: 'm5', text: 'ok', reply_to: { mid: 'parent', is_self_reply: false } },
+        }),
+      ).toBe(RewardTriggerKind.DirectMessageInbound);
+    });
+
+    it('reads a story mention from the normalised attachment flag', () => {
+      expect(triggerFor({ sender: { id: '123' }, message: { mid: 'm6' } }, true)).toBe(
+        RewardTriggerKind.StoryMention,
+      );
+    });
+
+    it('leaves an ordinary text message alone', () => {
+      expect(triggerFor({ sender: { id: '123' }, message: { mid: 'm7', text: 'Yhy' } })).toBe(
+        RewardTriggerKind.DirectMessageInbound,
+      );
+    });
   });
 });
