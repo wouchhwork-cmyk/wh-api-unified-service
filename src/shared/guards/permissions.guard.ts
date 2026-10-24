@@ -7,6 +7,7 @@ import {
   REQUIRED_PERMISSIONS_KEY,
 } from '@/shared/decorators';
 import { AppException, ErrorCode } from '@/shared/errors';
+import { PermissionRepository } from '@/database/repositories/permission.repository';
 
 /**
  * Gate 2: do the actor's resolved permissions include everything the route
@@ -20,9 +21,12 @@ import { AppException, ErrorCode } from '@/shared/errors';
  */
 @Injectable()
 export class PermissionsGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly permissions: PermissionRepository,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -52,6 +56,7 @@ export class PermissionsGuard implements CanActivate {
      * the strict reading rather than whichever fell out.
      */
     if (declaresAny && !(anyOf ?? []).some((permission) => actor.permissions.has(permission))) {
+      await this.refuseWithTheRealReason(actor.enterpriseId, anyOf ?? []);
       throw new AppException(ErrorCode.PermissionDenied, {
         // Named for the same reason the missing ALL codes are: they are not
         // secrets, and a client author otherwise learns them by trial and error.
@@ -63,6 +68,7 @@ export class PermissionsGuard implements CanActivate {
 
     const missing = (required ?? []).filter((permission) => !actor.permissions.has(permission));
     if (missing.length > 0) {
+      await this.refuseWithTheRealReason(actor.enterpriseId, missing);
       // Naming the missing codes is deliberate: they are not secrets, and a
       // client author otherwise learns them only by trial and error. No
       // internal ids are exposed.
@@ -72,5 +78,33 @@ export class PermissionsGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  /**
+   * Throws `FEATURE_NOT_ENABLED` when gate 1, not gate 2, is what refused.
+   *
+   * Both gates end in a 403 and the resolved set cannot tell them apart: a
+   * permission whose feature the business does not hold is simply absent, so it
+   * is indistinguishable from one the actor's roles never granted. The client
+   * needs the difference — "ask your admin for the role" and "your business
+   * does not have this feature" are different remedies, and only one of them is
+   * the user's to act on.
+   *
+   * Returns quietly when the permission is genuinely not granted, leaving the
+   * caller to throw `PERMISSION_DENIED`. No feature key is disclosed unless the
+   * actor's own business is the one missing it.
+   */
+  private async refuseWithTheRealReason(
+    enterpriseId: number | null,
+    candidates: readonly string[],
+  ): Promise<void> {
+    if (enterpriseId === null) return;
+
+    const blocking = await this.permissions.featureBlocking(enterpriseId, candidates);
+    if (!blocking) return;
+
+    throw new AppException(ErrorCode.FeatureNotEnabled, {
+      details: [{ field: 'feature', issue: blocking }],
+    });
   }
 }

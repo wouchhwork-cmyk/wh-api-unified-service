@@ -167,26 +167,35 @@ export class ConnectionsService {
     const disconnected = await this.tx.runInTransaction(async () => {
       const count = await this.channels.disconnectForConnection(enterpriseId, connection.id);
       await this.connections.revoke(enterpriseId, connection.id);
-      return count;
-    });
 
-    /*
-     * AFTER the commit, because an audit row claiming a disconnect that rolled
-     * back is worse than none — and the record exists for a reason: this
-     * withdraws a business's authority over its own Instagram, clears live
-     * tokens and stops every future delivery. Nothing recorded who did it.
-     *
-     * The channel count travels with it: "they disconnected" and "they
-     * disconnected eleven channels" are different events to whoever reads this
-     * later. Names and tokens stay out of `changes`.
-     */
-    await this.audit.record({
-      action: AuditAction.Disconnected,
-      entityType: AuditEntityType.ProviderConnection,
-      entityId: connection.id,
-      enterpriseId,
-      changes: { status: { from: connection.status, to: ConnectionStatus.Revoked } },
-      metadata: { channelsDisconnected: disconnected },
+      /*
+       * INSIDE the transaction, with the writes it describes.
+       *
+       * This sat after the commit, arguing that an audit row claiming a
+       * disconnect that rolled back is worse than none. The premise was right
+       * and the placement did not follow from it: `AuditService` joins the
+       * ambient transaction, so a row written here rolls back WITH the
+       * disconnect and can never claim anything that did not happen. After the
+       * commit was the placement that could lose the row, not the one that
+       * could invent it.
+       *
+       * The record matters: this withdraws a business's authority over its own
+       * Instagram, clears live tokens and stops every future delivery, and
+       * nothing recorded who did it. The channel count travels with it —
+       * "they disconnected" and "they disconnected eleven channels" are
+       * different events to whoever reads this later. Names and tokens stay
+       * out of `changes`.
+       */
+      await this.audit.record({
+        action: AuditAction.Disconnected,
+        entityType: AuditEntityType.ProviderConnection,
+        entityId: connection.id,
+        enterpriseId,
+        changes: { status: { from: connection.status, to: ConnectionStatus.Revoked } },
+        metadata: { channelsDisconnected: count },
+      });
+
+      return count;
     });
 
     this.logger.info(

@@ -1,4 +1,5 @@
 import type { OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import { AppException, ErrorCode } from '@/shared/errors';
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Client } from 'pg';
@@ -178,7 +179,22 @@ export class InboxEventsService implements OnModuleInit, OnApplicationShutdown {
     const existing = this.subscribers.get(enterpriseId) ?? new Set<InboxSubscriber>();
 
     if (existing.size >= SSE_MAX_STREAMS_PER_ENTERPRISE) {
-      throw new Error('too many open streams for this business');
+      /*
+       * A TYPED ERROR, because this is the caller's situation and not our
+       * failure. A bare `Error` escapes the catalogue, so the filter had
+       * nothing to map and answered `INTERNAL_ERROR` 500 — logged at `error`
+       * as though the service had broken, when a deliberate per-tenant control
+       * had done exactly its job. A 429 tells the client to close a tab and
+       * try again, which is the actual remedy.
+       */
+      throw new AppException(ErrorCode.RateLimited, {
+        details: [
+          {
+            field: 'stream',
+            issue: 'this business already has the maximum number of open streams',
+          },
+        ],
+      });
     }
 
     this.visibleKinds.set(subscriber, visibleKinds);

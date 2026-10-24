@@ -17,6 +17,7 @@ import {
   ERROR_STATUS,
   asPostgresError,
   mapConstraintViolation,
+  PG_ERROR,
 } from '@/shared/errors';
 import type { ErrorEnvelope, ResponseMeta } from '@/shared/contracts/envelope';
 
@@ -51,7 +52,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code: body.error.code,
       status,
       method: request.method,
-      route: request.route?.path ?? request.url,
+      /*
+       * THE PATH, NEVER THE QUERY STRING. `request.url` carries it, and the
+       * request serialiser strips it deliberately — query strings carry codes
+       * and identifiers we have promised never to log. This fallback put it
+       * back on the error path, which is the one path most likely to be read.
+       *
+       * It only fires for an unmatched route, so the realistic exposure was a
+       * mistyped URL carrying an OAuth `code`. Narrow, and it contradicted the
+       * stated rule, which is enough.
+       */
+      route: request.route?.path ?? request.url.split('?')[0],
       err: exception,
     };
     if (isServerError(status)) {
@@ -119,9 +130,37 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
-    // A statement_timeout is a real, diagnosable condition — not an anonymous 500.
     const pg = asPostgresError(exception);
-    if (pg?.code === '57014') {
+
+    /*
+     * A MALFORMED VALUE IS THE CALLER'S MISTAKE, and must not read as ours.
+     *
+     * Every route validates its reference ids at the edge, so this should be
+     * unreachable — and it was not: one route took a `programRefId` straight
+     * from the query string into a `uuid` predicate, and anything that was not
+     * a uuid raised 22P02 and fell through to INTERNAL_ERROR. A 500 tells the
+     * client to retry and tells us to go looking for a bug of our own.
+     *
+     * The edge validation is still the real fix. This is the backstop, so the
+     * next route that forgets it answers 422 rather than 500.
+     */
+    if (pg?.code === PG_ERROR.InvalidTextRepresentation) {
+      return {
+        status: ERROR_STATUS[ErrorCode.ValidationFailed],
+        body: {
+          success: false,
+          error: {
+            code: ErrorCode.ValidationFailed,
+            message: ERROR_MESSAGE[ErrorCode.ValidationFailed],
+            /* No column name, no SQL, no driver text — that is ours to log. */
+            details: [{ issue: 'a value in this request is not in the expected format' }],
+          },
+        },
+      };
+    }
+
+    // A statement_timeout is a real, diagnosable condition — not an anonymous 500.
+    if (pg?.code === PG_ERROR.QueryCanceled) {
       return {
         status: ERROR_STATUS[ErrorCode.RequestTimeout],
         body: {

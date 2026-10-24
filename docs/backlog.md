@@ -389,6 +389,9 @@ Machinery that exists, is migrated, has indexes, and is never read.
 | **Token expiry warnings** | S | `SweeperWorker.flagExpiringTokens` emits a debug line and moves no token to an expiring state, so a channel whose token dies simply goes quiet. `EXPIRY_SWEEP_CRON` is validated, plumbed to config, and read by nothing. |
 | **Feature expiry** | S | Nothing acts on `enterprise_features.expires_at`; a feature never moves to `expired` on its own. |
 | **Channel retirement** | S | No code path writes `is_deleted = true` or moves a channel to `disconnected`/`expired`. The connect flow only upserts the Pages currently discovered, so a Page that goes away stays active forever. |
+| **Entitlement lifecycle** | L | `reward_entitlements` can be `issued` and `revoked` and nothing else. `reserved`, `redeemed` and `expired` are declared and unreachable: there is no redemption path and no expiry sweep, so an entitlement whose `expires_at` has passed stays `issued` for ever and is still presented to the business as a live right. **Deliberately out of scope** — redemption needs an item catalogue, which is a product decision rather than a missing branch — but recorded here because an incomplete state machine is the kind of gap that reads as an oversight. |
+| **Three permissions nothing enforces** | S | `features.decide`, `customers.manage` and `enterprise.manage` are declared, seeded and granted to role templates, and no endpoint consults any of them. `features.decide` is redundant rather than missing — the route it describes sits behind `@RequirePlatformAdmin`, which is strictly narrower. `enterprise.manage` is load-bearing in the seed even so: the owner/manager split is defined by filtering it out, so the distinction exists in the templates and nowhere else. `customers.manage` awaits a customer-mutating endpoint. All three read as controls and are not; either enforce or remove them when the endpoints arrive. |
+| **Three error codes nothing throws** | S | `POST_NOT_FOUND`, `CUSTOMER_BLOCKED` and `OAUTH_DENIED` are in the status map with no throw site. `OAUTH_DENIED` is deliberate — the callback redirects with `status=cancelled` rather than erroring — and the other two await their endpoints. `FEATURE_NOT_ENABLED` was in this list and is now thrown by `PermissionsGuard`. |
 
 ---
 
@@ -396,25 +399,33 @@ Machinery that exists, is migrated, has indexes, and is never read.
 
 The schema supports all of these; nothing exposes them.
 
-- **Change an employee's role** after creation. Today a role is set once, at
-  creation, and cannot be changed. **S**
-- **Create or edit a role.** A business gets its four copied templates and cannot
-  alter them. **M**
-- **A business requesting a feature.** `access_requested`, the `features.request`
-  permission and the whole request path are modelled and unreachable — only an
-  admin can grant. **S**
+- ~~**Change an employee's role** after creation.~~ DONE —
+  `POST /roles/employees/:refId` replaces the set, refuses to leave the business
+  without an owner, and records both directions in the audit trail.
+- ~~**Create or edit a role.**~~ DONE — `POST /roles`, `PATCH /roles/:refId` and
+  `POST /roles/:refId/archive`, bounded by the actor's own authority level.
+- ~~**A business requesting a feature.**~~ DONE —
+  `POST /features/:featureKey/request`, with the admin decision on
+  `POST /platform/enterprises/:refId/features/:featureKey`.
 - ~~**Customer directory.**~~ DONE — `GET /customers`, searchable by name or
   handle, with the split given name and the Instagram handle, and a page in the
   portal.
 - ~~**Posts.**~~ DONE — synced by the backfill, served by `GET /posts` with
   previews, engagement counts and a channel filter, and a page in the portal.
   What is missing is a post DETAIL view showing its comment thread. **M**
-- **Comment hide and delete.** The outbound event types and relay senders exist;
-  no endpoint triggers them. **S**
+- ~~**Comment hide and delete.**~~ DONE —
+  `POST /conversations/:refId/messages/:messageRefId/moderate` for hide, unhide
+  and delete, with a replay path for a dead-lettered send.
 - **Password reset.** Configured as a token flow in `verification.config.ts`,
   with no endpoint. Note the same problem the invitation had: a token needs a
   link, so the reset page needs the reference and the secret in the URL. **M**
-- **Resend a verification code.** **S**
+- ~~**Resend a verification code.**~~ DONE — `POST /auth/resend`, behind the
+  per-destination hourly cap.
+
+> **Why five entries were wrong at once.** SOP checkpoint 0 sends the next
+> person here first and tells them to believe it, so a stale "not built" is how
+> a feature gets built twice. Checkpoint 20 is the other half of the fix: the
+> change that builds something closes its backlog entry in the same commit.
 
 ---
 

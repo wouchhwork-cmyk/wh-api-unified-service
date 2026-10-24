@@ -365,14 +365,24 @@ describe('the shared inbox', () => {
     expect(after.body.data[0].assignedTo).toBeNull();
   });
 
-  it('refuses to assign work to somebody from another business', async () => {
+  /**
+   * NOT A TENANCY TEST, despite the name it used to carry.
+   *
+   * Both the conversation and the caller are this business's, and the employee
+   * ref is a literal belonging to nobody — so a single tenant is involved
+   * throughout, and the predicate under test is "does this employee exist
+   * here", not "can one business reach another". The honest name says so.
+   *
+   * The cross-tenant assertions for the conversation `:refId` itself live in
+   * `tenant-isolation.e2e.spec.ts`, where a second business actually exists.
+   */
+  it('refuses to assign work to an employee reference that names nobody', async () => {
     const { ownerToken, enterpriseRefId } = await onboardedBusiness();
     const refId = await seedConversation(enterpriseRefId);
 
     await http()
       .post(`/api/v1/conversations/${refId}/assign`)
       .set('Authorization', `Bearer ${ownerToken}`)
-      // A well-formed ref that belongs to nobody here.
       .send({ employeeRefId: '11111111-2222-4333-8444-555555555555' })
       .expect(404);
   });

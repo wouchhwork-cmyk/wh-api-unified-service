@@ -87,36 +87,47 @@ export class RewardsService {
     };
   }
 
+  /**
+   * ONE TRANSACTION over all three writes.
+   *
+   * This was three independent commits. A failure after the first left a
+   * reward program with no version 1 — exactly the row the comment below says
+   * must always exist — and a program whose history begins at its first edit
+   * can never answer what it originally was.
+   */
   async createProgram(enterpriseId: number, input: CreateRewardProgramInput) {
-    const program = await this.programs.create({ enterpriseId, ...input });
+    return this.tx.runInTransaction(async () => {
+      const program = await this.programs.create({ enterpriseId, ...input });
 
-    await this.audit.record({
-      action: AuditAction.Created,
-      entityType: AuditEntityType.RewardProgram,
-      entityId: program.id,
-      enterpriseId,
+      await this.audit.record({
+        action: AuditAction.Created,
+        entityType: AuditEntityType.RewardProgram,
+        entityId: program.id,
+        enterpriseId,
+        /*
+         * The shape, never a secret. forward_config holds a credential
+         * REFERENCE, so it is excluded entirely — auditing that it changed is
+         * right, auditing its value is not.
+         */
+        changes: { name: program.name, timezone: program.timezone },
+      });
+
       /*
-       * The shape, never a secret. forward_config holds a credential
-       * REFERENCE, so it is excluded entirely — auditing that it changed is
-       * right, auditing its value is not.
+       * VERSION 1 — the state the program began in.
+       *
+       * Without it the history would start at the first EDIT, and "what did
+       * this look like originally" would be the one question it could not
+       * answer.
        */
-      changes: { name: program.name, timezone: program.timezone },
-    });
+      await this.versions.record({
+        entityType: AuditEntityType.RewardProgram,
+        entityId: program.id,
+        enterpriseId,
+        snapshot: RewardsService.snapshotOf(program),
+      });
 
-    /*
-     * VERSION 1 — the state the program began in.
-     *
-     * Without it the history would start at the first EDIT, and "what did this
-     * look like originally" would be the one question it could not answer.
-     */
-    await this.versions.record({
-      entityType: AuditEntityType.RewardProgram,
-      entityId: program.id,
-      enterpriseId,
-      snapshot: RewardsService.snapshotOf(program),
+      return program;
     });
-
-    return program;
   }
 
   listPrograms(
@@ -138,37 +149,40 @@ export class RewardsService {
    * programme, and the dashboard could never separate them.
    */
   async setProgramStatus(enterpriseId: number, refId: string, status: RewardProgramStatus) {
-    const outcome = await this.programs.setStatus(enterpriseId, refId, status);
-    if (outcome === 'missing') throw new AppException(ErrorCode.RewardProgramNotFound);
-    if (outcome === 'archived') throw new AppException(ErrorCode.RewardProgramArchived);
+    return this.tx.runInTransaction(async () => {
+      const outcome = await this.programs.setStatus(enterpriseId, refId, status);
+      if (outcome === 'missing') throw new AppException(ErrorCode.RewardProgramNotFound);
+      if (outcome === 'archived') throw new AppException(ErrorCode.RewardProgramArchived);
 
-    const program = await this.programs.findByRefId(enterpriseId, refId);
-    await this.audit.record({
-      action: AuditAction.Updated,
-      entityType: AuditEntityType.RewardProgram,
-      entityId: program?.id ?? null,
-      enterpriseId,
-      changes: { status },
-    });
+      const program = await this.programs.findByRefId(enterpriseId, refId);
 
-    /*
-     * A STATUS CHANGE IS A NEW VERSION, not a footnote to the last one.
-     *
-     * Switching a program on is what makes its rules start awarding, so "when
-     * did this become active" is a money question. The version row carries the
-     * whole configuration at that moment, so the answer does not depend on
-     * replaying every earlier diff.
-     */
-    if (program) {
-      await this.versions.record({
+      await this.audit.record({
+        action: AuditAction.Updated,
         entityType: AuditEntityType.RewardProgram,
-        entityId: program.id,
+        entityId: program?.id ?? null,
         enterpriseId,
-        snapshot: RewardsService.snapshotOf(program),
+        changes: { status },
       });
-    }
 
-    return program;
+      /*
+       * A STATUS CHANGE IS A NEW VERSION, not a footnote to the last one.
+       *
+       * Switching a program on is what makes its rules start awarding, so
+       * "when did this become active" is a money question. The version row
+       * carries the whole configuration at that moment, so the answer does not
+       * depend on replaying every earlier diff.
+       */
+      if (program) {
+        await this.versions.record({
+          entityType: AuditEntityType.RewardProgram,
+          entityId: program.id,
+          enterpriseId,
+          snapshot: RewardsService.snapshotOf(program),
+        });
+      }
+
+      return program;
+    });
   }
 
   /**
@@ -295,23 +309,84 @@ export class RewardsService {
         })),
       );
 
+      /*
+       * INSIDE the transaction, with the rows they describe. A rule, its
+       * benefits and its conditions are written here; an audit row or a
+       * version written after the commit could survive a rule that did not.
+       */
+      await this.audit.record({
+        action: AuditAction.Created,
+        entityType: AuditEntityType.RewardRule,
+        entityId: created.id,
+        enterpriseId,
+        changes: {
+          triggerKind: created.triggerKind,
+          version: created.version,
+          benefitCount: input.benefits.length,
+          conditionCount: input.conditions.length,
+        },
+      });
+
+      /*
+       * A RULE IS WHAT DECIDES WHO RECEIVES VALUE, so its history matters more
+       * than the program's. "What was this rule awarding in March" has to be
+       * answerable from one row, because an award made then was decided by the
+       * rule as it stood then.
+       */
+      await this.versions.record({
+        entityType: AuditEntityType.RewardRule,
+        entityId: created.id,
+        enterpriseId,
+        snapshot: RewardsService.ruleSnapshotOf(created, input),
+      });
+
       return created;
     });
 
-    await this.audit.record({
-      action: AuditAction.Created,
-      entityType: AuditEntityType.RewardRule,
-      entityId: rule.id,
-      enterpriseId,
-      changes: {
-        triggerKind: rule.triggerKind,
-        version: rule.version,
-        benefitCount: input.benefits.length,
-        conditionCount: input.conditions.length,
-      },
-    });
-
     return rule;
+  }
+
+  /**
+   * What goes into a rule's version history.
+   *
+   * STATED, NOT SERIALISED, for the reason `snapshotOf` gives: the history is
+   * append-only, so a field added later must be a decision rather than an
+   * accident. Benefits and conditions are included because they ARE the rule —
+   * a version recording only the trigger would answer nothing about what was
+   * awarded.
+   */
+  private static ruleSnapshotOf(
+    rule: {
+      triggerKind: string;
+      version: number;
+      capScope: string;
+      capCount: number;
+      holdHours: number;
+      reversalPolicy: string;
+      isActive: boolean;
+    },
+    input: CreateRewardRuleInput,
+  ): Record<string, unknown> {
+    return {
+      triggerKind: rule.triggerKind,
+      version: rule.version,
+      capScope: rule.capScope,
+      capCount: rule.capCount,
+      holdHours: rule.holdHours,
+      reversalPolicy: rule.reversalPolicy,
+      isActive: rule.isActive,
+      triggerConfig: input.triggerConfig,
+      benefits: input.benefits.map((b) => ({
+        benefitKind: b.benefitKind,
+        awardMode: b.awardMode,
+        awardCap: b.awardCap,
+        config: b.config,
+      })),
+      conditions: input.conditions.map((c) => ({
+        conditionKind: c.conditionKind,
+        config: c.config,
+      })),
+    };
   }
 
   /**
@@ -347,18 +422,46 @@ export class RewardsService {
   }
 
   async setRuleActive(enterpriseId: number, refId: string, isActive: boolean) {
-    const moved = await this.rules.setActive(enterpriseId, refId, isActive);
-    if (!moved) throw new AppException(ErrorCode.RewardRuleNotFound);
+    return this.tx.runInTransaction(async () => {
+      const moved = await this.rules.setActive(enterpriseId, refId, isActive);
+      if (!moved) throw new AppException(ErrorCode.RewardRuleNotFound);
 
-    const rule = await this.rules.findByRefId(enterpriseId, refId);
-    await this.audit.record({
-      action: AuditAction.Updated,
-      entityType: AuditEntityType.RewardRule,
-      entityId: rule?.id ?? null,
-      enterpriseId,
-      changes: { isActive },
+      const rule = await this.rules.findByRefId(enterpriseId, refId);
+
+      await this.audit.record({
+        action: AuditAction.Updated,
+        entityType: AuditEntityType.RewardRule,
+        entityId: rule?.id ?? null,
+        enterpriseId,
+        changes: { isActive },
+      });
+
+      /*
+       * SWITCHING A RULE OFF IS THE EDIT THAT MATTERS MOST — it is the
+       * difference between a customer earning and not — so it appends a
+       * version like any other change. The snapshot carries the rule's own
+       * shape; its benefits and conditions belong to a rule VERSION and are
+       * immutable, so the create-time snapshot still describes them.
+       */
+      if (rule) {
+        await this.versions.record({
+          entityType: AuditEntityType.RewardRule,
+          entityId: rule.id,
+          enterpriseId,
+          snapshot: {
+            triggerKind: rule.triggerKind,
+            version: rule.version,
+            capScope: rule.capScope,
+            capCount: rule.capCount,
+            holdHours: rule.holdHours,
+            reversalPolicy: rule.reversalPolicy,
+            isActive,
+          },
+        });
+      }
+
+      return rule;
     });
-    return rule;
   }
 
   /* ------------------------------------------------------------------ */
@@ -418,7 +521,7 @@ export class RewardsService {
         currencyCode: input.walletKind === RewardWalletKind.Points ? null : input.currencyCode,
       });
 
-      return this.wallets.postUnchecked({
+      const posted = await this.wallets.postUnchecked({
         enterpriseId,
         walletId: wallet.id,
         entryKind: RewardEntryKind.Adjust,
@@ -435,20 +538,28 @@ export class RewardsService {
         actorId: actor?.employeeId ?? null,
         reasonCode: 'manual_adjustment',
       });
-    });
 
-    await this.audit.record({
-      action: AuditAction.Adjusted,
-      entityType: AuditEntityType.RewardWallet,
-      entityId: entry.walletId,
-      enterpriseId,
-      changes: {
-        customerRefId: input.customerRefId,
-        walletKind: input.walletKind,
-        amount: input.amount,
-        balanceAfter: entry.balanceAfter,
-      },
-      metadata: { reason: input.reason, ledgerEntryRefId: entry.refId },
+      /*
+       * INSIDE the transaction, with the ledger entry it describes. A human
+       * moved value for a named customer — the one reward action with a person
+       * behind it — so a record that could outlive a rolled-back entry, or go
+       * missing after a committed one, is the wrong trade either way.
+       */
+      await this.audit.record({
+        action: AuditAction.Adjusted,
+        entityType: AuditEntityType.RewardWallet,
+        entityId: posted.walletId,
+        enterpriseId,
+        changes: {
+          customerRefId: input.customerRefId,
+          walletKind: input.walletKind,
+          amount: input.amount,
+          balanceAfter: posted.balanceAfter,
+        },
+        metadata: { reason: input.reason, ledgerEntryRefId: posted.refId },
+      });
+
+      return posted;
     });
 
     return entry;

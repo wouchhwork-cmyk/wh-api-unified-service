@@ -11,6 +11,11 @@ export const PG_ERROR = {
   /** Retryable: deadlock; one side is chosen as the victim. */
   DeadlockDetected: '40P01',
   QueryCanceled: '57014',
+  /**
+   * A value the column's type cannot parse — in practice a malformed uuid
+   * reaching a `ref_id` predicate. The caller's mistake, not ours.
+   */
+  InvalidTextRepresentation: '22P02',
   LockNotAvailable: '55P03',
 } as const;
 

@@ -3,13 +3,14 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { RoleRepository, type RoleDetailRow } from '@/database/repositories/role.repository';
 import { EnterpriseEmployeeRepository } from '@/database/repositories/enterprise-employee.repository';
 import { TransactionManager } from '@/database/transaction';
-import { AuditService } from '@/modules/audit';
+import { AuditService, EntityVersionService } from '@/modules/audit';
 import {
   AuditAction,
   AuditEntityType,
   PermissionResource,
   ROLE_LEVEL,
   SystemRole,
+  RoleStatus,
 } from '@/shared/enums';
 import { RequestContext } from '@/shared/context';
 import { MAX_ROLES_PER_ENTERPRISE } from '@/shared/constants';
@@ -78,6 +79,7 @@ export class RolesService {
     private readonly roles: RoleRepository,
     private readonly employees: EnterpriseEmployeeRepository,
     private readonly audit: AuditService,
+    private readonly versions: EntityVersionService,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(RolesService.name) private readonly logger: PinoLogger,
   ) {}
@@ -138,6 +140,29 @@ export class RolesService {
     ]);
 
     return rows.map((row) => this.toView(row, authority));
+  }
+
+  /**
+   * What goes into a role's version history.
+   *
+   * STATED, NOT SERIALISED, like every other snapshot. Permission CODES are
+   * the whole point — a role is what it can do — and they are the business's
+   * own vocabulary rather than anything private.
+   */
+  private static snapshotOf(role: {
+    name: string;
+    description: string | null;
+    level: number;
+    permissions: readonly string[];
+    status: string;
+  }): Record<string, unknown> {
+    return {
+      name: role.name,
+      description: role.description,
+      level: role.level,
+      status: role.status,
+      permissions: [...role.permissions].sort(),
+    };
   }
 
   async create(
@@ -205,16 +230,37 @@ export class RolesService {
         level: request.level,
       });
       await this.roles.replaceRolePermissions(enterpriseId, role.id, request.permissions);
+
+      await this.audit.record({
+        action: AuditAction.Created,
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        metadata: { name: request.name, level: request.level, permissions: request.permissions },
+      });
+
+      /*
+       * A ROLE IS CONFIGURATION THAT DECIDES ACCESS, which is the same reason
+       * a reward program is versioned. "What could this role do in March" has
+       * to be answerable from one row — an audit diff of a permission SET is
+       * exactly the thing that cannot be replayed reliably.
+       */
+      await this.versions.record({
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        snapshot: RolesService.snapshotOf({
+          name: request.name,
+          description: request.description ?? null,
+          level: request.level,
+          permissions: request.permissions,
+          status: RoleStatus.Active,
+        }),
+      });
+
       return role;
     });
 
-    await this.audit.record({
-      action: AuditAction.Created,
-      entityType: AuditEntityType.Role,
-      entityId: created.id,
-      enterpriseId,
-      metadata: { name: request.name, level: request.level, permissions: request.permissions },
-    });
     this.logger.info(
       { enterpriseId, level: request.level, permissionCount: request.permissions.length },
       'role created',
@@ -275,17 +321,30 @@ export class RolesService {
       // refused, so this is the belt to that braces.
       if (affected === 0) throw new AppException(ErrorCode.PermissionDenied);
       await this.roles.replaceRolePermissions(enterpriseId, role.id, request.permissions);
-    });
 
-    await this.audit.record({
-      action: AuditAction.Updated,
-      entityType: AuditEntityType.Role,
-      entityId: role.id,
-      enterpriseId,
-      changes: {
-        level: { from: role.level, to: request.level },
-        permissions: { from: role.permissionCodes, to: request.permissions },
-      },
+      await this.audit.record({
+        action: AuditAction.Updated,
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        changes: {
+          level: { from: role.level, to: request.level },
+          permissions: { from: role.permissionCodes, to: request.permissions },
+        },
+      });
+
+      await this.versions.record({
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        snapshot: RolesService.snapshotOf({
+          name: request.name,
+          description: request.description ?? null,
+          level: request.level,
+          permissions: request.permissions,
+          status: RoleStatus.Active,
+        }),
+      });
     });
 
     return this.requireView(enterpriseId, refId, authority);
@@ -317,15 +376,33 @@ export class RolesService {
       });
     }
 
-    const affected = await this.roles.archiveRole(enterpriseId, role.id);
-    if (affected === 0) throw new AppException(ErrorCode.PermissionDenied);
+    await this.tx.runInTransaction(async () => {
+      const affected = await this.roles.archiveRole(enterpriseId, role.id);
+      if (affected === 0) throw new AppException(ErrorCode.PermissionDenied);
 
-    await this.audit.record({
-      action: AuditAction.Updated,
-      entityType: AuditEntityType.Role,
-      entityId: role.id,
-      enterpriseId,
-      changes: { status: { from: 'active', to: 'archived' } },
+      await this.audit.record({
+        action: AuditAction.Updated,
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        changes: { status: { from: RoleStatus.Active, to: RoleStatus.Archived } },
+      });
+
+      /* Retiring a role is a change to what the business can grant, so it gets
+       * a version like any other — and it is the last one, which is what makes
+       * the history readable as a life story rather than a list of edits. */
+      await this.versions.record({
+        entityType: AuditEntityType.Role,
+        entityId: role.id,
+        enterpriseId,
+        snapshot: RolesService.snapshotOf({
+          name: role.name,
+          description: role.description ?? null,
+          level: role.level,
+          permissions: role.permissionCodes,
+          status: RoleStatus.Archived,
+        }),
+      });
     });
   }
 
@@ -386,7 +463,7 @@ export class RolesService {
      */
     const keepsOwner = roles.some((role) => role.name === (SystemRole.Owner as string));
 
-    const held = await this.tx.runInTransaction(async () => {
+    const { added, revoked } = await this.tx.runInTransaction(async () => {
       /*
        * THE LAST OWNER STAYS AN OWNER, decided inside the transaction and
        * behind a lock.
@@ -434,7 +511,40 @@ export class RolesService {
         grantedByEmployeeId: actingEmployeeId,
       });
 
-      return previous;
+      /*
+       * INSIDE the transaction, with the write it describes. `AuditService`
+       * joins the ambient one, so these roll back together and a row can never
+       * survive a replace that did not.
+       */
+      const before = [...previous].sort();
+      const after = roles.map((role) => role.name).sort();
+      const gained = after.filter((name) => !before.includes(name));
+      const lost = before.filter((name) => !after.includes(name));
+      const changes = { roles: { from: before, to: after } };
+
+      if (lost.length > 0) {
+        await this.audit.record({
+          action: AuditAction.RoleRevoked,
+          entityType: AuditEntityType.EnterpriseEmployee,
+          entityId: employee.employeeId,
+          enterpriseId,
+          changes,
+          metadata: { revoked: lost },
+        });
+      }
+
+      if (gained.length > 0) {
+        await this.audit.record({
+          action: AuditAction.RoleGranted,
+          entityType: AuditEntityType.EnterpriseEmployee,
+          entityId: employee.employeeId,
+          enterpriseId,
+          changes,
+          metadata: { granted: gained },
+        });
+      }
+
+      return { added: gained, revoked: lost };
     });
 
     /*
@@ -452,36 +562,8 @@ export class RolesService {
      * role NAMES, which are the business's own words and neither PII nor a
      * secret.
      */
-    const before = [...held].sort();
-    const after = roles.map((role) => role.name).sort();
-    const added = after.filter((name) => !before.includes(name));
-    const removed = before.filter((name) => !after.includes(name));
-    const changes = { roles: { from: before, to: after } };
-
-    if (removed.length > 0) {
-      await this.audit.record({
-        action: AuditAction.RoleRevoked,
-        entityType: AuditEntityType.EnterpriseEmployee,
-        entityId: employee.employeeId,
-        enterpriseId,
-        changes,
-        metadata: { revoked: removed },
-      });
-    }
-
-    if (added.length > 0) {
-      await this.audit.record({
-        action: AuditAction.RoleGranted,
-        entityType: AuditEntityType.EnterpriseEmployee,
-        entityId: employee.employeeId,
-        enterpriseId,
-        changes,
-        metadata: { granted: added },
-      });
-    }
-
     this.logger.info(
-      { enterpriseId, roleCount: roles.length, granted: added.length, revoked: removed.length },
+      { enterpriseId, roleCount: roles.length, granted: added.length, revoked: revoked.length },
       'employee roles replaced',
     );
   }

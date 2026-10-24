@@ -1329,7 +1329,64 @@ guarantee is not evidence of it.** A database-level guarantee now gets a test
 that attempts the forbidden thing and expects a rejection, and a control with a
 threshold gets a test proving it can actually fail.
 
-### 19.12 Still open
+### 19.12 Phase 3 — what auditing the codebase against the SOP found
+
+The SOP was written, then run against the repository. Everything below was
+already shipped and already wrong.
+
+- **Swallowing a failed audit write inside a transaction destroys the caller's
+  work and reports success.** `AuditService` caught its own failure and logged
+  "the action itself was not rolled back", which is precisely backwards.
+  Measured against the real database:
+
+  ```
+  INSERT INTO audit_logs ...   -- fails a foreign key
+  SELECT 1                     -- ERROR: current transaction is aborted
+  COMMIT                       -- reports SUCCESS
+  ```
+
+  **Postgres converts a COMMIT on an aborted transaction into a ROLLBACK and
+  reports success.** So the swallow handed back a committed-looking result for
+  work that had been discarded entirely. Both `AuditService` and
+  `EntityVersionService` now rethrow when there is an ambient transaction, and
+  still swallow outside one, where the state change has already committed and a
+  lost row is the better of the two losses. The audit write also moved INSIDE
+  the transaction at every site that has one — it was outside at 33 of 36.
+
+- **`createProgram` was three independent commits**, so a failure after the
+  first left a reward program with no version 1 — the row its own comment said
+  must always exist.
+
+- **The staff role path still recorded a revocation as a grant.** The tenant
+  side was fixed and this was not, which is the worse half to miss: staff reach
+  crosses tenants, so that trail is the only thing separating support work from
+  an insider.
+
+- **`PATCH /rewards/rules/:refId/active` had no request schema.** It read
+  `body?.isActive === true`, so `{"isActive":"true"}`, `{"active":true}` and an
+  empty body all coerced to false, silently switched a money rule off, and
+  returned 200.
+
+- **Gate 1 and gate 2 were indistinguishable.** A permission whose feature the
+  business lacks is simply absent from the resolved set, so "you lack the role"
+  and "your business has not bought this" both arrived as `PERMISSION_DENIED` —
+  and `FEATURE_NOT_ENABLED` existed for the second and was thrown by nothing.
+  `PermissionsGuard` now asks, on the denial path only, whether a missing
+  permission is gated behind an inactive feature, and names it.
+
+- **Two cross-tenant tests proved nothing.** Both attacked a hardcoded uuid
+  belonging to nobody, with no second tenant in the test at all — deleting the
+  `enterprise_id` predicate would have left both passing. A not-found test
+  wearing a tenancy test's name is worse than no test, because the suite
+  reports it as coverage. Real ones now exist for the rewards and inbox write
+  routes, and writing them surfaced the same trap again: without granting the
+  attacker the feature first, every one of them passed on a gate-1 refusal
+  rather than the tenancy check.
+
+- **A bare `throw new Error` made a deliberate per-tenant cap answer 500**, and
+  `22P02` — a malformed uuid reaching a predicate — did the same.
+
+### 19.13 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is
   complete; in dev the code is logged, and in qa or prod a missing provider is

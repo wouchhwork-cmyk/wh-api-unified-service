@@ -54,13 +54,16 @@ export class EntityVersionService {
    * wrongly — which is the defect that made a role revocation read as a grant —
    * and the two snapshots already contain the answer.
    *
-   * A FAILURE IS LOGGED AND SWALLOWED, the same trade AuditService makes and
-   * for the same reason: throwing would turn a history outage into an outage of
-   * every endpoint that edits anything. The entity's own row is the source of
-   * truth; this is the record beside it.
+   * A FAILURE IS SWALLOWED ONLY OUTSIDE A TRANSACTION, exactly as
+   * `AuditService` does, and for the reason measured there: a failed statement
+   * aborts the transaction, catching it does not un-abort it, and Postgres then
+   * turns the caller's COMMIT into a silent ROLLBACK that reports success.
+   * Swallowing inside a transaction would hand back a committed-looking result
+   * for work that had been discarded.
    */
   async record(event: EntityVersionEvent): Promise<number | null> {
     const actor = RequestContext.actor();
+    const insideTransaction = RequestContext.transactionManager() !== undefined;
 
     try {
       const previous = await this.versions.latest(
@@ -97,8 +100,11 @@ export class EntityVersionService {
           enterpriseId: event.enterpriseId,
           snapshot: event.snapshot,
         },
-        'FAILED TO WRITE ENTITY VERSION — the change itself was not rolled back',
+        insideTransaction
+          ? 'FAILED TO WRITE ENTITY VERSION — the change is being rolled back with it'
+          : 'FAILED TO WRITE ENTITY VERSION — the change itself had already committed',
       );
+      if (insideTransaction) throw error;
       return null;
     }
   }

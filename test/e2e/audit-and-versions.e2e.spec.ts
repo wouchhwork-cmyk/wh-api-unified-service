@@ -216,13 +216,30 @@ describe('the audit trail and the version history, over HTTP', () => {
     expect(items[0]?.actorKind).toBe('employee');
   });
 
-  /** A version history is addressed by an id that never leaves the server. */
-  it('refuses a history read for a program that is not this tenant’s', async () => {
+  /**
+   * A refId that names nothing is a 404, not a 500.
+   *
+   * THIS IS NOT A TENANCY TEST, and it was named as one. It attacks a literal
+   * uuid belonging to nobody, so no second business is involved and deleting
+   * the `enterprise_id` predicate from `programHistory` would leave it
+   * passing. A not-found test wearing a tenancy test's name is worse than no
+   * test at all, because the suite reports it as coverage.
+   *
+   * The real one, with a program genuinely belonging to another business, is
+   * in `tenant-isolation.e2e.spec.ts`.
+   */
+  it('answers 404 for a program reference that names nothing', async () => {
     const { auth } = await ownerWithRewards();
     await http()
       .get('/api/v1/rewards/programs/3f2a9c14-0000-4000-8000-000000000000/versions')
       .set(auth)
       .expect(404);
+  });
+
+  /** And a reference that is not a uuid at all is a 422, never a 500. */
+  it('answers 422 for a malformed program reference', async () => {
+    const { auth } = await ownerWithRewards();
+    await http().get('/api/v1/rewards/programs/not-a-uuid/versions').set(auth).expect(422);
   });
 
   /**

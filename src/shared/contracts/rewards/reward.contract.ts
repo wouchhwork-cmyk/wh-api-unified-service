@@ -320,26 +320,34 @@ export const CreateRewardRuleSchema = z
     },
   );
 
-export const UpdateRewardRuleSchema = CreateRewardRuleSchema;
+/**
+ * Switching a rule on or off.
+ *
+ * STRICT, AND THE BOOLEAN IS REQUIRED. This route had no schema at all: it read
+ * `body?.isActive === true`, so `{"isActive":"true"}`, `{"active":true}`, `{}`
+ * and a missing body every one of them coerced to FALSE and returned 200 — a
+ * silent deactivation of a rule that decides who receives money, reported to
+ * the caller as success. A typo switched off a money rule and said OK.
+ */
+export const UpdateRewardRuleActiveSchema = z.strictObject({
+  isActive: z.boolean(),
+});
 
-export const RewardRuleQuerySchema = z.strictObject({
-  programRefId: z.uuid().optional(),
-  triggerKind: z.enum(RewardTriggerKind).optional(),
-  isActive: z.stringbool().optional(),
-  limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
-  cursor: z.string().max(512).optional(),
+/**
+ * Which program's rules to list.
+ *
+ * `programRefId` is REQUIRED here, unlike in the general query below: the route
+ * lists the rules OF a program, and without one the handler fell through to a
+ * repository lookup with an empty string and a Postgres 22P02 — a client's
+ * malformed input answering 500.
+ */
+export const RewardRuleListQuerySchema = z.strictObject({
+  programRefId: z.uuid('expected a program reference id'),
 });
 
 /* ========================================================================
  * Balances and manual adjustment
  * ===================================================================== */
-
-export const RewardAwardQuerySchema = z.strictObject({
-  customerRefId: z.uuid().optional(),
-  programRefId: z.uuid().optional(),
-  limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
-  cursor: z.string().max(512).optional(),
-});
 
 /**
  * A manual credit or debit against ONE customer's balance.

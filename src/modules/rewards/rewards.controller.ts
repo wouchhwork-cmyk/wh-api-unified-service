@@ -7,6 +7,8 @@ import {
   CreateRewardProgramSchema,
   CreateRewardRuleSchema,
   HistoryLimitSchema,
+  RewardRuleListQuerySchema,
+  UpdateRewardRuleActiveSchema,
   RewardProgramQuerySchema,
   UpdateRewardProgramStatusSchema,
 } from '@/shared/contracts/rewards/reward.contract';
@@ -125,10 +127,8 @@ export class RewardsController {
   @Get('rules')
   @RequirePermission(Permission.RewardsView)
   @ApiOperation({ summary: 'Rules in a program' })
-  async listRules(
-    @CurrentScopedActor() actor: ScopedActorContext,
-    @Query('programRefId') programRefId: string,
-  ) {
+  async listRules(@CurrentScopedActor() actor: ScopedActorContext, @Query() query: unknown) {
+    const { programRefId } = RewardRuleListQuerySchema.parse(query);
     const rules = await this.rewards.listRules(actor.enterpriseId, programRefId);
     return { items: rules.map(toRuleSummary) };
   }
@@ -153,10 +153,10 @@ export class RewardsController {
   async setRuleActive(
     @CurrentScopedActor() actor: ScopedActorContext,
     @Param('refId') refIdParam: string,
-    @Body() body: { isActive?: unknown },
+    @Body() body: unknown,
   ) {
     const refId = RefIdParamSchema.parse(refIdParam);
-    const isActive = body?.isActive === true;
+    const { isActive } = UpdateRewardRuleActiveSchema.parse(body);
     const rule = await this.rewards.setRuleActive(actor.enterpriseId, refId, isActive);
     return rule ? toRuleSummary(rule) : null;
   }
