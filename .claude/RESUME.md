@@ -41,13 +41,46 @@ Last known green: 620 unit / 342 integration / 264 e2e.
 Work them in order. **Nothing merges until the user says so**, explicitly, in
 their own words. Opening a PR is allowed; merging is not.
 
-### 1. Finish the PR review — IN PROGRESS
+### 1. PR review — DONE (2026-10-25)
 
-Ten-plus rounds against `feature/engagement-programs`, end to end: SOP
-compliance (`docs/sop.md`), layering, logic, patterns, the lot. Reference
-`.claude/skills/pr-review`. Fix what is found, with a test for each fix.
+Ten rounds run. Five real findings, all fixed with a test, all pushed.
+`5b30461` on the API, `bf67119` on the portal. Gate green: 620 unit / 342
+integration / 272 e2e / 7 schema.
 
-### 2. Kill the ports — AFTER the review
+| round | area | outcome |
+|---|---|---|
+| 1 | Architecture & layering | clean |
+| 2 | Validation & idempotency | **2 × P0** — adjustment endpoint not idempotent; underlying ledger post moved the balance twice on a replay |
+| 3 | Security & access control | 1 × P1 — enum interpolated into SQL (safe, but no exceptions to the rule) |
+| 4 | Backward compat & migrations | clean — destructive steps are in down(), no blocking NOT NULL |
+| 5 | Business logic | clean |
+| 6 | Data model & DB | clean — no N+1, 27 reward indexes |
+| 7 | Performance | clean — the per-trigger write loop is bounded at 14, in a transaction |
+| 8 | Concurrency | **1 × P0** — two concurrent programme edits raced; fixed with a row lock |
+| 9 | Error handling & PII | clean |
+| 10 | Testing & quality | 1 × P1 — the 409 on a taken name was never tested on either path |
+
+**Still open, recorded in `docs/backlog.md` rather than fixed:**
+`debitIfSufficient` carries the same replay defect `post()` had. Fixing it
+changes its contract — it must throw on insufficient funds instead of returning
+null, because an append-only table cannot withdraw the claimed key. That is a
+decision about the conversion flow and needs the user.
+
+**PR still not opened.** `gh` cannot: the active account `oml-nova` has READ
+only; the account with write access is `don44112000` and `gh auth switch` was
+denied by the permission classifier. The user must switch it or open the PR.
+Body is ready. **No merge until the user says so.**
+
+### 2. Kill the ports — DONE (2026-10-25)
+
+Killed the dev API (:3000), its worker, and a stray `node server.js` on
+:5173. Deliberately LEFT: postgres (holds the dev data), mongod, the user's
+editor and language servers, chrome-devtools-mcp, and a mocha run belonging to
+a different repo. "All ports" was read as development servers, not system
+daemons — killing a database or their editor while they sleep is not what was
+asked for.
+
+### ~~2. Kill the ports — AFTER the review~~
 
 The user asked for "all ports on the mac". Interpret as DEVELOPMENT processes:
 the dev API on :3000, the worker (`dist/workers/main.js`), any stray node/vite
@@ -55,7 +88,22 @@ listeners started for this work. **Do NOT kill system daemons or anything not
 started for development** — report what was killed rather than guessing wide.
 Doing this before the review ends is wrong; the review may need to run things.
 
-### 3. Pop the stash, then research autonomous chat agents
+### 3 & 4. Stash popped, research DONE (2026-10-25)
+
+Stash restored and compiles on the new base. **Still must not be committed.**
+
+Two documents written and committed:
+- `docs/research/autonomous-chat-systems.md` — the machinery that holds a
+  conversation; what we have, what we lack, and the Instagram constraints that
+  shape all of it
+- `docs/research/ai-driven-conversation.md` — context, memory tiers, steering,
+  tool-calling as the real-time feed, failure modes, prompt-injection risk
+
+Both end with an explicit "what this did NOT establish" section. Every vendor
+number is labelled as one. Meta's own docs were NOT read — that is flagged as
+required before building anything against the Messaging API.
+
+### ~~3. Pop the stash, then research autonomous chat agents~~
 
 `git stash pop` the entry labelled `auto-message: reward thank-you DM`.
 **It still must not be committed.**

@@ -19,3 +19,4 @@ coverage/
 .claude/auto-resume*.log
 .claude/.auto-resume.*
 .claude/RESUME-PENDING
+.claude/.session-heartbeat
