@@ -13,6 +13,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { PostRepository } from '@/database/repositories/post.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
+import { RewardEntitlementRepository } from '@/database/repositories/reward-entitlement.repository';
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -76,6 +77,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     SyncJobRepository,
     QueueMetricsRepository,
     EnterpriseFeatureRepository,
+    RewardEntitlementRepository,
     GraphApiClient,
     /*
      * The workers make most of the Graph calls in this system — backfills,

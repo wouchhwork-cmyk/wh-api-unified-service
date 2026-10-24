@@ -66,6 +66,41 @@ export class RewardEntitlementRepository extends BaseRepository {
   }
 
   /** A customer's issued rights, bounded and newest first. */
+  /**
+   * Moves lapsed entitlements to `expired`.
+   *
+   * `expires_at` was written on every issue and read by nothing, so an
+   * entitlement whose window had closed stayed `issued` for ever and kept
+   * being presented to the business as a live right somebody could still
+   * claim. `RewardEntitlementStatus.Expired` was declared and unreachable.
+   *
+   * ONLY FROM `issued`. A `revoked` or `redeemed` row has already reached a
+   * terminal state and must not be relabelled — what happened to it is the
+   * thing the status exists to record.
+   *
+   * Batched, like every other sweep here: a single capped pass cannot keep up
+   * with a service issuing more than that, and the table would grow a backlog
+   * of lapsed rows while the sweep looked like it ran.
+   */
+  async expireLapsed(limit: number): Promise<number> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `UPDATE reward_entitlements
+          SET status = $1
+        WHERE id IN (
+          SELECT id FROM reward_entitlements
+           WHERE status = $2
+             AND expires_at IS NOT NULL
+             AND expires_at <= now()
+             AND is_deleted = false
+           ORDER BY expires_at
+           LIMIT $3
+        )
+      RETURNING id`,
+      [RewardEntitlementStatus.Expired, RewardEntitlementStatus.Issued, limit],
+    );
+    return rows.length;
+  }
+
   async listForCustomer(
     enterpriseId: number,
     customerId: number,

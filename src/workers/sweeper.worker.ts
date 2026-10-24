@@ -10,6 +10,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { ProviderApiUsageRepository } from '@/database/repositories/provider-api-usage.repository';
 import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
+import { RewardEntitlementRepository } from '@/database/repositories/reward-entitlement.repository';
 import { META_USAGE_RETENTION_MS } from '@/shared/constants';
 
 const SWEEP_BATCH = 500;
@@ -59,6 +60,7 @@ export class SweeperWorker {
     private readonly syncJobs: SyncJobRepository,
     private readonly metaUsage: ProviderApiUsageRepository,
     private readonly features: EnterpriseFeatureRepository,
+    private readonly entitlements: RewardEntitlementRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(SweeperWorker.name) private readonly logger: PinoLogger,
   ) {}
@@ -163,6 +165,33 @@ export class SweeperWorker {
       { warningWindowDays: this.config.worker.expiryWarningWindowDays },
       'token expiry sweep tick',
     );
+  }
+
+  /**
+   * Retires entitlements whose window has closed.
+   *
+   * `expires_at` was written on every issue and read by NOTHING, so a lapsed
+   * entitlement stayed `issued` for ever and the customer's balance kept
+   * offering it as a right they could still claim. `Expired` was declared and
+   * unreachable — a state machine with a terminal state nothing can reach is
+   * not finished, it just looks it.
+   *
+   * HOURLY rather than daily, unlike the retention sweep above. That one
+   * reclaims disk and nobody notices a day's lag; this one decides whether a
+   * business is told it still owes somebody a free coffee, so a day is a day
+   * of wrong answers.
+   *
+   * Its own tick and its own try, so a failure here cannot stop the token
+   * sweep beside it or the retention pass at 3am.
+   */
+  @Cron('0 * * * *')
+  async expireEntitlements(): Promise<void> {
+    try {
+      const expired = await drain((limit) => this.entitlements.expireLapsed(limit));
+      if (expired > 0) this.logger.info({ expired }, 'entitlements expired');
+    } catch (error) {
+      this.logger.error({ err: error }, 'entitlement expiry sweep failed');
+    }
   }
 }
 

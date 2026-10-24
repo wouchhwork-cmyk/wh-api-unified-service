@@ -241,11 +241,23 @@ export class AuthService {
     const identity = await this.identities.findById(identityId);
     if (!identity) throw new AppException(ErrorCode.AuthInvalidCredentials);
 
+    /*
+     * HASHED BEFORE THE TRANSACTION OPENS, which signup already does and this
+     * path never did.
+     *
+     * argon2id is deliberately expensive — that is the whole point of it — and
+     * awaiting it inside the transaction holds a pooled connection open, with
+     * a transaction on it, for the entire key derivation. The pool is ten
+     * connections; invitations accepted together therefore queue behind each
+     * other's CPU work for no reason involving the database at all.
+     *
+     * backend-design.md §19.7 records this exact mistake being fixed for
+     * signup, with the same reasoning. It was not carried across to here.
+     */
+    const passwordHash = await this.hasher.hashPassword(newPassword);
+
     await this.tx.runInTransaction(async () => {
-      await this.identities.updatePasswordHash(
-        identity.id,
-        await this.hasher.hashPassword(newPassword),
-      );
+      await this.identities.updatePasswordHash(identity.id, passwordHash);
 
       // The column is chosen by matching the destination that was actually
       // proven, so accepting an email invite can never mark a mobile verified.
