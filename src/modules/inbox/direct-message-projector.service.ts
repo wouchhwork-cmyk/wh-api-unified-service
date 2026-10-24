@@ -17,6 +17,7 @@ import {
   IdentifierSource,
   IdentifierVerificationStatus,
   Platform,
+  RewardTriggerKind,
   SyncJobKind,
   SyncTriggerKind,
 } from '@/shared/enums';
@@ -523,7 +524,7 @@ export class DirectMessageProjectorService {
           sourceRefId: inserted.id,
           occurredAtUtc: occurredAt,
           content: message.text ?? null,
-          conversationKind: ConversationKind.DirectMessage,
+          triggerKind: resolveDirectMessageTrigger(platformFacts),
         },
       };
     });
@@ -836,4 +837,50 @@ export class DirectMessageProjectorService {
         : 'a message_edit for a message we never received — a resync is already in flight',
     };
   }
+}
+
+/**
+ * Which reward trigger an inbound DM actually is.
+ *
+ * EVERYTHING ARRIVES IN THE SAME THREAD. Instagram delivers a story mention, a
+ * reply to our story, a tapped ice-breaker and an ordinary message as messaging
+ * events on one conversation, so "it is a direct message" was all the reward
+ * engine ever knew — and four triggers in the catalogue could never fire. The
+ * facts that tell them apart were already being captured on the message, for a
+ * feature that did not exist yet. This is that feature.
+ *
+ * EXACTLY ONE TRIGGER PER EVENT, most specific first. A story mention is also,
+ * technically, an inbound direct message; firing both would pay a business's
+ * `story_mention` rule and their `direct_message_inbound` rule for one action,
+ * which is a double award nobody asked for. The specific one wins and the
+ * general one does not see it.
+ *
+ * Pure, and exported, so the precedence is testable without a database.
+ */
+export function resolveDirectMessageTrigger(
+  platformFacts: Record<string, unknown>,
+): RewardTriggerKind {
+  /* They put US in THEIR story. The attachment is the message. */
+  if (platformFacts.isStoryMention === true) return RewardTriggerKind.StoryMention;
+
+  /* They answered OUR story. Meta names the story it was a reply to. */
+  if (platformFacts.replyToStoryId !== undefined) return RewardTriggerKind.StoryReply;
+
+  /*
+   * How they ARRIVED — an ad, an m.me link, a QR code in the shop. Ranked above
+   * the button tap because it is the campaign event a business is paying to
+   * measure, and "scan this and get 50 points" is the rule it exists for.
+   */
+  if (platformFacts.referral !== undefined) return RewardTriggerKind.ReferralEntry;
+
+  /* An ice breaker, a template button or a quick reply: a deliberate tap. */
+  if (
+    platformFacts.isPostback === true ||
+    platformFacts.postbackPayload !== undefined ||
+    platformFacts.quickReplyPayload !== undefined
+  ) {
+    return RewardTriggerKind.PostbackTapped;
+  }
+
+  return RewardTriggerKind.DirectMessageInbound;
 }

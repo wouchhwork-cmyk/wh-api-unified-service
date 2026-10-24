@@ -6,6 +6,7 @@ import {
   AdjustRewardBalanceSchema,
   CreateRewardProgramSchema,
   CreateRewardRuleSchema,
+  RewardProgramQuerySchema,
   UpdateRewardProgramStatusSchema,
 } from '@/shared/contracts/rewards/reward.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
@@ -31,9 +32,16 @@ export class RewardsController {
 
   @Get('programs')
   @RequirePermission(Permission.RewardsView)
-  @ApiOperation({ summary: 'Reward programs for this business' })
-  async listPrograms(@CurrentScopedActor() actor: ScopedActorContext) {
-    const programs = await this.rewards.listPrograms(actor.enterpriseId);
+  @ApiOperation({
+    summary: 'Reward programs for this business',
+    description:
+      'Archived programs are EXCLUDED unless asked for by status. They are kept for the record ' +
+      'and never deleted, but a retired program in the working list is how somebody edits the ' +
+      'wrong one.',
+  })
+  async listPrograms(@CurrentScopedActor() actor: ScopedActorContext, @Query() query: unknown) {
+    const { status } = RewardProgramQuerySchema.parse(query ?? {});
+    const programs = await this.rewards.listPrograms(actor.enterpriseId, undefined, status ?? null);
     return { items: programs.map(toProgramSummary) };
   }
 
@@ -71,7 +79,9 @@ export class RewardsController {
     summary: 'Switch a program on, pause it, or archive it',
     description:
       'Status is the SWITCH, not the schedule. A program scheduled for next month is active ' +
-      'with a future start date; there is no "scheduled" status because the date says it.',
+      'with a future start date; there is no "scheduled" status because the date says it. ' +
+      'ARCHIVING IS ONE-WAY: the program is kept and readable for ever, its rules stop ' +
+      'matching, and it can never be switched back on. 409 if it already is.',
   })
   async setProgramStatus(
     @CurrentScopedActor() actor: ScopedActorContext,

@@ -825,6 +825,20 @@ temptation is to do both in one place.
 
 ### 9.3 Evaluation
 
+**The projector names the trigger.** It used to be derived in the worker from
+the conversation kind through a three-entry table, which is why a story mention,
+a story reply, a tapped ice-breaker and an ordinary DM were all
+`direct_message_inbound` and four catalogue entries could never fire. Everything
+arrives in the same thread; only the projector holds the facts that tell them
+apart (`isStoryMention`, `replyToStoryId`, `referral`, `postbackPayload`), and
+they were already being captured for a feature that did not exist yet.
+
+**EXACTLY ONE TRIGGER PER EVENT**, most specific first:
+`story_mention` → `story_reply` → `referral_entry` → `postback_tapped` →
+`direct_message_inbound`. A story mention is also an inbound DM, so firing both
+would pay a `story_mention` rule and a `direct_message_inbound` rule for one
+action. The specific one wins; the general one never sees it.
+
 Gates 1–3 are SQL — they narrow which rules are worth loading. Gate 3 has a
 **second half** in TypeScript (the trigger *config*, §8.2.1: SQL matched the
 kind, this matches what the business narrowed it to), judged before the
@@ -1671,9 +1685,11 @@ Median across seven real OSS commits: 7 files, 1 of them logic.
 | `reward_rule_benefits` + `reward_award_benefits`, 1:N | **built** |
 | Typed handler registry + compensator pairing | **built** |
 | Three validation layers (write / read / CI drift) | **built** |
-| **4 of 14 triggers** have a producer | `comment_on_own_post`, `comment_on_mentioned_post`, `direct_message_inbound`, `points_balance_reached`. **The other ten cannot fire** — see below |
+| **8 of 14 triggers** have a producer | `comment_on_own_post`, `comment_on_mentioned_post`, `direct_message_inbound`, `points_balance_reached`, plus `story_mention`, `story_reply`, `referral_entry`, `postback_tapped` — resolved from the platform facts already captured on the message |
 | `post_like` / `post_share` | **blocked** — verify `todo.md` B4, then backlog §8.2 |
-| `story_mention`, `story_reply`, `message_reaction`, `postback_tapped`, `opt_in_granted`, `referral_entry`, `post_tagging_us` | **NO PRODUCER.** Configurable in the portal, saved, listed, and silently inert. The projector derives the trigger from the CONVERSATION KIND (`TRIGGER_FOR_CONVERSATION`), which knows three kinds, so a story mention and a story reply both arrive as `direct_message_inbound` and the specific trigger never happens |
+| `message_reaction` | **no producer.** A reaction is a property OF a message, not a message: `handleReaction` updates the row it belongs to and returns `projected: false`, and the worker only offers PROJECTED outcomes to the engine. Wiring it means letting a skipped outcome carry trigger facts |
+| `opt_in_granted` | **no producer.** An opt-in is consent, not conversation — it is skipped before any customer row is written, so there is nobody to award |
+| `post_tagging_us` | **no producer.** A post-projector concern, not a DM one |
 | Frequency caps, program budget | **built** |
 | Points wallet + ledger | **built** |
 | Currency wallets, multi-currency | **built** |

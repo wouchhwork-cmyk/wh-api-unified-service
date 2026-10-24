@@ -23,6 +23,7 @@ import {
   MentionKind,
   MessageKind,
   Platform,
+  RewardTriggerKind,
 } from '@/shared/enums';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
 import { normalizeComment, normalizeMention } from './comment-normalizer';
@@ -65,7 +66,16 @@ export interface ProjectedTriggerFacts {
   /** WHEN THEY ACTED, from the platform — not when we projected it. */
   readonly occurredAtUtc: Date;
   readonly content: string | null;
-  readonly conversationKind: ConversationKind;
+  /**
+   * WHAT HAPPENED, named by the projector that saw it.
+   *
+   * This used to be the conversation kind, which the worker mapped through a
+   * three-entry table — so a story mention, a story reply, a tapped button and
+   * an ordinary DM all arrived as `direct_message_inbound` and four triggers in
+   * the catalogue could never fire. The projector holds the platform facts that
+   * tell them apart; the worker does not, and should not have to.
+   */
+  readonly triggerKind: RewardTriggerKind;
 }
 
 /**
@@ -590,7 +600,10 @@ export class CommentProjectorService {
           sourceRefId: inserted.id,
           occurredAtUtc: occurredAt,
           content: comment.text ?? null,
-          conversationKind,
+          triggerKind:
+            conversationKind === ConversationKind.Mention
+              ? RewardTriggerKind.CommentOnMentionedPost
+              : RewardTriggerKind.CommentOnOwnPost,
         },
       };
     });

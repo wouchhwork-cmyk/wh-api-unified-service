@@ -72,6 +72,7 @@ export enum ErrorCode {
 
   /* REWARD PROGRAMS. */
   RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',
+  RewardProgramArchived = 'REWARD_PROGRAM_ARCHIVED',
   RewardRuleNotFound = 'REWARD_RULE_NOT_FOUND',
   RewardWalletNotFound = 'REWARD_WALLET_NOT_FOUND',
   /**

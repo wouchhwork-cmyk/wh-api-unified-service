@@ -76,13 +76,28 @@ export class RewardsService {
     return program;
   }
 
-  listPrograms(enterpriseId: number, limit = DEFAULT_PAGE) {
-    return this.programs.list(enterpriseId, limit);
+  listPrograms(
+    enterpriseId: number,
+    limit = DEFAULT_PAGE,
+    status: RewardProgramStatus | null = null,
+  ) {
+    return this.programs.list(enterpriseId, limit, status);
   }
 
+  /**
+   * Switch a programme on, pause it, or archive it.
+   *
+   * ARCHIVING IS ONE-WAY. A programme is never deleted — the awards, the ledger
+   * entries and the audit trail all point at it, and a business needs to be
+   * able to answer "what was running last March". Archiving retires it instead:
+   * the record stays, the rules stop matching, and it cannot be switched back
+   * on. Reusing it would mean its old awards and its new ones share a
+   * programme, and the dashboard could never separate them.
+   */
   async setProgramStatus(enterpriseId: number, refId: string, status: RewardProgramStatus) {
-    const moved = await this.programs.setStatus(enterpriseId, refId, status);
-    if (!moved) throw new AppException(ErrorCode.RewardProgramNotFound);
+    const outcome = await this.programs.setStatus(enterpriseId, refId, status);
+    if (outcome === 'missing') throw new AppException(ErrorCode.RewardProgramNotFound);
+    if (outcome === 'archived') throw new AppException(ErrorCode.RewardProgramArchived);
 
     const program = await this.programs.findByRefId(enterpriseId, refId);
     await this.audit.record({

@@ -205,6 +205,17 @@ export const CreateRewardProgramSchema = z
  * answering one question is the duplication schema.md rejects when it forbids
  * `deleted` inside any status enum.
  */
+/**
+ * Which programmes to list.
+ *
+ * Absent means the working set: everything except archived. Naming a status
+ * returns exactly that status, which is how the portal's "archived" view asks
+ * for the retired ones without a second endpoint.
+ */
+export const RewardProgramQuerySchema = z.strictObject({
+  status: z.enum(RewardProgramStatus).optional(),
+});
+
 export const UpdateRewardProgramStatusSchema = z.strictObject({
   status: z.enum([
     RewardProgramStatus.Active,

@@ -17,7 +17,6 @@ import type {
 } from '@/modules/inbox/comment-projector.service';
 import { RewardGrantService } from '@/modules/rewards/reward-grant.service';
 import { RuleEvaluatorService } from '@/modules/rewards/rule-evaluator.service';
-import { ConversationKind, RewardTriggerKind } from '@/shared/enums';
 
 /**
  * Which reward trigger a projected conversation represents.
@@ -29,12 +28,6 @@ import { ConversationKind, RewardTriggerKind } from '@/shared/enums';
  *
  * A kind absent from this map simply does not drive rewards.
  */
-const TRIGGER_FOR_CONVERSATION: Partial<Record<ConversationKind, RewardTriggerKind>> = {
-  [ConversationKind.CommentThread]: RewardTriggerKind.CommentOnOwnPost,
-  [ConversationKind.Mention]: RewardTriggerKind.CommentOnMentionedPost,
-  [ConversationKind.DirectMessage]: RewardTriggerKind.DirectMessageInbound,
-};
-
 /**
  * Projects ledger rows into the domain.
  *
@@ -238,14 +231,13 @@ export class InboundProjectorWorker extends BasePoller {
   private async offerToRewards(trigger: ProjectedTriggerFacts | undefined): Promise<void> {
     if (!trigger) return;
 
-    const triggerKind = TRIGGER_FOR_CONVERSATION[trigger.conversationKind];
-    if (!triggerKind) return;
-
     try {
       await this.rewards.onTriggerEvent({
         enterpriseId: trigger.enterpriseId,
         customerId: trigger.customerId,
-        triggerKind,
+        /* Named by the projector that saw the event, not re-derived here from
+         * a conversation kind that cannot tell a story mention from a DM. */
+        triggerKind: trigger.triggerKind,
         sourceRefKind: trigger.sourceRefKind,
         sourceRefId: trigger.sourceRefId,
         channelId: trigger.channelId,

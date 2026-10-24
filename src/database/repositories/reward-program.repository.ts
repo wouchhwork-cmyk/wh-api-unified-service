@@ -75,32 +75,56 @@ export class RewardProgramRepository extends BaseRepository {
     return rows[0] ?? null;
   }
 
-  async list(enterpriseId: number, limit: number): Promise<RewardProgramRow[]> {
+  /**
+   * The programmes a business works with.
+   *
+   * ARCHIVED ONES ARE EXCLUDED BY DEFAULT and asked for by name. They are kept
+   * for the record — what ran, what it spent, what it awarded — but a retired
+   * programme cluttering the working list is how somebody edits the wrong one.
+   */
+  async list(
+    enterpriseId: number,
+    limit: number,
+    status: RewardProgramStatus | null = null,
+  ): Promise<RewardProgramRow[]> {
     return this.query<RewardProgramRow>(
       `SELECT ${COLUMNS} FROM reward_programs
         WHERE enterprise_id = $1 AND is_deleted = false
+          AND ($3::varchar IS NULL AND status <> $4 OR status = $3::varchar)
         ORDER BY created_at DESC, id DESC
         LIMIT $2`,
-      [enterpriseId, limit],
+      [enterpriseId, limit, status, RewardProgramStatus.Archived],
     );
   }
 
   /**
    * Moves the switch.
    *
-   * `affected` is returned so the service can tell "no such program" from
-   * "nothing changed" — a silent zero-row UPDATE is how a 404 becomes a 200.
+   * ARCHIVED IS TERMINAL, and the guard is in the WHERE clause rather than a
+   * read followed by a write: two concurrent requests, one archiving and one
+   * reactivating, would both pass a check-then-write and the loser would
+   * resurrect a programme somebody had just retired.
+   *
+   * Three outcomes, distinguished, because a silent zero-row UPDATE is how a
+   * 404 becomes a 200 — and how "this is archived" becomes "this does not
+   * exist", which sends somebody looking for a programme they are staring at.
    */
   async setStatus(
     enterpriseId: number,
     refId: string,
     status: RewardProgramStatus,
-  ): Promise<boolean> {
-    const { affected } = await this.mutate(
+  ): Promise<'moved' | 'archived' | 'missing'> {
+    const { rows } = await this.mutate<{ status: RewardProgramStatus }>(
       `UPDATE reward_programs SET status = $3
-        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false`,
-      [enterpriseId, refId, status],
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
+          AND status <> $4
+      RETURNING status`,
+      [enterpriseId, refId, status, RewardProgramStatus.Archived],
     );
-    return affected > 0;
+    if (rows.length > 0) return 'moved';
+
+    /* Only on the failure path, so the ordinary case stays one statement. */
+    const existing = await this.findByRefId(enterpriseId, refId);
+    return existing ? 'archived' : 'missing';
   }
 }

@@ -39,6 +39,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.ChannelNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.CustomerNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.RewardProgramNotFound]: HttpStatus.NOT_FOUND,
+  /* 409, not 404: it exists and you can still read it. It just cannot move. */
+  [ErrorCode.RewardProgramArchived]: HttpStatus.CONFLICT,
   [ErrorCode.RewardRuleNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.RewardWalletNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ConversationNotFound]: HttpStatus.NOT_FOUND,
@@ -104,6 +106,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
  */
 export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.RewardProgramNotFound]: 'That reward program does not exist.',
+  [ErrorCode.RewardProgramArchived]:
+    'That reward program is archived. Archiving is permanent — create a new program instead.',
   [ErrorCode.RewardRuleNotFound]: 'That reward rule does not exist.',
   [ErrorCode.RewardWalletNotFound]: 'That balance does not exist.',
   [ErrorCode.RewardBenefitNotScalable]:
