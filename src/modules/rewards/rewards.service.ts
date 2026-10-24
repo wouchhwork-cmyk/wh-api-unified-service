@@ -4,6 +4,7 @@ import { CustomerRepository } from '@/database/repositories/customer.repository'
 import { RewardAwardRepository } from '@/database/repositories/reward-award.repository';
 import { RewardEntitlementRepository } from '@/database/repositories/reward-entitlement.repository';
 import { RewardProgramRepository } from '@/database/repositories/reward-program.repository';
+import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { RewardRuleRepository } from '@/database/repositories/reward-rule.repository';
 import { RewardWalletRepository } from '@/database/repositories/reward-wallet.repository';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
@@ -13,6 +14,8 @@ import type {
   AdjustRewardBalanceInput,
   CreateRewardProgramInput,
   CreateRewardRuleInput,
+  RewardBenefitInput,
+  RewardConditionConfig,
 } from '@/shared/contracts/rewards/reward.contract';
 import {
   ActorKind,
@@ -20,6 +23,8 @@ import {
   CURRENCY_BEARING_BENEFITS,
   RewardCapScope,
   RewardConditionKind,
+  RewardReversalPolicy,
+  RewardTriggerKind,
   AuditEntityType,
   CONSTANT_ONE_FACTOR_PROVIDER,
   RewardAwardMode,
@@ -54,6 +59,7 @@ export class RewardsService {
     private readonly customers: CustomerRepository,
     private readonly benefits: BenefitRegistry,
     private readonly audit: AuditService,
+    private readonly enterprises: EnterpriseRepository,
     private readonly versions: EntityVersionService,
     private readonly tx: TransactionManager,
   ) {}
@@ -97,8 +103,32 @@ export class RewardsService {
    * can never answer what it originally was.
    */
   async createProgram(enterpriseId: number, input: CreateRewardProgramInput) {
+    /*
+     * CHECKED BEFORE THE TRANSACTION OPENS, because both of these are reads
+     * of the business and neither needs to be inside one. A programme whose
+     * triggers need a calendar or a currency the business has not set is
+     * refused with the code that names the remedy, exactly as a rule is.
+     */
+    if (input.triggers.length > 0) {
+      const business = await this.enterprises.findById(enterpriseId);
+      RewardsService.assertProgramCanRun(
+        input,
+        business?.timezone ?? null,
+        business?.currencyCode ?? null,
+      );
+    }
+
     return this.tx.runInTransaction(async () => {
-      const program = await this.programs.create({ enterpriseId, ...input });
+      const program = await this.programs.create({
+        enterpriseId,
+        name: input.name,
+        displayName: input.displayName,
+        /* The schedule's dates ARE the programme's dates. One concept, asked
+         * once, rather than a programme window and a schedule window that can
+         * disagree. */
+        startsAt: input.schedule.startsAt,
+        endsAt: input.schedule.endsAt,
+      });
 
       await this.audit.record({
         action: AuditAction.Created,
@@ -126,6 +156,33 @@ export class RewardsService {
         enterpriseId,
         snapshot: RewardsService.snapshotOf(program),
       });
+
+      /*
+       * ONE RULE PER TRIGGER, in the same transaction.
+       *
+       * The engine's shape is unchanged — a rule carries exactly one trigger
+       * — and that is not what the person filling in the form is thinking
+       * about. They are saying "reward DMs and story mentions", which is two
+       * rules sharing everything else. Expanding here rather than making the
+       * client write them keeps the two from drifting, and keeps a
+       * half-created programme from existing at all.
+       */
+      const conditions = RewardsService.scheduleToConditions(input.schedule);
+      for (const triggerKind of input.triggers) {
+        await this.createRuleWithin(enterpriseId, program.id, {
+          triggerKind,
+          triggerConfig:
+            triggerKind === RewardTriggerKind.PointsBalanceReached
+              ? { minPointsBalance: input.minPointsBalance }
+              : {},
+          capScope: input.capScope,
+          capCount: input.capCount,
+          holdHours: input.holdHours,
+          reversalPolicy: input.reversalPolicy,
+          benefits: input.benefits,
+          conditions,
+        });
+      }
 
       return program;
     });
@@ -275,10 +332,50 @@ export class RewardsService {
     RewardsService.assertMoneyHasACurrency(input, program.enterpriseCurrencyCode);
     RewardsService.assertCalendarRulesHaveATimezone(input, program.enterpriseTimezone);
 
-    const rule = await this.tx.runInTransaction(async () => {
+    const rule = await this.tx.runInTransaction(() =>
+      this.createRuleWithin(enterpriseId, program.id, {
+        triggerKind: input.triggerKind,
+        triggerConfig: input.triggerConfig,
+        capScope: input.capScope,
+        capCount: input.capCount,
+        holdHours: input.holdHours,
+        reversalPolicy: input.reversalPolicy,
+        priority: input.priority,
+        benefits: input.benefits,
+        conditions: input.conditions,
+      }),
+    );
+
+    return rule;
+  }
+
+  /**
+   * Writes ONE rule, with its benefits, conditions, audit row and version.
+   *
+   * MUST BE CALLED INSIDE A TRANSACTION, and both callers open one. It exists
+   * because a programme created whole writes several of these and a rule added
+   * on its own writes one, and two copies of "what a rule is" would disagree
+   * the first time either gained a field.
+   */
+  private async createRuleWithin(
+    enterpriseId: number,
+    programId: number,
+    input: {
+      triggerKind: RewardTriggerKind;
+      triggerConfig: Record<string, unknown>;
+      capScope: RewardCapScope;
+      capCount: number;
+      holdHours: number;
+      reversalPolicy: RewardReversalPolicy;
+      priority?: number;
+      benefits: readonly RewardBenefitInput[];
+      conditions: readonly RewardConditionConfig[];
+    },
+  ) {
+    {
       const created = await this.rules.insertRule({
         enterpriseId,
-        programId: program.id,
+        programId,
         version: 1,
         supersedesRuleId: null,
         triggerKind: input.triggerKind,
@@ -288,7 +385,7 @@ export class RewardsService {
         capCount: input.capCount,
         holdHours: input.holdHours,
         reversalPolicy: input.reversalPolicy,
-        priority: input.priority,
+        priority: input.priority ?? 0,
       });
 
       await this.rules.insertBenefits(
@@ -345,9 +442,7 @@ export class RewardsService {
       });
 
       return created;
-    });
-
-    return rule;
+    }
   }
 
   /**
@@ -369,7 +464,11 @@ export class RewardsService {
       reversalPolicy: string;
       isActive: boolean;
     },
-    input: CreateRewardRuleInput,
+    input: {
+      triggerConfig: Record<string, unknown>;
+      benefits: readonly RewardBenefitInput[];
+      conditions: readonly RewardConditionConfig[];
+    },
   ): Record<string, unknown> {
     return {
       triggerKind: rule.triggerKind,
@@ -433,8 +532,65 @@ export class RewardsService {
    * every event in three weeks is the version of this that nobody notices
    * until the awards are missing.
    */
+  /**
+   * Refuses a programme the business is not configured to run.
+   *
+   * Exactly the two guards a rule gets, asked once for the whole programme
+   * rather than once per expanded rule — the person filling in the form sees
+   * one refusal naming what is missing, not the same refusal repeated per
+   * trigger they ticked.
+   */
+  private static assertProgramCanRun(
+    input: CreateRewardProgramInput,
+    businessTimezone: string | null,
+    businessCurrency: string | null,
+  ): void {
+    const asRule = {
+      capScope: input.capScope,
+      conditions: RewardsService.scheduleToConditions(input.schedule),
+      benefits: input.benefits,
+    };
+    RewardsService.assertMoneyHasACurrency(asRule, businessCurrency);
+    RewardsService.assertCalendarRulesHaveATimezone(asRule, businessTimezone);
+  }
+
+  /**
+   * Turns the schedule a person filled in into the condition the engine reads.
+   *
+   * THEY ARE TRANSPOSES OF EACH OTHER. Somebody ticks Friday and then says
+   * when on Friday; the engine holds slots, each naming the days it covers.
+   * Converting here means the client never learns the engine's shape and the
+   * engine never learns the form's.
+   *
+   * A DAY WITH NO SLOTS MEANS ALL OF IT, expressed as midnight to midnight —
+   * `time-window.condition` treats a window whose end is not after its start
+   * as running through midnight, so 00:00–00:00 covers the whole day rather
+   * than none of it.
+   *
+   * NO DAYS AT ALL MEANS NO CONDITION. An empty condition list is "always",
+   * never "never": the absence of a restriction must not silently disable the
+   * programme nobody configured.
+   */
+  private static scheduleToConditions(
+    schedule: CreateRewardProgramInput['schedule'],
+  ): RewardConditionConfig[] {
+    if (schedule.days.length === 0) return [];
+
+    const slots = schedule.days.flatMap((day) =>
+      day.slots.length === 0
+        ? [{ days: [day.isoDay], start: '00:00', end: '00:00' }]
+        : day.slots.map((slot) => ({ days: [day.isoDay], start: slot.start, end: slot.end })),
+    );
+
+    return [
+      { conditionKind: RewardConditionKind.TimeWindow, config: { slots } },
+    ] as RewardConditionConfig[];
+  }
+
   private static assertCalendarRulesHaveATimezone(
-    input: CreateRewardRuleInput,
+    /* Only what it reads. Declared as the whole rule input, a programme could
+     * not reuse it without inventing a programRefId it does not have. */
+    input: { capScope: RewardCapScope; conditions: readonly RewardConditionConfig[] },
     businessTimezone: string | null,
   ): void {
     if (businessTimezone !== null) return;
@@ -456,7 +612,7 @@ export class RewardsService {
   }
 
   private static assertMoneyHasACurrency(
-    input: CreateRewardRuleInput,
+    input: { benefits: readonly RewardBenefitInput[] },
     businessCurrency: string | null,
   ): void {
     if (businessCurrency !== null) return;

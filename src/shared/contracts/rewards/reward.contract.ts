@@ -179,48 +179,54 @@ export type RewardConditionConfig = z.infer<typeof RewardConditionConfigSchema>;
  * ===================================================================== */
 
 /**
- * A programme takes NEITHER a timezone NOR a currency any more.
+ * WHICH TRIGGERS ARE SOCIAL, and which one is not.
  *
- * Both are facts about the BUSINESS, set once in business settings and read
- * from there by everything. Taken per programme, they were copied at creation
- * and never reconciled — so two programmes in one business could disagree
- * about when Tuesday starts and about what money means, with nothing to say
- * which was right.
+ * Every trigger but one is something a customer did on a platform: they sent
+ * a message, commented, mentioned us, tapped a button. `points_balance_reached`
+ * is raised by the engine itself after a credit moves a balance — it is an
+ * internal transfer, not an interaction — and almost everything in the form
+ * that makes sense for a social trigger makes none for it.
+ *
+ * Exported because the portal groups its checkboxes by exactly this split, and
+ * a second copy of the list there would be a second thing to update.
  */
-export const CreateRewardProgramSchema = z
-  .strictObject({
-    /**
-     * THE INTERNAL NAME. Unique per business, case insensitively, because its
-     * whole job is to let somebody say which programme they mean.
-     */
-    name: z.string().trim().min(1).max(120),
-    /**
-     * WHAT CUSTOMERS WILL SEE, and deliberately almost unvalidated.
-     *
-     * It is marketing copy: emoji, punctuation, mixed script, whatever the
-     * business wants to be called in front of its customers. Not unique —
-     * two programmes may both say "Rewards", and which one awarded is a
-     * question for the ledger rather than the label.
-     *
-     * BOUNDED ANYWAY, because "no checks" cannot mean "no limit": an
-     * unbounded string from a request body is a way to put a megabyte in a
-     * row. Trimmed, and an empty string becomes NULL rather than being stored
-     * as a name that renders as nothing.
-     */
-    displayName: z
-      .string()
-      .trim()
-      .max(160)
-      .transform((value) => (value.length === 0 ? null : value))
-      .nullable()
-      .default(null),
-    startsAt: z.coerce.date().nullable().default(null),
-    endsAt: z.coerce.date().nullable().default(null),
-  })
-  .refine((v) => v.startsAt === null || v.endsAt === null || v.startsAt < v.endsAt, {
-    message: 'endsAt must be after startsAt',
-    path: ['endsAt'],
-  });
+export const SYSTEM_TRIGGERS: ReadonlySet<RewardTriggerKind> = new Set([
+  RewardTriggerKind.PointsBalanceReached,
+]);
+
+/**
+ * The day-and-hours half of a schedule, shaped the way a person fills it in.
+ *
+ * ONE ENTRY PER DAY, each with its own hours, because that is how somebody
+ * thinks about it: tick Friday, then say when on Friday. The engine's
+ * `time_window` condition is the transpose — a list of slots, each naming the
+ * days it applies to — and the service converts between them. Neither shape is
+ * wrong; they are answers to different questions, and the conversion lives in
+ * one place rather than in the client.
+ */
+export const ScheduleDaySchema = z.strictObject({
+  isoDay: z.number().int().min(ISO_MONDAY).max(ISO_SUNDAY),
+  /** Empty means the whole of that day. */
+  slots: z
+    .array(z.strictObject({ start: WallClockSchema, end: WallClockSchema }))
+    .max(8)
+    .default([]),
+});
+
+/**
+ * When a programme runs, and when within that it applies.
+ *
+ * EVERY PART IS OPTIONAL and they are independent. No dates means "running
+ * now, indefinitely". No days means "any day, any hour". Days with no slots
+ * means "those days, all day". The absence of a restriction has to mean
+ * ALWAYS rather than never — the opposite would silently disable every
+ * programme nobody configured.
+ */
+export const ProgramScheduleSchema = z.strictObject({
+  startsAt: z.coerce.date().nullable().default(null),
+  endsAt: z.coerce.date().nullable().default(null),
+  days: z.array(ScheduleDaySchema).max(7).default([]),
+});
 
 /**
  * Only the transitions a human makes.
@@ -277,6 +283,130 @@ const BenefitInputSchema = z.intersection(
     awardCap: z.number().int().positive().nullable().default(null),
   }),
 );
+
+/* ========================================================================
+ * Programs — created whole, in one request
+ *
+ * DECLARED AFTER THE BENEFITS it embeds, because it embeds them: a programme
+ * now arrives with its triggers and its rewards rather than as an empty shell
+ * to be filled in by later calls.
+ * ===================================================================== */
+
+/**
+ * A programme takes NEITHER a timezone NOR a currency any more.
+ *
+ * Both are facts about the BUSINESS, set once in business settings and read
+ * from there by everything. Taken per programme, they were copied at creation
+ * and never reconciled — so two programmes in one business could disagree
+ * about when Tuesday starts and about what money means, with nothing to say
+ * which was right.
+ */
+export const CreateRewardProgramSchema = z
+  .strictObject({
+    /**
+     * THE INTERNAL NAME. Unique per business, case insensitively, because its
+     * whole job is to let somebody say which programme they mean.
+     */
+    name: z.string().trim().min(1).max(120),
+    /**
+     * WHAT CUSTOMERS WILL SEE, and deliberately almost unvalidated.
+     *
+     * It is marketing copy: emoji, punctuation, mixed script, whatever the
+     * business wants to be called in front of its customers. Not unique —
+     * two programmes may both say "Rewards", and which one awarded is a
+     * question for the ledger rather than the label.
+     *
+     * BOUNDED ANYWAY, because "no checks" cannot mean "no limit": an
+     * unbounded string from a request body is a way to put a megabyte in a
+     * row. Trimmed, and an empty string becomes NULL rather than being stored
+     * as a name that renders as nothing.
+     */
+    displayName: z
+      .string()
+      .trim()
+      .max(160)
+      .transform((value) => (value.length === 0 ? null : value))
+      .nullable()
+      .default(null),
+    /**
+     * WHAT THE CUSTOMER HAS TO DO, as a set rather than one at a time.
+     *
+     * A rule carries exactly one trigger — that is the engine's shape and it
+     * does not change. What changed is the conversation: somebody setting up
+     * a programme thinks "reward DMs and story mentions", not "write two
+     * rules". The service expands the set into one rule per trigger, in one
+     * transaction, so a half-built programme cannot exist.
+     *
+     * OPTIONAL, because a programme may legitimately be created empty and
+     * filled in later — and because every existing caller does exactly that.
+     */
+    triggers: z.array(z.enum(RewardTriggerKind)).max(14).default([]),
+    /**
+     * The balance that fires `points_balance_reached`. Required with it,
+     * refused without it — see the refinements below.
+     */
+    minPointsBalance: z.number().int().positive().max(10_000_000).optional(),
+    holdHours: z.number().int().min(0).max(720).default(0),
+    capScope: z.enum(RewardCapScope).default(RewardCapScope.None),
+    capCount: z.number().int().positive().max(1000).default(1),
+    reversalPolicy: z.enum(RewardReversalPolicy).default(RewardReversalPolicy.None),
+    /** Shared by every rule the triggers expand into. */
+    benefits: z.array(BenefitInputSchema).max(16).default([]),
+    schedule: ProgramScheduleSchema.default({ startsAt: null, endsAt: null, days: [] }),
+  })
+  .refine(
+    (v) =>
+      v.schedule.startsAt === null ||
+      v.schedule.endsAt === null ||
+      v.schedule.startsAt < v.schedule.endsAt,
+    {
+      message: 'the end of the schedule must be after its start',
+      path: ['schedule', 'endsAt'],
+    },
+  )
+  /*
+   * THE SYSTEM TRIGGER STANDS ALONE.
+   *
+   * `points_balance_reached` is raised by the engine after a credit moves a
+   * balance — an internal transfer rather than something a customer did. Put
+   * in the same rule set as a social trigger it would mean "when they DM us
+   * AND when their balance crosses 100", which is two unrelated programmes
+   * wearing one name and sharing one cap.
+   */
+  .refine((v) => !v.triggers.some((t) => SYSTEM_TRIGGERS.has(t)) || v.triggers.length === 1, {
+    message:
+      'a points-balance programme cannot also be driven by social triggers — it is an internal transfer, not an interaction',
+    path: ['triggers'],
+  })
+  /* Both directions, as on the rule: a threshold with no trigger to apply it
+   * to reads as a condition the engine will never consult. */
+  .refine(
+    (v) =>
+      v.triggers.includes(RewardTriggerKind.PointsBalanceReached) ===
+      (v.minPointsBalance !== undefined),
+    {
+      message:
+        'a balance to reach is required for points_balance_reached and means nothing on any other trigger',
+      path: ['minPointsBalance'],
+    },
+  )
+  /*
+   * A HOLD IS A SOCIAL IDEA. It exists so a comment that is deleted an hour
+   * later never pays out, which is a thing that can happen to a post and
+   * cannot happen to a balance crossing — nobody un-earns points by deleting
+   * something.
+   */
+  .refine((v) => v.holdHours === 0 || !v.triggers.some((t) => SYSTEM_TRIGGERS.has(t)), {
+    message:
+      'a hold only means something for a social trigger; a balance crossing cannot be undone',
+    path: ['holdHours'],
+  })
+  /* A programme with triggers but nothing to award is a programme that does
+   * nothing, loudly rather than quietly. */
+  .refine((v) => v.triggers.length === 0 || v.benefits.length > 0, {
+    message: 'choose at least one reward, or the triggers award nothing',
+    path: ['benefits'],
+  });
 
 /**
  * What a trigger matches on, beyond its kind.
