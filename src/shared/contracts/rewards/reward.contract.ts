@@ -1029,6 +1029,31 @@ export const AdjustRewardBalanceSchema = z
       .int()
       .refine((v) => v !== 0, 'an adjustment of zero does nothing'),
     reason: z.string().trim().min(1).max(255),
+    /**
+     * REQUIRED, and supplied by the CLIENT. This is the one endpoint where a
+     * person moves real value, so it is the one that most needs a retry to be
+     * safe.
+     *
+     * `reward_ledger_entries` has a unique index on `(enterprise_id,
+     * idempotency_key)` that makes a repeat a no-op — and this path defeated
+     * it by generating a fresh random key on every call, so the index could
+     * never fire. A double-clicked button, a client retrying a timeout, or a
+     * proxy replaying a request each credited the customer again.
+     *
+     * NOT DERIVED FROM THE PAYLOAD, which was the original objection and is a
+     * correct one: the same employee may legitimately credit the same customer
+     * the same amount twice, and a derived key would silently collapse the
+     * second into the first. A client-supplied key separates those two cases —
+     * one intent, one key; two intents, two keys — which is why `messages`
+     * already takes one and calls it "client-supplied, so a double-click
+     * cannot post twice".
+     *
+     * Required rather than optional because optional protects nobody who
+     * forgets, and this endpoint is new in this change — so asking for it now
+     * costs a line in the caller, and asking for it later costs a migration
+     * and every adjustment made in between.
+     */
+    idempotencyKey: z.string().trim().min(8).max(100),
   })
   .refine((v) => (v.walletKind === RewardWalletKind.Points) === (v.currencyCode === null), {
     message: 'points carry no currency; currency requires one',

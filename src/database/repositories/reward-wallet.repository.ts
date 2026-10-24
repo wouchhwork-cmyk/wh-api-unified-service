@@ -136,44 +136,25 @@ export class RewardWalletRepository extends BaseRepository {
   }
 
   /**
-   * Moves the balance WITHOUT a sufficiency check.
+   * Writes the entry on its own, for the one caller that still needs to.
    *
-   * For reversals and manual debits only, and the distinction is deliberate.
-   * Rule evaluation can never drive a balance below zero; only a clawback or an
-   * adjustment can. A negative balance is real debt — it takes effect
-   * immediately, never expires (one that could expire would be an exploit), and
-   * the next earn offsets it.
-   */
-  async postUnchecked(input: PostEntryInput): Promise<LedgerEntryRow> {
-    return this.post(input, false);
-  }
-
-  private async post(input: PostEntryInput, isEarn: boolean): Promise<LedgerEntryRow> {
-    const lifetimeDelta = isEarn && input.amount > 0 ? input.amount : 0;
-    const { rows } = await this.mutate<{ balance: number }>(
-      `UPDATE reward_wallets
-          SET balance = balance + $3,
-              lifetime_earned = lifetime_earned + $4,
-              version = version + 1
-        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false
-      RETURNING balance`,
-      [input.walletId, input.enterpriseId, input.amount, lifetimeDelta],
-    );
-    const updated = rows[0];
-    if (!updated) {
-      throw new Error(`reward wallet ${input.walletId} not found for this enterprise`);
-    }
-    return this.insertEntry(input, updated.balance);
-  }
-
-  /**
-   * Writes the entry itself.
+   * KNOWN DEFECT, LEFT DELIBERATELY — see `docs/backlog.md`. `post()` was
+   * inverted so the ledger claim gates the balance change; `debitIfSufficient`
+   * above still debits first and writes second, so a REPLAYED debit moves the
+   * balance twice and writes one entry.
    *
-   * ON CONFLICT DO NOTHING on the idempotency key, then a read-back: a retried
-   * job must not write a second entry, and must still see the first. The
-   * balance update above is NOT idempotent on its own, which is why every
-   * caller runs inside the award transaction — a replay that reaches here
-   * aborts the whole transaction rather than double-counting.
+   * It is not fixed here because the fix changes its contract. Inverting it
+   * means claiming the key before knowing whether the funds are there — and
+   * when they are not, the claimed row cannot be withdrawn, because
+   * `reward_ledger_entries` is append-only by trigger. The only way out is to
+   * THROW on insufficient funds instead of returning null, and "not enough
+   * points" is currently a refusal the conversion handler expects to receive
+   * rather than an error. That is a decision about the conversion flow, not a
+   * repair to a repository.
+   *
+   * The practical exposure is narrower than `post()`'s was: the only caller is
+   * `convert-value`, whose own replay would have to get past the award claim
+   * first.
    */
   private async insertEntry(input: PostEntryInput, balanceAfter: number): Promise<LedgerEntryRow> {
     const returning = `id, ref_id AS "refId", wallet_id AS "walletId",
@@ -221,6 +202,133 @@ export class RewardWalletRepository extends BaseRepository {
       throw new Error('ledger insert conflicted but the existing entry was not found');
     }
     return found;
+  }
+
+  /**
+   * Moves the balance WITHOUT a sufficiency check.
+   *
+   * For reversals and manual debits only, and the distinction is deliberate.
+   * Rule evaluation can never drive a balance below zero; only a clawback or an
+   * adjustment can. A negative balance is real debt — it takes effect
+   * immediately, never expires (one that could expire would be an exploit), and
+   * the next earn offsets it.
+   */
+  async postUnchecked(input: PostEntryInput): Promise<LedgerEntryRow> {
+    return this.post(input, false);
+  }
+
+  /**
+   * The balance and its ledger entry, moved together or not at all.
+   *
+   * ONE STATEMENT, AND THE ENTRY IS CLAIMED FIRST. That order is the whole
+   * correctness argument, and the previous order was a money bug:
+   *
+   *   1. UPDATE the wallet balance        <- unconditional, NOT idempotent
+   *   2. INSERT the entry ON CONFLICT DO NOTHING
+   *   3. on conflict, read the existing entry back and return it
+   *
+   * A replay therefore moved the balance a SECOND time, wrote no ledger row,
+   * and returned the original entry as though nothing had happened. The
+   * wallet and its ledger disagreed permanently, and the caller was told it
+   * succeeded. The comment above step 3 claimed the opposite — that "a replay
+   * that reaches here aborts the whole transaction rather than double-counting"
+   * — but `ON CONFLICT DO NOTHING` does not raise, so nothing aborted.
+   *
+   * Measured: three identical adjustments with one idempotency key left a
+   * balance of 150 and a single ledger entry for 50.
+   *
+   * The fix is a guard, not a reordering: the wallet UPDATE only matches a
+   * row when no entry already holds this idempotency key, so a replay moves
+   * nothing and the UNION hands back the entry that already exists.
+   *
+   * IT HAS TO BE THIS WAY ROUND, and the two obvious alternatives do not work:
+   *
+   *   - Claim the key first, then correct `balance_after` afterwards. A
+   *     data-modifying CTE cannot see another's inserted row, so the correcting
+   *     UPDATE finds nothing — and as separate statements it is refused anyway,
+   *     because `reward_ledger_entries` is append-only by trigger. So
+   *     `balance_after` must be known at INSERT time, which means the balance
+   *     must move first.
+   *   - Read the balance, compute, then write. That is the check-then-write
+   *     this repository rejects everywhere else.
+   *
+   * THE HONEST LIMIT: the guard is a subquery against another table, so under
+   * READ COMMITTED two concurrent posts carrying the SAME key could both pass
+   * it before either commits; the unique index then refuses the second insert
+   * while its balance change has already applied. Sequential replays — the
+   * retry, the redelivered webhook, the double-click, which is every case seen
+   * in practice — are fully covered. The concurrent one is narrowed to callers
+   * that do not already serialize, and every current caller runs inside a
+   * transaction that holds the award or the wallet row first.
+   *
+   */
+  private async post(input: PostEntryInput, isEarn: boolean): Promise<LedgerEntryRow> {
+    const lifetimeDelta = isEarn && input.amount > 0 ? input.amount : 0;
+    const returning = `id, ref_id AS "refId", wallet_id AS "walletId",
+              entry_kind AS "entryKind", amount, balance_after AS "balanceAfter",
+              occurred_at_utc AS "occurredAtUtc", recorded_at_utc AS "recordedAtUtc",
+              reason_code AS "reasonCode", rule_id AS "ruleId"`;
+
+    const { rows } = await this.mutate<LedgerEntryRow & { claimed: boolean }>(
+      `WITH moved AS (
+         UPDATE reward_wallets
+            SET balance = balance + $4,
+                lifetime_earned = lifetime_earned + $15,
+                version = version + 1
+          WHERE id = $2 AND enterprise_id = $1 AND is_deleted = false
+            AND NOT EXISTS (
+                  SELECT 1 FROM reward_ledger_entries
+                   WHERE enterprise_id = $1 AND idempotency_key = $10
+                )
+         RETURNING balance
+       ),
+       written AS (
+         INSERT INTO reward_ledger_entries
+                (enterprise_id, wallet_id, entry_kind, amount, balance_after,
+                 award_id, rule_id, rule_version, group_ref, reverses_entry_id,
+                 idempotency_key, actor_kind, actor_id, reason_code, occurred_at_utc)
+         SELECT $1, $2, $3, $4, moved.balance,
+                $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14
+           FROM moved
+         ON CONFLICT (enterprise_id, idempotency_key) DO NOTHING
+         RETURNING ${returning}
+       )
+       SELECT * FROM written
+       UNION ALL
+       SELECT ${returning}
+         FROM reward_ledger_entries
+        WHERE enterprise_id = $1 AND idempotency_key = $10
+          AND NOT EXISTS (SELECT 1 FROM moved)`,
+      [
+        input.enterpriseId,
+        input.walletId,
+        input.entryKind,
+        input.amount,
+        input.awardId ?? null,
+        input.ruleId ?? null,
+        input.ruleVersion ?? null,
+        input.groupRef ?? null,
+        input.reversesEntryId ?? null,
+        input.idempotencyKey,
+        input.actorKind ?? null,
+        input.actorId ?? null,
+        input.reasonCode ?? null,
+        input.occurredAtUtc,
+        lifetimeDelta,
+      ],
+    );
+
+    const entry = rows[0];
+    if (entry) return entry;
+
+    /*
+     * Nothing came back, so the claim was won and the wallet update matched no
+     * row — the wallet does not exist, or belongs to another business. The
+     * entry inserted by `claim` is part of this statement's transaction and
+     * goes with the throw, so no orphan is left behind.
+     */
+    throw new Error(`reward wallet ${input.walletId} not found for this enterprise`);
   }
 
   /** One wallet, without creating it. Returns null when they have none. */

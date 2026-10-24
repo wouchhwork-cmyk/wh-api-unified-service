@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { RewardAwardRepository } from '@/database/repositories/reward-award.repository';
@@ -1212,12 +1211,22 @@ export class RewardsService {
         entryKind: RewardEntryKind.Adjust,
         amount: input.amount,
         /*
-         * Random, and that is correct HERE where it is wrong everywhere else.
-         * An adjustment has no natural key — the same employee may legitimately
-         * credit the same customer the same amount twice — so deriving a key
-         * would silently collapse the second into the first.
+         * THE CALLER'S KEY, not a fresh random one.
+         *
+         * The original reasoning was half right: an adjustment has no natural
+         * key, because the same employee may legitimately credit the same
+         * customer the same amount twice, so DERIVING one from the payload
+         * would collapse the second into the first. The conclusion drawn from
+         * it was wrong — generating a random key per call does not make the
+         * endpoint safe to retry, it makes `reward_ledger_entries`' unique
+         * index on (enterprise_id, idempotency_key) unreachable. A
+         * double-clicked button credited the customer twice.
+         *
+         * A client-supplied key separates the two cases the derived key could
+         * not: one intent is one key however many times it is sent, and two
+         * intents are two keys even when the payloads match.
          */
-        idempotencyKey: `adjust:${randomUUID()}`,
+        idempotencyKey: `adjust:${input.idempotencyKey}`,
         occurredAtUtc: new Date(),
         actorKind: actor?.actorKind ?? ActorKind.System,
         actorId: actor?.employeeId ?? null,

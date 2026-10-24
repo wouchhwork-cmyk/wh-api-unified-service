@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wouchh.auto-resume</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/NI013/Documents/Om Docs/depos/wouch/wh-api-unified-service/.claude/auto-resume.sh</string>
+  </array>
+
+  <!-- Every 30 minutes. The script decides whether there is anything to do;
+       almost every firing exits within milliseconds on the marker check. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!-- Deliberately NOT RunAtLoad: loading this should not immediately launch
+       an agent. The first firing is 30 minutes away, which is time to change
+       your mind. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/NI013/Documents/Om Docs/depos/wouch/wh-api-unified-service/.claude/auto-resume.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/NI013/Documents/Om Docs/depos/wouch/wh-api-unified-service/.claude/auto-resume.launchd.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
