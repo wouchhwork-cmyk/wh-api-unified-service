@@ -201,9 +201,6 @@ function toProgramSummary(program: {
   name: string;
   status: string;
   timezone: string;
-  budgetMinor: number | null;
-  budgetCurrencyCode: string | null;
-  spentMinor: number;
   startsAt: Date | null;
   endsAt: Date | null;
 }) {
@@ -212,9 +209,6 @@ function toProgramSummary(program: {
     name: program.name,
     status: program.status,
     timezone: program.timezone,
-    budgetMinor: program.budgetMinor,
-    budgetCurrencyCode: program.budgetCurrencyCode,
-    spentMinor: program.spentMinor,
     startsAt: program.startsAt,
     endsAt: program.endsAt,
   };

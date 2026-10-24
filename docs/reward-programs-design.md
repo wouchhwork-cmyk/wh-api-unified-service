@@ -52,8 +52,8 @@ cannot be expressed.** Not a test we maintain. A shape that does not exist.
    ▼                  ▼                 ▼              ▼                 ▼             ▼
 ┌────────┐      ┌───────────┐     ┌───────────┐  ┌──────────┐    ┌────────────┐  ┌─────────┐
 │inbound_│─────▶│ messages  │────▶│  TRIGGER  │─▶│ match +  │───▶│ GRANT_     │─▶│ entry + │
-│events  │ dedup│ posts     │     │  (13 of   │  │ cap +    │    │ POINTS     │  │ wallet  │
-│        │      │           │     │   them)   │  │ budget   │    │ ISSUE_ENT  │  │         │
+│events  │ dedup│ posts     │     │  (13 of   │  │ cap      │    │ POINTS     │  │ wallet  │
+│        │      │           │     │   them)   │  │          │    │ ISSUE_ENT  │  │         │
 └────────┘      └───────────┘     └───────────┘  └──────────┘    └────────────┘  └─────────┘
                                                         │                 │
                                                    claim slot        dispatcher
@@ -172,7 +172,6 @@ export enum AwardStatus {
   Granted           = 'granted',
   Reversed          = 'reversed',
   SkippedCap        = 'skipped_cap',
-  SkippedBudget     = 'skipped_budget',
   SkippedCondition  = 'skipped_condition',      // reason_code names which (§9.4)
   SkippedZeroFactor = 'skipped_zero_factor',
   Expired           = 'expired',
@@ -402,11 +401,8 @@ is **acted upon**: adjusted today, and redeemed against later.
 | status | VARCHAR(16) | `ProgramStatus` — the switch, **not** the schedule |
 | timezone | VARCHAR(64) | **resolves `period_key` AND every window**. Defaults from enterprise |
 | default_currency_code | CHAR(3) | rule may override |
-| budget_minor | BIGINT | NULL = uncapped |
-| budget_currency_code | CHAR(3) | budget is counted in this |
 | forward_provider_code | VARCHAR(40) | NULL = keep value here. `'noop'` in V1 |
 | forward_config | JSONB | endpoint + mapping. **A secret reference, never a secret** |
-| spent_minor | BIGINT | DEFAULT 0 |
 | starts_at | TIMESTAMPTZ | NULL = already running. **May be in the future** |
 | ends_at | TIMESTAMPTZ | NULL = no end |
 
@@ -473,7 +469,6 @@ One row per benefit. Ordered. Applied all-or-nothing (§12.2).
 | benefit_schema_version | SMALLINT | NOT NULL DEFAULT 1. **A sibling column, never a key inside the JSON** |
 | award_mode | VARCHAR(10) | `fixed` / `up_to` — **per benefit** |
 | award_cap | INTEGER | `up_to` only: the ceiling the factor scales |
-| budget_cost_minor | BIGINT | NOT NULL DEFAULT 0 — what THIS benefit costs |
 | config | JSONB | NOT NULL — the kind's payload. Zod-validated on write AND read |
 
 ```sql
@@ -488,17 +483,12 @@ coffee means nothing. The kind declares whether it may be `up_to` and the
 registry enforces it. With `award_mode` on the *rule*, a factor of 0.6 on
 "20 points AND a free coffee" produced 12 points and six tenths of a coffee.
 
-**`budget_cost_minor` belongs here too.** Per-rule, adding a fourth benefit left
-the budget believing the rule cost what it did yesterday. An award claims the
-**sum over its benefits**.
-
 **Why JSONB and not typed columns.** Measured, not preferred:
 
 - **Typed columns make every new benefit kind a migration.** Flagsmith built that
   (`operator` as a constrained column) and is spending 20 files and +2,498 lines
   escaping it.
-- **The usual arguments for typed columns don't apply here.** Budget reads
-  `budget_cost_minor` on the *rule*, not these payloads. Reporting reads
+- **The usual arguments for typed columns don't apply here.** Reporting reads
   `reward_ledger_entries.amount`, typed either way. And a `STORED` generated
   column extracted from `config` takes a composite FK — available the day an
   item catalogue exists, costing one index.
@@ -686,8 +676,8 @@ The test is *what varies*:
 | Day / time windows | can vary **per rule** — "double points Tuesdays 6–9pm, normal points always" | **a condition** |
 
 The old design could not express that second row at all: "double points on
-Tuesdays" needed a whole second program, with its own budget and its own caps,
-for what is one campaign with two rules.
+Tuesdays" needed a whole second program, with its own schedule and its own
+caps, for what is one campaign with two rules.
 
 ```ts
 export enum RewardConditionKind {
@@ -753,7 +743,7 @@ UNIQUE (enterprise_id, redemption_code) WHERE is_deleted = false
 #### Conversion is a rule, not a mechanism
 
 "When points reach 30, burn 30 and grant ₹50" is a **trigger plus a benefit**.
-Building it separately duplicated caps, budget, versioning, audit and the award
+Building it separately duplicated caps, versioning, audit and the award
 state machine — all of which rules already have.
 
 ```ts
@@ -945,28 +935,36 @@ day" must not reset at 05:30 local.
 > an ORM flushing `SET used = 1` instead of an increment, so concurrent writers
 > overwrote each other.
 
-### 10.3 Program budget
+### 10.3 Program budget — built, then removed
 
-```sql
-UPDATE reward_programs
-   SET spent_minor = spent_minor + :cost
- WHERE id = :id AND enterprise_id = :ent
-   AND (budget_minor IS NULL OR spent_minor + :cost <= budget_minor)
-RETURNING spent_minor;
-```
+A program carried a money cap (`budget_minor` in `budget_currency_code`), each
+benefit declared `budget_cost_minor`, and an award claimed the sum before
+granting. The claim was the same correct shape as the cap above: one
+conditional UPDATE, guard in the WHERE clause, 0 rows → `skipped_budget`.
 
-0 rows → `skipped_budget`. Points and items carry `budget_cost_minor` or the
-budget guards nothing but currency.
+**It was removed because it could not price a point.** A money cap can only
+count a points benefit if somebody states what a point is worth in money, and
+nothing ever asked — no endpoint accepted `budgetCostMinor`, no screen offered
+it, and the column defaulted to 0. The claim short-circuited on a zero cost and
+returned success for every award ever evaluated.
+
+The dev database recorded the outcome exactly: a program with `budget_minor = 12`
+— twelve paise — granted awards with `spent_minor` still 0, and `skipped_budget`
+was never written once. **A control that cannot fail is worse than no control**,
+because the screen promised a ceiling the engine would never apply.
+
+Capping spend is a real requirement and comes back with §21 #2 answered first:
+points and money are separate quantities, and nothing may convert one to the
+other until the enterprise states the rate.
 
 ### 10.4 Transaction order
 
 ```
 1. INSERT award  ON CONFLICT DO NOTHING  → no row? already processed. EXIT
 2. claim cap counter                     → 0 rows? state=skipped_cap.     COMMIT
-3. claim program budget                  → 0 rows? state=skipped_budget.  COMMIT
-4. evaluate factor, snapshot it          → 0 factor? release cap. COMMIT
-5. write ledger entries + wallet projection
-6. enqueue forward if configured
+3. evaluate factor, snapshot it          → 0 factor? release cap. COMMIT
+4. write ledger entries + wallet projection
+5. enqueue forward if configured
    COMMIT
 ```
 
@@ -1008,7 +1006,6 @@ Both `BIGINT`. Never a float.
 ```
                     ┌──────── cap taken ────────▶ SKIPPED_CAP      (terminal)
                     │
-                    ├──────── no budget ────────▶ SKIPPED_BUDGET   (terminal)
    event ──▶ award ─┤
                     ├──── factor = 0 ───────────▶ SKIPPED_ZERO_FACTOR
                     │                             └─ releases the cap slot
@@ -1245,7 +1242,7 @@ points.
 
 Talon.One: *"If one benefit cannot be applied, all the other benefits in the same
 rule will also not be applied"* — and benefits are ordered, because a later one
-sees the budget an earlier one consumed.
+sees the wallet an earlier one moved.
 
 `RequestContext.runInTransaction` gives us this with **zero plumbing**:
 repositories resolve the ambient transaction per call, so N heterogeneous
@@ -1317,14 +1314,14 @@ DB actually holds.
 
 ```
 reward_programs
-┌────┬─────┬────────────────┬────────┬───────────────┬──────────────┬─────────────┐
-│ id │ ent │ name           │ status │ timezone      │ budget_minor │ forward_    │
-│    │     │                │        │               │ (INR)        │ provider    │
-├────┼─────┼────────────────┼────────┼───────────────┼──────────────┼─────────────┤
-│ 50 │  1  │ Social Rewards │ active │ Asia/Kolkata  │   5 000 000  │ NULL        │
-└────┴─────┴────────────────┴────────┴───────────────┴──────────────┴─────────────┘
+┌────┬─────┬────────────────┬────────┬───────────────┬──────────────────┬───────────┐
+│ id │ ent │ name           │ status │ timezone      │ default_currency │ forward_  │
+│    │     │                │        │               │ _code            │ provider  │
+├────┼─────┼────────────────┼────────┼───────────────┼──────────────────┼───────────┤
+│ 50 │  1  │ Social Rewards │ active │ Asia/Kolkata  │ INR              │ NULL      │
+└────┴─────┴────────────────┴────────┴───────────────┴──────────────────┴───────────┘
   starts_at = 2026-11-01 00:00 IST     ends_at = 2027-02-01 00:00 IST
-  budget_minor 5 000 000 = ₹50,000     forward_provider NULL = value stays here
+  forward_provider NULL = value stays here
 ```
 
 ### 16.2 Five rules
@@ -1368,19 +1365,18 @@ own slot.
 
 ```
 reward_rule_benefits
-┌─────┬──────┬───────┬───────────────────┬────────────┬─────┬────────┬──────────────────────┐
-│ id  │ rule │ index │ benefit_kind       │ award_mode │ cap │ budget │ config               │
-│     │      │       │                   │            │     │ _minor │                      │
-├─────┼──────┼───────┼───────────────────┼────────────┼─────┼────────┼──────────────────────┤
-│ 901 │  71  │   0   │ grant_points      │ up_to      │ 20  │  200   │ {}                   │
-│ 902 │  72  │   0   │ grant_points      │ fixed      │  —  │   50   │ {"points":5}         │
-│ 903 │  73  │   0   │ grant_points      │ fixed      │  —  │  100   │ {"points":10}        │
-│ 904 │  74  │   0   │ grant_points      │ fixed      │  —  │  500   │ {"points":50}        │
-│ 905 │  74  │   1   │ issue_entitlement │ fixed      │  —  │ 15000  │ {"itemRef":"COFFEE"} │
-│ 906 │  75  │   0   │ convert_value     │ fixed      │  —  │    0   │ {"burnPoints":30,    │
-│     │      │       │                   │            │     │        │  "grantMinor":5000,  │
-│     │      │       │                   │            │     │        │  "currency":"INR"}   │
-└─────┴──────┴───────┴───────────────────┴────────────┴─────┴────────┴──────────────────────┘
+┌─────┬──────┬───────┬───────────────────┬────────────┬─────┬──────────────────────┐
+│ id  │ rule │ index │ benefit_kind      │ award_mode │ cap │ config               │
+├─────┼──────┼───────┼───────────────────┼────────────┼─────┼──────────────────────┤
+│ 901 │  71  │   0   │ grant_points      │ up_to      │ 20  │ {}                   │
+│ 902 │  72  │   0   │ grant_points      │ fixed      │  —  │ {"points":5}         │
+│ 903 │  73  │   0   │ grant_points      │ fixed      │  —  │ {"points":10}        │
+│ 904 │  74  │   0   │ grant_points      │ fixed      │  —  │ {"points":50}        │
+│ 905 │  74  │   1   │ issue_entitlement │ fixed      │  —  │ {"itemRef":"COFFEE"} │
+│ 906 │  75  │   0   │ convert_value     │ fixed      │  —  │ {"burnPoints":30,    │
+│     │      │       │                   │            │     │  "grantMinor":5000,  │
+│     │      │       │                   │            │     │  "currency":"INR"}   │
+└─────┴──────┴───────┴───────────────────┴────────────┴─────┴──────────────────────┘
 ```
 
 **Rule 74 has two benefits.** 50 points AND a free coffee. One award, applied
@@ -1389,9 +1385,6 @@ represent.
 
 **Only 901 is `up_to`.** The factor scales points. It cannot scale a coffee
 (§8.3), so 905 is `fixed` and the registry refuses to make it otherwise.
-
-**Budget cost is per benefit.** Rule 74 claims 500 + 15 000 = **₹155.00** against
-the program budget. Adding a third benefit raises that automatically.
 
 ---
 
@@ -1406,7 +1399,6 @@ reward_cap_counters                         reward_awards
 ├─────┼──────┼──────┼──────────┼──────┤    ├──────┼──────┼─────┼────────┼────────────┤
 │  1  │  74  │ 8812 │ LIFETIME │  1   │    │ 3301 │  74  │8812 │granted │ LIFETIME   │
 └─────┴──────┴──────┴──────────┴──────┘    └──────┴──────┴─────┴────────┴────────────┘
-  programs.spent_minor: 0 → 15 500
 ```
 
 Two benefits, one transaction:
@@ -1487,7 +1479,7 @@ grant's transaction:
 | --- | --- |
 | after the commit | nesting *joins* the ambient transaction with no savepoint — a threshold rule that threw would poison the grant that earned the points |
 | held awards too | a 24h hold credits hours later; the deferred granter makes the same offer |
-| never recursive | a threshold rule cannot fire another. Nothing grants points from a crossing today, but the day somebody writes that rule it is an unbounded loop spending a real budget |
+| never recursive | a threshold rule cannot fire another. Nothing grants points from a crossing today, but the day somebody writes that rule it is an unbounded loop granting real value |
 
 ```
 reward_ledger_entries                     group_ref pairs the legs
@@ -1556,7 +1548,7 @@ rows that all say `system`, drowning the handful that name a person.
 | ----- | ----- | ---------- |
 | Create / edit / pause a **program** | human, JWT | **`audit_logs`** |
 | Create / edit / disable a **rule**, its benefits, its conditions | human, JWT | **`audit_logs`** |
-| Change **budget**, **caps**, **forward destination** | human, JWT | **`audit_logs`** |
+| Change **caps**, **forward destination** | human, JWT | **`audit_logs`** |
 | Manual balance **`adjust`** | human, JWT | **both** — §17.3 |
 | An **award** granted by a rule | none | ledger provenance only |
 | A **reversal** from deleted content | none | ledger provenance only |
@@ -1590,7 +1582,7 @@ the rule body into `changes`.
 that it changed, never the value.
 
 **Audit failures too.** `status` is `success | failure | error`. A rejected
-attempt to raise a budget is worth more than a successful one.
+attempt to raise a cap is worth more than a successful one.
 
 ### 17.3 Manual adjustment is the one that needs both
 
@@ -1690,7 +1682,8 @@ Median across seven real OSS commits: 7 files, 1 of them logic.
 | `message_reaction` | **no producer.** A reaction is a property OF a message, not a message: `handleReaction` updates the row it belongs to and returns `projected: false`, and the worker only offers PROJECTED outcomes to the engine. Wiring it means letting a skipped outcome carry trigger facts |
 | `opt_in_granted` | **no producer.** An opt-in is consent, not conversation — it is skipped before any customer row is written, so there is nobody to award |
 | `post_tagging_us` | **no producer.** A post-projector concern, not a DM one |
-| Frequency caps, program budget | **built** |
+| Frequency caps | **built** |
+| Program budget | **removed** — it could not price a point, so it never bound (§10.3) |
 | Points wallet + ledger | **built** |
 | Currency wallets, multi-currency | **built** |
 | Conversion rules | **built** |
@@ -1720,8 +1713,12 @@ Steps 1–3 hold the correctness. Each is shippable alone.
 
 ## 20. Abuse — controls, not detection
 
-**Have:** per-customer cap as a constraint, program budget failing closed, hold
-before spendable, append-only ledger, `hide` as a free abuse signal (§6.5).
+**Have:** per-customer cap as a constraint, hold before spendable, append-only
+ledger, `hide` as a free abuse signal (§6.5).
+
+**Lost with the budget (§10.3):** there is now no ceiling on what a program can
+grant in total. The per-customer cap bounds one customer, not the campaign.
+Restoring that bound is the point of question #2 below.
 
 **Do not have:** anything against *ten* accounts instead of one. That is a graph
 problem (market study §16.3), and naive versions flag most of your customers.
@@ -1752,7 +1749,7 @@ typed columns; flat AND conditions over a boolean tree; typed registry over
 | # | Question |
 | - | -------- |
 | 1 | **What should the factor engine measure?** Inputs, weighting, per-trigger or global. Backlog §8.1. A reach-based answer needs a Meta permission conversation first — `#10` blocks it today |
-| 2 | **`budget_cost_minor` for points/items** — what does the enterprise consider a 20-point award to cost? Without it the budget guards only currency |
+| 2 | **What is a point worth?** The blocker for any spend ceiling. A money budget cannot count a points award until the enterprise states a rate, and the first attempt shipped the cap without ever asking — so it never bound (§10.3). A ceiling returns only with this answered, or as a *count* cap (awards per program) that needs no conversion at all |
 | 3 | ~~**Who may `adjust` a balance**, under which permission**~~ — answered: `rewards.adjust`, behind the `reward_programs` feature (§17) |
 | 4 | **Retention.** Ledger entries are financial records and should outlive the 30-day transport window. Awards and counters probably follow the customer |
 | 5 | **Does the customer ever see their own balance?** Nothing here surfaces it to them — it is an enterprise-facing view. A customer-facing one is a separate authenticated surface |

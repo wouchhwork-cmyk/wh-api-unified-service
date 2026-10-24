@@ -36,16 +36,6 @@ export class RewardProgram extends PublicEntity {
   @Column({ type: 'char', length: 3, nullable: true })
   defaultCurrencyCode!: string | null;
 
-  /** NULL = uncapped. */
-  @Column({ type: 'bigint', nullable: true, transformer: bigintTransformer })
-  budgetMinor!: number | null;
-
-  @Column({ type: 'char', length: 3, nullable: true })
-  budgetCurrencyCode!: string | null;
-
-  @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
-  spentMinor!: number;
-
   /** NULL = already running. May be in the FUTURE — that is a scheduled program. */
   @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })
   startsAt!: Date | null;

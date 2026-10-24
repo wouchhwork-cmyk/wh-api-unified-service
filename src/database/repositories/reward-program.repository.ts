@@ -9,9 +9,6 @@ export interface RewardProgramRow {
   readonly status: RewardProgramStatus;
   readonly timezone: string;
   readonly defaultCurrencyCode: string | null;
-  readonly budgetMinor: number | null;
-  readonly budgetCurrencyCode: string | null;
-  readonly spentMinor: number;
   readonly startsAt: Date | null;
   readonly endsAt: Date | null;
   readonly forwardProviderCode: string | null;
@@ -19,8 +16,7 @@ export interface RewardProgramRow {
 
 const COLUMNS = `id, ref_id AS "refId", name, status, timezone,
        default_currency_code AS "defaultCurrencyCode",
-       budget_minor AS "budgetMinor", budget_currency_code AS "budgetCurrencyCode",
-       spent_minor AS "spentMinor", starts_at AS "startsAt", ends_at AS "endsAt",
+       starts_at AS "startsAt", ends_at AS "endsAt",
        forward_provider_code AS "forwardProviderCode"`;
 
 @Injectable()
@@ -30,24 +26,20 @@ export class RewardProgramRepository extends BaseRepository {
     name: string;
     timezone: string;
     defaultCurrencyCode: string | null;
-    budgetMinor: number | null;
-    budgetCurrencyCode: string | null;
     startsAt: Date | null;
     endsAt: Date | null;
   }): Promise<RewardProgramRow> {
     const { rows } = await this.mutate<RewardProgramRow>(
       `INSERT INTO reward_programs
               (enterprise_id, name, timezone, default_currency_code,
-               budget_minor, budget_currency_code, starts_at, ends_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               starts_at, ends_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING ${COLUMNS}`,
       [
         input.enterpriseId,
         input.name,
         input.timezone,
         input.defaultCurrencyCode,
-        input.budgetMinor,
-        input.budgetCurrencyCode,
         input.startsAt,
         input.endsAt,
       ],

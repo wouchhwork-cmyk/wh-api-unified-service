@@ -164,47 +164,6 @@ export class RewardAwardRepository extends BaseRepository {
     );
   }
 
-  /**
-   * Claims budget. Same shape as the cap: one conditional statement.
-   *
-   * Zero rows means the budget is spent, and the award records
-   * `skipped_budget` rather than vanishing. The cost is the SUM over the
-   * award's benefits — per-benefit, because with the cost on the rule, adding
-   * a fourth benefit left the budget believing the rule cost what it did
-   * yesterday.
-   */
-  async claimBudget(input: {
-    enterpriseId: number;
-    programId: number;
-    costMinor: number;
-  }): Promise<boolean> {
-    if (input.costMinor === 0) return true;
-    const { rows } = await this.mutate<{ spentMinor: number }>(
-      `UPDATE reward_programs
-          SET spent_minor = spent_minor + $3
-        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false
-          AND (budget_minor IS NULL OR spent_minor + $3 <= budget_minor)
-      RETURNING spent_minor AS "spentMinor"`,
-      [input.programId, input.enterpriseId, input.costMinor],
-    );
-    return rows.length > 0;
-  }
-
-  /** Gives budget back when an award is reversed. Floored, like the cap. */
-  async releaseBudget(input: {
-    enterpriseId: number;
-    programId: number;
-    costMinor: number;
-  }): Promise<void> {
-    if (input.costMinor === 0) return;
-    await this.mutate(
-      `UPDATE reward_programs
-          SET spent_minor = GREATEST(spent_minor - $3, 0)
-        WHERE id = $1 AND enterprise_id = $2`,
-      [input.programId, input.enterpriseId, input.costMinor],
-    );
-  }
-
   /** Records why nothing was granted. A skipped award is still a row. */
   async markSkipped(input: {
     enterpriseId: number;

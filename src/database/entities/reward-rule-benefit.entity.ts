@@ -14,9 +14,9 @@ import { BaseEntity } from './base.entity';
  * `config` is JSONB rather than typed columns, and that is measured rather than
  * preferred: typed columns make every new benefit kind a migration, which is
  * what Flagsmith is spending a four-figure diff to escape. The arguments for
- * typing it do not apply — budget reads `budget_cost_minor` here, not the
- * payload; reporting reads the ledger, typed either way; and a STORED generated
- * column takes a composite FK the day an item catalogue exists.
+ * typing it do not apply — reporting reads the ledger, typed either way, and a
+ * STORED generated column takes a composite FK the day an item catalogue
+ * exists.
  *
  * WHAT THAT COSTS, and how it is paid: Vendure stores the same shape and
  * silently drops a renamed arg while TypeScript asserts it is present. Three
@@ -58,10 +58,6 @@ export class RewardRuleBenefit extends BaseEntity {
   /** `up_to` only: the ceiling the factor scales. */
   @Column({ type: 'int', nullable: true })
   awardCap!: number | null;
-
-  /** What THIS benefit costs the budget. An award claims the sum over its benefits. */
-  @Column({ type: 'bigint', default: 0, transformer: bigintTransformer })
-  budgetCostMinor!: number;
 
   @Column({ type: 'jsonb', default: () => "'{}'" })
   config!: Record<string, unknown>;

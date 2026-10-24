@@ -41,8 +41,6 @@ describe('archiving a reward program', () => {
       name,
       timezone: 'Asia/Kolkata',
       defaultCurrencyCode: 'INR',
-      budgetMinor: null,
-      budgetCurrencyCode: null,
       startsAt: null,
       endsAt: null,
     });

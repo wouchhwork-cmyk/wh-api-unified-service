@@ -184,14 +184,8 @@ export const CreateRewardProgramSchema = z
         }
       }, 'not a recognised IANA timezone'),
     defaultCurrencyCode: CurrencyCodeSchema.nullable().default(null),
-    budgetMinor: MinorUnitsSchema.nullable().default(null),
-    budgetCurrencyCode: CurrencyCodeSchema.nullable().default(null),
     startsAt: z.coerce.date().nullable().default(null),
     endsAt: z.coerce.date().nullable().default(null),
-  })
-  .refine((v) => v.budgetMinor === null || v.budgetCurrencyCode !== null, {
-    message: 'a budget needs the currency it is counted in',
-    path: ['budgetCurrencyCode'],
   })
   .refine((v) => v.startsAt === null || v.endsAt === null || v.startsAt < v.endsAt, {
     message: 'endsAt must be after startsAt',
@@ -237,8 +231,6 @@ const BenefitInputSchema = z.intersection(
      */
     awardMode: z.enum(RewardAwardMode).default(RewardAwardMode.Fixed),
     awardCap: z.number().int().positive().nullable().default(null),
-    /** What THIS benefit costs the budget. The award claims the sum. */
-    budgetCostMinor: MinorUnitsSchema.default(0),
   }),
 );
 
@@ -288,7 +280,7 @@ export const CreateRewardRuleSchema = z
   })
   /*
    * BOTH DIRECTIONS, and both are real mistakes. A threshold trigger with no
-   * threshold would fire at any balance above zero and drain the budget; a
+   * threshold would fire at any balance above zero and grant endlessly; a
    * threshold on any other trigger reads as a condition the engine will never
    * apply.
    */

@@ -15,7 +15,6 @@ export interface RewardRuleBenefitRow {
   readonly benefitSchemaVersion: number;
   readonly awardMode: RewardAwardMode;
   readonly awardCap: number | null;
-  readonly budgetCostMinor: number;
   readonly config: Record<string, unknown>;
 }
 
@@ -99,8 +98,7 @@ export class RewardRuleRepository extends BaseRepository {
     return this.query<RewardRuleBenefitRow>(
       `SELECT benefit_index AS "benefitIndex", benefit_kind AS "benefitKind",
               benefit_schema_version AS "benefitSchemaVersion",
-              award_mode AS "awardMode", award_cap AS "awardCap",
-              budget_cost_minor AS "budgetCostMinor", config
+              award_mode AS "awardMode", award_cap AS "awardCap", config
          FROM reward_rule_benefits
         WHERE enterprise_id = $1 AND rule_id = $2 AND rule_version = $3
           AND is_deleted = false
@@ -187,7 +185,6 @@ export class RewardRuleRepository extends BaseRepository {
       benefitKind: RewardBenefitKind;
       awardMode: RewardAwardMode;
       awardCap: number | null;
-      budgetCostMinor: number;
       config: Record<string, unknown>;
     }[],
   ): Promise<void> {
@@ -195,8 +192,8 @@ export class RewardRuleRepository extends BaseRepository {
       await this.mutate(
         `INSERT INTO reward_rule_benefits
                 (enterprise_id, rule_id, rule_version, benefit_index, benefit_kind,
-                 award_mode, award_cap, budget_cost_minor, config)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+                 award_mode, award_cap, config)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
         [
           enterpriseId,
           ruleId,
@@ -205,7 +202,6 @@ export class RewardRuleRepository extends BaseRepository {
           benefit.benefitKind,
           benefit.awardMode,
           benefit.awardCap,
-          benefit.budgetCostMinor,
           JSON.stringify(benefit.config),
         ],
       );

@@ -70,7 +70,7 @@ export class RewardsService {
        * REFERENCE, so it is excluded entirely — auditing that it changed is
        * right, auditing its value is not.
        */
-      changes: { name: program.name, timezone: program.timezone, budgetMinor: program.budgetMinor },
+      changes: { name: program.name, timezone: program.timezone },
     });
 
     return program;
@@ -138,9 +138,6 @@ export class RewardsService {
         refId: program.refId,
         name: program.name,
         status: program.status,
-        budgetMinor: program.budgetMinor,
-        budgetCurrencyCode: program.budgetCurrencyCode,
-        spentMinor: program.spentMinor,
         awardsGranted: granted?.awards ?? 0,
         awardsHeld: held?.awards ?? 0,
         awardsReversed: reversed?.awards ?? 0,
@@ -208,7 +205,6 @@ export class RewardsService {
           benefitKind: b.benefitKind,
           awardMode: b.awardMode,
           awardCap: b.awardCap,
-          budgetCostMinor: b.budgetCostMinor,
           config: b.config as Record<string, unknown>,
         })),
       );

@@ -190,7 +190,7 @@ export class RuleEvaluatorService {
     /*
      * A threshold rule must never fire another. Nothing today grants points
      * from a balance crossing, but the day somebody writes that rule it is an
-     * unbounded loop spending a real budget, and the guard costs a comparison.
+     * unbounded loop granting real value, and the guard costs a comparison.
      */
     if (input.grantingTriggerKind === RewardTriggerKind.PointsBalanceReached) return;
 
@@ -350,27 +350,9 @@ export class RuleEvaluatorService {
     }
 
     const benefits = await this.rules.loadBenefits(event.enterpriseId, rule.id, rule.version);
-    const budgetCost = benefits.reduce((sum, b) => sum + b.budgetCostMinor, 0);
-
-    const funded = await this.awards.claimBudget({
-      enterpriseId: event.enterpriseId,
-      programId: rule.programId,
-      costMinor: budgetCost,
-    });
-    if (!funded) {
-      await this.releaseCap(event, rule, periodKey);
-      await this.awards.markSkipped({
-        enterpriseId: event.enterpriseId,
-        awardId: award.id,
-        status: RewardAwardStatus.SkippedBudget,
-        reasonCode: 'budget_exhausted',
-        periodKey,
-      });
-      return null;
-    }
 
     /*
-     * A HELD award stops here with its cap and budget already claimed.
+     * A HELD award stops here with its cap already claimed.
      *
      * Claiming at event time rather than at grant time is deliberate: it fails
      * fast, so a customer who is already capped is told by the absence of a
@@ -392,7 +374,6 @@ export class RuleEvaluatorService {
       periodKey,
       occurredAtUtc: event.occurredAtUtc,
       benefits,
-      budgetCost,
     });
     return creditedPoints ? award.id : null;
   }
@@ -422,10 +403,8 @@ export class RuleEvaluatorService {
       benefitKind: string;
       awardMode: RewardAwardMode;
       awardCap: number | null;
-      budgetCostMinor: number;
       config: Record<string, unknown>;
     }[];
-    budgetCost: number;
     /** True when a points balance went UP, which is what a threshold watches. */
   }): Promise<boolean> {
     const needsFactor = input.benefits.some((b) => b.awardMode === RewardAwardMode.UpTo);
@@ -443,9 +422,9 @@ export class RuleEvaluatorService {
      * A ZERO FACTOR DOES NOT CONSUME THE CAP SLOT.
      *
      * The customer did not earn, so burning their once-a-week slot on a
-     * benefit worth nothing would be the wrong outcome. The budget comes back
-     * too. Unreachable with `constant_one`, which is exactly why it is tested
-     * now rather than when a real provider first returns zero in production.
+     * benefit worth nothing would be the wrong outcome. Unreachable with
+     * `constant_one`, which is exactly why it is tested now rather than when a
+     * real provider first returns zero in production.
      */
     const worthless =
       needsFactor &&
@@ -453,11 +432,6 @@ export class RuleEvaluatorService {
         input.benefits.some((b) => this.scalesToNothing(b, factor.basisPoints)));
 
     if (worthless) {
-      await this.awards.releaseBudget({
-        enterpriseId: input.enterpriseId,
-        programId: input.rule.programId,
-        costMinor: input.budgetCost,
-      });
       if (input.periodKey) {
         await this.awards.releaseCapSlot({
           enterpriseId: input.enterpriseId,

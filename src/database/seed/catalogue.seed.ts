@@ -197,7 +197,7 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
   [Permission.CustomersView]: 'See customer records and their platform identifiers.',
   [Permission.CustomersManage]: 'Edit, merge, and archive customer records.',
   [Permission.RewardsView]: 'See reward programs, rules, balances, and award history.',
-  [Permission.RewardsManage]: 'Create and edit reward programs, rules, and budgets.',
+  [Permission.RewardsManage]: 'Create and edit reward programs and their rules.',
   [Permission.RewardsAdjust]: "Manually credit or debit a customer's reward balance.",
 
   [Permission.EmployeesView]: 'See the people who belong to this enterprise.',

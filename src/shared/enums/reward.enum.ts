@@ -128,7 +128,7 @@ export enum RewardCapScope {
 /**
  * An award's lifecycle.
  *
- * The four `skipped_*` values are terminal and are RECORDED rather than
+ * The three `skipped_*` values are terminal and are RECORDED rather than
  * discarded: "why didn't I get my points?" is a question the enterprise will be
  * asked, and one row with a period_key answers it.
  */
@@ -137,7 +137,6 @@ export enum RewardAwardStatus {
   Granted = 'granted',
   Reversed = 'reversed',
   SkippedCap = 'skipped_cap',
-  SkippedBudget = 'skipped_budget',
   /** reason_code names WHICH condition failed. */
   SkippedCondition = 'skipped_condition',
   /** A zero factor does not consume the cap slot — they did not earn. */
