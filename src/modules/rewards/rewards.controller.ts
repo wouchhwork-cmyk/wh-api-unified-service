@@ -7,6 +7,7 @@ import {
   CreateRewardProgramSchema,
   CreateRewardRuleSchema,
   HistoryLimitSchema,
+  TRIGGER_CATALOGUE,
   RewardRuleListQuerySchema,
   UpdateRewardRuleActiveSchema,
   RewardProgramQuerySchema,
@@ -97,6 +98,21 @@ export class RewardsController {
     const { status } = UpdateRewardProgramStatusSchema.parse(body);
     const program = await this.rewards.setProgramStatus(actor.enterpriseId, refId, status);
     return program ? toProgramSummary(program) : null;
+  }
+
+  @Get('triggers')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'Every trigger, grouped, and whether it can actually fire',
+    description:
+      'The SAME list the create endpoints validate against, so a client renders its picker from ' +
+      'here rather than keeping a copy that drifts the day a producer is built. ' +
+      '`available: false` means the trigger is modelled and nothing raises it yet — those are ' +
+      'refused on save, not merely greyed out, because a screen is not the only way to reach ' +
+      'this API and a rule that can never fire should not be storable.',
+  })
+  triggers(): { items: typeof TRIGGER_CATALOGUE } {
+    return { items: TRIGGER_CATALOGUE };
   }
 
   @Get('programs/:refId/versions')

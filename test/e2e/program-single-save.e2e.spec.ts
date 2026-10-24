@@ -271,7 +271,15 @@ describe('creating a reward programme in one save', () => {
       ]);
     });
 
-    /** A ticked day with no hours means all of it, not none of it. */
+    /**
+     * A ticked day with no hours means all of it, not none of it.
+     *
+     * THIS ASSERTED THE STORED SHAPE AND NOT THE BEHAVIOUR, which is how it
+     * passed while being wrong: the encoding was 00:00–00:00, and the window
+     * condition reads that as `minutes >= 0 && minutes < 0` — false at every
+     * instant of the day. The matching half is pinned in
+     * `test/unit/reward-time-window.spec.ts`.
+     */
     it('treats a day with no slots as the whole day', async () => {
       const { auth } = await business();
       await http()
@@ -288,7 +296,7 @@ describe('creating a reward programme in one save', () => {
       const rows: { config: { slots: unknown[] } }[] = await db.query(
         `SELECT config FROM reward_rule_conditions`,
       );
-      expect(rows[0]?.config.slots).toEqual([{ days: [5], start: '00:00', end: '00:00' }]);
+      expect(rows[0]?.config.slots).toEqual([{ days: [5], start: '00:00', end: '23:59' }]);
     });
 
     it('puts the schedule dates on the programme', async () => {
@@ -320,6 +328,92 @@ describe('creating a reward programme in one save', () => {
           schedule: { startsAt: '2027-02-01T00:00:00Z', endsAt: '2026-11-01T00:00:00Z', days: [] },
         })
         .expect(422);
+    });
+  });
+
+  describe('a trigger that cannot fire', () => {
+    /**
+     * REFUSED, NOT GREYED OUT.
+     *
+     * Six of the fourteen are modelled with no producer. The portal disables
+     * them, and a screen is not the only way to reach this API — a rule built
+     * on one would save, report success and never award anything.
+     */
+    it('is refused on a programme', async () => {
+      const { auth } = await business();
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Never fires', triggers: ['post_like'], benefits: POINTS })
+        .expect(422);
+    });
+
+    it('is refused alongside ones that can', async () => {
+      const { auth } = await business();
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({
+          name: 'Half dead',
+          triggers: ['direct_message_inbound', 'post_share'],
+          benefits: POINTS,
+        })
+        .expect(422);
+    });
+
+    it('is refused on a single rule too', async () => {
+      const { auth } = await business();
+      const created = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Host' })
+        .expect(201);
+
+      await http()
+        .post('/api/v1/rewards/rules')
+        .set(auth)
+        .send({
+          programRefId: created.body.data.refId,
+          triggerKind: 'message_reaction',
+          benefits: POINTS,
+          conditions: [],
+        })
+        .expect(422);
+    });
+
+    /**
+     * The client renders its picker from this, so the list it offers and the
+     * list the server accepts cannot drift.
+     */
+    it('is listed, grouped, and marked unavailable rather than hidden', async () => {
+      const { auth } = await business();
+      const listed = await http().get('/api/v1/rewards/triggers').set(auth).expect(200);
+
+      const items = listed.body.data.items as {
+        key: string;
+        group: string;
+        label: string;
+        available: boolean;
+      }[];
+      expect(items).toHaveLength(14);
+      expect(items.filter((t) => t.group === 'system').map((t) => t.key)).toEqual([
+        'points_balance_reached',
+      ]);
+
+      /* Everything the list calls available must actually save. */
+      const available = items.filter((t) => t.available).map((t) => t.key);
+      expect(available).toContain('direct_message_inbound');
+      expect(items.find((t) => t.key === 'post_like')?.available).toBe(false);
+
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({
+          name: 'Everything offered',
+          triggers: available.filter((k) => k !== 'points_balance_reached'),
+          benefits: POINTS,
+        })
+        .expect(201);
     });
   });
 

@@ -128,4 +128,77 @@ describe('TimeWindowCondition', () => {
     const rule = slots({ days: [1], start: '00:00', end: '06:00' });
     expect(condition.check(rule, ctx('2026-10-18T18:30:00Z'))).toBe(true); // Mon 00:00 IST
   });
+  /**
+   * THE LAST MINUTE OF THE DAY, which half-open arithmetic quietly drops.
+   *
+   * A window is `[start, end)` everywhere else, and that is right: 18:00 to
+   * 21:00 must not also award at 21:00 sharp, because that is where the next
+   * window begins. 23:59 is the exception, and it is a missing number rather
+   * than a special case — there is no 24:00 to type, so 23:59 is how somebody
+   * writes "until the end of the day".
+   */
+  describe('a window ending at 23:59', () => {
+    // Monday 2026-10-19 23:59 IST = 18:29 UTC
+    const MONDAY_2359_IST = '2026-10-19T18:29:00Z';
+    // Tuesday 2026-10-20 00:00 IST = 18:30 UTC on the Monday
+    const TUESDAY_0000_IST = '2026-10-19T18:30:00Z';
+
+    it('includes 23:59 itself', () => {
+      const rule = slots({ days: [1], start: '18:00', end: '23:59' });
+      expect(condition.check(rule, ctx(MONDAY_2359_IST))).toBe(true);
+    });
+
+    /**
+     * THE HANDOVER. Monday ending 23:59 and Tuesday starting 00:00 have to
+     * join with no gap — read exclusively, the minute 23:59:00 to 23:59:59
+     * belonged to neither and a customer in it earned nothing.
+     */
+    it('hands over to a 00:00 slot on the next day with no gap', () => {
+      const rule = slots(
+        { days: [1], start: '18:00', end: '23:59' },
+        { days: [2], start: '00:00', end: '02:00' },
+      );
+      expect(condition.check(rule, ctx(MONDAY_2359_IST)), 'the last minute of Monday').toBe(true);
+      expect(condition.check(rule, ctx(TUESDAY_0000_IST)), 'the first minute of Tuesday').toBe(
+        true,
+      );
+    });
+
+    /** And it does not leak into the next day on its own. */
+    it('stops at midnight when the next day has no slot', () => {
+      const rule = slots({ days: [1], start: '18:00', end: '23:59' });
+      expect(condition.check(rule, ctx(TUESDAY_0000_IST))).toBe(false);
+    });
+  });
+
+  /**
+   * A TICKED DAY WITH NO HOURS MEANS ALL OF IT.
+   *
+   * This is what `scheduleToConditions` writes, and it was written as
+   * 00:00–00:00 — which the ordinary branch reads as
+   * `minutes >= 0 && minutes < 0`, false at every instant. A day somebody
+   * ticked matched nothing at all, and the test covering it asserted the
+   * stored shape rather than whether it ever fired.
+   */
+  describe('the whole-day window', () => {
+    const WHOLE_DAY = { days: [1], start: '00:00', end: '23:59' };
+
+    it('matches at the first minute', () => {
+      // Monday 00:00 IST = Sunday 18:30 UTC
+      expect(condition.check(slots(WHOLE_DAY), ctx('2026-10-18T18:30:00Z'))).toBe(true);
+    });
+
+    it('matches in the middle', () => {
+      expect(condition.check(slots(WHOLE_DAY), ctx(MONDAY_1530_IST))).toBe(true);
+    });
+
+    it('matches at the last minute', () => {
+      expect(condition.check(slots(WHOLE_DAY), ctx('2026-10-19T18:29:00Z'))).toBe(true);
+    });
+
+    it('does not match another day', () => {
+      // Tuesday 15:30 IST
+      expect(condition.check(slots(WHOLE_DAY), ctx('2026-10-20T10:00:00Z'))).toBe(false);
+    });
+  });
 });

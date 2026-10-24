@@ -8,6 +8,33 @@ function toMinutes(wallClock: string): number {
   return Number(h) * 60 + Number(m);
 }
 
+/** The last minute of a day, 23:59. */
+const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
+/** One past it, which is midnight — the value a window needs to reach it. */
+const END_OF_DAY = 24 * 60;
+
+/**
+ * An end time, with `23:59` read as the end of the day.
+ *
+ * A window is otherwise half-open — `[start, end)` — which is the right shape
+ * for every other value: 18:00 to 21:00 should not also award at 21:00 sharp,
+ * because the next window starts there.
+ *
+ * 23:59 IS THE EXCEPTION, and it is not a special case so much as a missing
+ * number. There is no 24:00 to type: an `<input type="time">` stops at 23:59,
+ * so that is how a person writes "until the end of the day". Read exclusively
+ * it instead means "until 23:58:59", quietly dropping the last minute —
+ * invisible on its own, and visible as a hole the moment the next day starts
+ * at 00:00 and the two are supposed to join.
+ *
+ * So a window ending 23:59 runs to midnight, and 23:59 to 00:00 is seamless.
+ * Nobody types 23:59 meaning "all but the last minute".
+ */
+function endMinute(wallClock: string): number {
+  const end = toMinutes(wallClock);
+  return end === LAST_MINUTE_OF_DAY ? END_OF_DAY : end;
+}
+
 /**
  * Resolves an instant into the PROGRAM's local day and clock.
  *
@@ -75,7 +102,7 @@ export class TimeWindowCondition implements ConditionHandler<RewardConditionKind
 
     return condition.config.slots.some((slot) => {
       const start = toMinutes(slot.start);
-      const end = toMinutes(slot.end);
+      const end = endMinute(slot.end);
 
       if (start <= end) {
         return slot.days.includes(isoDay) && minutes >= start && minutes < end;

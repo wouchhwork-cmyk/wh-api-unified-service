@@ -77,10 +77,13 @@ export class BusinessOwnsTheTimezone1759100000000 implements MigrationInterface 
      * had never said anything about rupees. Silently picking somebody's
      * currency for them is worse than refusing and asking.
      *
-     * The timezone is deliberately NOT treated this way. Every business has a
-     * "today" whether or not it has thought about it, and the reporting day
-     * has to resolve to something — so that column keeps its NOT NULL and its
-     * default. Money does not have a safe default.
+     * The timezone goes the same way, for the same reason — see below. An
+     * earlier draft of this migration kept its NOT NULL and its default on the
+     * grounds that every business has a "today" whether or not it has thought
+     * about one. That argument is wrong in the way that matters: a business
+     * that has not chosen still has a today, but WE do not know when it
+     * starts, and picking Asia/Kolkata for them answers a question nobody
+     * asked.
      */
 
     /*

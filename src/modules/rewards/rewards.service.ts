@@ -178,7 +178,9 @@ export class RewardsService {
           capScope: input.capScope,
           capCount: input.capCount,
           holdHours: input.holdHours,
-          reversalPolicy: input.reversalPolicy,
+          /* Always `none` while the switch is off the wire — see the note on
+           * the contract. The engine path stays; nothing configures it. */
+          reversalPolicy: RewardReversalPolicy.None,
           benefits: input.benefits,
           conditions,
         });
@@ -339,7 +341,7 @@ export class RewardsService {
         capScope: input.capScope,
         capCount: input.capCount,
         holdHours: input.holdHours,
-        reversalPolicy: input.reversalPolicy,
+        reversalPolicy: RewardReversalPolicy.None,
         priority: input.priority,
         benefits: input.benefits,
         conditions: input.conditions,
@@ -562,10 +564,17 @@ export class RewardsService {
    * Converting here means the client never learns the engine's shape and the
    * engine never learns the form's.
    *
-   * A DAY WITH NO SLOTS MEANS ALL OF IT, expressed as midnight to midnight —
-   * `time-window.condition` treats a window whose end is not after its start
-   * as running through midnight, so 00:00–00:00 covers the whole day rather
-   * than none of it.
+   * A DAY WITH NO SLOTS MEANS ALL OF IT, expressed as 00:00 to 23:59.
+   *
+   * It was written as 00:00 to 00:00, which reads like "midnight to midnight"
+   * and is wrong: the condition takes `start <= end` as an ordinary window
+   * and asks `minutes >= 0 && minutes < 0`, which is false at every instant.
+   * A ticked day with no hours therefore matched NOTHING — the exact opposite
+   * of what it says — and the test that covered it asserted the stored shape
+   * rather than whether it ever fires.
+   *
+   * 23:59 is read as the end of the day by `endMinute`, so this covers every
+   * minute including the last.
    *
    * NO DAYS AT ALL MEANS NO CONDITION. An empty condition list is "always",
    * never "never": the absence of a restriction must not silently disable the
@@ -578,7 +587,7 @@ export class RewardsService {
 
     const slots = schedule.days.flatMap((day) =>
       day.slots.length === 0
-        ? [{ days: [day.isoDay], start: '00:00', end: '00:00' }]
+        ? [{ days: [day.isoDay], start: '00:00', end: '23:59' }]
         : day.slots.map((slot) => ({ days: [day.isoDay], start: slot.start, end: slot.end })),
     );
 

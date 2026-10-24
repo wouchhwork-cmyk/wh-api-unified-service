@@ -9,7 +9,6 @@ import {
   RewardCapScope,
   RewardConditionKind,
   RewardProgramStatus,
-  RewardReversalPolicy,
   RewardTriggerKind,
   RewardWalletKind,
 } from '@/shared/enums';
@@ -177,6 +176,112 @@ export type RewardConditionConfig = z.infer<typeof RewardConditionConfigSchema>;
 /* ========================================================================
  * Programs
  * ===================================================================== */
+
+/**
+ * EVERY TRIGGER, WHERE IT COMES FROM, AND WHETHER IT CAN ACTUALLY FIRE.
+ *
+ * One list, served to the client by `GET /rewards/triggers` and used by the
+ * validation below. The portal used to carry its own copy with its own
+ * availability flags — two lists that agree only until somebody builds a
+ * producer and updates one of them.
+ *
+ * `available: false` means the trigger is MODELLED and has no producer: the
+ * enum lists it so a rule referencing it is representable, and nothing in the
+ * ingest path will ever raise it. A rule built on one would save and then
+ * never fire, which is why it is refused below rather than merely greyed out
+ * on a screen — a client is not the only way to reach this API.
+ */
+export const TRIGGER_CATALOGUE: readonly {
+  readonly key: RewardTriggerKind;
+  readonly group: 'instagram' | 'system';
+  readonly label: string;
+  readonly available: boolean;
+}[] = [
+  {
+    key: RewardTriggerKind.DirectMessageInbound,
+    group: 'instagram',
+    label: 'Sent us a direct message',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.StoryMention,
+    group: 'instagram',
+    label: 'Mentioned us in their story',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.StoryReply,
+    group: 'instagram',
+    label: 'Replied to our story',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.CommentOnOwnPost,
+    group: 'instagram',
+    label: 'Commented on our post',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.CommentOnMentionedPost,
+    group: 'instagram',
+    label: 'Commented on a post tagging us',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.ReferralEntry,
+    group: 'instagram',
+    label: 'Arrived from an ad, link or QR code',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.PostbackTapped,
+    group: 'instagram',
+    label: 'Tapped a button',
+    available: true,
+  },
+  {
+    key: RewardTriggerKind.PostTaggingUs,
+    group: 'instagram',
+    label: 'Posted and tagged us',
+    available: false,
+  },
+  {
+    key: RewardTriggerKind.MessageReaction,
+    group: 'instagram',
+    label: 'Reacted to our message',
+    available: false,
+  },
+  { key: RewardTriggerKind.OptInGranted, group: 'instagram', label: 'Opted in', available: false },
+  {
+    key: RewardTriggerKind.PostCaptionMention,
+    group: 'instagram',
+    label: 'Named us in a caption',
+    available: false,
+  },
+  {
+    key: RewardTriggerKind.PostLike,
+    group: 'instagram',
+    label: 'Liked our post',
+    available: false,
+  },
+  {
+    key: RewardTriggerKind.PostShare,
+    group: 'instagram',
+    label: 'Shared our post',
+    available: false,
+  },
+  {
+    key: RewardTriggerKind.PointsBalanceReached,
+    group: 'system',
+    label: 'Reached a points balance',
+    available: true,
+  },
+];
+
+/** Derived, never written twice. */
+export const AVAILABLE_TRIGGERS: ReadonlySet<RewardTriggerKind> = new Set(
+  TRIGGER_CATALOGUE.filter((t) => t.available).map((t) => t.key),
+);
 
 /**
  * WHICH TRIGGERS ARE SOCIAL, and which one is not.
@@ -349,7 +454,21 @@ export const CreateRewardProgramSchema = z
     holdHours: z.number().int().min(0).max(720).default(0),
     capScope: z.enum(RewardCapScope).default(RewardCapScope.None),
     capCount: z.number().int().positive().max(1000).default(1),
-    reversalPolicy: z.enum(RewardReversalPolicy).default(RewardReversalPolicy.None),
+    /*
+     * NOT CONFIGURABLE FOR NOW.
+     *
+     * Taking an award back when the content behind it is deleted or hidden is
+     * built — the column, the engine path and its tests all exist — and what
+     * it should DO is not settled: whether a hidden comment is the same as a
+     * deleted one, whether a customer who deletes and reposts earns twice,
+     * whether reversing is right at all when the hold already covers the
+     * common case. Offering the switch before those are answered is offering
+     * a promise nobody has decided the shape of.
+     *
+     * So the field is gone from the wire and every rule is written `none`.
+     * The machinery stays rather than being ripped out, because the decision
+     * is deferred rather than reversed — see backlog.md §2.
+     */
     /** Shared by every rule the triggers expand into. */
     benefits: z.array(BenefitInputSchema).max(16).default([]),
     schedule: ProgramScheduleSchema.default({ startsAt: null, endsAt: null, days: [] }),
@@ -364,6 +483,20 @@ export const CreateRewardProgramSchema = z
       path: ['schedule', 'endsAt'],
     },
   )
+  /*
+   * A TRIGGER THAT CANNOT FIRE IS REFUSED, not merely greyed out.
+   *
+   * Six of the fourteen are modelled with no producer: nothing in the ingest
+   * path will ever raise them. The portal disables them, and a screen is not
+   * the only way to reach this API — a rule built on one would save, report
+   * success, and never award anything, which is the exact failure this
+   * codebase keeps rediscovering under different names.
+   */
+  .refine((v) => v.triggers.every((t) => AVAILABLE_TRIGGERS.has(t)), {
+    message:
+      'that trigger is modelled but has no producer yet, so a rule using it could never fire',
+    path: ['triggers'],
+  })
   /*
    * THE SYSTEM TRIGGER STANDS ALONE.
    *
@@ -441,12 +574,17 @@ export const CreateRewardRuleSchema = z
       .nonnegative()
       .max(24 * 30)
       .default(0),
-    reversalPolicy: z.enum(RewardReversalPolicy).default(RewardReversalPolicy.None),
     priority: z.number().int().min(0).max(10_000).default(0),
     /** An EMPTY list means ALWAYS — never "never". */
     conditions: z.array(RewardConditionConfigSchema).max(16).default([]),
     /** At least one: a rule that awards nothing is a rule that does nothing. */
     benefits: z.array(BenefitInputSchema).min(1).max(16),
+  })
+  /* Same rule as the programme path: a trigger with no producer cannot fire,
+   * so a rule may not be built on one. */
+  .refine((v) => AVAILABLE_TRIGGERS.has(v.triggerKind), {
+    message: 'that trigger is modelled but has no producer yet, so this rule could never fire',
+    path: ['triggerKind'],
   })
   .refine((v) => v.capScope !== RewardCapScope.None || v.capCount === 1, {
     message: 'capCount only means something with a capScope',
