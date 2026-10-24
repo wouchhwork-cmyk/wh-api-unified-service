@@ -699,6 +699,24 @@ export const CreateRewardProgramSchema = z
      * anything today; see `REWARD_DESTINATIONS`.
      */
     destination: z.enum(REWARD_DESTINATIONS).default('internal'),
+    /*
+     * CONDITIONS THE SCHEDULE CANNOT EXPRESS.
+     *
+     * `schedule` is the friendly way to write ONE condition kind —
+     * `time_window` — because days and hours are what somebody filling in a
+     * form is thinking about. The engine has two others with working
+     * handlers, `customer_tenure` and `content_match`, and before this field
+     * existed a programme had nowhere to put them: they could be set through
+     * `POST /rewards/rules` and were then DESTROYED the next time anybody
+     * saved the programme form, because the update rebuilt the condition list
+     * from the schedule alone.
+     *
+     * So the schedule stays the door for time windows and this is the door
+     * for everything else. A PUT restates both, which is why the read returns
+     * this list — a client that round-trips what it was given keeps the
+     * conditions it does not have a screen for.
+     */
+    conditions: z.array(RewardConditionConfigSchema).max(16).default([]),
     schedule: ProgramScheduleSchema.default({ startsAt: null, endsAt: null, days: [] }),
   })
   .refine(
@@ -815,6 +833,19 @@ export const CreateRewardProgramSchema = z
       path: ['benefits'],
     },
   )
+  /*
+   * ONE SOURCE FOR TIME WINDOWS, and it is `schedule`.
+   *
+   * Accepting a `time_window` here too would mean two fields describing the
+   * same thing with no rule about which wins — and `scheduleToConditions`
+   * writes the schedule's, so the one sent here would be accepted, stored
+   * nowhere, and reported as saved. Refused instead.
+   */
+  .refine((v) => v.conditions.every((c) => c.conditionKind !== RewardConditionKind.TimeWindow), {
+    message:
+      'days and hours belong in `schedule`, which is the only thing that writes a time window',
+    path: ['conditions'],
+  })
   /*
    * TWO REWARDS THAT DO THE SAME THING ARE ONE REWARD WRITTEN TWICE.
    *

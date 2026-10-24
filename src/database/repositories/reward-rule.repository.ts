@@ -274,6 +274,39 @@ export class RewardRuleRepository extends BaseRepository {
   }
 
   /**
+   * Conditions for MANY rules, in one statement.
+   *
+   * The single-rule version exists for the evaluator, which is looking at one
+   * rule by definition. Reading a whole programme means reading every active
+   * rule's conditions, and calling that one per rule is the N+1 this codebase
+   * forbids outright — fourteen triggers would be fourteen round trips to
+   * render one screen.
+   *
+   * The pairs are expanded into two arrays and zipped with `unnest`, because
+   * `(rule_id, rule_version) IN ((1,2),(3,4))` cannot be parameterised as a
+   * list without building the SQL by hand, and building SQL by hand around
+   * caller-supplied values is how injection gets in.
+   */
+  async loadConditionsForRules(
+    enterpriseId: number,
+    rules: readonly { id: number; version: number }[],
+  ): Promise<(RewardRuleConditionRow & { ruleId: number })[]> {
+    if (rules.length === 0) return [];
+
+    return this.query<RewardRuleConditionRow & { ruleId: number }>(
+      `SELECT c.rule_id AS "ruleId",
+              c.condition_index AS "conditionIndex", c.condition_kind AS "conditionKind",
+              c.condition_schema_version AS "conditionSchemaVersion", c.config
+         FROM reward_rule_conditions c
+         JOIN unnest($2::bigint[], $3::int[]) AS want(rule_id, rule_version)
+           ON want.rule_id = c.rule_id AND want.rule_version = c.rule_version
+        WHERE c.enterprise_id = $1 AND c.is_deleted = false
+        ORDER BY c.rule_id, c.condition_index`,
+      [this.requireEnterprise(enterpriseId), rules.map((r) => r.id), rules.map((r) => r.version)],
+    );
+  }
+
+  /**
    * Switches off EVERY active rule in a programme, and says which they were.
    *
    * THE RULES ARE NOT DELETED and not edited. Awards point at a rule id and a

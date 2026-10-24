@@ -234,7 +234,7 @@ export class RewardsService {
        * client write them keeps the two from drifting, and keeps a
        * half-created programme from existing at all.
        */
-      const conditions = RewardsService.scheduleToConditions(input.schedule);
+      const conditions = RewardsService.programConditions(input);
       for (const triggerKind of input.triggers) {
         await this.createRuleWithin(enterpriseId, program.id, {
           triggerKind,
@@ -329,7 +329,7 @@ export class RewardsService {
         }
       }
 
-      const conditions = RewardsService.scheduleToConditions(input.schedule);
+      const conditions = RewardsService.programConditions(input);
       for (const triggerKind of input.triggers) {
         const prior = previous.get(triggerKind);
         await this.createRuleWithin(enterpriseId, existing.id, {
@@ -789,7 +789,7 @@ export class RewardsService {
   ): void {
     const asRule = {
       capScope: input.capScope,
-      conditions: RewardsService.scheduleToConditions(input.schedule),
+      conditions: RewardsService.programConditions(input),
       benefits: input.benefits,
     };
     RewardsService.assertMoneyHasACurrency(asRule, businessCurrency);
@@ -820,24 +820,41 @@ export class RewardsService {
    * never "never": the absence of a restriction must not silently disable the
    * programme nobody configured.
    */
-  private static scheduleToConditions(
-    schedule: CreateRewardProgramInput['schedule'],
-  ): RewardConditionConfig[] {
-    if (schedule.days.length === 0) return [];
+  /**
+   * The conditions a programme's rules carry: the schedule's, plus the ones
+   * the schedule cannot express.
+   *
+   * THE SCHEDULE IS NOT THE ONLY AUTHOR ANY MORE, and that is the fix. It used
+   * to return only what it built, so a rule's `customer_tenure` or
+   * `content_match` — both with working handlers, both settable through
+   * `POST /rewards/rules` — was silently destroyed the next time anybody saved
+   * the programme form. Accepted, reported as saved, gone.
+   *
+   * `time_window` is refused in the other list by the contract, so these two
+   * sources cannot both claim the same kind and there is no precedence rule to
+   * get wrong.
+   */
+  private static programConditions(input: {
+    schedule: CreateRewardProgramInput['schedule'];
+    conditions: readonly RewardConditionConfig[];
+  }): RewardConditionConfig[] {
+    const others = [...input.conditions];
+    if (input.schedule.days.length === 0) return others;
 
-    const slots = schedule.days.flatMap((day) =>
+    const slots = input.schedule.days.flatMap((day) =>
       day.slots.length === 0
         ? [{ days: [day.isoDay], start: '00:00', end: '23:59' }]
         : day.slots.map((slot) => ({ days: [day.isoDay], start: slot.start, end: slot.end })),
     );
 
     return [
-      { conditionKind: RewardConditionKind.TimeWindow, config: { slots } },
-    ] as RewardConditionConfig[];
+      { conditionKind: RewardConditionKind.TimeWindow, config: { slots } } as RewardConditionConfig,
+      ...others,
+    ];
   }
 
   /**
-   * The inverse of `scheduleToConditions`: slots back into days.
+   * The time-window half of `programConditions`, reversed: slots back into days.
    *
    * The engine stores a list of slots, each naming the days it applies to;
    * the form asks day by day. Neither shape is wrong — they answer different
@@ -914,15 +931,67 @@ export class RewardsService {
     const benefits = first
       ? await this.rules.loadBenefits(enterpriseId, first.id, first.version)
       : [];
-    const conditions = first
-      ? await this.rules.loadConditions(enterpriseId, first.id, first.version)
-      : [];
+    /*
+     * EVERY ACTIVE RULE'S CONDITIONS, not the first rule's.
+     *
+     * Reading only the first was the same bug one layer up: a condition set
+     * on a rule added through `POST /rewards/rules` was invisible here, so a
+     * client round-tripping this response still dropped it. One batched query
+     * rather than one per rule — fourteen triggers would otherwise be
+     * fourteen round trips to render one screen.
+     */
+    const everyCondition = await this.rules.loadConditionsForRules(
+      enterpriseId,
+      rules.map((rule) => ({ id: rule.id, version: rule.version })),
+    );
+    const conditions = everyCondition.filter((c) => first && c.ruleId === first.id);
+
+    const stored = conditions.map((c) => ({
+      conditionKind: c.conditionKind,
+      config: c.config,
+    })) as RewardConditionConfig[];
+
+    /*
+     * The non-schedule conditions, deduplicated across rules.
+     *
+     * The composite form writes the same set onto every rule it creates, so
+     * the union IS that set. Where rules genuinely differ, the union is what
+     * keeps every condition visible — and `uniform` below says the form
+     * cannot represent the difference, so saving would flatten it.
+     */
+    const otherConditions: RewardConditionConfig[] = [];
+    const seenCondition = new Set<string>();
+    for (const row of everyCondition) {
+      if (row.conditionKind === RewardConditionKind.TimeWindow) continue;
+      const key = `${row.conditionKind}:${JSON.stringify(row.config)}`;
+      if (seenCondition.has(key)) continue;
+      seenCondition.add(key);
+      otherConditions.push({
+        conditionKind: row.conditionKind,
+        config: row.config,
+      } as RewardConditionConfig);
+    }
+
+    /*
+     * `uniform` counts CONDITIONS too, not just cap and hold. A programme
+     * whose rules carry different conditions is one the form flattens just as
+     * surely, and saying so only about cap and hold would be telling half of
+     * the same truth.
+     */
+    const conditionFingerprint = (ruleId: number): string =>
+      everyCondition
+        .filter((c) => c.ruleId === ruleId)
+        .map((c) => `${c.conditionKind}:${JSON.stringify(c.config)}`)
+        .sort()
+        .join('|');
+    const firstFingerprint = first ? conditionFingerprint(first.id) : '';
 
     const uniform = rules.every(
       (rule) =>
         rule.capScope === first?.capScope &&
         rule.capCount === first?.capCount &&
-        rule.holdHours === first?.holdHours,
+        rule.holdHours === first?.holdHours &&
+        conditionFingerprint(rule.id) === firstFingerprint,
     );
 
     const balanceRule = rules.find(
@@ -953,13 +1022,15 @@ export class RewardsService {
       schedule: {
         startsAt: program.startsAt,
         endsAt: program.endsAt,
-        days: RewardsService.conditionsToSchedule(
-          conditions.map((c) => ({
-            conditionKind: c.conditionKind,
-            config: c.config,
-          })) as RewardConditionConfig[],
-        ),
+        days: RewardsService.conditionsToSchedule(stored),
       },
+      /*
+       * EVERYTHING THE SCHEDULE DOES NOT SPEAK FOR, handed back so a client
+       * that returns what it was given keeps conditions it has no screen for.
+       * Without this the round trip was lossy in the worst way: the form
+       * showed everything it understood, saved, and quietly dropped the rest.
+       */
+      conditions: otherConditions,
       /* False = these rules do not agree; saving this form would flatten them. */
       uniform,
     };

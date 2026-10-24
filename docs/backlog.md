@@ -398,6 +398,138 @@ nothing about where it goes.
 **To close it**: the provider interface, one real provider, the transit leg,
 the outbox consumer, and an alarm on a non-zero transit balance.
 
+### Attachment media is never fetched — `is_downloaded` is a column nothing writes
+
+`message_attachments` carries `storage_key`, `is_downloaded`, `downloaded_at`,
+`mime_type`, `file_size_bytes`, `width`, `height` and `duration_ms`. A search
+of `src/` finds `is_downloaded` in exactly two places — the entity and the
+schema definition — and **nothing ever sets it**. There is no downloader.
+
+Measured on the dev database: **44 attachments, 0 with a `storage_key`, 0
+downloaded**, and every one of mime type, dimensions and duration NULL across
+all 44.
+
+**WHAT WE ACTUALLY HOLD** is a signed Meta CDN link and nothing else:
+
+```json
+{"type":"image","payload":{"url":"https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=…&signature=…"}}
+```
+
+Those links expire — about 24 hours for a story, per the note in
+`attachment-normalizer.ts`. When one does, that image, video or audio clip is
+gone, and `asset_id` does not bring it back.
+
+**WHAT THIS IS NOT.** An investigation on 2026-10-25 reported these fields as
+"available on arrival and not captured", against the standing rule to capture
+every field Meta gives. That reading is wrong and is recorded here so nobody
+chases it twice: the webhook payload carries `type` and `payload.url`, and
+nothing else. Mime type, dimensions and duration are not sent by Meta at all —
+they can only be learned by fetching the bytes. The one field hidden in that
+URL, `asset_id`, IS already extracted into `metadata.assetId` by
+`extractAssetId` (28 of the 44 rows carry one; the rest are kinds whose URL has
+none). **The ingest path is already capturing everything Meta gives.**
+
+So this is not a capture gap. It is a missing media pipeline, and it needs a
+decision before it needs code:
+
+- where the bytes live — object storage, bucket, region, encryption
+- who fetches them: a worker off `outbound_events`-style polling, or on ingest
+- what happens when a fetch fails or the link has already expired
+- retention — customer media is personal data, so how long, and deleted how
+- backpressure, because a resync burst wrote 43 attachments in 3.5 minutes and
+  a real backfill would be far larger
+
+**Until it is built**, treat every attachment as readable only while its CDN
+link lives, and do not let any feature promise otherwise.
+
+### VERIFY EVERY TRIGGER — six of the seven have never fired, once
+
+`TRIGGER_CATALOGUE` marks seven triggers `available: true`, and that flag is a
+promise with teeth: the contract REFUSES `available: false` on save, on the
+stated grounds that a rule built on a trigger with no producer "would save,
+report success, and never award anything". The flag is what separates the
+triggers we claim work from the ones we admit do not.
+
+**For six of the seven, that claim is untested.** Measured 2026-10-25 against
+the dev database, with live active rules configured on all seven:
+
+| trigger | awards ever |
+|---|---|
+| `direct_message_inbound` | **3** — verified end to end 2026-10-24 |
+| `story_mention` | 0 |
+| `story_reply` | 0 |
+| `comment_on_own_post` | 0 |
+| `comment_on_mentioned_post` | 0 |
+| `referral_entry` | 0 |
+| `postback_tapped` | 0 |
+
+Zero is not proof of a broken producer — nobody has sent a story mention at a
+rule that was listening. But it is not proof of a working one either, and
+`available: true` currently asserts the latter on six triggers nobody has
+watched fire. That is the same shape as every failure this codebase keeps
+rediscovering: configuration that saves, reports success, and does nothing.
+
+**What verifying one looks like** — the DM was done this way and it took one
+message:
+
+1. A live active rule on that trigger alone, points benefit, no hold, no cap.
+2. Perform the real interaction on the real account. **No synthetic webhooks** —
+   a fabricated payload proves the evaluator works, not that Meta sends what we
+   think it sends, which is the half that actually breaks.
+3. Confirm the chain: `inbound_events` row → `reward_awards` row `granted` →
+   points in `reward_wallets`.
+4. If it does not fire, find out which link broke — did Meta deliver the
+   webhook, did the projector raise the right `InboundEventType`, did
+   `findMatchingRules` match it — and record the answer.
+
+`referral_entry` and `postback_tapped` deserve attention first: both need
+something set up on the Meta side (an ad/link/QR, and a button with a payload)
+before they can fire at all, so "it did not fire" may mean "it was never
+possible to fire" rather than anything about our code.
+
+**Until each is verified**, treat its `available: true` as a claim rather than
+a fact, and say so to anyone building on it.
+
+### OPEN QUESTION — can we send media to a customer at all? **UNVERIFIED**
+
+> "so you mean there is no way we can send media from the code to the user?"
+
+Raised 2026-10-25 while tracing what the platform had and had not sent. **It is
+recorded here as a question, not an answer: nobody has checked yet.**
+
+**What is actually observed**, and it is only an observation: every
+`outbound_events` row that exists carries a text-only payload of the shape
+`{ "message": "..." }`, and all three surviving platform-dispatched messages
+have `message_kind = 'text'`. No row has ever carried an attachment.
+
+**What that does NOT establish.** Absence of a media send is not absence of the
+ability to send media — nobody has tried. The records are also incomplete:
+`outbound_events` ids 1–25 and `messages` ids 1–582 were hard-deleted at some
+unknown point (sequences were never reset, so those ids were used), so "it has
+never happened" cannot be asserted from this table either.
+
+**To answer it properly, check all four:**
+
+1. Does the outbound relay's Meta client build anything but a `text` message
+   body? (`src/workers/outbound-relay.worker.ts` and whatever send adapter it
+   calls.)
+2. Does the outbound payload have a schema, and does it admit attachments? The
+   enqueue path currently types `payload` loosely, so a media payload might be
+   *storable* and simply never *sent*.
+3. Does Meta's Instagram messaging API accept media from a business inside the
+   24-hour window, and in what form — a public URL, an uploaded `attachment_id`,
+   or both? This is a platform-capability question, not a code one, and the
+   answer belongs in `docs/platform-limitations.md`.
+4. If it can be sent by URL, where does the URL come from? We store no media of
+   our own — see the attachment entry above — so there is currently nothing to
+   point at.
+
+**Why it matters**: a reward that hands over a voucher image, a QR code or a
+receipt is a plausible next ask, and the answer decides whether that is a
+feature or a platform wall. Finding out by shipping and dead-lettering is the
+expensive way — which is exactly how the malformed recipient id was found on
+2026-10-24.
+
 ### `issue_entitlement` — modelled end to end, with nothing to point at
 
 The handler, the expiry sweep and the ledger treatment all exist. What does not

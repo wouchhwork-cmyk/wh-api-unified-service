@@ -280,6 +280,96 @@ describe('editing a reward programme in one save', () => {
       .expect(200);
   });
 
+  /*
+   * THE LOSSY ROUND TRIP, which is what this pair of tests exists for.
+   *
+   * `customer_tenure` and `content_match` have working handlers and can be set
+   * through `POST /rewards/rules`. The programme form cannot show them — and
+   * before `conditions` was on the wire, saving the programme rebuilt its
+   * condition list from the schedule alone, so opening the form and pressing
+   * save DESTROYED them. Accepted, reported as saved, gone.
+   */
+  it('keeps a condition the form cannot show, across a save', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+
+    /* Set the way a client would have to: through the rule endpoint. */
+    await http()
+      .post('/api/v1/rewards/rules')
+      .set(auth)
+      .send({
+        programRefId: refId,
+        triggerKind: 'comment_on_own_post',
+        benefits: POINTS,
+        conditions: [
+          { conditionKind: 'customer_tenure', config: { minDaysSinceFirstEngagement: 30 } },
+        ],
+      })
+      .expect(201);
+
+    const read = await http()
+      .get(`/api/v1/rewards/programs/${refId}/configuration`)
+      .set(auth)
+      .expect(200);
+    const config = read.body.data;
+
+    /* It comes back, rather than being invisible to anything but the engine. */
+    expect(config.conditions).toEqual([
+      { conditionKind: 'customer_tenure', config: { minDaysSinceFirstEngagement: 30 } },
+    ]);
+
+    /* And returning what was read keeps it. */
+    await http()
+      .put(`/api/v1/rewards/programs/${refId}`)
+      .set(auth)
+      .send({
+        name: config.name,
+        displayName: config.displayName,
+        triggers: config.triggers,
+        capScope: config.capScope,
+        capCount: config.capCount,
+        holdHours: config.holdHours,
+        benefits: config.benefits,
+        destination: config.destination,
+        schedule: config.schedule,
+        conditions: config.conditions,
+      })
+      .expect(200);
+
+    const rows = await db.query(
+      `SELECT c.condition_kind AS kind, c.config
+         FROM reward_rule_conditions c
+         JOIN reward_rules r ON r.id = c.rule_id AND r.version = c.rule_version
+        WHERE r.is_active = true AND c.is_deleted = false
+          AND c.condition_kind = 'customer_tenure'`,
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0].config.minDaysSinceFirstEngagement).toBe(30);
+  });
+
+  it('refuses a time window in `conditions` — that is the schedule’s job', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+
+    /* Two fields describing one thing, with the schedule's winning silently,
+     * is exactly the "accepted and stored nowhere" shape this codebase keeps
+     * finding. Refused instead. */
+    const refused = await http()
+      .put(`/api/v1/rewards/programs/${refId}`)
+      .set(auth)
+      .send({
+        ...PROGRAM,
+        conditions: [
+          {
+            conditionKind: 'time_window',
+            config: { slots: [{ days: [1], start: '09:00', end: '17:00' }] },
+          },
+        ],
+      })
+      .expect(422);
+    expect(JSON.stringify(refused.body.error)).toContain('schedule');
+  });
+
   it('records the destination toggle and reads it back', async () => {
     const { auth } = await business();
     const refId = await create(auth);
