@@ -579,6 +579,66 @@ describe('editing a reward programme in one save', () => {
       .expect(422);
   });
 
+  /*
+   * THE INTERNAL NAME IS UNIQUE PER BUSINESS, and that uniqueness is enforced
+   * by an index rather than a check — so the 409 comes from the Postgres error
+   * map, not from a `throw` anywhere. Nothing proved it reached the client as
+   * a 409 rather than a 500, on either path. An unmapped constraint violation
+   * is a 500 that tells a business its save "failed" when what actually
+   * happened is that the name is taken.
+   */
+  it('409s when a new programme takes a name already in use', async () => {
+    const { auth } = await business();
+    await create(auth);
+
+    const clash = await http()
+      .post('/api/v1/rewards/programs')
+      .set(auth)
+      .send({ ...PROGRAM, displayName: 'Something else' })
+      .expect(409);
+    expect(clash.body.error.code).toBe(ErrorCode.RewardProgramNameTaken);
+  });
+
+  it('409s when an EDIT renames a programme onto another one', async () => {
+    const { auth } = await business();
+    const first = await create(auth);
+    const second = await http()
+      .post('/api/v1/rewards/programs')
+      .set(auth)
+      .send({ ...PROGRAM, name: 'Summer loyalty' })
+      .expect(201);
+
+    const clash = await http()
+      .put(`/api/v1/rewards/programs/${second.body.data.refId as string}`)
+      .set(auth)
+      .send({ ...PROGRAM, name: 'Monsoon loyalty' })
+      .expect(409);
+    expect(clash.body.error.code).toBe(ErrorCode.RewardProgramNameTaken);
+
+    /* And the clash changed nothing — the rules of the programme that was
+     * being edited are untouched, not half-replaced. */
+    const rows = await db.query(
+      `SELECT count(*)::int AS n FROM reward_rules
+        WHERE program_id = (SELECT id FROM reward_programs WHERE ref_id = $1)
+          AND is_active = true`,
+      [second.body.data.refId],
+    );
+    expect(rows[0].n).toBe(2);
+    expect(first).toBeTruthy();
+  });
+
+  /* The uniqueness is case-insensitive — `lower(name)` — so this is the same
+   * clash wearing different capitals. */
+  it('409s on a name that differs only in case', async () => {
+    const { auth } = await business();
+    await create(auth);
+    await http()
+      .post('/api/v1/rewards/programs')
+      .set(auth)
+      .send({ ...PROGRAM, name: 'MONSOON LOYALTY' })
+      .expect(409);
+  });
+
   it('404s on a programme that is not this business’s', async () => {
     const { auth } = await business();
     const missing = await http()

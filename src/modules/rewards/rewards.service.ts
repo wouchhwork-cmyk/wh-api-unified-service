@@ -296,6 +296,19 @@ export class RewardsService {
     }
 
     return this.tx.runInTransaction(async () => {
+      /*
+       * THE ROW LOCK COMES FIRST, before anything is read or written.
+       *
+       * Two people editing one programme at once would otherwise both
+       * deactivate its rules, and the second — finding nothing left to
+       * deactivate — would conclude each trigger had no history and write
+       * VERSION 1 rules superseding nothing, live, beside the version 2 rules
+       * the first had just created. Nothing in the schema orders them; see
+       * `lockForUpdate`.
+       */
+      const present = await this.programs.lockForUpdate(enterpriseId, existing.id);
+      if (!present) throw new AppException(ErrorCode.RewardProgramNotFound);
+
       const outcome = await this.programs.updateDetails({
         enterpriseId,
         id: existing.id,

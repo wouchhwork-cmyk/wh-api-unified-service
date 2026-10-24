@@ -163,6 +163,37 @@ export class RewardProgramRepository extends BaseRepository {
   }
 
   /**
+   * Takes the programme's row lock, so two edits of it cannot interleave.
+   *
+   * WITHOUT THIS, two concurrent PUTs produce a mess that no constraint
+   * catches. Both deactivate the active rules; the second blocks, then finds
+   * nothing left to deactivate, so it believes this trigger has no history and
+   * writes VERSION 1 rules superseding nothing — live, beside the version 2
+   * rules the first edit just created and the second just switched off. The
+   * lineage breaks and the older version number is the one left running.
+   *
+   * `reward_rules_version_uniq` does not help: it is `(enterprise_id, id,
+   * version)` and `id` is the primary key, so it is unique whatever the
+   * version says. Nothing in the schema orders two edits of one programme.
+   *
+   * Taken BEFORE anything is read or written, so both editors queue on the
+   * same row and the second sees the first's committed result — including its
+   * rules — and supersedes them properly.
+   *
+   * Returns false when the programme is gone, so the caller can 404 rather
+   * than proceed against nothing.
+   */
+  async lockForUpdate(enterpriseId: number, id: number): Promise<boolean> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM reward_programs
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        FOR UPDATE`,
+      [enterpriseId, id],
+    );
+    return rows.length > 0;
+  }
+
+  /**
    * The programme's own fields. Its rules are replaced separately.
    *
    * ARCHIVED IS REFUSED IN THE WHERE CLAUSE, not checked first. A programme

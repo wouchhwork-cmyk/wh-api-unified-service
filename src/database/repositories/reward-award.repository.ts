@@ -148,16 +148,27 @@ export class RewardAwardRepository extends BaseRepository {
     limit: number;
     cursor: { lastAwardedAt: Date; customerId: number } | null;
   }): Promise<RewardBeneficiaryRow[]> {
+    /*
+     * The statuses are BOUND, not interpolated. They are our own enum members
+     * and could not carry an injection — but "parameterised queries only, no
+     * string interpolation" is a rule worth having no exceptions to, because
+     * an exception is what the next value copies.
+     */
     const params: unknown[] = [
       this.requireEnterprise(input.enterpriseId),
       input.programId,
       input.limit,
       [RewardAwardStatus.Granted, RewardAwardStatus.Held, RewardAwardStatus.Reversed],
+      RewardAwardStatus.Granted,
+      RewardAwardStatus.Held,
+      RewardAwardStatus.Reversed,
     ];
 
     let having = '';
     if (input.cursor) {
       params.push(input.cursor.lastAwardedAt, input.cursor.customerId);
+      /* Positional, computed from the array length, so adding a parameter
+       * above cannot silently point these at the wrong one. */
       const at = `$${params.length - 1}::timestamptz`;
       const id = `$${params.length}`;
       having = `HAVING (MAX(a.occurred_at_utc), a.customer_id) < (${at}, ${id})`;
@@ -168,9 +179,9 @@ export class RewardAwardRepository extends BaseRepository {
               c.ref_id                                                       AS "customerRefId",
               c.display_name                                                 AS "displayName",
               MAX(a.occurred_at_utc)                                         AS "lastAwardedAt",
-              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Granted}')::int  AS "granted",
-              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Held}')::int     AS "held",
-              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Reversed}')::int AS "reversed"
+              count(*) FILTER (WHERE a.status = $5)::int AS "granted",
+              count(*) FILTER (WHERE a.status = $6)::int AS "held",
+              count(*) FILTER (WHERE a.status = $7)::int AS "reversed"
          FROM reward_awards a
          JOIN customers c
            ON c.id = a.customer_id
