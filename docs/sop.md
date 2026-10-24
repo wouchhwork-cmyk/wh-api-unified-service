@@ -89,10 +89,41 @@ does not know it was ever decided.
 
 - [ ] Reads and validation happen **before** the transaction opens.
 - [ ] One flow = one `tx.runInTransaction`. Nested calls **join** the ambient transaction — there is no implicit savepoint, so a nested call that swallows an error poisons the outer one.
-- [ ] **No network I/O inside a transaction.** Write the `outbound_events` row, commit, let the relay call out.
+- [ ] **No network I/O inside a transaction.** Write the `outbound_events` row, commit, let the relay call out — see checkpoint 7.1 for what that row has to carry.
 - [ ] Idempotency is a **unique index**, not a check-then-write. Use `ON CONFLICT`.
 - [ ] Guard goes in the `WHERE` clause, not in a prior `SELECT`.
 - → detail: `backend-design.md` §6
+
+## 7.1 Crossing the boundary — the inbox and the outbox
+
+Nothing in this service calls a platform from a request, and nothing trusts a
+platform to deliver exactly once. Both directions go through a ledger table,
+and both are at-least-once.
+
+**Going out — the transactional outbox.**
+
+- [ ] Write the `outbound_events` row **inside the transaction that decides to send**, then commit. Never call out from a request: a transaction holding locks while waiting on Meta is how a slow third party becomes a database incident.
+- [ ] Every row carries a **`dedup_key`**, and the insert is `ON CONFLICT (COALESCE(enterprise_id, 0), dedup_key) DO NOTHING`. Duplicate suppression is a unique index, not a check-then-write.
+- [ ] The key must distinguish **legitimate repeats** from duplicates. Hide, unhide, hide again is three events; keyed on the message alone, the third is silently dropped.
+- [ ] The relay claims with a **lease**, re-checks it immediately before sending, and makes the write-back **conditional on `lease_owner`** — a worker that lost its claim must not settle the row. A bounded lease alone is not enough (`backend-design.md` §19.4).
+- [ ] Capped attempts, jittered backoff, then a terminal **`dead_letter`**. Prove the budget can be spent (checkpoint 15).
+
+**Coming in — the inbox.**
+
+- [ ] Verify the signature against the **raw body** before parsing, then write one `inbound_events` row per entry and **answer 200 fast**. Projection happens in a worker, never inline: a slow projector must not make the platform retry.
+- [ ] Same `ON CONFLICT ... DO NOTHING` dedup. A redelivery is normal, not an error — the webhook still returns 200.
+- [ ] **The dedup key needs the verb, not just the object id.** One Facebook comment id carries added, edited, hidden and removed over its life; keyed on the id alone, every event after the first is discarded as a duplicate (`backend-design.md` §19.5).
+- [ ] **One Page can belong to several businesses.** Attribution fans out to every channel holding that platform id, each with its own enterprise-scoped key — resolving with `LIMIT 1` delivered to one tenant and silently dropped the rest.
+- [ ] Projection must **tolerate being run twice**. The row may be re-claimed after a crash or a lease expiry, so the write it performs has to be idempotent on its own.
+- [ ] Claim with `FOR UPDATE SKIP LOCKED` in **one statement**. No advisory locks, no check-then-set.
+- [ ] A row that cannot be projected is marked `skipped` with a reason or `failed` with an attempt count — **never deleted and never silently swallowed**. Skipped is terminal and visible, and can be replayed when the handler exists.
+
+**Both.**
+
+- [ ] The **database row is the source of truth**; the worker loop is only a trigger. Anything the worker needs to decide — attempts, next attempt, dead-lettered — lives on the row.
+- [ ] Carry the `correlationId` onto the ledger row. It is what lets one support question trace from an HTTP request through the ledger to a platform call.
+- [ ] Never log the ledger `payload` — it carries customer message content (checkpoint 12).
+- → detail: `backend-design.md` §12, §18.2, §19.4, §19.5; `schema.md` — *Idempotency & deduplication* and *Transport ledger requirements*
 
 ## 8. Database and migrations
 
