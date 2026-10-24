@@ -293,6 +293,12 @@ export class RuleEvaluatorService {
       programId: rule.programId,
       ruleId: rule.id,
       ruleVersion: rule.version,
+      /* And the programme AROUND the rule, as it stood at this moment. The
+       * rule version says what was awarded; this says what it was part of —
+       * the name, the schedule, the whole configuration, recoverable from the
+       * version history. The programme row is already loaded above, so this
+       * costs nothing. */
+      programVersion: program.version,
       customerId: event.customerId,
       channelId: event.channelId,
       sourceRefKind: event.sourceRefKind,

@@ -273,6 +273,34 @@ export class RewardRuleRepository extends BaseRepository {
     );
   }
 
+  /**
+   * Switches off EVERY active rule in a programme, and says which they were.
+   *
+   * THE RULES ARE NOT DELETED and not edited. Awards point at a rule id and a
+   * rule version, and `reward_rules` is documented as versioned and never
+   * edited in place — so replacing a programme's configuration means retiring
+   * what was there and writing the next version beside it. Deleting would
+   * orphan every award ever made under it.
+   *
+   * RETURNING the rows it switched off is what lets the caller chain each new
+   * rule to the one it supersedes, so the lineage of a trigger survives an
+   * edit.
+   */
+  async deactivateProgramRules(
+    enterpriseId: number,
+    programId: number,
+  ): Promise<{ id: number; triggerKind: string; version: number }[]> {
+    const { rows } = await this.mutate<{ id: number; triggerKind: string; version: number }>(
+      `UPDATE reward_rules
+          SET is_active = false
+        WHERE enterprise_id = $1 AND program_id = $2
+          AND is_deleted = false AND is_active = true
+      RETURNING id, trigger_kind AS "triggerKind", version`,
+      [enterpriseId, programId],
+    );
+    return rows;
+  }
+
   /** Switching a rule off. The versions stay; awards under them still resolve. */
   async setActive(enterpriseId: number, refId: string, isActive: boolean): Promise<boolean> {
     const { affected } = await this.mutate(

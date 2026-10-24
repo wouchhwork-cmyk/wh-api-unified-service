@@ -11,6 +11,12 @@ export interface RewardProgramRow {
   readonly displayName: string | null;
   readonly status: RewardProgramStatus;
   /**
+   * WHICH VERSION THIS PROGRAM IS ON. Mirrored from `entity_versions`, which
+   * stays the authority; it is on the row so the award path can stamp it onto
+   * an award without a second query on a hot path.
+   */
+  readonly version: number;
+  /**
    * THE BUSINESS'S, not the programme's, and named so nobody mistakes it.
    *
    * A programme used to carry its own copy of each, taken at creation and
@@ -35,6 +41,7 @@ export interface RewardProgramRow {
  * defend against for a row that cannot occur.
  */
 const COLUMNS = `p.id, p.ref_id AS "refId", p.name, p.display_name AS "displayName", p.status,
+       p.version,
        e.timezone AS "enterpriseTimezone",
        e.currency_code AS "enterpriseCurrencyCode",
        p.starts_at AS "startsAt", p.ends_at AS "endsAt",
@@ -59,12 +66,22 @@ export class RewardProgramRepository extends BaseRepository {
     displayName: string | null;
     startsAt: Date | null;
     endsAt: Date | null;
+    /** NULL = the value stays in Wouchh. See REWARD_DESTINATIONS. */
+    forwardProviderCode: string | null;
   }): Promise<RewardProgramRow> {
     const { rows } = await this.mutate<{ id: number }>(
-      `INSERT INTO reward_programs (enterprise_id, name, display_name, starts_at, ends_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO reward_programs
+              (enterprise_id, name, display_name, starts_at, ends_at, forward_provider_code)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
-      [input.enterpriseId, input.name, input.displayName, input.startsAt, input.endsAt],
+      [
+        input.enterpriseId,
+        input.name,
+        input.displayName,
+        input.startsAt,
+        input.endsAt,
+        input.forwardProviderCode,
+      ],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('create program returned no row');
@@ -143,5 +160,64 @@ export class RewardProgramRepository extends BaseRepository {
     /* Only on the failure path, so the ordinary case stays one statement. */
     const existing = await this.findByRefId(enterpriseId, refId);
     return existing ? 'archived' : 'missing';
+  }
+
+  /**
+   * The programme's own fields. Its rules are replaced separately.
+   *
+   * ARCHIVED IS REFUSED IN THE WHERE CLAUSE, not checked first. A programme
+   * archived between the read and this write would otherwise be edited anyway
+   * — the gap is small and it is still a gap, and archiving is one-way
+   * precisely so nothing resurrects a retired programme.
+   *
+   * `reward_programs_name_uniq` may still raise on the internal name; the
+   * service maps it to the 409 that names the field, rather than letting a
+   * constraint violation surface as a 500.
+   */
+  async updateDetails(input: {
+    enterpriseId: number;
+    id: number;
+    name: string;
+    displayName: string | null;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    forwardProviderCode: string | null;
+  }): Promise<'updated' | 'archived' | 'missing'> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `UPDATE reward_programs
+          SET name = $3, display_name = $4, starts_at = $5, ends_at = $6,
+              forward_provider_code = $7
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+          AND status <> $8
+      RETURNING id`,
+      [
+        input.enterpriseId,
+        input.id,
+        input.name,
+        input.displayName,
+        input.startsAt,
+        input.endsAt,
+        input.forwardProviderCode,
+        RewardProgramStatus.Archived,
+      ],
+    );
+    if (rows.length > 0) return 'updated';
+
+    const existing = await this.findById(input.enterpriseId, input.id);
+    return existing ? 'archived' : 'missing';
+  }
+
+  /**
+   * Mirrors the number `entity_versions` just allocated onto the programme row.
+   *
+   * WRITTEN IN THE SAME TRANSACTION as the version row it mirrors, never on
+   * its own — the two disagreeing is worse than the lookup this avoids.
+   */
+  async setVersion(enterpriseId: number, id: number, version: number): Promise<void> {
+    await this.mutate(
+      `UPDATE reward_programs SET version = $3
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [enterpriseId, id, version],
+    );
   }
 }

@@ -26,6 +26,7 @@ import { AuditLogHumanActorIndex1758900000000 } from './migrations/1758900000000
 import { EntityVersions1759000000000 } from './migrations/1759000000000-EntityVersions';
 import { BusinessOwnsTheTimezone1759100000000 } from './migrations/1759100000000-BusinessOwnsTheTimezone';
 import { RewardProgramDisplayName1759200000000 } from './migrations/1759200000000-RewardProgramDisplayName';
+import { AwardsRecordTheProgramVersion1759300000000 } from './migrations/1759300000000-AwardsRecordTheProgramVersion';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -97,6 +98,7 @@ export function buildDataSourceOptions(
       EntityVersions1759000000000,
       BusinessOwnsTheTimezone1759100000000,
       RewardProgramDisplayName1759200000000,
+      AwardsRecordTheProgramVersion1759300000000,
     ],
     migrationsTableName: 'schema_migrations',
 

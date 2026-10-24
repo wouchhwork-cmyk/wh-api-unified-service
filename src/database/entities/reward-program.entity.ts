@@ -37,9 +37,31 @@ export class RewardProgram extends PublicEntity {
   @Column({ type: 'varchar', length: 16, default: RewardProgramStatus.Draft })
   status!: RewardProgramStatus;
 
-  /** Default for currency benefits; a benefit may state another. */
-  @Column({ type: 'char', length: 3, nullable: true })
-  defaultCurrencyCode!: string | null;
+  /**
+   * WHICH VERSION THIS PROGRAM IS ON, mirrored from `entity_versions`.
+   *
+   * The history in `entity_versions` is the authority — this is the same
+   * number on the row so the award path can read it without a MAX() against
+   * the history for every award. Written in the same transaction as the
+   * version row it mirrors, never on its own.
+   */
+  @Column({ type: 'int', default: 1 })
+  version!: number;
+
+  /*
+   * `default_currency_code` IS GONE, and the entity had kept declaring it.
+   *
+   * `BusinessOwnsTheTimezone1759100000000` dropped the column: a programme
+   * does not own a currency, the BUSINESS does, and a per-programme copy was
+   * taken at creation and never reconciled. The migration dropped it; this
+   * field was left behind.
+   *
+   * That is not cosmetic. A database built by `db:sync` builds its tables from
+   * these entities, so sync kept creating a column migration had removed —
+   * two ways of provisioning the same schema producing two different schemas,
+   * with the difference being a money column. `pnpm test:schema` is what
+   * caught it.
+   */
 
   /** NULL = already running. May be in the FUTURE — that is a scheduled program. */
   @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, nullable: true })

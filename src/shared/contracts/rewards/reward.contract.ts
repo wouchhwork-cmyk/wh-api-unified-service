@@ -300,6 +300,151 @@ export const SYSTEM_TRIGGERS: ReadonlySet<RewardTriggerKind> = new Set([
 ]);
 
 /**
+ * Every reward, whether it can be chosen, and what it needs chosen with it.
+ *
+ * THE SAME IDEA AS `TRIGGER_CATALOGUE`, and here for the same reason: the
+ * portal's dropdown and this validator must be one list or they will be two
+ * lists, and the day they disagree is the day a screen greys something out
+ * while the API happily stores it. A screen is not the only way to reach this
+ * API.
+ *
+ * `available: false` — `issue_entitlement` is modelled end to end and has no
+ * item catalogue behind it. `itemRef` is free text, so a business can promise
+ * `FREE_COFFEE` with nothing in the system that knows what that is, nothing to
+ * redeem it against, and nothing to stop a typo becoming a different reward.
+ * Until there is something to point at, it is refused on save rather than
+ * merely hidden — a stored promise nobody can keep is worse than a missing
+ * option. (`docs/backlog.md` §2 holds what it is waiting for.)
+ *
+ * `requiresTrigger` — `convert_value` burns points and grants money in one
+ * step, which only makes sense at the moment a balance is worth converting.
+ * `docs/reward-programs-design.md` already says it: "conversion is a rule, not
+ * a mechanism — 'when points reach 30, burn 30 and grant ₹50' is a trigger
+ * plus a benefit". Hung off a DM instead, it would try to burn points the
+ * customer may not have and silently award nothing, for ever.
+ */
+export const BENEFIT_CATALOGUE: readonly {
+  readonly key: RewardBenefitKind;
+  readonly label: string;
+  readonly available: boolean;
+  /** EMPTY = goes with anything. Otherwise: at least one of these triggers. */
+  readonly requiresTrigger: readonly RewardTriggerKind[];
+  /**
+   * Whether the scoring factor may scale this down — whether "up to" is an
+   * answer at all.
+   *
+   * MIRRORS THE HANDLER'S OWN `scalable`, which stays the authority: the
+   * benefit registry refuses a non-scalable "up to" at the service layer.
+   * This copy exists because a contract cannot import a service, and because
+   * the portal has to know which rows may offer the choice. A test pins the
+   * two together so the copy cannot drift from the thing it copies.
+   */
+  readonly scalable: boolean;
+}[] = [
+  {
+    key: RewardBenefitKind.GrantPoints,
+    label: 'Points',
+    available: true,
+    requiresTrigger: [],
+    scalable: true,
+  },
+  {
+    key: RewardBenefitKind.GrantCurrency,
+    label: 'Money',
+    available: true,
+    requiresTrigger: [],
+    scalable: true,
+  },
+  {
+    key: RewardBenefitKind.IssueEntitlement,
+    label: 'An item',
+    available: false,
+    requiresTrigger: [],
+    /* Six tenths of a free coffee is nothing. */
+    scalable: false,
+  },
+  {
+    key: RewardBenefitKind.ConvertValue,
+    label: 'Turn points into money',
+    available: true,
+    requiresTrigger: [RewardTriggerKind.PointsBalanceReached],
+    /*
+     * A CONVERSION IS A STATED EXCHANGE RATE. "Every 20 points becomes 2.00"
+     * is a promise; letting a factor shave it would mean 20 points sometimes
+     * bought 2.00 and sometimes 1.20, which is not a thing a business can
+     * explain to a customer. Exactly, or not at all.
+     */
+    scalable: false,
+  },
+];
+
+/**
+ * WHERE THE VALUE ENDS UP, asked once for the whole programme.
+ *
+ * A programme-level choice rather than a per-reward one, because it is a
+ * statement about where this business keeps value, not about what a
+ * particular reward is. Two rewards in one programme paying into two
+ * different systems would mean a customer's balance lived in two places with
+ * nothing reconciling them.
+ *
+ * `internal` → `forward_provider_code` stays NULL: the value lives in Wouchh
+ * wallets, which is everything that works today.
+ *
+ * `external` → the provider code is recorded on the programme, it is audited
+ * and versioned like any other configuration, AND NOTHING IS FORWARDED YET.
+ * The forwarding pipeline is designed in `docs/reward-programs-design.md` §13
+ * — outbound_events, the transit leg, the provider interface — and none of it
+ * is built: `RewardEntryKind.ForwardOut` is the only part of it that exists in
+ * code. `'noop'` is the design's own name for the provider that records
+ * intent and moves nothing.
+ *
+ * SAYING SO IS THE POINT. A toggle that looks like it forwards and silently
+ * does not is the exact failure this codebase keeps finding under new names,
+ * so the portal states what it does and this comment states why.
+ */
+export const REWARD_DESTINATIONS = ['internal', 'external'] as const;
+export type RewardDestination = (typeof REWARD_DESTINATIONS)[number];
+
+/** The design's V1 provider: records intent, moves nothing. */
+export const NOOP_FORWARD_PROVIDER = 'noop';
+
+/** Derived, never written twice. */
+export const AVAILABLE_BENEFITS: ReadonlySet<RewardBenefitKind> = new Set(
+  BENEFIT_CATALOGUE.filter((b) => b.available).map((b) => b.key),
+);
+
+/** The kinds a factor may scale. Everything else is "exactly" or nothing. */
+export const SCALABLE_BENEFITS: ReadonlySet<RewardBenefitKind> = new Set(
+  BENEFIT_CATALOGUE.filter((b) => b.scalable).map((b) => b.key),
+);
+
+const BENEFIT_TRIGGER_REQUIREMENT: ReadonlyMap<
+  RewardBenefitKind,
+  ReadonlySet<RewardTriggerKind>
+> = new Map(
+  BENEFIT_CATALOGUE.filter((b) => b.requiresTrigger.length > 0).map((b) => [
+    b.key,
+    new Set(b.requiresTrigger),
+  ]),
+);
+
+/**
+ * Whether this reward may sit alongside these triggers.
+ *
+ * ONE FUNCTION, called from both the programme path and the rule path, because
+ * the two differ only in how many triggers they hold — and a rule that is
+ * refused one way in and accepted the other is not a rule.
+ */
+export function benefitSuitsTriggers(
+  benefitKind: RewardBenefitKind,
+  triggers: readonly RewardTriggerKind[],
+): boolean {
+  const required = BENEFIT_TRIGGER_REQUIREMENT.get(benefitKind);
+  if (required === undefined) return true;
+  return triggers.some((t) => required.has(t));
+}
+
+/**
  * The day-and-hours half of a schedule, shaped the way a person fills it in.
  *
  * ONE ENTRY PER DAY, each with its own hours, because that is how somebody
@@ -471,6 +616,12 @@ export const CreateRewardProgramSchema = z
      */
     /** Shared by every rule the triggers expand into. */
     benefits: z.array(BenefitInputSchema).max(16).default([]),
+    /*
+     * WHERE THE VALUE GOES — one answer for the programme, not one per
+     * reward. Defaults to `internal`, which is the only one that moves
+     * anything today; see `REWARD_DESTINATIONS`.
+     */
+    destination: z.enum(REWARD_DESTINATIONS).default('internal'),
     schedule: ProgramScheduleSchema.default({ startsAt: null, endsAt: null, days: [] }),
   })
   .refine(
@@ -539,7 +690,54 @@ export const CreateRewardProgramSchema = z
   .refine((v) => v.triggers.length === 0 || v.benefits.length > 0, {
     message: 'choose at least one reward, or the triggers award nothing',
     path: ['benefits'],
-  });
+  })
+  /*
+   * AND THE OTHER DIRECTION, which was silently wrong.
+   *
+   * `createProgram` builds one rule PER TRIGGER and hangs the benefits off
+   * each. With no triggers there is no rule, so the benefits were accepted,
+   * validated, reported back in a 201 — and dropped. Somebody would fill in
+   * "20 points", save, see success, and own a programme that awards nothing.
+   */
+  .refine((v) => v.benefits.length === 0 || v.triggers.length > 0, {
+    message: 'rewards need a trigger to hang off; with none, nothing would ever award them',
+    path: ['benefits'],
+  })
+  /*
+   * A REWARD NOTHING CAN DELIVER IS NOT STORABLE. Same bargain as the trigger
+   * list above, and the same reason: the portal greys it out, and the portal
+   * is not the only way in.
+   */
+  .refine((v) => v.benefits.every((b) => AVAILABLE_BENEFITS.has(b.benefitKind)), {
+    message:
+      'that reward is modelled but has nothing behind it yet, so it could be promised and never honoured',
+    path: ['benefits'],
+  })
+  /* `convert_value` needs the balance trigger — see `BENEFIT_CATALOGUE`. */
+  .refine((v) => v.benefits.every((b) => benefitSuitsTriggers(b.benefitKind, v.triggers)), {
+    message:
+      'turning points into money only means something when the trigger is the balance itself — pick "reached a points balance"',
+    path: ['benefits'],
+  })
+  /*
+   * "UP TO" ONLY WHERE THERE IS SOMETHING TO SCALE.
+   *
+   * The service refuses this too, through the registry, and that refusal is
+   * the authoritative one because the handler declares its own scalability.
+   * It is here as well so the answer is a 422 naming the field rather than a
+   * business-rule exception thrown halfway through a transaction — and so the
+   * rule lives in the same place as the form rule it mirrors.
+   */
+  .refine(
+    (v) =>
+      v.benefits.every(
+        (b) => b.awardMode !== RewardAwardMode.UpTo || SCALABLE_BENEFITS.has(b.benefitKind),
+      ),
+    {
+      message: 'this reward cannot be "up to" — it is exact or it is nothing',
+      path: ['benefits'],
+    },
+  );
 
 /**
  * What a trigger matches on, beyond its kind.
@@ -616,6 +814,28 @@ export const CreateRewardRuleSchema = z
       message: 'points_balance_reached is not a channel event and cannot be scoped to channels',
       path: ['triggerConfig', 'channelIds'],
     },
+  )
+  /* The same two reward rules as the programme path, because this is the same
+   * rule arriving by a different door. */
+  .refine((v) => v.benefits.every((b) => AVAILABLE_BENEFITS.has(b.benefitKind)), {
+    message:
+      'that reward is modelled but has nothing behind it yet, so it could be promised and never honoured',
+    path: ['benefits'],
+  })
+  .refine((v) => v.benefits.every((b) => benefitSuitsTriggers(b.benefitKind, [v.triggerKind])), {
+    message:
+      'turning points into money only means something when the trigger is the balance itself',
+    path: ['benefits'],
+  })
+  .refine(
+    (v) =>
+      v.benefits.every(
+        (b) => b.awardMode !== RewardAwardMode.UpTo || SCALABLE_BENEFITS.has(b.benefitKind),
+      ),
+    {
+      message: 'this reward cannot be "up to" — it is exact or it is nothing',
+      path: ['benefits'],
+    },
   );
 
 /**
@@ -673,7 +893,22 @@ export const AdjustRewardBalanceSchema = z
     path: ['currencyCode'],
   });
 
+/**
+ * EDITING A PROGRAMME IS RESTATING IT, which is why this is the create shape.
+ *
+ * A PUT, not a PATCH, and deliberately. The form that edits a programme is the
+ * form that created it: every field is on screen, so every field is in the
+ * body, and "what the user is looking at" and "what will be stored" are the
+ * same thing. A partial update would make an omitted field ambiguous — cleared
+ * or untouched? — for a configuration that decides who receives money.
+ *
+ * The same refinements apply for the same reasons: an edit cannot put a
+ * programme into a state a creation could not.
+ */
+export const UpdateRewardProgramSchema = CreateRewardProgramSchema;
+
 export type CreateRewardProgramInput = z.infer<typeof CreateRewardProgramSchema>;
+export type UpdateRewardProgramInput = z.infer<typeof UpdateRewardProgramSchema>;
 export type CreateRewardRuleInput = z.infer<typeof CreateRewardRuleSchema>;
 export type AdjustRewardBalanceInput = z.infer<typeof AdjustRewardBalanceSchema>;
 export type RewardBenefitInput = z.infer<typeof BenefitInputSchema>;

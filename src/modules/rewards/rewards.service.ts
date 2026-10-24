@@ -10,12 +10,15 @@ import { RewardWalletRepository } from '@/database/repositories/reward-wallet.re
 import { TransactionManager } from '@/database/transaction/transaction.manager';
 import { AuditService } from '@/modules/audit/audit.service';
 import { EntityVersionService } from '@/modules/audit/entity-version.service';
+import { NOOP_FORWARD_PROVIDER } from '@/shared/contracts/rewards/reward.contract';
 import type {
   AdjustRewardBalanceInput,
   CreateRewardProgramInput,
   CreateRewardRuleInput,
   RewardBenefitInput,
   RewardConditionConfig,
+  RewardDestination,
+  UpdateRewardProgramInput,
 } from '@/shared/contracts/rewards/reward.contract';
 import {
   ActorKind,
@@ -76,14 +79,28 @@ export class RewardsService {
    * there could never be taken back out. Listing the fields by hand is what
    * keeps that from happening the day somebody adds a column.
    */
-  private static snapshotOf(program: {
-    name: string;
-    displayName: string | null;
-    status: string;
-    startsAt: Date | null;
-    endsAt: Date | null;
-    forwardProviderCode: string | null;
-  }): Record<string, unknown> {
+  private static snapshotOf(
+    program: {
+      name: string;
+      displayName: string | null;
+      status: string;
+      startsAt: Date | null;
+      endsAt: Date | null;
+      forwardProviderCode: string | null;
+    },
+    /*
+     * THE SHAPE OF THE RULE SET, not its contents.
+     *
+     * The rules themselves are versioned rows: an award carries `ruleId` and
+     * `ruleVersion`, so exactly what decided it is already recoverable to the
+     * benefit. Copying all of that in here would be a second authority that
+     * could disagree with the first. What the version history adds is what the
+     * programme LOOKED LIKE — which triggers it ran on and how much it
+     * awarded — so somebody reading it can see a programme change shape
+     * without opening every rule.
+     */
+    rules?: { triggers: readonly string[]; benefitCount: number },
+  ): Record<string, unknown> {
     return {
       name: program.name,
       displayName: program.displayName,
@@ -91,7 +108,52 @@ export class RewardsService {
       startsAt: program.startsAt?.toISOString() ?? null,
       endsAt: program.endsAt?.toISOString() ?? null,
       forwardProviderCode: program.forwardProviderCode,
+      ...(rules ? { triggers: [...rules.triggers], benefitCount: rules.benefitCount } : {}),
     };
+  }
+
+  /**
+   * The destination choice, as the column stores it.
+   *
+   * NULL means the value stays in Wouchh. `'noop'` is the design's own name
+   * for the provider that records intent and moves nothing — which is what
+   * "external" can honestly mean until the forwarding pipeline in
+   * `docs/reward-programs-design.md` §13 is built.
+   */
+  private static providerFor(destination: RewardDestination): string | null {
+    return destination === 'external' ? NOOP_FORWARD_PROVIDER : null;
+  }
+
+  /**
+   * Appends a version row AND mirrors its number onto the programme.
+   *
+   * Together, because the mirror exists to be read on the award path and a
+   * mirror that lags what it mirrors would stamp awards with the wrong
+   * version. `record` rethrows inside a transaction, so a failure here takes
+   * the whole edit with it rather than leaving a version-less change.
+   */
+  private async recordProgramVersion(
+    enterpriseId: number,
+    program: {
+      id: number;
+      name: string;
+      displayName: string | null;
+      status: string;
+      startsAt: Date | null;
+      endsAt: Date | null;
+      forwardProviderCode: string | null;
+    },
+    rules?: { triggers: readonly string[]; benefitCount: number },
+  ): Promise<void> {
+    const version = await this.versions.record({
+      entityType: AuditEntityType.RewardProgram,
+      entityId: program.id,
+      enterpriseId,
+      snapshot: RewardsService.snapshotOf(program, rules),
+    });
+    if (version !== null) {
+      await this.programs.setVersion(enterpriseId, program.id, version);
+    }
   }
 
   /**
@@ -128,6 +190,7 @@ export class RewardsService {
          * disagree. */
         startsAt: input.schedule.startsAt,
         endsAt: input.schedule.endsAt,
+        forwardProviderCode: RewardsService.providerFor(input.destination),
       });
 
       await this.audit.record({
@@ -140,7 +203,11 @@ export class RewardsService {
          * REFERENCE, so it is excluded entirely — auditing that it changed is
          * right, auditing its value is not.
          */
-        changes: { name: program.name, displayName: program.displayName },
+        changes: {
+          name: program.name,
+          displayName: program.displayName,
+          destination: input.destination,
+        },
       });
 
       /*
@@ -150,11 +217,9 @@ export class RewardsService {
        * this look like originally" would be the one question it could not
        * answer.
        */
-      await this.versions.record({
-        entityType: AuditEntityType.RewardProgram,
-        entityId: program.id,
-        enterpriseId,
-        snapshot: RewardsService.snapshotOf(program),
+      await this.recordProgramVersion(enterpriseId, program, {
+        triggers: input.triggers,
+        benefitCount: input.benefits.length,
       });
 
       /*
@@ -187,6 +252,135 @@ export class RewardsService {
       }
 
       return program;
+    });
+  }
+
+  /**
+   * Editing a programme: the same form, the same body, one save.
+   *
+   * THE RULES ARE SUPERSEDED, NEVER EDITED. `reward_rules` is documented as
+   * versioned and never edited in place, and it has to be: an award stores
+   * `rule_id` + `rule_version`, so the row that decided a payment last March
+   * must still say what it said last March. Editing one would silently rewrite
+   * the justification for every award made under it.
+   *
+   * So an edit switches the old rules off and writes new ones beside them,
+   * each chained to the rule it replaces through `supersedes_rule_id`. The old
+   * rows stay readable, stop matching new events, and every existing award
+   * still resolves to the exact configuration that produced it.
+   *
+   * TRIGGERS REMOVED simply keep their deactivated rule. Triggers ADDED get a
+   * version 1 rule of their own. Triggers KEPT get the next version of theirs.
+   *
+   * ONE TRANSACTION over all of it, because a programme whose old rules were
+   * switched off and whose new ones failed to write is a programme that has
+   * silently stopped rewarding anybody.
+   */
+  async updateProgram(enterpriseId: number, refId: string, input: UpdateRewardProgramInput) {
+    const existing = await this.programs.findByRefId(enterpriseId, refId);
+    if (!existing) throw new AppException(ErrorCode.RewardProgramNotFound);
+
+    /*
+     * Read outside the transaction, exactly as the create path does: both are
+     * reads of the business, and an edit that needs a calendar or a currency
+     * the business has not set is refused with the code that names the remedy.
+     */
+    if (input.triggers.length > 0) {
+      const business = await this.enterprises.findById(enterpriseId);
+      RewardsService.assertProgramCanRun(
+        input,
+        business?.timezone ?? null,
+        business?.currencyCode ?? null,
+      );
+    }
+
+    return this.tx.runInTransaction(async () => {
+      const outcome = await this.programs.updateDetails({
+        enterpriseId,
+        id: existing.id,
+        name: input.name,
+        displayName: input.displayName,
+        startsAt: input.schedule.startsAt,
+        endsAt: input.schedule.endsAt,
+        forwardProviderCode: RewardsService.providerFor(input.destination),
+      });
+      /* Re-checked here rather than trusted from the read above: the status
+       * can move between the two, and archiving is one-way. */
+      if (outcome === 'missing') throw new AppException(ErrorCode.RewardProgramNotFound);
+      if (outcome === 'archived') throw new AppException(ErrorCode.RewardProgramArchived);
+
+      /*
+       * EVERY ACTIVE RULE GOES OFF FIRST, and the statement says which they
+       * were. Doing it in one UPDATE rather than per trigger means a rule for
+       * a trigger that has just been REMOVED is switched off too — the case
+       * that is easy to forget and leaves a programme still awarding for
+       * something nobody asked for any more.
+       */
+      const retired = await this.rules.deactivateProgramRules(enterpriseId, existing.id);
+
+      /* The newest version of each trigger's lineage, to chain to. */
+      const previous = new Map<string, { id: number; version: number }>();
+      for (const rule of retired) {
+        const held = previous.get(rule.triggerKind);
+        if (!held || rule.version > held.version) {
+          previous.set(rule.triggerKind, { id: rule.id, version: rule.version });
+        }
+      }
+
+      const conditions = RewardsService.scheduleToConditions(input.schedule);
+      for (const triggerKind of input.triggers) {
+        const prior = previous.get(triggerKind);
+        await this.createRuleWithin(enterpriseId, existing.id, {
+          triggerKind,
+          triggerConfig:
+            triggerKind === RewardTriggerKind.PointsBalanceReached
+              ? { minPointsBalance: input.minPointsBalance }
+              : {},
+          capScope: input.capScope,
+          capCount: input.capCount,
+          holdHours: input.holdHours,
+          reversalPolicy: RewardReversalPolicy.None,
+          benefits: input.benefits,
+          conditions,
+          /* Chained to what it replaces, or starting a lineage of its own. */
+          version: prior ? prior.version + 1 : 1,
+          supersedesRuleId: prior ? prior.id : null,
+        });
+      }
+
+      await this.audit.record({
+        action: AuditAction.Updated,
+        entityType: AuditEntityType.RewardProgram,
+        entityId: existing.id,
+        enterpriseId,
+        /*
+         * WHAT IT IS NOW, and what it cost to get there. `rulesRetired` is the
+         * number of rules switched off, which is how somebody reading the
+         * trail sees that an edit replaced a configuration rather than only
+         * renaming it. forward_config is never recorded — it holds a
+         * credential reference.
+         */
+        changes: {
+          name: input.name,
+          displayName: input.displayName,
+          destination: input.destination,
+          triggers: [...input.triggers],
+          benefitCount: input.benefits.length,
+          rulesRetired: retired.length,
+        },
+      });
+
+      const updated = await this.programs.findById(enterpriseId, existing.id);
+      if (!updated) throw new AppException(ErrorCode.RewardProgramNotFound);
+
+      await this.recordProgramVersion(enterpriseId, updated, {
+        triggers: input.triggers,
+        benefitCount: input.benefits.length,
+      });
+
+      /* Read back AFTER the version is mirrored, so the caller is handed the
+       * version number its edit actually produced rather than the one before. */
+      return await this.programs.findById(enterpriseId, existing.id);
     });
   }
 
@@ -233,12 +427,7 @@ export class RewardsService {
        * depend on replaying every earlier diff.
        */
       if (program) {
-        await this.versions.record({
-          entityType: AuditEntityType.RewardProgram,
-          entityId: program.id,
-          enterpriseId,
-          snapshot: RewardsService.snapshotOf(program),
-        });
+        await this.recordProgramVersion(enterpriseId, program);
       }
 
       return program;
@@ -372,14 +561,22 @@ export class RewardsService {
       priority?: number;
       benefits: readonly RewardBenefitInput[];
       conditions: readonly RewardConditionConfig[];
+      /*
+       * WHERE THIS RULE SITS IN ITS LINEAGE. A rule created fresh is version
+       * 1 superseding nothing; one written by an edit is the next version of
+       * the rule it replaces. Defaulted rather than required so the create
+       * path, which only ever writes version 1, does not have to say so.
+       */
+      version?: number;
+      supersedesRuleId?: number | null;
     },
   ) {
     {
       const created = await this.rules.insertRule({
         enterpriseId,
         programId,
-        version: 1,
-        supersedesRuleId: null,
+        version: input.version ?? 1,
+        supersedesRuleId: input.supersedesRuleId ?? null,
         triggerKind: input.triggerKind,
         triggerConfig: input.triggerConfig,
         factorProviderCode: CONSTANT_ONE_FACTOR_PROVIDER,
@@ -594,6 +791,135 @@ export class RewardsService {
     return [
       { conditionKind: RewardConditionKind.TimeWindow, config: { slots } },
     ] as RewardConditionConfig[];
+  }
+
+  /**
+   * The inverse of `scheduleToConditions`: slots back into days.
+   *
+   * The engine stores a list of slots, each naming the days it applies to;
+   * the form asks day by day. Neither shape is wrong — they answer different
+   * questions — and the conversion belongs in ONE place, beside the function
+   * it reverses, rather than in whichever client needs it.
+   *
+   * A whole-day window comes back as a day with NO slots, which is how the
+   * form says "all of this day". Recognising `00:00`–`23:59` here is what
+   * stops a round trip turning "all day" into an explicit window that merely
+   * looks like one.
+   */
+  private static conditionsToSchedule(
+    conditions: readonly RewardConditionConfig[],
+  ): { isoDay: number; slots: { start: string; end: string }[] }[] {
+    const byDay = new Map<number, { start: string; end: string }[]>();
+
+    for (const condition of conditions) {
+      if (condition.conditionKind !== RewardConditionKind.TimeWindow) continue;
+      const slots = (
+        condition.config as { slots?: { days: number[]; start: string; end: string }[] }
+      ).slots;
+      if (!slots) continue;
+
+      for (const slot of slots) {
+        for (const isoDay of slot.days) {
+          const held = byDay.get(isoDay) ?? [];
+          /* The whole day is the ABSENCE of a slot, not a slot covering it. */
+          if (!(slot.start === '00:00' && slot.end === '23:59')) {
+            held.push({ start: slot.start, end: slot.end });
+          }
+          byDay.set(isoDay, held);
+        }
+      }
+    }
+
+    return [...byDay.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([isoDay, slots]) => ({ isoDay, slots }));
+  }
+
+  /**
+   * A programme as the edit form needs it — the same shape its PUT accepts.
+   *
+   * ONE READ THAT ROUND TRIPS. The form that edits a programme is the form
+   * that created it, so what it loads has to be what it will send back. Giving
+   * the client the rule rows and letting it fold them into a programme would
+   * put the create path's expansion logic in two places, and the copy in the
+   * browser would be the one that goes stale.
+   *
+   * ONLY ACTIVE RULES. The retired versions are the history; they are what an
+   * old award resolves against, not what the programme is now.
+   *
+   * `uniform` IS NOT DECORATION. The composite path writes one rule per
+   * trigger with identical settings, so flattening them back is lossless. A
+   * programme whose rules were added one at a time through `POST
+   * /rewards/rules` can have rules that genuinely differ — and saving this
+   * form would then overwrite all of them with one shared answer. Saying so
+   * lets the client warn before that happens instead of after.
+   */
+  async programConfiguration(enterpriseId: number, refId: string) {
+    const program = await this.programs.findByRefId(enterpriseId, refId);
+    if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
+
+    const rules = (await this.rules.listForProgram(enterpriseId, program.id, DEFAULT_PAGE)).filter(
+      (rule) => rule.isActive,
+    );
+
+    const first = rules[0];
+    /*
+     * THE FIRST ACTIVE RULE'S, and `uniform` below says whether that is the
+     * whole truth. The composite path writes the same benefits and conditions
+     * onto every rule it creates, so reading one is reading all of them.
+     */
+    const benefits = first
+      ? await this.rules.loadBenefits(enterpriseId, first.id, first.version)
+      : [];
+    const conditions = first
+      ? await this.rules.loadConditions(enterpriseId, first.id, first.version)
+      : [];
+
+    const uniform = rules.every(
+      (rule) =>
+        rule.capScope === first?.capScope &&
+        rule.capCount === first?.capCount &&
+        rule.holdHours === first?.holdHours,
+    );
+
+    const balanceRule = rules.find(
+      (rule) => rule.triggerKind === RewardTriggerKind.PointsBalanceReached,
+    );
+    const minPointsBalance = (
+      balanceRule?.triggerConfig as { minPointsBalance?: number } | undefined
+    )?.minPointsBalance;
+
+    return {
+      refId: program.refId,
+      name: program.name,
+      displayName: program.displayName,
+      status: program.status,
+      version: program.version,
+      destination: program.forwardProviderCode === null ? 'internal' : 'external',
+      triggers: rules.map((rule) => rule.triggerKind),
+      ...(minPointsBalance === undefined ? {} : { minPointsBalance }),
+      capScope: first?.capScope ?? RewardCapScope.None,
+      capCount: first?.capCount ?? 1,
+      holdHours: first?.holdHours ?? 0,
+      benefits: benefits.map((benefit) => ({
+        benefitKind: benefit.benefitKind,
+        awardMode: benefit.awardMode,
+        awardCap: benefit.awardCap,
+        config: benefit.config,
+      })),
+      schedule: {
+        startsAt: program.startsAt,
+        endsAt: program.endsAt,
+        days: RewardsService.conditionsToSchedule(
+          conditions.map((c) => ({
+            conditionKind: c.conditionKind,
+            config: c.config,
+          })) as RewardConditionConfig[],
+        ),
+      },
+      /* False = these rules do not agree; saving this form would flatten them. */
+      uniform,
+    };
   }
 
   private static assertCalendarRulesHaveATimezone(

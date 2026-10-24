@@ -1435,6 +1435,80 @@ already shipped and already wrong.
   used by the role templates to separate owner from manager, and consulted by
   no endpoint. The settings route is the first thing to require it.
 
+### 19.15 Phase 5 — a programme is edited whole, and an award says what decided it
+
+Four decisions, recorded here because the next person to touch rewards will
+otherwise rediscover them by breaking one.
+
+**An edit supersedes the rules; it never edits them.** `reward_rules` has
+carried `version` and `supersedes_rule_id` since it was designed, and
+`reward_awards` carries `rule_id` + `rule_version`, because the row that
+decided a payment has to keep saying what it said at the time. So `PUT
+/rewards/programs/:refId` switches every active rule off, keeps it readable,
+and writes the next version beside it chained to the one it replaces. A trigger
+removed keeps its retired rule; a trigger added starts a lineage. Mutating a
+rule in place would silently rewrite the justification for every award ever
+made under it.
+
+**It is a PUT, not a PATCH.** The screen that edits a programme is the screen
+that created it, so every field is on screen and every field is in the body. A
+partial update would make an omitted field ambiguous — cleared, or untouched? —
+for configuration that decides who receives money. `GET
+/rewards/programs/:refId/configuration` returns exactly the shape the PUT
+accepts, so the form round-trips and the create path's rule expansion stays on
+the server rather than being reimplemented in a browser. That read also returns
+`uniform`, which is false when the active rules disagree about cap or hold: the
+form holds one of each, so saving would flatten them, and the client says so
+first.
+
+**An award records the programme version, not just the rule version.** The rule
+version said what was awarded; nothing said what it was part of. A programme can
+be renamed, rescheduled or have its whole rule set replaced, and an award made
+before any of that pointed only at the programme's current shape.
+`reward_awards.program_version` closes it. It is NULLABLE and stays nullable —
+awards made before the column exists were decided by a version nobody recorded,
+and backfilling `1` would state, in a column built to be trusted, something we
+do not know. `reward_programs.version` mirrors the counter `entity_versions`
+keeps, written in the same transaction, so the award path reads it off a row it
+has already loaded instead of running a `MAX()` per award.
+
+**The destination is a programme-level toggle, and it is honest about doing
+nothing yet.** `internal` leaves `forward_provider_code` NULL. `external`
+records the design's `'noop'` provider — intent recorded, nothing moved —
+because §13's forwarding pipeline is designed and unbuilt: `RewardEntryKind.ForwardOut`
+is the only part of it that exists in code. The portal says so on the field. It
+is one answer for the whole programme rather than one per reward, because two
+rewards paying into two systems would mean a customer's balance lived in two
+places with nothing reconciling them.
+
+**Which rewards may be chosen is a contract, not a screen.** `BENEFIT_CATALOGUE`
+carries `available`, `requiresTrigger` and `scalable`, is served at `GET
+/rewards/benefits`, and is refined against on both create paths. `issue_entitlement`
+is unavailable — `itemRef` is free text with no item catalogue behind it, so a
+business could promise `FREE_COFFEE` with nothing in the system that knows what
+that is. `convert_value` requires `points_balance_reached`, which is what §12
+already said: conversion is a trigger plus a benefit. `scalable` mirrors the
+handler's own flag and a unit test pins the two together, because a contract
+cannot import a service and the copy would otherwise drift.
+
+### 19.16 Phase 5 — what `pnpm test:schema` caught
+
+Two schema faults, neither visible on any existing database.
+
+**`db:sync` and the migrations disagreed about a money column.**
+`BusinessOwnsTheTimezone` dropped `reward_programs.default_currency_code`; the
+entity kept declaring it. Sync builds tables from entities, so it kept creating
+a column the migrated schema no longer had — two ways of provisioning one
+schema producing two schemas.
+
+**A database built from migrations alone could not be built at all.**
+`StaffRoles1758300000000` calls `applyLateTableObjects`, which indexes
+`entity_versions` — a table created six migrations later by
+`EntityVersions1759000000000`. Every existing database already had the table by
+the time anyone migrated again, so the chain only failed from zero, which is
+the one moment you least want to find it. The statements are now guarded on the
+table existing; the later migration creates them itself either way.
+
 ### 19.14 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is

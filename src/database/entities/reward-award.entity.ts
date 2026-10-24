@@ -32,6 +32,17 @@ export class RewardAward extends PublicEntity {
   @Column({ type: 'int' })
   ruleVersion!: number;
 
+  /**
+   * And which version of the PROGRAM the rule belonged to at the time.
+   *
+   * The rule version says what was awarded and why; this says what the rule
+   * was part of — the name, the schedule, the whole configuration as it stood,
+   * recoverable from `entity_versions`. NULL means the award predates this
+   * being recorded, which is not the same as version 1.
+   */
+  @Column({ type: 'int', nullable: true })
+  programVersion!: number | null;
+
   @Column({ type: 'bigint', transformer: bigintTransformer })
   customerId!: number;
 

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import type { ScopedActorContext } from '@/shared/context';
@@ -7,10 +7,12 @@ import {
   CreateRewardProgramSchema,
   CreateRewardRuleSchema,
   HistoryLimitSchema,
+  BENEFIT_CATALOGUE,
   TRIGGER_CATALOGUE,
   RewardRuleListQuerySchema,
   UpdateRewardRuleActiveSchema,
   RewardProgramQuerySchema,
+  UpdateRewardProgramSchema,
   UpdateRewardProgramStatusSchema,
 } from '@/shared/contracts/rewards/reward.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
@@ -79,6 +81,53 @@ export class RewardsController {
     return toProgramSummary(program);
   }
 
+  @Get('programs/:refId/configuration')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'A program in the shape its edit form needs — and its PUT accepts',
+    description:
+      'What `PUT /rewards/programs/:refId` takes, read back: triggers, rewards, cap, hold and ' +
+      "the schedule as days rather than as the engine's slot list. ONE READ THAT ROUND TRIPS, " +
+      'so the form that edits a program loads exactly what it will send. ONLY ACTIVE RULES — ' +
+      'retired versions are the history an old award resolves against, not what the program is ' +
+      'now. `uniform: false` means the active rules do NOT agree on cap or hold, which happens ' +
+      'when rules were added one at a time rather than through the program form; saving the ' +
+      'form would flatten them to one shared answer, so a client should say so first.',
+  })
+  async programConfiguration(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refIdParam: string,
+  ) {
+    const refId = RefIdParamSchema.parse(refIdParam);
+    return this.rewards.programConfiguration(actor.enterpriseId, refId);
+  }
+
+  @Put('programs/:refId')
+  @RequirePermission(Permission.RewardsManage)
+  @ApiOperation({
+    summary: 'Edit a program whole — the same form, the same body, one save',
+    description:
+      'A PUT, not a PATCH: the screen that edits a program is the screen that created it, so ' +
+      'every field is restated and an omitted one is never ambiguous between "cleared" and ' +
+      '"untouched". THE RULES ARE SUPERSEDED, NEVER EDITED — an award stores the rule id and ' +
+      'rule version that decided it, so the old rules are switched off and kept readable while ' +
+      'new versions are written beside them, chained through `supersedes_rule_id`. A trigger ' +
+      'removed keeps its retired rule; a trigger added starts a lineage of its own. The program ' +
+      'gains a version holding its whole configuration at this moment, and that version number ' +
+      'is what later awards are stamped with. 404 if it does not exist, 409 if it is archived ' +
+      '(archiving is one-way) or the internal name is taken.',
+  })
+  async updateProgram(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refIdParam: string,
+    @Body() body: unknown,
+  ) {
+    const refId = RefIdParamSchema.parse(refIdParam);
+    const input = UpdateRewardProgramSchema.parse(body);
+    const program = await this.rewards.updateProgram(actor.enterpriseId, refId, input);
+    return program ? toProgramSummary(program) : null;
+  }
+
   @Patch('programs/:refId/status')
   @RequirePermission(Permission.RewardsManage)
   @ApiOperation({
@@ -113,6 +162,23 @@ export class RewardsController {
   })
   triggers(): { items: typeof TRIGGER_CATALOGUE } {
     return { items: TRIGGER_CATALOGUE };
+  }
+
+  @Get('benefits')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'Every reward, whether it can be chosen, and what it needs chosen with it',
+    description:
+      'The companion to `GET /rewards/triggers`, and the SAME list the create endpoints ' +
+      'validate against. `available: false` means the reward is modelled with nothing behind ' +
+      'it yet — `issue_entitlement` has no item catalogue, so its `itemRef` is free text that ' +
+      'nothing can redeem — and it is refused on save, not merely greyed out. ' +
+      '`requiresTrigger` names the triggers a reward may only be used with: `convert_value` ' +
+      'burns points and grants money in one step, which means something only at the moment a ' +
+      'balance is worth converting, so it needs `points_balance_reached`.',
+  })
+  benefits(): { items: typeof BENEFIT_CATALOGUE } {
+    return { items: BENEFIT_CATALOGUE };
   }
 
   @Get('programs/:refId/versions')
@@ -268,16 +334,26 @@ function toProgramSummary(program: {
   name: string;
   displayName: string | null;
   status: string;
+  version: number;
   startsAt: Date | null;
   endsAt: Date | null;
+  forwardProviderCode: string | null;
 }) {
   return {
     refId: program.refId,
     name: program.name,
     displayName: program.displayName,
     status: program.status,
+    /* Which version this is NOW. An award carries the version that decided
+     * it, so the two together answer "was this the configuration that paid". */
+    version: program.version,
     startsAt: program.startsAt,
     endsAt: program.endsAt,
+    /*
+     * ADDITIVE, and the provider code stays server-side: a client needs to
+     * render the toggle it set, not the name of the mechanism behind it.
+     */
+    destination: program.forwardProviderCode === null ? 'internal' : 'external',
   };
 }
 

@@ -1045,29 +1045,6 @@ export async function applyLateTableObjects(run: SqlRunner): Promise<void> {
       FOREIGN KEY (role_id, role_scope) REFERENCES roles (id, scope)
     `);
 
-  // =======================================================================
-  // entity_versions — the configuration history
-  //
-  // TypeORM builds the table from the entity; none of what makes it correct
-  // can be expressed there. The unique index is what stops two concurrent
-  // editors both writing version 4, and the trigger is what makes a history
-  // a history rather than a mutable table that happens to have versions in it.
-  // =======================================================================
-  await run(`
-      CREATE UNIQUE INDEX IF NOT EXISTS entity_versions_uniq
-      ON entity_versions (enterprise_id, entity_type, entity_id, version)
-    `);
-  await run(`
-      CREATE INDEX IF NOT EXISTS entity_versions_history_idx
-      ON entity_versions (enterprise_id, entity_type, entity_id, version DESC)
-    `);
-  await run(`
-      ALTER TABLE entity_versions DROP CONSTRAINT IF EXISTS entity_versions_enterprise_fk
-    `);
-  await run(`
-      ALTER TABLE entity_versions ADD CONSTRAINT entity_versions_enterprise_fk
-      FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)
-    `);
   await run(`
     CREATE OR REPLACE FUNCTION entity_versions_is_append_only()
     RETURNS TRIGGER AS $$
@@ -1076,10 +1053,53 @@ export async function applyLateTableObjects(run: SqlRunner): Promise<void> {
     END;
     $$ LANGUAGE plpgsql
   `);
-  await run(`DROP TRIGGER IF EXISTS entity_versions_append_only ON entity_versions`);
+
+  // =======================================================================
+  // entity_versions — the configuration history
+  //
+  // TypeORM builds the table from the entity; none of what makes it correct
+  // can be expressed there. The unique index is what stops two concurrent
+  // editors both writing version 4, and the trigger is what makes a history
+  // a history rather than a mutable table that happens to have versions in it.
+  //
+  // GUARDED ON THE TABLE EXISTING, and that guard is not defensive noise.
+  //
+  // This function has TWO callers at two different moments. `db:sync` calls it
+  // after TypeORM has built every table from the entities, so the table is
+  // always there. `StaffRoles1758300000000` calls it so that a migrated
+  // database ends up identical to a synced one — and that migration runs SIX
+  // migrations before `EntityVersions1759000000000` creates the table. So on a
+  // database built from migrations alone, from zero, these statements used to
+  // run against a relation that did not exist yet and the whole chain failed.
+  //
+  // It was invisible on every existing database, because every existing
+  // database already had the table by the time anyone migrated again. It would
+  // have appeared the first time somebody provisioned a new environment from
+  // migrations — which is the one moment you least want to discover it.
+  //
+  // The later migration creates the index, the constraint and the trigger
+  // itself, so skipping here loses nothing: the table arrives fully formed
+  // either way.
+  // =======================================================================
   await run(`
-    CREATE TRIGGER entity_versions_append_only
-      BEFORE UPDATE OR DELETE ON entity_versions
-      FOR EACH ROW EXECUTE FUNCTION entity_versions_is_append_only()
+    DO $do$
+    BEGIN
+      IF to_regclass('public.entity_versions') IS NULL THEN RETURN; END IF;
+
+      EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS entity_versions_uniq
+                 ON entity_versions (enterprise_id, entity_type, entity_id, version)';
+      EXECUTE 'CREATE INDEX IF NOT EXISTS entity_versions_history_idx
+                 ON entity_versions (enterprise_id, entity_type, entity_id, version DESC)';
+      EXECUTE 'ALTER TABLE entity_versions
+                 DROP CONSTRAINT IF EXISTS entity_versions_enterprise_fk';
+      EXECUTE 'ALTER TABLE entity_versions
+                 ADD CONSTRAINT entity_versions_enterprise_fk
+                 FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+      EXECUTE 'DROP TRIGGER IF EXISTS entity_versions_append_only ON entity_versions';
+      EXECUTE 'CREATE TRIGGER entity_versions_append_only
+                 BEFORE UPDATE OR DELETE ON entity_versions
+                 FOR EACH ROW EXECUTE FUNCTION entity_versions_is_append_only()';
+    END
+    $do$
   `);
 }

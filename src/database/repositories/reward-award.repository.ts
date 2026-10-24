@@ -14,6 +14,11 @@ export interface RewardAwardRow {
   readonly programId: number;
   readonly ruleId: number;
   readonly ruleVersion: number;
+  /**
+   * The program's version at the moment the award was decided. NULL on awards
+   * made before this was recorded, which is not the same as version 1.
+   */
+  readonly programVersion: number | null;
   readonly customerId: number;
   readonly status: RewardAwardStatus;
   readonly periodKey: string | null;
@@ -40,6 +45,8 @@ export interface CreateAwardInput {
   readonly programId: number;
   readonly ruleId: number;
   readonly ruleVersion: number;
+  /** The program's version in force. Always known on a new award. */
+  readonly programVersion: number;
   readonly customerId: number;
   readonly channelId: number | null;
   readonly sourceRefKind: string;
@@ -67,15 +74,16 @@ export class RewardAwardRepository extends BaseRepository {
   async createIfAbsent(input: CreateAwardInput): Promise<RewardAwardRow | null> {
     const { rows } = await this.mutate<RewardAwardRow>(
       `INSERT INTO reward_awards
-              (enterprise_id, program_id, rule_id, rule_version, customer_id,
-               channel_id, source_ref_kind, source_ref_id, status, held_until,
-               occurred_at_utc)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              (enterprise_id, program_id, rule_id, rule_version, program_version,
+               customer_id, channel_id, source_ref_kind, source_ref_id, status,
+               held_until, occurred_at_utc)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (enterprise_id, rule_id, customer_id, source_ref_kind, source_ref_id)
          WHERE is_deleted = false
        DO NOTHING
        RETURNING id, ref_id AS "refId", program_id AS "programId", rule_id AS "ruleId",
-                 rule_version AS "ruleVersion", customer_id AS "customerId", status,
+                 rule_version AS "ruleVersion", program_version AS "programVersion",
+                 customer_id AS "customerId", status,
                  period_key AS "periodKey", held_until AS "heldUntil",
                  occurred_at_utc AS "occurredAtUtc", reason_code AS "reasonCode",
                  factor_basis_points AS "factorBasisPoints"`,
@@ -84,6 +92,7 @@ export class RewardAwardRepository extends BaseRepository {
         input.programId,
         input.ruleId,
         input.ruleVersion,
+        input.programVersion,
         input.customerId,
         input.channelId,
         input.sourceRefKind,

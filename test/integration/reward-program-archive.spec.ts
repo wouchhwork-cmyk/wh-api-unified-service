@@ -42,6 +42,7 @@ describe('archiving a reward program', () => {
       displayName: null,
       startsAt: null,
       endsAt: null,
+      forwardProviderCode: null,
     });
 
   it('moves a program to archived and says so', async () => {

@@ -380,6 +380,35 @@ and `employees.e2e.spec.ts` covers the ascending case.
 
 ## 2. Built, but nothing consumes it
 
+### Reward forwarding — designed in full, built as one enum value
+
+`docs/reward-programs-design.md` §13 specifies the whole pipeline: the
+`forward_out` / `forward_back` ledger legs, the `system_transit` wallet whose
+non-zero balance is the alarm that forwarding has stopped, `OutboundEventType.RewardForward`
+on the existing outbox, and a provider interface. In code there is
+`RewardEntryKind.ForwardOut` and nothing else.
+
+The programme-level destination toggle is now on the wire and in the portal —
+`internal` leaves `forward_provider_code` NULL, `external` records `'noop'`,
+the design's own name for "records intent, moves nothing". Both the API
+description and the portal field say so rather than implying a send. Choosing
+`external` today changes where a reader thinks value is going and changes
+nothing about where it goes.
+
+**To close it**: the provider interface, one real provider, the transit leg,
+the outbox consumer, and an alarm on a non-zero transit balance.
+
+### `issue_entitlement` — modelled end to end, with nothing to point at
+
+The handler, the expiry sweep and the ledger treatment all exist. What does not
+exist is an item catalogue: `itemRef` is free text, so a business can promise
+`FREE_COFFEE` with nothing in the system that knows what that is, nothing to
+redeem it against, and nothing to stop a typo becoming a different reward. It
+is marked `available: false` in `BENEFIT_CATALOGUE` and REFUSED on save rather
+than merely hidden, because a screen is not the only way to reach the API and a
+stored promise nobody can keep is worse than a missing option.
+
+
 Machinery that exists, is migrated, has indexes, and is never read.
 
 | | Size | What is missing |
