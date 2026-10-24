@@ -344,6 +344,97 @@ describe('business settings', () => {
     await http().post('/api/v1/rewards/rules').set(auth).send(body).expect(201);
   });
 
+  /**
+   * A programme has two names, and they are opposites on purpose.
+   *
+   * `name` is the internal identifier and is unique per business, case
+   * insensitively, because its job is to let somebody say which programme
+   * they mean. `displayName` is what customers will see: not unique, no
+   * format rules, optional.
+   */
+  describe('a programme’s two names', () => {
+    it('keeps the internal name unique, case insensitively', async () => {
+      const { auth } = await business();
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Monsoon loyalty' })
+        .expect(201);
+
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'monsoon LOYALTY' })
+        .expect(409);
+    });
+
+    /** Two programmes may greet customers identically; the ledger says which paid. */
+    it('lets two programmes share a customer-facing name', async () => {
+      const { auth } = await business();
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Monsoon v1', displayName: 'Rewards' })
+        .expect(201);
+
+      const second = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Monsoon v2', displayName: 'Rewards' })
+        .expect(201);
+
+      expect(second.body.data.displayName).toBe('Rewards');
+    });
+
+    /** Marketing copy is not ours to police. */
+    it('accepts anything in the customer-facing name', async () => {
+      const { auth } = await business();
+      const wild = '☕ Chai Club — 50% off! (मानसून) 🎉';
+
+      const created = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Internal only', displayName: wild })
+        .expect(201);
+
+      expect(created.body.data.displayName).toBe(wild);
+    });
+
+    /** Optional: nothing renders it to an end user yet. */
+    it('allows no customer-facing name at all', async () => {
+      const { auth } = await business();
+      const created = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Internal only' })
+        .expect(201);
+
+      expect(created.body.data.displayName).toBeNull();
+    });
+
+    /** An empty string is not a name; it is the absence of one. */
+    it('treats an empty customer-facing name as unset', async () => {
+      const { auth } = await business();
+      const created = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Internal only', displayName: '   ' })
+        .expect(201);
+
+      expect(created.body.data.displayName).toBeNull();
+    });
+
+    /** "No checks" cannot mean "no limit". */
+    it('still bounds its length', async () => {
+      const { auth } = await business();
+      await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth)
+        .send({ name: 'Internal only', displayName: 'x'.repeat(161) })
+        .expect(422);
+    });
+  });
+
   /** A settings change is recorded and versioned like any other configuration. */
   it('records the change in the audit trail and the version history', async () => {
     const { auth } = await business();

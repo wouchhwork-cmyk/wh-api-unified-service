@@ -41,6 +41,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.RewardProgramNotFound]: HttpStatus.NOT_FOUND,
   /* 409, not 404: it exists and you can still read it. It just cannot move. */
   [ErrorCode.RewardProgramArchived]: HttpStatus.CONFLICT,
+  [ErrorCode.RewardProgramNameTaken]: HttpStatus.CONFLICT,
   /* 422: the request is well formed, the business is simply not configured for it. */
   [ErrorCode.EnterpriseCurrencyNotSet]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.EnterpriseTimezoneNotSet]: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -109,6 +110,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
  */
 export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.RewardProgramNotFound]: 'That reward program does not exist.',
+  [ErrorCode.RewardProgramNameTaken]:
+    'Another program in this business already uses that internal name. The customer-facing name may be shared; this one identifies it for you.',
   [ErrorCode.RewardProgramArchived]:
     'That reward program is archived. Archiving is permanent — create a new program instead.',
   [ErrorCode.EnterpriseCurrencyNotSet]:

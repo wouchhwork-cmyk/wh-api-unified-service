@@ -189,7 +189,31 @@ export type RewardConditionConfig = z.infer<typeof RewardConditionConfigSchema>;
  */
 export const CreateRewardProgramSchema = z
   .strictObject({
+    /**
+     * THE INTERNAL NAME. Unique per business, case insensitively, because its
+     * whole job is to let somebody say which programme they mean.
+     */
     name: z.string().trim().min(1).max(120),
+    /**
+     * WHAT CUSTOMERS WILL SEE, and deliberately almost unvalidated.
+     *
+     * It is marketing copy: emoji, punctuation, mixed script, whatever the
+     * business wants to be called in front of its customers. Not unique —
+     * two programmes may both say "Rewards", and which one awarded is a
+     * question for the ledger rather than the label.
+     *
+     * BOUNDED ANYWAY, because "no checks" cannot mean "no limit": an
+     * unbounded string from a request body is a way to put a megabyte in a
+     * row. Trimmed, and an empty string becomes NULL rather than being stored
+     * as a name that renders as nothing.
+     */
+    displayName: z
+      .string()
+      .trim()
+      .max(160)
+      .transform((value) => (value.length === 0 ? null : value))
+      .nullable()
+      .default(null),
     startsAt: z.coerce.date().nullable().default(null),
     endsAt: z.coerce.date().nullable().default(null),
   })

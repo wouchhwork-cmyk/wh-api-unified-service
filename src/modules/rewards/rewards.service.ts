@@ -72,6 +72,7 @@ export class RewardsService {
    */
   private static snapshotOf(program: {
     name: string;
+    displayName: string | null;
     status: string;
     startsAt: Date | null;
     endsAt: Date | null;
@@ -79,6 +80,7 @@ export class RewardsService {
   }): Record<string, unknown> {
     return {
       name: program.name,
+      displayName: program.displayName,
       status: program.status,
       startsAt: program.startsAt?.toISOString() ?? null,
       endsAt: program.endsAt?.toISOString() ?? null,
@@ -108,7 +110,7 @@ export class RewardsService {
          * REFERENCE, so it is excluded entirely — auditing that it changed is
          * right, auditing its value is not.
          */
-        changes: { name: program.name },
+        changes: { name: program.name, displayName: program.displayName },
       });
 
       /*
@@ -226,6 +228,7 @@ export class RewardsService {
       return {
         refId: program.refId,
         name: program.name,
+        displayName: program.displayName,
         status: program.status,
         awardsGranted: granted?.awards ?? 0,
         awardsHeld: held?.awards ?? 0,

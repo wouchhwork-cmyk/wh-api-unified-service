@@ -39,6 +39,7 @@ describe('archiving a reward program', () => {
     programs.create({
       enterpriseId: tenant,
       name,
+      displayName: null,
       startsAt: null,
       endsAt: null,
     });

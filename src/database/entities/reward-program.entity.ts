@@ -21,6 +21,19 @@ export class RewardProgram extends PublicEntity {
   @Column({ type: 'varchar', length: 120 })
   name!: string;
 
+  /**
+   * What customers will see, as opposed to `name`, which is what the business
+   * calls it internally.
+   *
+   * NOT unique and format-free on purpose: it is marketing copy, two
+   * programmes may both greet people as "Rewards", and which one awarded is a
+   * question for the ledger rather than the label. NULL until somebody
+   * chooses one — nothing renders it to an end user yet, so requiring one
+   * would demand a decision for a surface that does not exist.
+   */
+  @Column({ type: 'varchar', length: 160, nullable: true })
+  displayName!: string | null;
+
   @Column({ type: 'varchar', length: 16, default: RewardProgramStatus.Draft })
   status!: RewardProgramStatus;
 

@@ -397,13 +397,28 @@ is **acted upon**: adjusted today, and redeemed against later.
 | id | BIGSERIAL | PK |
 | ref_id | UUID | UNIQUE NOT NULL, `gen_random_uuid()` |
 | enterprise_id | BIGINT | NOT NULL |
-| name | VARCHAR(120) | |
+| name | VARCHAR(120) | **INTERNAL.** Unique per business, case insensitively — `reward_programs_name_uniq` on `(enterprise_id, lower(name))` |
+| display_name | VARCHAR(160) | **What customers will see.** NOT unique, no format rules, NULL until chosen |
 | status | VARCHAR(16) | `ProgramStatus` — the switch, **not** the schedule |
 | forward_provider_code | VARCHAR(40) | NULL = keep value here. `'noop'` in V1 |
 | forward_config | JSONB | endpoint + mapping. **A secret reference, never a secret** |
 | starts_at | TIMESTAMPTZ | NULL = already running. **May be in the future** |
 | ends_at | TIMESTAMPTZ | NULL = no end |
 
+> **TWO NAMES, AND THEY ARE OPPOSITES ON PURPOSE.** `name` is the internal identifier: unique
+> per business, case insensitively, because its whole job is to let somebody say which programme
+> they mean. "Monsoon loyalty v2" is a good internal name and a terrible thing to show a customer.
+> `display_name` is the customer-facing one — **not unique** (two programmes may both greet people
+> as "Rewards"; which one awarded is a question for the ledger, not the label), **no format rules**
+> (it is marketing copy), and **nullable**, because nothing renders it to an end user yet and
+> requiring one would demand a decision for a surface that does not exist.
+>
+> It is still length-bounded, because "no checks" cannot mean "no limit": an unbounded string from
+> a request body is a way to put a megabyte in a row. An empty string normalises to NULL rather
+> than being stored as a name that renders as nothing. A duplicate INTERNAL name is a 409
+> (`REWARD_PROGRAM_NAME_TAKEN`) — it used to be a 500, because the index enforced it and nothing
+> mapped it.
+>
 > **A PROGRAMME HAS NEITHER A TIMEZONE NOR A CURRENCY.** Both were columns here, taken at
 > creation and never reconciled — so two programmes in one business could disagree about when
 > Tuesday starts and about what money means, and a `period_key` derived from one would silently

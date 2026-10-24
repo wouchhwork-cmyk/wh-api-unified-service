@@ -5,7 +5,10 @@ import { BaseRepository } from './base.repository';
 export interface RewardProgramRow {
   readonly id: number;
   readonly refId: string;
+  /** The INTERNAL identifier, unique per business, case insensitively. */
   readonly name: string;
+  /** What customers will see. Not unique, no format rules, NULL until chosen. */
+  readonly displayName: string | null;
   readonly status: RewardProgramStatus;
   /**
    * THE BUSINESS'S, not the programme's, and named so nobody mistakes it.
@@ -31,7 +34,7 @@ export interface RewardProgramRow {
  * LEFT join would invite a NULL timezone that every caller would then have to
  * defend against for a row that cannot occur.
  */
-const COLUMNS = `p.id, p.ref_id AS "refId", p.name, p.status,
+const COLUMNS = `p.id, p.ref_id AS "refId", p.name, p.display_name AS "displayName", p.status,
        e.timezone AS "enterpriseTimezone",
        e.currency_code AS "enterpriseCurrencyCode",
        p.starts_at AS "startsAt", p.ends_at AS "endsAt",
@@ -53,14 +56,15 @@ export class RewardProgramRepository extends BaseRepository {
   async create(input: {
     enterpriseId: number;
     name: string;
+    displayName: string | null;
     startsAt: Date | null;
     endsAt: Date | null;
   }): Promise<RewardProgramRow> {
     const { rows } = await this.mutate<{ id: number }>(
-      `INSERT INTO reward_programs (enterprise_id, name, starts_at, ends_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO reward_programs (enterprise_id, name, display_name, starts_at, ends_at)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [input.enterpriseId, input.name, input.startsAt, input.endsAt],
+      [input.enterpriseId, input.name, input.displayName, input.startsAt, input.endsAt],
     );
     const id = rows[0]?.id;
     if (id === undefined) throw new Error('create program returned no row');

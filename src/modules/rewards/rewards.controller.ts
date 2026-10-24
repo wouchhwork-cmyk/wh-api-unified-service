@@ -250,6 +250,7 @@ function toVersionSummary(version: {
 function toProgramSummary(program: {
   refId: string;
   name: string;
+  displayName: string | null;
   status: string;
   startsAt: Date | null;
   endsAt: Date | null;
@@ -257,6 +258,7 @@ function toProgramSummary(program: {
   return {
     refId: program.refId,
     name: program.name,
+    displayName: program.displayName,
     status: program.status,
     startsAt: program.startsAt,
     endsAt: program.endsAt,

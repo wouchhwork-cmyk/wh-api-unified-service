@@ -73,6 +73,16 @@ export enum ErrorCode {
   /* REWARD PROGRAMS. */
   RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',
   RewardProgramArchived = 'REWARD_PROGRAM_ARCHIVED',
+
+  /**
+   * Two programmes in one business cannot share an INTERNAL name.
+   *
+   * The unique index has always enforced it; nothing mapped it, so a
+   * duplicate answered 500 and told the caller the server had broken when
+   * they had simply reused a name. The customer-facing `displayName` has no
+   * such rule and never will — two programmes may greet people identically.
+   */
+  RewardProgramNameTaken = 'REWARD_PROGRAM_NAME_TAKEN',
   /**
    * A rule would grant money and nobody has said in what.
    *

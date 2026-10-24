@@ -58,6 +58,8 @@ export const CONSTRAINT_ERROR: Readonly<Record<string, ErrorCode>> = {
   enterprise_features_uniq: ErrorCode.FeatureAlreadyRequested,
   customer_identifiers_value_uniq: ErrorCode.IdentifierAlreadyLinked,
   messages_idempotency_uniq: ErrorCode.DuplicateMessage,
+  /* The INTERNAL programme name. `display_name` has no unique index at all. */
+  reward_programs_name_uniq: ErrorCode.RewardProgramNameTaken,
   messages_platform_uniq: ErrorCode.DuplicateMessage,
   sync_jobs_live_uniq: ErrorCode.SyncAlreadyRunning,
   /*
