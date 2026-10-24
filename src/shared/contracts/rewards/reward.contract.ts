@@ -429,6 +429,64 @@ const BENEFIT_TRIGGER_REQUIREMENT: ReadonlyMap<
 );
 
 /**
+ * WHAT A REWARD ACTUALLY DOES, as a key — so two that do the same thing can be
+ * recognised as two of the same thing.
+ *
+ * "Grant 20 points and grant 30 points" is not two rewards. It is one reward
+ * of 50 written twice, and saving it that way gives a business two lines to
+ * maintain, two lines to read in an audit trail, and one effect.
+ *
+ * KEYED ON THE EFFECT, NOT ON THE KIND, because those differ in one real case.
+ * `grant_currency` may name its own currency — that is what the optional
+ * `currencyCode` is for, a promotion paying in something other than the usual
+ * — so two currency grants in DIFFERENT currencies pay into two different
+ * wallets and are genuinely two rewards. Two in the same currency are not.
+ * Keying on the kind alone would refuse the first case along with the second.
+ *
+ * `issue_entitlement` keys on the item: a free coffee and a free pastry are
+ * different things to hand over.
+ */
+/* The config is typed `unknown` per key, and the schemas have already
+ * guaranteed these two are strings by the time a refinement runs. Narrowing
+ * rather than casting keeps that guarantee checked rather than asserted. */
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+export function benefitEffectKey(benefit: {
+  benefitKind: RewardBenefitKind;
+  config: Record<string, unknown>;
+}): string {
+  switch (benefit.benefitKind) {
+    case RewardBenefitKind.GrantPoints:
+      /* One points wallet per customer, so there is nothing to vary by. */
+      return RewardBenefitKind.GrantPoints;
+    case RewardBenefitKind.IssueEntitlement:
+      return `${RewardBenefitKind.IssueEntitlement}:${text(benefit.config.itemRef)}`;
+    default:
+      /* Both money kinds: unstated currency means the business's, so an
+       * unstated one and a stated one naming the same currency would be the
+       * same wallet. They cannot be told apart here without reading the
+       * business, and `assertMoneyHasACurrency` already refuses the case
+       * where that matters, so unstated is its own key. */
+      return `${benefit.benefitKind}:${text(benefit.config.currencyCode)}`;
+  }
+}
+
+/** True when no two benefits would land in the same place. */
+function benefitsAreDistinct(
+  benefits: readonly { benefitKind: RewardBenefitKind; config: Record<string, unknown> }[],
+): boolean {
+  const seen = new Set<string>();
+  for (const benefit of benefits) {
+    const key = benefitEffectKey(benefit);
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+/**
  * Whether this reward may sit alongside these triggers.
  *
  * ONE FUNCTION, called from both the programme path and the rule path, because
@@ -737,6 +795,27 @@ export const CreateRewardProgramSchema = z
       message: 'this reward cannot be "up to" — it is exact or it is nothing',
       path: ['benefits'],
     },
+  )
+  /*
+   * TWO REWARDS THAT DO THE SAME THING ARE ONE REWARD WRITTEN TWICE.
+   *
+   * Refused rather than merged: merging would mean the stored configuration
+   * is not the one that was sent, and somebody who meant 20 and 30 to be two
+   * separate lines for two separate reasons would find one line of 50 and no
+   * record of why.
+   */
+  .refine(
+    (v) =>
+      benefitsAreDistinct(
+        v.benefits.map((b) => ({
+          benefitKind: b.benefitKind,
+          config: b.config as Record<string, unknown>,
+        })),
+      ),
+    {
+      message: 'two rewards here do the same thing — combine them into one, or make them different',
+      path: ['benefits'],
+    },
   );
 
 /**
@@ -834,6 +913,19 @@ export const CreateRewardRuleSchema = z
       ),
     {
       message: 'this reward cannot be "up to" — it is exact or it is nothing',
+      path: ['benefits'],
+    },
+  )
+  .refine(
+    (v) =>
+      benefitsAreDistinct(
+        v.benefits.map((b) => ({
+          benefitKind: b.benefitKind,
+          config: b.config as Record<string, unknown>,
+        })),
+      ),
+    {
+      message: 'two rewards here do the same thing — combine them into one, or make them different',
       path: ['benefits'],
     },
   );

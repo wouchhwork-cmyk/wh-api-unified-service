@@ -155,6 +155,100 @@ describe('which rewards may be chosen', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /* Two rewards that do the same thing are one reward written twice   */
+  /* ---------------------------------------------------------------- */
+
+  it('refuses two points rewards, which are one bigger grant', () => {
+    const result = CreateRewardProgramSchema.safeParse({
+      ...PROGRAM,
+      benefits: [points, { ...points, config: { points: 30 } }],
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('do the same thing');
+  });
+
+  it('refuses two money rewards in the same currency', () => {
+    const money = {
+      benefitKind: RewardBenefitKind.GrantCurrency,
+      awardMode: RewardAwardMode.Fixed,
+      config: { minorUnits: 500, currencyCode: 'INR' },
+    };
+    const result = CreateRewardProgramSchema.safeParse({
+      ...PROGRAM,
+      benefits: [money, { ...money, config: { minorUnits: 250, currencyCode: 'INR' } }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses a stated currency twice even written differently', () => {
+    const result = CreateRewardProgramSchema.safeParse({
+      ...PROGRAM,
+      benefits: [
+        {
+          benefitKind: RewardBenefitKind.GrantCurrency,
+          awardMode: RewardAwardMode.Fixed,
+          config: { minorUnits: 500, currencyCode: 'USD' },
+        },
+        {
+          benefitKind: RewardBenefitKind.GrantCurrency,
+          awardMode: RewardAwardMode.UpTo,
+          awardCap: 250,
+          config: { minorUnits: 250, currencyCode: 'USD' },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  /*
+   * THE CASE THIS MUST NOT BREAK. Two currency grants in DIFFERENT currencies
+   * pay into two different wallets, which is two rewards and not one written
+   * twice — so the rule keys on the effect rather than on the kind.
+   */
+  it('accepts two money rewards in different currencies', () => {
+    const result = CreateRewardProgramSchema.safeParse({
+      ...PROGRAM,
+      benefits: [
+        {
+          benefitKind: RewardBenefitKind.GrantCurrency,
+          awardMode: RewardAwardMode.Fixed,
+          config: { minorUnits: 500, currencyCode: 'INR' },
+        },
+        {
+          benefitKind: RewardBenefitKind.GrantCurrency,
+          awardMode: RewardAwardMode.Fixed,
+          config: { minorUnits: 600, currencyCode: 'USD' },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still accepts points alongside money — different effects entirely', () => {
+    const result = CreateRewardProgramSchema.safeParse({
+      ...PROGRAM,
+      benefits: [
+        points,
+        {
+          benefitKind: RewardBenefitKind.GrantCurrency,
+          awardMode: RewardAwardMode.Fixed,
+          config: { minorUnits: 500 },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('refuses the duplicate on the rule path too', () => {
+    const result = CreateRewardRuleSchema.safeParse({
+      programRefId: '11111111-1111-4111-8111-111111111111',
+      triggerKind: RewardTriggerKind.DirectMessageInbound,
+      benefits: [points, { ...points, config: { points: 30 } }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  /* ---------------------------------------------------------------- */
   /* The catalogue is the one the portal renders from                  */
   /* ---------------------------------------------------------------- */
 
