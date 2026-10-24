@@ -1989,7 +1989,51 @@ The actor is split across three columns because "who did this" has three genuine
 >
 > `is_deleted` is kept for **repository-pattern consistency**: the shared base repository, its default scope, and the common row type all apply here with no special case. Nothing in the audit path ever sets it.
 >
-> Policy is not enforcement, so back it in the database: revoke `UPDATE` and `DELETE` on this table from the application role, leaving `INSERT` and `SELECT`. The tripwire then only ever fires on something with superuser access — exactly the case worth knowing about.
+> Policy is not enforcement, so it is backed in the database by a `BEFORE UPDATE OR DELETE` trigger that raises. The tripwire above then only ever fires on something that bypassed the trigger — exactly the case worth knowing about.
+>
+> **A trigger, and not the REVOKE this document originally specified.** A `REVOKE` only bites where the application role differs from the migration role, which is false on every developer machine and anywhere `DB_APP_ROLE` is unset. The guarded block did nothing, and for months this paragraph — and the entity, and the repository — asserted a database guarantee that was not in force: measured on a real database, the application role held `UPDATE`, `DELETE` and `TRUNCATE`, and both statements succeeded against a real row. The trigger does not care which role is connected. The `REVOKE` is kept as defence in depth where a separate role does exist.
+>
+> **The honest limits:** `TRUNCATE` is not blocked — a row trigger cannot see it, and the test harness needs it — and a role with DDL rights can drop the trigger. It stops the accidental `UPDATE` and the well-meaning repair script, which is the realistic threat.
+
+---
+
+## 26. `entity_versions`
+
+What a piece of configuration **looked like**, every time it changed. Append-only, like §25, and written beside it rather than instead of it.
+
+| Column               | Type        | Constraints                 | Notes                                                                     |
+| -------------------- | ----------- | --------------------------- | ------------------------------------------------------------------------- |
+| id                   | BIGSERIAL   | PK                          |                                                                           |
+| enterprise_id        | BIGINT      | NOT NULL, FK → enterprises(id) |                                                                        |
+| entity_type          | VARCHAR(50) | NOT NULL                    | `AuditEntityType` — which table `entity_id` points at                     |
+| entity_id            | BIGINT      | NOT NULL                    | PK of the versioned row. **Not an FK** — it points at whichever table      |
+| version              | INTEGER     | NOT NULL                    | 1 for the first. Unique per entity                                        |
+| snapshot             | JSONB       | NOT NULL, DEFAULT '{}'      | The **whole** entity after this change — **never credentials, never PII**  |
+| change_summary       | JSONB       | NOT NULL, DEFAULT '{}'      | What moved since the previous version. Derived, not supplied               |
+| actor_identity_id    | BIGINT      | FK → identities(id)         | NULL = system                                                             |
+| actor_employee_id    | BIGINT      | FK → enterprise_employees(id) |                                                                         |
+| actor_staff_id       | BIGINT      | FK → staff_members(id)      |                                                                           |
+| actor_kind           | VARCHAR(30) | NOT NULL                    | `employee` · `staff` · `system`                                           |
+| is_impersonated      | BOOLEAN     | NOT NULL, DEFAULT false     |                                                                           |
+| correlation_id       | VARCHAR(64) |                             | Ties this version to the `audit_logs` row from the same request            |
+| is_deleted           | BOOLEAN     | NOT NULL, DEFAULT false     | Repository-pattern consistency; nothing sets it                            |
+| created_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()     |                                                                           |
+| updated_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()     | Tripwire, as in §25                                                       |
+
+```sql
+CREATE UNIQUE INDEX entity_versions_uniq
+  ON entity_versions (enterprise_id, entity_type, entity_id, version);
+CREATE INDEX entity_versions_history_idx
+  ON entity_versions (enterprise_id, entity_type, entity_id, version DESC);
+```
+
+**Why this is not §25 with extra columns.** `audit_logs` answers *who changed this, and when*. Its `changes` column holds whichever fields the call site chose to name, so reconstructing a past state means replaying every diff since creation and trusting that none of them omitted anything. That is not good enough where the configuration decides money: **an award made last March was decided by the reward program as it stood last March**, and that has to be answerable by reading one row. So each version carries the entity whole, and a snapshot stands alone.
+
+**The version number is allocated by the database**, as `MAX(version) + 1` inside the `INSERT`. Two concurrent editors could still compute the same number; the unique index makes the loser fail loudly rather than overwrite a history that is supposed to be immutable.
+
+**The snapshot is stated by the call site, never serialised from the row.** A reward program carries `forward_config`, which holds a credential *reference*. Auto-capturing the row would write it into an append-only table that can never give it back, so each call site lists the fields it stores — redaction as a deliberate act rather than a filter somebody has to remember to maintain.
+
+`reward_rules` solve the same problem their own way, with a `version` column and `supersedes_rule_id`, and an award storing the rule version that decided it. Both are acceptable. An editable entity with **no** history is not.
 
 ---
 

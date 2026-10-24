@@ -10,6 +10,7 @@ from one place.
 | -------- | --------------- |
 | [docs/schema.md](docs/schema.md) | The data: 25 tables, their keys, and the reasoning behind each name and constraint |
 | [docs/backend-design.md](docs/backend-design.md) | The code: stack, layering, transactions, auth, API contract, deployment, and the Meta integration. §19 records what building it changed |
+| [docs/sop.md](docs/sop.md) | **The checklist to work through for any change.** Contract, auth, RBAC, tenant scoping, transactions, audit, versioning, tests, release — each bullet pointing into the two documents above for the reasoning |
 
 - [`docs/backlog.md`](docs/backlog.md) — everything known to be missing or wrong,
   ordered by risk. Read this before planning work.
@@ -186,15 +187,11 @@ mocked repository would accept the duplicate a partial unique index rejects.
 
 ## Conventions worth knowing before changing anything
 
-- **The database is `snake_case`, the code is `camelCase`**, and the mapping is
-  mechanical. A hand-written column alias breaks it.
-- **Migrations own all DDL.** Entities carry columns only. `synchronize` is
-  `false` everywhere, because the synchroniser cannot represent the partial
-  indexes, expression indexes and composite foreign keys the isolation and
-  idempotency guarantees depend on — and would `DROP` them as drift.
-- **Every tenant-scoped query and write names `enterprise_id`**, and it comes
-  from the access token, never from a request body.
-- **Business logic lives only in services.** Controllers parse, call and map;
-  repositories hold queries and no business rules.
-- **No network I/O inside a transaction.** Write the `outbound_events` row,
-  commit, and let the relay make the call.
+They moved to [`docs/sop.md`](docs/sop.md), which is the checklist to work
+through for any change — the five that used to sit here are checkpoints 5 to 8,
+alongside the contract, the guards, the audit trail and the release steps.
+
+Read it before writing code. It is bullets only: every "why" stays in
+[`docs/backend-design.md`](docs/backend-design.md) and
+[`docs/schema.md`](docs/schema.md), because two copies of a rule disagree
+eventually.

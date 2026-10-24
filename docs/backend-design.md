@@ -933,7 +933,7 @@ Beyond auth (§7) and supply chain (§2):
 - **Secrets from a secret manager.** The token-encryption key (`schema.md` §14) and the verification HMAC pepper (§12) are never in the repo, an env file, or an image layer.
 - **Webhook signature verification** on every inbound platform request, before the payload is parsed, using the raw body.
 - **No sensitive data in URLs** — no tokens, no codes, no identifiers in query strings, since those land in access logs.
-- **Audit the sensitive actions**, per `schema.md` §25, including `is_impersonated` when Wouchh staff act inside an enterprise.
+- **Audit every state change**, per `schema.md` §25 and [`sop.md`](./sop.md) §9, including `is_impersonated` when Wouchh staff act inside an enterprise. "Sensitive actions" was the original wording and it was too soft to act on: nine audit actions ended up declared and written by nothing, and connecting or disconnecting a business's Instagram went unrecorded entirely. The SOP says which paths must write a row and which need not.
 - **Dependency and image scanning** blocking in CI; `pnpm audit` on a schedule as well as on PR.
 
 ---
@@ -1251,7 +1251,85 @@ flow-level account of all of it is [`backend-flows.md`](backend-flows.md).
   expired — up to fifteen minutes of full access after being switched off, which
   made "suspend" a suggestion rather than a control.
 
-### 19.8 Still open
+### 19.9 Phase 3 — the audit trail was not what it said it was
+
+Found by querying the database rather than by reading the code, which is the
+only reason it was found at all.
+
+- **`audit_logs` was not append-only.** §15 and `schema.md` §25 both specified a
+  `REVOKE` of `UPDATE` and `DELETE` from the application role, and the entity and
+  the repository each stated it as fact in a comment. The `REVOKE` is guarded on
+  the application role DIFFERING from the migration role — false on every
+  developer machine and anywhere `DB_APP_ROLE` is unset — so it had never run
+  anywhere. Measured: the role held `UPDATE`, `DELETE` and `TRUNCATE`, and both
+  statements succeeded against a real row. **A tamper tripwire attached to a row
+  the application can edit is not a tripwire.** Now enforced by a
+  `BEFORE UPDATE OR DELETE` trigger, which does not care which role is connected
+  — the mechanism `reward_ledger_entries` had used all along for the same reason.
+  `TRUNCATE` is deliberately still permitted (a row trigger cannot see it, and
+  the harness needs it), and DDL rights can still drop the trigger: it stops the
+  accidental `UPDATE` and the repair script, which is the realistic threat.
+- **Coverage was about half, and the enum proves it was not deliberate.** 9 of 19
+  `AuditAction` values and 5 of 15 `AuditEntityType` values were declared and
+  written by nothing. Provider connect and disconnect — which clears live tokens
+  and withdraws a business's authority over its own Instagram — wrote no row at
+  all, nor did comment moderation, replies, sign-in, failed sign-in, or signup.
+  **A vocabulary is not coverage**, which is now a rule: the change that writes an
+  enum member ships with the member.
+- **A revocation was recorded as a grant.** `replaceEmployeeRoles` always wrote
+  `role_granted` with metadata naming only the resulting set, so removing
+  somebody's role produced a row stating the opposite of what happened. A wrong
+  row is worse than no row, because it is read as fact. Both directions are
+  recorded now, as separate rows when one call does both, each carrying the whole
+  before/after.
+- **System-caused actions are audited, reversing an earlier decision.** The enum
+  argued that auditing awards would produce millions of rows saying `system` and
+  drown the handful naming a person. The premise is right and the conclusion was
+  wrong: granting a customer value IS an action the platform took, and "why does
+  this customer have 340 points" must be answerable whether or not a human was
+  involved. The drowning is an indexing problem, solved where it belongs —
+  `audit_logs_human_idx` is partial on `actor_kind <> 'system'`, so reviewing what
+  people did never pays for the volume of what the engine did.
+- **The actor stays unforgeable.** `AuditService` reads it from `RequestContext`
+  and nothing may pass one in. Where no session exists — an OAuth callback, a
+  signup, a worker tick — the row says `system` and the available attribution goes
+  in `metadata`. A route-specific override was considered and rejected: it is
+  exactly the hole the ambient read closes.
+
+### 19.10 Phase 3 — configuration gained a version history
+
+`audit_logs` cannot answer "what did this look like in March". `changes` holds
+whichever fields a call site named, so reconstructing a past state means
+replaying every diff since creation and trusting none omitted anything. Where
+configuration decides money that is not good enough: **an award made in March was
+decided by the program as it stood in March.**
+
+`entity_versions` (`schema.md` §26) holds a full snapshot per change, addressed
+by `entity_type` + `entity_id` so any entity can use it without a new table.
+Reward programs record one on create and on every status change, and
+`GET /rewards/programs/:refId/versions` serves the history.
+
+Three decisions worth keeping:
+
+- **The snapshot is stated by the call site, never serialised from the row.**
+  `forward_config` holds a credential reference, and the table is append-only, so
+  a secret written there could never be taken back out.
+- **The diff is derived by the service, not described by the caller.** Every call
+  site that describes its own change is one that can describe it wrongly — which
+  is precisely how the role revocation came to read as a grant.
+- **One generic table, not one per entity.** The cost is that `entity_id` is not a
+  foreign key; the same trade `audit_logs` already makes, for the same reason.
+
+### 19.11 What this left behind
+
+The rules all of the above produced live in [`sop.md`](./sop.md) — a checklist to
+work through for any change, bullets only, each pointing back into this document
+for the reasoning. The one that covers the rest: **a comment asserting a
+guarantee is not evidence of it.** A database-level guarantee now gets a test
+that attempts the forbidden thing and expects a rejection, and a control with a
+threshold gets a test proving it can actually fail.
+
+### 19.12 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is
   complete; in dev the code is logged, and in qa or prod a missing provider is
