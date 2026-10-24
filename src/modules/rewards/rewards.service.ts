@@ -37,6 +37,8 @@ import {
   RewardWalletKind,
 } from '@/shared/enums';
 import { RequestContext } from '@/shared/context';
+import { clampLimit } from '@/shared/utils/page-limit';
+import { decodeKeysetCursor, encodeKeysetCursor } from '@/shared/utils/keyset-cursor';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { BenefitRegistry } from './benefits/benefit.registry';
 
@@ -447,6 +449,47 @@ export class RewardsService {
     if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
 
     return this.versions.history(enterpriseId, AuditEntityType.RewardProgram, program.id, limit);
+  }
+
+  /**
+   * Who this programme has rewarded, a page at a time.
+   *
+   * THE PROGRAMME IS RESOLVED FIRST, AND THAT IS THE TENANT CHECK. `refId` is
+   * the only handle a client has; looking it up scoped to the enterprise is
+   * what makes one business's beneficiaries unreachable from another, because
+   * the numeric `program_id` the query actually uses never leaves the server.
+   *
+   * ONE EXTRA ROW IS FETCHED to decide `hasMore` without a second COUNT over
+   * the same group — the count would be a second aggregate of the same rows to
+   * answer a yes/no question.
+   */
+  async programBeneficiaries(
+    enterpriseId: number,
+    refId: string,
+    options: { limit: number | null; cursor: string | null },
+  ) {
+    const program = await this.programs.findByRefId(enterpriseId, refId);
+    if (!program) throw new AppException(ErrorCode.RewardProgramNotFound);
+
+    const limit = clampLimit(options.limit);
+    const parsed = decodeKeysetCursor(options.cursor);
+    const rows = await this.awards.listBeneficiaries({
+      enterpriseId,
+      programId: program.id,
+      limit: limit + 1,
+      cursor: parsed && parsed.at ? { lastAwardedAt: parsed.at, customerId: parsed.id } : null,
+    });
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+
+    return {
+      items,
+      limit,
+      nextCursor: hasMore && last ? encodeKeysetCursor(last.lastAwardedAt, last.customerId) : null,
+      hasMore,
+    };
   }
 
   /**

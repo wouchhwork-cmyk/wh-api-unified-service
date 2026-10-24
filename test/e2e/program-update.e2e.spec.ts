@@ -324,6 +324,171 @@ describe('editing a reward programme in one save', () => {
     expect(rows[0].n).toBe(2);
   });
 
+  /* ------------------------------------------------------------------ */
+  /* Who it rewarded                                                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Awards are written straight to the table rather than driven through the
+   * engine: this is testing the LISTING, and routing real events through
+   * Instagram ingestion to produce them would be testing the engine instead,
+   * with the paging boundary left to whatever order that produced.
+   */
+  async function award(
+    refId: string,
+    rows: { customer: string; status: string; at: string }[],
+  ): Promise<void> {
+    const [program] = await db.query(
+      `SELECT id, enterprise_id AS "enterpriseId" FROM reward_programs WHERE ref_id = $1`,
+      [refId],
+    );
+    const [rule] = await db.query(
+      `SELECT id, version FROM reward_rules WHERE program_id = $1 AND is_active = true
+        ORDER BY id LIMIT 1`,
+      [program.id],
+    );
+
+    let source = 0;
+    for (const row of rows) {
+      const [customer] = await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source)
+         VALUES ($1, $2, 'manual') RETURNING id`,
+        [program.enterpriseId, row.customer],
+      );
+      source += 1;
+      await db.query(
+        `INSERT INTO reward_awards
+            (enterprise_id, program_id, rule_id, rule_version, program_version, customer_id,
+             source_ref_kind, source_ref_id, status, occurred_at_utc)
+         VALUES ($1, $2, $3, $4, 1, $5, 'message', $6, $7, $8)`,
+        [
+          program.enterpriseId,
+          program.id,
+          rule.id,
+          rule.version,
+          customer.id,
+          source,
+          row.status,
+          row.at,
+        ],
+      );
+    }
+  }
+
+  it('lists who it rewarded, newest first, with what it did for them', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+    await award(refId, [
+      { customer: 'Asha', status: 'granted', at: '2026-03-01T10:00:00Z' },
+      { customer: 'Bina', status: 'held', at: '2026-03-03T10:00:00Z' },
+      { customer: 'Chandra', status: 'reversed', at: '2026-03-02T10:00:00Z' },
+    ]);
+
+    const page = await http()
+      .get(`/api/v1/rewards/programs/${refId}/beneficiaries`)
+      .set(auth)
+      .expect(200);
+
+    /* `data` IS the array: the envelope lifts `items` up and moves
+     * `pagination` into `meta` whenever a payload carries one. */
+    const items = page.body.data as { displayName: string; held: number }[];
+    expect(items.map((i) => i.displayName)).toEqual(['Bina', 'Chandra', 'Asha']);
+    expect(items[0]?.held).toBe(1);
+    expect(page.body.meta.pagination.hasMore).toBe(false);
+  });
+
+  it('leaves out the refusals — they are people who got nothing', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+    await award(refId, [
+      { customer: 'Asha', status: 'granted', at: '2026-03-01T10:00:00Z' },
+      { customer: 'Refused', status: 'skipped_cap', at: '2026-03-04T10:00:00Z' },
+      { customer: 'AlsoRefused', status: 'skipped_condition', at: '2026-03-05T10:00:00Z' },
+    ]);
+
+    const page = await http()
+      .get(`/api/v1/rewards/programs/${refId}/beneficiaries`)
+      .set(auth)
+      .expect(200);
+    const items = page.body.data as { displayName: string }[];
+    expect(items.map((i) => i.displayName)).toEqual(['Asha']);
+  });
+
+  /*
+   * THE BOUNDARY, which is where keyset paging goes wrong. Walking every page
+   * must yield each customer exactly once — a cursor that is off by a row
+   * either repeats the row on the boundary or loses it, and a single-page
+   * assertion would never notice.
+   */
+  it('pages without repeating or losing anybody', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+    const people = ['A', 'B', 'C', 'D', 'E'];
+    await award(
+      refId,
+      people.map((name, index) => ({
+        customer: name,
+        status: 'granted',
+        at: `2026-03-0${index + 1}T10:00:00Z`,
+      })),
+    );
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let guard = 0; guard < 10; guard += 1) {
+      const url =
+        `/api/v1/rewards/programs/${refId}/beneficiaries?limit=2` +
+        (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
+      const page = await http().get(url).set(auth).expect(200);
+      const rows = page.body.data as { displayName: string }[];
+      const meta = page.body.meta.pagination as {
+        nextCursor: string | null;
+        hasMore: boolean;
+      };
+      seen.push(...rows.map((i) => i.displayName));
+      if (!meta.hasMore) break;
+      cursor = meta.nextCursor;
+      expect(cursor).not.toBeNull();
+    }
+
+    expect(seen).toEqual(['E', 'D', 'C', 'B', 'A']);
+    expect(new Set(seen).size).toBe(people.length);
+  });
+
+  it('counts several awards to one customer as one beneficiary', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+    await award(refId, [
+      { customer: 'Asha', status: 'granted', at: '2026-03-01T10:00:00Z' },
+      { customer: 'Asha', status: 'granted', at: '2026-03-02T10:00:00Z' },
+      { customer: 'Asha', status: 'reversed', at: '2026-03-03T10:00:00Z' },
+    ]);
+
+    const page = await http()
+      .get(`/api/v1/rewards/programs/${refId}/beneficiaries`)
+      .set(auth)
+      .expect(200);
+    const items = page.body.data as {
+      displayName: string;
+      granted: number;
+      reversed: number;
+    }[];
+    /* Three customers were inserted, because each insert makes a new one —
+     * so this also proves the grouping is by customer and not by award. */
+    expect(items.filter((i) => i.displayName === 'Asha')).toHaveLength(3);
+    expect(items.reduce((sum, i) => sum + i.granted, 0)).toBe(2);
+    expect(items.reduce((sum, i) => sum + i.reversed, 0)).toBe(1);
+  });
+
+  it('refuses a limit beyond the ceiling rather than honouring it', async () => {
+    const { auth } = await business();
+    const refId = await create(auth);
+    await http()
+      .get(`/api/v1/rewards/programs/${refId}/beneficiaries?limit=100000`)
+      .set(auth)
+      .expect(422);
+  });
+
   it('404s on a programme that is not this business’s', async () => {
     const { auth } = await business();
     const missing = await http()

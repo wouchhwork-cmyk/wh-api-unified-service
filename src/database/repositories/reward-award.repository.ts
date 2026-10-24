@@ -40,6 +40,17 @@ export interface DueRewardAwardRow extends RewardAwardRow {
   readonly enterpriseId: number;
 }
 
+/** One customer this programme has rewarded, with what it did for them. */
+export interface RewardBeneficiaryRow {
+  readonly customerId: number;
+  readonly customerRefId: string;
+  readonly displayName: string | null;
+  readonly lastAwardedAt: Date;
+  readonly granted: number;
+  readonly held: number;
+  readonly reversed: number;
+}
+
 export interface CreateAwardInput {
   readonly enterpriseId: number;
   readonly programId: number;
@@ -103,6 +114,77 @@ export class RewardAwardRepository extends BaseRepository {
       ],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * Who this programme has actually rewarded, one row per customer.
+   *
+   * ONE QUERY, NOT ONE PER CUSTOMER. The counts come back from the same
+   * statement as the names — fetching a customer's awards per row is the N+1
+   * that turns a fifty-person page into fifty-one queries.
+   *
+   * KEYSET, NOT OFFSET. A page built on OFFSET re-reads and discards
+   * everything before it, and shifts under anybody who is rewarded while
+   * somebody is paging. The cursor is the aggregate `(last awarded, customer
+   * id)`, so it has to be applied in HAVING rather than WHERE — it is a
+   * property of the group, not of any one award.
+   *
+   * `occurred_at_utc` IS NOT NULL, so this needs none of the three-branch NULL
+   * handling the customer directory carries. That is stated because the
+   * similarity is close enough to invite copying it.
+   *
+   * ORDER BY ends in the customer id, which is unique, so the order is total
+   * and a page boundary can never repeat or skip a row.
+   *
+   * THE REFUSALS ARE EXCLUDED. `skipped_cap` and `skipped_condition` are rows
+   * saying somebody did NOT get something, and a list of beneficiaries built
+   * from them would name people who were never rewarded. `reversed` stays: it
+   * was granted and taken back, which is part of what this programme did to
+   * that customer.
+   */
+  async listBeneficiaries(input: {
+    enterpriseId: number;
+    programId: number;
+    limit: number;
+    cursor: { lastAwardedAt: Date; customerId: number } | null;
+  }): Promise<RewardBeneficiaryRow[]> {
+    const params: unknown[] = [
+      this.requireEnterprise(input.enterpriseId),
+      input.programId,
+      input.limit,
+      [RewardAwardStatus.Granted, RewardAwardStatus.Held, RewardAwardStatus.Reversed],
+    ];
+
+    let having = '';
+    if (input.cursor) {
+      params.push(input.cursor.lastAwardedAt, input.cursor.customerId);
+      const at = `$${params.length - 1}::timestamptz`;
+      const id = `$${params.length}`;
+      having = `HAVING (MAX(a.occurred_at_utc), a.customer_id) < (${at}, ${id})`;
+    }
+
+    return this.query<RewardBeneficiaryRow>(
+      `SELECT a.customer_id                                                  AS "customerId",
+              c.ref_id                                                       AS "customerRefId",
+              c.display_name                                                 AS "displayName",
+              MAX(a.occurred_at_utc)                                         AS "lastAwardedAt",
+              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Granted}')::int  AS "granted",
+              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Held}')::int     AS "held",
+              count(*) FILTER (WHERE a.status = '${RewardAwardStatus.Reversed}')::int AS "reversed"
+         FROM reward_awards a
+         JOIN customers c
+           ON c.id = a.customer_id
+          AND c.enterprise_id = a.enterprise_id
+        WHERE a.enterprise_id = $1
+          AND a.program_id = $2
+          AND a.is_deleted = false
+          AND a.status = ANY($4::varchar[])
+        GROUP BY a.customer_id, c.ref_id, c.display_name
+        ${having}
+        ORDER BY MAX(a.occurred_at_utc) DESC, a.customer_id DESC
+        LIMIT $3`,
+      params,
+    );
   }
 
   /**

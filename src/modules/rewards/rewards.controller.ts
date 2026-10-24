@@ -11,11 +11,13 @@ import {
   TRIGGER_CATALOGUE,
   RewardRuleListQuerySchema,
   UpdateRewardRuleActiveSchema,
+  RewardBeneficiaryQuerySchema,
   RewardProgramQuerySchema,
   UpdateRewardProgramSchema,
   UpdateRewardProgramStatusSchema,
 } from '@/shared/contracts/rewards/reward.contract';
 import { RefIdParamSchema } from '@/shared/contracts/params.contract';
+import { paginated } from '@/shared/contracts/envelope';
 import { Permission } from '@/shared/enums';
 import { RewardsService } from './rewards.service';
 
@@ -179,6 +181,45 @@ export class RewardsController {
   })
   benefits(): { items: typeof BENEFIT_CATALOGUE } {
     return { items: BENEFIT_CATALOGUE };
+  }
+
+  @Get('programs/:refId/beneficiaries')
+  @RequirePermission(Permission.RewardsView)
+  @ApiOperation({
+    summary: 'Who this program has rewarded',
+    description:
+      'One row per customer, with how many awards this program granted, is still holding, and ' +
+      'has reversed for them, newest activity first. CURSOR-PAGINATED and bounded: an offset ' +
+      'page re-reads everything it skips and shifts under anybody rewarded while somebody is ' +
+      'reading. THE REFUSALS ARE EXCLUDED — a `skipped_cap` row says somebody did NOT get ' +
+      'something, and a beneficiary list built from those would name people who were never ' +
+      'rewarded. `reversed` stays: it was granted and taken back, which is part of what this ' +
+      'program did to that customer. There is no search here on purpose; looking a customer up ' +
+      'is what the customer directory is for.',
+  })
+  async programBeneficiaries(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refIdParam: string,
+    @Query() query: unknown,
+  ) {
+    const refId = RefIdParamSchema.parse(refIdParam);
+    const parsed = RewardBeneficiaryQuerySchema.parse(query ?? {});
+    const result = await this.rewards.programBeneficiaries(actor.enterpriseId, refId, {
+      limit: parsed.limit ?? null,
+      cursor: parsed.cursor ?? null,
+    });
+
+    return paginated(
+      result.items.map((row) => ({
+        customerRefId: row.customerRefId,
+        displayName: row.displayName,
+        lastAwardedAt: row.lastAwardedAt,
+        granted: row.granted,
+        held: row.held,
+        reversed: row.reversed,
+      })),
+      { limit: result.limit, nextCursor: result.nextCursor, hasMore: result.hasMore },
+    );
   }
 
   @Get('programs/:refId/versions')

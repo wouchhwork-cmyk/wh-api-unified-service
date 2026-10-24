@@ -557,6 +557,25 @@ export const ProgramScheduleSchema = z.strictObject({
  * waiting for the first program that has been edited a thousand times. Coerced
  * from the query string, which arrives as text or not at all.
  */
+/**
+ * Paging through a programme's beneficiaries.
+ *
+ * NO SEARCH, deliberately. This answers "who has this programme rewarded",
+ * which is a list to read through, not a box to look somebody up in — the
+ * customer directory already does that, with the trigram index that makes a
+ * contains-match affordable. Adding a search here would mean a second place to
+ * keep that working, and a `%term%` scan over awards with no index behind it.
+ *
+ * CURSOR, NOT PAGE NUMBER, as on every other listing: an offset page re-reads
+ * what it skips and shifts under anybody rewarded mid-read.
+ */
+export const RewardBeneficiaryQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
+    cursor: z.string().max(512).optional(),
+  })
+  .strict();
+
 export const HistoryLimitSchema = z.coerce
   .number()
   .int()
