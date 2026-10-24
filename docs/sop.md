@@ -9,7 +9,7 @@ two copies of a rule disagree eventually.
 Work down it in order. The order is the build order: the contract before the
 code, the guards before the logic, the record before the response.
 
-**Checkpoint 19 is not optional.** An architectural decision that is not written
+**Checkpoint 20 is not optional.** An architectural decision that is not written
 into the design docs is a decision that will be re-taken, usually by someone who
 does not know it was ever decided.
 
@@ -169,7 +169,29 @@ does not know it was ever decided.
 - [ ] `pnpm test`, `pnpm test:integration`, `pnpm test:e2e`
 - [ ] `pnpm build`
 
-## 17. Release
+## 17. Getting it into main
+
+- [ ] Work on a branch off `main`. **Nothing is committed to `main` directly.**
+- [ ] Code reaches `main` **only through a pull request**. No direct push, no local merge, no exceptions for a one-line fix.
+- [ ] **Squash merge only.** Not a merge commit, not rebase-and-merge.
+- [ ] Checkpoint 16 is green **before** the PR merges, not after.
+- [ ] The PR body says: what changed, why, risk level, testing evidence, and the rollout/rollback note from checkpoint 18.
+- [ ] **Delete the branch as soon as it is squashed.** A merged branch left behind is indistinguishable from an abandoned one a month later.
+
+**Why squash.** `main` becomes a list of *changes*, one commit per reviewed unit
+of work, rather than a transcript of somebody's keystrokes. A revert is then one
+commit, and `git bisect` lands on something that was actually reviewed and
+actually passed the gate.
+
+**The consequence to know about, because it looks alarming.** A squash merge
+rewrites the branch's commits into a single new one, so the originals are never
+in `main`'s history. `git rev-list main..the-branch` therefore still reports
+every one of them as unmerged — a branch whose work shipped weeks ago can read
+as "187 commits not in main" and look far too risky to delete. It is not: the
+*content* is in `main`, only the commits are not. Confirm with the diff
+(`git diff main...the-branch`) or with the PR, never with the commit count.
+
+## 18. Release
 
 - [ ] Deploy order: **migrate → seed → code**. Not a preference.
 - [ ] Breaking change? Versioning or migration plan, or it does not ship. Removing/renaming a field, changing a type or a default, or changing an error shape are all breaking.
@@ -177,13 +199,13 @@ does not know it was ever decided.
 - [ ] Risky change sits behind a feature flag or a phased rollout.
 - → detail: [`deploy-order.md`](./deploy-order.md), `backend-design.md` §14
 
-## 18. Before you call it done
+## 19. Before you call it done
 
 - [ ] **Read it back from the database.** Configuration is not evidence of state — query for the trigger, the grant, the row, the subscription, and read the answer. Two real defects here were found that way and neither was visible in the code.
 - [ ] Check which process holds `:3000` and that exactly one API and one worker are running. A stale worker claims jobs with old code and is invisible to a port check — grep the **entry path**, never the repo name.
 - [ ] Report honestly: what was verified against real data, what was only unit-tested, and what was left out.
 
-## 19. Record the decision, or it will be re-taken
+## 20. Record the decision, or it will be re-taken
 
 **Every architectural decision goes back into the design docs, in the same
 change that makes it.** Not afterwards, not in the PR description, not in a
