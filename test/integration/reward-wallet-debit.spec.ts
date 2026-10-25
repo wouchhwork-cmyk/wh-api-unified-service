@@ -148,7 +148,7 @@ describe('reward wallet debit', () => {
    * "not enough points" and left nothing behind to say what had really
    * happened.
    */
-  it('throws rather than reporting a refusal when the wallet is another tenant\'s', async () => {
+  it("throws rather than reporting a refusal when the wallet is another tenant's", async () => {
     const otherId = await seedEnterprise(db, 'Other Co', 'other-co');
     const [otherCustomer] = await db.query(
       `INSERT INTO customers (enterprise_id, display_name, first_source)

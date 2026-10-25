@@ -50,7 +50,9 @@
           }
         },
         "summary": "Sign in with an email address or a mobile number",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/verify": {
@@ -64,7 +66,9 @@
           }
         },
         "summary": "Submit a verification code and receive a session",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/accept-invite": {
@@ -78,7 +82,9 @@
           }
         },
         "summary": "Accept an invitation and set a password",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/resend": {
@@ -92,7 +98,9 @@
           }
         },
         "summary": "Send a fresh code to an address that already had one",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/select-enterprise": {
@@ -105,7 +113,9 @@
           }
         },
         "summary": "Exchange a selection token for a session in one business",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/refresh": {
@@ -119,7 +129,9 @@
           }
         },
         "summary": "Exchange the refresh cookie for a new access token",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/switch-enterprise": {
@@ -132,7 +144,9 @@
           }
         },
         "summary": "Move the session to another business the actor belongs to",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/logout": {
@@ -145,7 +159,9 @@
           }
         },
         "summary": "Revoke the session and clear the cookie",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/logout-all": {
@@ -159,7 +175,9 @@
           }
         },
         "summary": "Sign out everywhere — revoke every session this person holds",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/auth/me": {
@@ -173,7 +191,9 @@
           }
         },
         "summary": "The current actor, its scope, and its resolved permissions",
-        "tags": ["auth"]
+        "tags": [
+          "auth"
+        ]
       }
     },
     "/api/v1/connections/providers": {
@@ -187,7 +207,9 @@
           }
         },
         "summary": "The platforms that can be connected",
-        "tags": ["connections"]
+        "tags": [
+          "connections"
+        ]
       }
     },
     "/api/v1/connections/start": {
@@ -225,7 +247,9 @@
           }
         },
         "summary": "Begin connecting a platform",
-        "tags": ["connections"]
+        "tags": [
+          "connections"
+        ]
       }
     },
     "/api/v1/connections": {
@@ -238,7 +262,9 @@
           }
         },
         "summary": "The provider connections this business holds",
-        "tags": ["connections"]
+        "tags": [
+          "connections"
+        ]
       }
     },
     "/api/v1/connections/{refId}/disconnect": {
@@ -261,7 +287,9 @@
           }
         },
         "summary": "Stop acting on this connection, and keep everything it produced",
-        "tags": ["connections"]
+        "tags": [
+          "connections"
+        ]
       }
     },
     "/api/v1/connections/channels": {
@@ -275,7 +303,9 @@
           }
         },
         "summary": "The channels under those connections",
-        "tags": ["connections"]
+        "tags": [
+          "connections"
+        ]
       }
     },
     "/api/v1/employees": {
@@ -289,7 +319,9 @@
           }
         },
         "summary": "Everybody who works here",
-        "tags": ["employees"]
+        "tags": [
+          "employees"
+        ]
       },
       "post": {
         "description": "The only way a second person joins a business — there is no employee signup. No password is accepted: the person sets their own from the code that reaches them, so nobody else ever knows it. They arrive as `invited` and can do nothing until they accept.",
@@ -333,7 +365,9 @@
           }
         },
         "summary": "Create a colleague",
-        "tags": ["employees"]
+        "tags": [
+          "employees"
+        ]
       }
     },
     "/api/v1/employees/roles": {
@@ -347,7 +381,9 @@
           }
         },
         "summary": "The roles this business can assign",
-        "tags": ["employees"]
+        "tags": [
+          "employees"
+        ]
       }
     },
     "/api/v1/employees/{refId}/status": {
@@ -370,7 +406,9 @@
           }
         },
         "summary": "Suspend or reinstate somebody",
-        "tags": ["employees"]
+        "tags": [
+          "employees"
+        ]
       }
     },
     "/api/v1/roles/permissions": {
@@ -384,7 +422,9 @@
           }
         },
         "summary": "Everything a role can grant, grouped for a person",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       }
     },
     "/api/v1/roles": {
@@ -398,7 +438,9 @@
           }
         },
         "summary": "The roles this business has",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       },
       "post": {
         "description": "The level must be strictly below your own, and the permissions must be ones you hold yourself. The owner level is reserved and cannot be created.",
@@ -410,7 +452,9 @@
           }
         },
         "summary": "Create a role",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       }
     },
     "/api/v1/roles/{refId}": {
@@ -433,7 +477,9 @@
           }
         },
         "summary": "Replace a role",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       }
     },
     "/api/v1/roles/{refId}/archive": {
@@ -456,7 +502,9 @@
           }
         },
         "summary": "Retire a role",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       }
     },
     "/api/v1/roles/employees/{refId}": {
@@ -479,7 +527,9 @@
           }
         },
         "summary": "Replace somebody's roles",
-        "tags": ["roles"]
+        "tags": [
+          "roles"
+        ]
       }
     },
     "/api/v1/enterprises/signup": {
@@ -548,7 +598,9 @@
           }
         },
         "summary": "Create a business and its owner",
-        "tags": ["enterprises"]
+        "tags": [
+          "enterprises"
+        ]
       }
     },
     "/api/v1/enterprises/current": {
@@ -561,7 +613,39 @@
           }
         },
         "summary": "The business the current session is scoped to",
-        "tags": ["enterprises"]
+        "tags": [
+          "enterprises"
+        ]
+      },
+      "patch": {
+        "description": "The timezone set here is the ONE the whole product reads — reward cap periods, happy-hour windows, and anything added later. Nothing keeps its own copy, so changing it moves every one of them at once. Recorded in the audit trail and versioned, because an award granted last month was decided against the timezone in force last month.",
+        "operationId": "EnterprisesController_updateSettings_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Change the business’s own settings",
+        "tags": [
+          "enterprises"
+        ]
+      }
+    },
+    "/api/v1/enterprises/settings/options": {
+      "get": {
+        "description": "The canonical IANA timezone list and the ISO 4217 currency list as this runtime knows them, which are the SAME sets the settings endpoint validates against — so a client renders its dropdowns from here rather than hardcoding lists that could drift. Timezone abbreviations are deliberately absent: \"EST\" resolves to America/Panama and \"IST\" is claimed by three countries, so neither can be stored. Currencies are checked against the list rather than a three-letter shape, which used to accept \"XYZ\".",
+        "operationId": "EnterprisesController_settingsOptions_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The values the settings form may offer",
+        "tags": [
+          "enterprises"
+        ]
       }
     },
     "/api/v1/features": {
@@ -575,7 +659,9 @@
           }
         },
         "summary": "What this business has, and what it could have",
-        "tags": ["features"]
+        "tags": [
+          "features"
+        ]
       }
     },
     "/api/v1/features/{featureKey}/request": {
@@ -598,7 +684,9 @@
           }
         },
         "summary": "Ask for a feature",
-        "tags": ["features"]
+        "tags": [
+          "features"
+        ]
       }
     },
     "/api/v1/conversations": {
@@ -612,7 +700,9 @@
           }
         },
         "summary": "The inbox",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/stream": {
@@ -626,7 +716,9 @@
           }
         },
         "summary": "Live conversation changes (text/event-stream)",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}": {
@@ -648,7 +740,9 @@
           }
         },
         "summary": "One conversation and its messages",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/messages/{messageRefId}/moderate": {
@@ -679,7 +773,9 @@
           }
         },
         "summary": "Hide, unhide or delete a comment on a post you own",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/messages/{messageRefId}/moderate/retry": {
@@ -710,7 +806,9 @@
           }
         },
         "summary": "Send a failed hide or delete again",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/reply": {
@@ -733,7 +831,9 @@
           }
         },
         "summary": "Reply to a conversation",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/assign": {
@@ -755,7 +855,9 @@
           }
         },
         "summary": "Assign a conversation to a team employee, or unassign it",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/status": {
@@ -777,7 +879,9 @@
           }
         },
         "summary": "Move a conversation through its workflow",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/resync": {
@@ -800,7 +904,9 @@
           }
         },
         "summary": "Re-read this thread from the platform",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/attachments/refresh": {
@@ -823,7 +929,9 @@
           }
         },
         "summary": "Replace expired media links in this thread",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/conversations/{refId}/read": {
@@ -846,11 +954,14 @@
           }
         },
         "summary": "Clear the unread badge",
-        "tags": ["inbox"]
+        "tags": [
+          "inbox"
+        ]
       }
     },
     "/api/v1/rewards/programs": {
       "get": {
+        "description": "Archived programs are EXCLUDED unless asked for by status. They are kept for the record and never deleted, but a retired program in the working list is how somebody edits the wrong one.",
         "operationId": "RewardsController_listPrograms_v1",
         "parameters": [],
         "responses": {
@@ -859,10 +970,12 @@
           }
         },
         "summary": "Reward programs for this business",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       },
       "post": {
-        "description": "A program starts as a draft. Its timezone resolves every cap period and every time window, so it cannot be changed casually later.",
+        "description": "A program starts as a draft. Cap periods and time windows resolve in the BUSINESS’s timezone, set once in business settings — a programme no longer carries its own, so two of them can never disagree about when Tuesday starts. window, so it cannot be changed casually later.",
         "operationId": "RewardsController_createProgram_v1",
         "parameters": [],
         "responses": {
@@ -871,7 +984,9 @@
           }
         },
         "summary": "Create a reward program",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/dashboard": {
@@ -885,12 +1000,64 @@
           }
         },
         "summary": "What every program has actually done",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/configuration": {
+      "get": {
+        "description": "What `PUT /rewards/programs/:refId` takes, read back: triggers, rewards, cap, hold and the schedule as days rather than as the engine's slot list. ONE READ THAT ROUND TRIPS, so the form that edits a program loads exactly what it will send. ONLY ACTIVE RULES — retired versions are the history an old award resolves against, not what the program is now. `uniform: false` means the active rules do NOT agree on cap or hold, which happens when rules were added one at a time rather than through the program form; saving the form would flatten them to one shared answer, so a client should say so first.",
+        "operationId": "RewardsController_programConfiguration_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "A program in the shape its edit form needs — and its PUT accepts",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}": {
+      "put": {
+        "description": "A PUT, not a PATCH: the screen that edits a program is the screen that created it, so every field is restated and an omitted one is never ambiguous between \"cleared\" and \"untouched\". THE RULES ARE SUPERSEDED, NEVER EDITED — an award stores the rule id and rule version that decided it, so the old rules are switched off and kept readable while new versions are written beside them, chained through `supersedes_rule_id`. A trigger removed keeps its retired rule; a trigger added starts a lineage of its own. The program gains a version holding its whole configuration at this moment, and that version number is what later awards are stamped with. 404 if it does not exist, 409 if it is archived (archiving is one-way) or the internal name is taken.",
+        "operationId": "RewardsController_updateProgram_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Edit a program whole — the same form, the same body, one save",
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/programs/{refId}/status": {
       "patch": {
-        "description": "Status is the SWITCH, not the schedule. A program scheduled for next month is active with a future start date; there is no \"scheduled\" status because the date says it.",
+        "description": "Status is the SWITCH, not the schedule. A program scheduled for next month is active with a future start date; there is no \"scheduled\" status because the date says it. ARCHIVING IS ONE-WAY: the program is kept and readable for ever, its rules stop matching, and it can never be switched back on. 409 if it already is.",
         "operationId": "RewardsController_setProgramStatus_v1",
         "parameters": [
           {
@@ -908,15 +1075,83 @@
           }
         },
         "summary": "Switch a program on, pause it, or archive it",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
-    "/api/v1/rewards/rules": {
+    "/api/v1/rewards/triggers": {
       "get": {
-        "operationId": "RewardsController_listRules_v1",
+        "description": "The SAME list the create endpoints validate against, so a client renders its picker from here rather than keeping a copy that drifts the day a producer is built. `available: false` means the trigger is modelled and nothing raises it yet — those are refused on save, not merely greyed out, because a screen is not the only way to reach this API and a rule that can never fire should not be storable.",
+        "operationId": "RewardsController_triggers_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Every trigger, grouped, and whether it can actually fire",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/benefits": {
+      "get": {
+        "description": "The companion to `GET /rewards/triggers`, and the SAME list the create endpoints validate against. `available: false` means the reward is modelled with nothing behind it yet — `issue_entitlement` has no item catalogue, so its `itemRef` is free text that nothing can redeem — and it is refused on save, not merely greyed out. `requiresTrigger` names the triggers a reward may only be used with: `convert_value` burns points and grants money in one step, which means something only at the moment a balance is worth converting, so it needs `points_balance_reached`.",
+        "operationId": "RewardsController_benefits_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Every reward, whether it can be chosen, and what it needs chosen with it",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/beneficiaries": {
+      "get": {
+        "description": "One row per customer, with how many awards this program granted, is still holding, and has reversed for them, newest activity first. CURSOR-PAGINATED and bounded: an offset page re-reads everything it skips and shifts under anybody rewarded while somebody is reading. THE REFUSALS ARE EXCLUDED — a `skipped_cap` row says somebody did NOT get something, and a beneficiary list built from those would name people who were never rewarded. `reversed` stays: it was granted and taken back, which is part of what this program did to that customer. There is no search here on purpose; looking a customer up is what the customer directory is for.",
+        "operationId": "RewardsController_programBeneficiaries_v1",
         "parameters": [
           {
-            "name": "programRefId",
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Who this program has rewarded",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/versions": {
+      "get": {
+        "description": "Every change to a program appends a version holding its WHOLE configuration at that moment, not a diff — so reconstructing what was running last March is reading one row rather than replaying every edit since. An award made then was decided by the program as it stood then, which is why this exists alongside the audit log: the audit log says who changed it, this says what it became. Newest first. The forwarding credential is never recorded.",
+        "operationId": "RewardsController_programVersions_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
             "required": true,
             "in": "query",
             "schema": {
@@ -929,8 +1164,25 @@
             "description": ""
           }
         },
+        "summary": "What this program has looked like, version by version",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/rules": {
+      "get": {
+        "operationId": "RewardsController_listRules_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
         "summary": "Rules in a program",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       },
       "post": {
         "description": "A rule is one trigger, a flat AND list of conditions, and one or more benefits applied all-or-nothing. An empty condition list means ALWAYS, never never.",
@@ -942,7 +1194,9 @@
           }
         },
         "summary": "Create a rule",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/rules/{refId}/active": {
@@ -964,7 +1218,9 @@
           }
         },
         "summary": "Switch a rule on or off",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/customers/{refId}/balances": {
@@ -987,7 +1243,9 @@
           }
         },
         "summary": "What a customer holds",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/customers/{refId}/awards": {
@@ -1010,7 +1268,9 @@
           }
         },
         "summary": "A customer’s award history",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/rewards/adjustments": {
@@ -1024,7 +1284,9 @@
           }
         },
         "summary": "Manually credit or debit a balance",
-        "tags": ["rewards"]
+        "tags": [
+          "rewards"
+        ]
       }
     },
     "/api/v1/posts": {
@@ -1038,7 +1300,9 @@
           }
         },
         "summary": "Posts published by the connected accounts",
-        "tags": ["catalogue"]
+        "tags": [
+          "catalogue"
+        ]
       }
     },
     "/api/v1/customers": {
@@ -1052,7 +1316,9 @@
           }
         },
         "summary": "The customer directory",
-        "tags": ["catalogue"]
+        "tags": [
+          "catalogue"
+        ]
       }
     },
     "/api/v1/platform/rate-limits": {
@@ -1066,7 +1332,9 @@
           }
         },
         "summary": "How much of the Meta API allowance is spent, and by whom",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/rate-limits/history": {
@@ -1080,7 +1348,9 @@
           }
         },
         "summary": "Minute-by-minute rate-limit history",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/staff": {
@@ -1094,7 +1364,9 @@
           }
         },
         "summary": "Wouchh's own people, and what each of them may do",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       },
       "post": {
         "description": "Creates a SCOPED staff member and sends them an invitation. They set their own password from the code, so nobody else ever knows it, and the account does nothing until they do. An address that already belongs to somebody is refused: a tenant invite deliberately reuses an existing identity, and doing that here would hand a customer staff reach over every business. Promotion to full platform admin is not available here and stays in the deployment configuration.",
@@ -1106,7 +1378,9 @@
           }
         },
         "summary": "Add one of our own people",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/staff/roles": {
@@ -1119,7 +1393,9 @@
           }
         },
         "summary": "The staff roles that can be granted",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/staff/{refId}/status": {
@@ -1142,7 +1418,9 @@
           }
         },
         "summary": "Suspend or reinstate a staff member",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/staff/{refId}/roles": {
@@ -1165,7 +1443,9 @@
           }
         },
         "summary": "Replace a staff member's roles",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/overview": {
@@ -1179,7 +1459,9 @@
           }
         },
         "summary": "Platform-wide totals",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/enterprises": {
@@ -1193,7 +1475,9 @@
           }
         },
         "summary": "Every business on the platform",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/enterprises/{refId}": {
@@ -1216,7 +1500,9 @@
           }
         },
         "summary": "One business in full",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/enterprises/{refId}/status": {
@@ -1239,7 +1525,9 @@
           }
         },
         "summary": "Activate or suspend a business",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/platform/enterprises/{refId}/features/{featureKey}": {
@@ -1270,7 +1558,9 @@
           }
         },
         "summary": "Grant, disable, decline or revoke a feature",
-        "tags": ["platform"]
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/api/v1/health/live": {
@@ -1284,7 +1574,9 @@
           }
         },
         "summary": "Is the process alive?",
-        "tags": ["health"]
+        "tags": [
+          "health"
+        ]
       }
     },
     "/api/v1/health/ready": {
@@ -1298,7 +1590,9 @@
           }
         },
         "summary": "Should this instance receive traffic?",
-        "tags": ["health"]
+        "tags": [
+          "health"
+        ]
       }
     },
     "/api/v1/health/startup": {
@@ -1312,7 +1606,9 @@
           }
         },
         "summary": "Has the process finished booting?",
-        "tags": ["health"]
+        "tags": [
+          "health"
+        ]
       }
     },
     "/api/v1/health/detail": {
@@ -1326,7 +1622,9 @@
           }
         },
         "summary": "The diagnostic breakdown (platform staff only)",
-        "tags": ["health"]
+        "tags": [
+          "health"
+        ]
       }
     }
   },
