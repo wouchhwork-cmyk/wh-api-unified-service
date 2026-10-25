@@ -34,6 +34,9 @@ const SIGNUP = {
 };
 
 describe('business settings', () => {
+  /** The two fields this PUT requires; every profile test restates them. */
+  const base = () => ({ timezone: 'Asia/Kolkata', currencyCode: 'INR' });
+
   let testApp: TestApp;
   let app: NestExpressApplication;
   let db: DataSource;
@@ -549,6 +552,158 @@ describe('business settings', () => {
         `SELECT snapshot FROM entity_versions WHERE entity_type = 'enterprise' ORDER BY version DESC`,
       );
       expect(versions[0]?.snapshot).toMatchObject({ displayName: 'Acme' });
+    });
+  });
+
+  /**
+   * The profile a customer reads: a description, links, and how to reach a
+   * person.
+   *
+   * The interesting cases are the same two as the name — what a save that
+   * never mentions them does, and what an explicitly empty one does — plus
+   * the refusals, because every value here is rendered to somebody outside
+   * the business.
+   */
+  describe('the public profile', () => {
+    const PROFILE = {
+      about: 'We are McDonalds — a chain of fast food restaurants. Try the aloo tikki burger.',
+      links: [
+        { label: 'Order online', url: 'https://mcdonalds.in/order' },
+        { label: 'Directions', url: 'https://maps.example.com/mcd-andheri' },
+      ],
+      contacts: [
+        { label: 'India', phone: '+91 98765-43210', email: 'Orders@McDonalds.IN' },
+        { label: 'Support', email: 'help@mcdonalds.in' },
+      ],
+    };
+
+    it('starts empty, with lists rather than nulls', async () => {
+      const { auth } = await business();
+      const read = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(read.body.data.about).toBeNull();
+      expect(read.body.data.links).toEqual([]);
+      expect(read.body.data.contacts).toEqual([]);
+    });
+
+    it('saves a whole profile and reads it back normalised', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), ...PROFILE })
+        .expect(200);
+
+      const read = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(read.body.data.about).toBe(PROFILE.about);
+      /* Order is the business's own answer to "what matters most". */
+      expect(read.body.data.links.map((l: { label: string }) => l.label)).toEqual([
+        'Order online',
+        'Directions',
+      ]);
+      /* Normalised on the way in, not on the way out. */
+      expect(read.body.data.contacts[0].phone).toBe('+919876543210');
+      expect(read.body.data.contacts[0].email).toBe('orders@mcdonalds.in');
+    });
+
+    it('survives a save that does not mention it, and clears on an empty list', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), ...PROFILE })
+        .expect(200);
+
+      /* An older client: timezone and currency only. Must not wipe anything. */
+      await http().patch('/api/v1/enterprises/current').set(auth).send(base()).expect(200);
+
+      const kept = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(kept.body.data.links).toHaveLength(2);
+      expect(kept.body.data.about).toBe(PROFILE.about);
+
+      /* An empty list IS an instruction — "I removed them all". */
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), links: [] })
+        .expect(200);
+
+      const cleared = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(cleared.body.data.links).toEqual([]);
+      expect(cleared.body.data.contacts).toHaveLength(2);
+    });
+
+    /**
+     * THE ONE THAT MATTERS MOST. These links are rendered as anchors in a
+     * customer's browser, so a settings form must not be a way to publish a
+     * `javascript:` URL into somebody else's session.
+     */
+    it('refuses a link that is not an ordinary web address', async () => {
+      const { auth } = await business();
+      for (const url of ['javascript:alert(1)', 'data:text/html,<script>', 'file:///etc/passwd']) {
+        await http()
+          .patch('/api/v1/enterprises/current')
+          .set(auth)
+          .send({ ...base(), links: [{ label: 'Menu', url }] })
+          .expect(422);
+      }
+
+      const read = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(read.body.data.links).toEqual([]);
+    });
+
+    it('refuses a link name that is really an address, and a nameless contact', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), links: [{ label: 'mcdonalds.in', url: 'https://mcdonalds.in' }] })
+        .expect(422);
+
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), contacts: [{ label: 'India' }] })
+        .expect(422);
+    });
+
+    it('offers suggested link names through the options endpoint', async () => {
+      const { auth } = await business();
+      const options = await http()
+        .get('/api/v1/enterprises/settings/options')
+        .set(auth)
+        .expect(200);
+      expect(options.body.data.linkLabels).toContain('Website');
+      expect(options.body.data.linkLabels).toContain('Directions');
+    });
+
+    /**
+     * The audit row records THAT the lists changed, not every address in
+     * them; the version snapshot keeps the full value, which is the thing
+     * that exists to reconstruct a past state.
+     */
+    it('records counts in the audit trail and the full profile in the snapshot', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ ...base(), ...PROFILE })
+        .expect(200);
+
+      const audit: { changes: Record<string, unknown> }[] = await db.query(
+        `SELECT changes FROM audit_logs
+          WHERE entity_type = 'enterprise' AND action = 'updated' ORDER BY id DESC LIMIT 1`,
+      );
+      expect(audit[0]?.changes).toMatchObject({
+        links: { from: 0, to: 2 },
+        contacts: { from: 0, to: 2 },
+      });
+      expect(JSON.stringify(audit[0]?.changes)).not.toContain('mcdonalds.in');
+
+      const versions: { snapshot: Record<string, unknown> }[] = await db.query(
+        `SELECT snapshot FROM entity_versions WHERE entity_type = 'enterprise' ORDER BY version DESC`,
+      );
+      expect(versions[0]?.snapshot).toMatchObject({ about: PROFILE.about });
+      expect((versions[0]?.snapshot as { links: unknown[] }).links).toHaveLength(2);
     });
   });
 });

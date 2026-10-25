@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import type { BusinessContact, BusinessLink } from '@/database/entities/enterprise.entity';
 import { AuditService, EntityVersionService } from '@/modules/audit';
 import { TransactionManager } from '@/database/transaction/transaction.manager';
 import { AuditAction, AuditEntityType } from '@/shared/enums';
 import {
   SUPPORTED_CURRENCIES,
+  SUGGESTED_LINK_LABELS,
   SUPPORTED_TIMEZONES,
   type UpdateBusinessSettingsInput,
 } from '@/shared/contracts/enterprises/settings.contract';
@@ -21,6 +23,12 @@ export interface EnterpriseSummary {
    * to `name`; this field never guesses on their behalf.
    */
   readonly displayName: string | null;
+  /** What the business says about itself. NULL = not written. */
+  readonly about: string | null;
+  /** Where it points its customers, in the order it chose. */
+  readonly links: readonly BusinessLink[];
+  /** How a customer reaches a person. */
+  readonly contacts: readonly BusinessContact[];
   readonly slug: string;
   /** NULL = this business has not chosen one yet. */
   readonly timezone: string | null;
@@ -57,8 +65,24 @@ export class EnterprisesService {
    * time the runtime's IANA database updated the two would disagree with no
    * symptom until a save failed.
    */
-  settingsOptions(): { timezones: readonly string[]; currencies: readonly string[] } {
-    return { timezones: SUPPORTED_TIMEZONES, currencies: SUPPORTED_CURRENCIES };
+  settingsOptions(): {
+    timezones: readonly string[];
+    currencies: readonly string[];
+    linkLabels: readonly string[];
+  } {
+    return {
+      timezones: SUPPORTED_TIMEZONES,
+      currencies: SUPPORTED_CURRENCIES,
+      /*
+       * SUGGESTIONS, unlike the two above, and the difference is worth saying
+       * out loud: a timezone outside that list is REFUSED, a link label
+       * outside this one is accepted. What a business might usefully point a
+       * customer at is not knowable from here — a clinic wants "Book an
+       * appointment", a gym its timetable — so these exist to save typing,
+       * not to bound the answer.
+       */
+      linkLabels: SUGGESTED_LINK_LABELS,
+    };
   }
 
   /**
@@ -94,6 +118,21 @@ export class EnterprisesService {
           /* Recorded whether or not it moved, like the other two: "it was not
            * changed in this edit" is part of what an audit row answers. */
           displayName: { from: before.displayName, to: updated.displayName },
+          /*
+           * COUNTS, NOT CONTENTS, for the two lists.
+           *
+           * These hold the business's published phone numbers and email
+           * addresses. They are meant to be seen by customers, so recording
+           * them is not a leak in the way a customer's own details would be —
+           * but `audit_logs` answers "who changed what, and when", and a
+           * diff of every address on every save is a copy of the contact book
+           * in a table nobody expects to find one in. The full value is kept
+           * once, in the version snapshot below, which is the thing that
+           * exists to reconstruct a past state.
+           */
+          about: { from: before.about === null, to: updated.about === null },
+          links: { from: before.links.length, to: updated.links.length },
+          contacts: { from: before.contacts.length, to: updated.contacts.length },
         },
       });
 
@@ -108,6 +147,9 @@ export class EnterprisesService {
           timezone: updated.timezone,
           currencyCode: updated.currencyCode,
           displayName: updated.displayName,
+          about: updated.about,
+          links: updated.links,
+          contacts: updated.contacts,
         },
       });
 
@@ -115,6 +157,9 @@ export class EnterprisesService {
         refId: updated.refId,
         name: updated.name,
         displayName: updated.displayName,
+        about: updated.about,
+        links: updated.links,
+        contacts: updated.contacts,
         slug: updated.slug,
         timezone: updated.timezone,
         currencyCode: updated.currencyCode,
@@ -136,6 +181,9 @@ export class EnterprisesService {
       refId: enterprise.refId,
       name: enterprise.name,
       displayName: enterprise.displayName,
+      about: enterprise.about,
+      links: enterprise.links,
+      contacts: enterprise.contacts,
       slug: enterprise.slug,
       timezone: enterprise.timezone,
       currencyCode: enterprise.currencyCode,

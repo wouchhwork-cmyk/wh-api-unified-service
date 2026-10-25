@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { EnterpriseStatus } from '@/shared/enums';
 import { Enterprise } from '../entities/enterprise.entity';
+import type { BusinessContact, BusinessLink } from '../entities/enterprise.entity';
 import { BaseRepository } from './base.repository';
 
 export interface CreateEnterpriseInput {
@@ -53,6 +54,10 @@ export class EnterpriseRepository extends BaseRepository {
       currencyCode: string | null;
       /** Absent = leave it alone. `null` = clear it. The two differ. */
       displayName?: string | null | undefined;
+      about?: string | null | undefined;
+      /** A list is replaced WHOLE; absent leaves the stored list untouched. */
+      links?: readonly BusinessLink[] | undefined;
+      contacts?: readonly BusinessContact[] | undefined;
     },
   ): Promise<Enterprise | null> {
     const { affected } = await this.repo(Enterprise).update(
@@ -73,6 +78,15 @@ export class EnterpriseRepository extends BaseRepository {
          * distinct from both and clears the name.
          */
         ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+        ...(input.about !== undefined ? { about: input.about } : {}),
+        /*
+         * WHOLE-LIST REPLACEMENT, which is what the form sends: the editor
+         * holds every row, so a save states the list rather than patching it.
+         * An empty array is therefore a real instruction — "I removed them
+         * all" — and only ABSENCE means "I am not talking about links".
+         */
+        ...(input.links !== undefined ? { links: [...input.links] } : {}),
+        ...(input.contacts !== undefined ? { contacts: [...input.contacts] } : {}),
       },
     );
     if (!affected) return null;

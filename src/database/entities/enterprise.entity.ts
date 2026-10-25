@@ -9,6 +9,23 @@ import { PublicEntity } from './base.entity';
  * (Business Manager / Portfolio) and we handle those in the same code, so two
  * different `business_id`s in one integration is a bug waiting to happen.
  */
+/** One link a business publishes to its customers. */
+export interface BusinessLink {
+  readonly label: string;
+  readonly url: string;
+}
+
+/**
+ * One way to reach the business. Every field is optional INDIVIDUALLY — the
+ * contract is what insists an entry carries a phone or an email, because that
+ * is a rule about a saved row rather than about the shape.
+ */
+export interface BusinessContact {
+  readonly label?: string | null | undefined;
+  readonly phone?: string | null | undefined;
+  readonly email?: string | null | undefined;
+}
+
 @Entity('enterprises')
 export class Enterprise extends PublicEntity {
   /** Business / brand name. Free text: trimmed and NFC-normalized, case preserved. */
@@ -30,6 +47,28 @@ export class Enterprise extends PublicEntity {
    */
   @Column({ type: 'varchar', length: 160, nullable: true })
   displayName!: string | null;
+
+  /**
+   * What the business says about itself, for its customers to read.
+   *
+   * NULL = not written. Free text by design; the bound lives in the contract.
+   */
+  @Column({ type: 'text', nullable: true })
+  about!: string | null;
+
+  /**
+   * Where the business points its customers, in the order it chose.
+   *
+   * JSONB, and the database does NOT police the shape — see the migration for
+   * why that trade was made and what it costs. The contract is what keeps
+   * these rows well-formed, so nothing should write here except through it.
+   */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  links!: BusinessLink[];
+
+  /** How a customer reaches a person. Same storage trade as `links`. */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  contacts!: BusinessContact[];
 
   /**
    * URL-safe identifier. Unique only among live rows (partial unique index
