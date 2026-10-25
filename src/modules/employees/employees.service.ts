@@ -338,6 +338,25 @@ export class EmployeesService {
         grantedByEmployeeId: actingEmployeeId,
       });
 
+      /*
+       * INSIDE the transaction that creates them. The verification below is
+       * deliberately outside it — issuing one writes its own rows and enqueues
+       * a send — but the record of the employment belongs with the employment,
+       * so a creation that rolls back cannot leave a row saying somebody was
+       * invited.
+       *
+       * No address and no name: both are PII, and the role plus the employment
+       * id are what an audit reader needs.
+       */
+      await this.audit.record({
+        action: AuditAction.Created,
+        entityType: AuditEntityType.EnterpriseEmployee,
+        entityId: employee.id,
+        enterpriseId,
+        changes: { status: { from: null, to: EmployeeStatus.Invited } },
+        metadata: { role: role.name, reusedExistingLogin: existing !== null },
+      });
+
       return { identity, employee, reusedIdentity: existing !== null };
     });
 
@@ -357,15 +376,6 @@ export class EmployeesService {
       deliveryChannel: email ? DeliveryChannel.Email : DeliveryChannel.Sms,
       requestedIp: null,
       requestedUserAgent: null,
-    });
-
-    await this.audit.record({
-      action: AuditAction.Created,
-      entityType: AuditEntityType.EnterpriseEmployee,
-      entityId: created.employee.id,
-      enterpriseId,
-      changes: { status: { from: null, to: EmployeeStatus.Invited } },
-      metadata: { role: role.name, reusedExistingLogin: created.reusedIdentity },
     });
 
     this.logger.info(

@@ -18,6 +18,34 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
 
 ## A. Correctness — wrong answers today
 
+- [ ] **A6. Every integration was tested against PUBLIC accounts only** — TOP
+  PRIORITY, added 19 Oct 2026
+  Every flow we have verified end to end — comments, replies, mentions, story
+  mentions, DMs, post and media reads, profile lookups, permalinks — was
+  exercised against **open, public Instagram and Facebook accounts**. We have
+  never run any of them against a **private** account, so we do not actually
+  know how Meta behaves on the other side of that boundary. Nothing here is a
+  known defect; the point is that it is an untested half of the product.
+
+  WHAT TO FIND OUT, per flow: does the webhook still arrive at all; does the
+  payload carry the same fields or a reduced set; does the Graph read succeed,
+  403, or return a stub; does a permalink resolve; does profile data come back
+  or come back empty; and does anything that worked at connect time stop
+  working when an account is switched to private afterwards.
+
+  That last case is the one most likely to bite us — a business account going
+  private mid-life, with data already in our DB, is a state transition nothing
+  in the code anticipates today.
+
+  Test BOTH directions: our connected account private, and the counterparty
+  (the commenter, the mentioner, the sender) private. They are different
+  permission surfaces and may fail differently.
+
+  Record the results in `docs/platform-limitations.md` the way the other
+  platform walls are recorded — what we expected, what actually happened, how
+  it was verified — and open follow-up items only for what turns out to be
+  genuinely broken rather than merely different.
+
 - [ ] **A5. `posts.media` refresh does not scale** — S
   `RefreshPostMetrics` does 200 channels per daily tick, so above 200 active
   channels a channel is reached every `ceil(N/200)` days — longer than the ~35h
@@ -47,6 +75,32 @@ pre-launch work that never existed, one a monitoring piece recorded on request.
   reactivates the channels.
 
 ## B. Safety and correctness of the integration
+
+- [ ] **B4. Verify what `feed` actually delivers for likes and shares** — S
+  `mapChangeField` says Facebook's `feed` field covers "posts, photos, videos,
+  shares, likes and comments, discriminated by `value.item`" — that comment was
+  written when routing the whole field to the comment projector turned out to be
+  a bug. But **`item: 'like'` is handled nowhere.** The string appears in `src/`
+  only as `like_count`. A like change routes to the post projector, `toPostKind`
+  falls through to `PostKind.Text`, and whoever liked the post is discarded.
+
+  VERIFY FIRST, FIX SECOND. Before writing any handler, confirm against live
+  traffic what we are actually sent: does a `like` change arrive at all on our
+  current subscription; does it carry `from` (who liked it) or only `post_id`;
+  what `verb` accompanies a like and an unlike; and does the same hold for
+  `share`. The comment in the code asserts likes are covered, and that assertion
+  has never been checked against a real delivery.
+
+  Record the answer in `docs/platform-limitations.md` in the usual form — what
+  we expected, what actually happens, how it was verified — whichever way it
+  goes. "Meta does not give us the actor on a like" is as useful a result as a
+  working handler, and right now nobody knows which it is.
+
+  Two things known already: this path is **Facebook only**, and likes are
+  **retractable**, so anything built on it needs the `remove` verb handled or
+  it is free money. Blocks `post_like` / `post_share` in
+  [`reward-programs-design.md`](./reward-programs-design.md) §6.4; the fix
+  itself is backlog §8.2.
 
 - [x] **B2. System roles are never reconciled** — 22 Sep — `1fc8604`.
   Reconciliation runs at the end of every seed: adds a missing role, adds a

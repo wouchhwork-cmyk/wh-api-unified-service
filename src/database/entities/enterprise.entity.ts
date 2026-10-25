@@ -73,9 +73,37 @@ export class Enterprise extends PublicEntity {
   @Column({ type: 'varchar', length: 10, nullable: true })
   pincode!: string | null;
 
-  /** Drives the business's reporting day — every summary and "today" boundary depends on it. */
-  @Column({ type: 'varchar', length: 50, default: 'Asia/Kolkata' })
-  timezone!: string;
+  /**
+   * THE BUSINESS'S OWN TIMEZONE, and the only one the product reads.
+   *
+   * Every summary, every "today" boundary, every reward cap period and every
+   * happy-hour window resolves through this. Reward programmes used to carry
+   * a copy taken at creation; it drifted, so the copy was removed rather than
+   * synchronised.
+   *
+   * NULL IS A REAL STATE: this business has not chosen one. It defaulted to
+   * Asia/Kolkata, which meant a business in London had a timezone it never
+   * picked and no way to notice — a cap of "once a day" resetting at
+   * half past six in the evening, correctly, for the wrong reason. Anything
+   * that needs a calendar day now asks for one to be set
+   * (`ErrorCode.EnterpriseTimezoneNotSet`) rather than assuming.
+   */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  timezone!: string | null;
+
+  /**
+   * The currency the business works in, ISO 4217.
+   *
+   * What a benefit means when it grants money without naming one. A benefit
+   * may still name a different currency for a promotion; unstated means this.
+   *
+   * NULL IS A REAL STATE: this business has not chosen one. A rule that would
+   * grant money is refused until it does, rather than being handed a default
+   * nobody picked — see `ErrorCode.EnterpriseCurrencyNotSet`. A points-only
+   * programme never needs it and is unaffected.
+   */
+  @Column({ type: 'char', length: 3, nullable: true })
+  currencyCode!: string | null;
 
   @Column({ type: 'varchar', length: 30, default: EnterpriseStatus.Active })
   status!: EnterpriseStatus;

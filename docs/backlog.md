@@ -380,6 +380,212 @@ and `employees.e2e.spec.ts` covers the ascending case.
 
 ## 2. Built, but nothing consumes it
 
+### Reward forwarding — designed in full, built as one enum value
+
+`docs/reward-programs-design.md` §13 specifies the whole pipeline: the
+`forward_out` / `forward_back` ledger legs, the `system_transit` wallet whose
+non-zero balance is the alarm that forwarding has stopped, `OutboundEventType.RewardForward`
+on the existing outbox, and a provider interface. In code there is
+`RewardEntryKind.ForwardOut` and nothing else.
+
+The programme-level destination toggle is now on the wire and in the portal —
+`internal` leaves `forward_provider_code` NULL, `external` records `'noop'`,
+the design's own name for "records intent, moves nothing". Both the API
+description and the portal field say so rather than implying a send. Choosing
+`external` today changes where a reader thinks value is going and changes
+nothing about where it goes.
+
+**To close it**: the provider interface, one real provider, the transit leg,
+the outbox consumer, and an alarm on a non-zero transit balance.
+
+### ~~`debitIfSufficient` still debits before it writes~~ — **DONE 25 Oct 2026**
+
+Fixed, and the entry is kept because **the reason it was deferred was wrong**,
+which is the part worth not repeating.
+
+**The defect was real.** `debitIfSufficient` updated the wallet first, guarded
+on `balance >= required`, and wrote the ledger entry afterwards with
+`ON CONFLICT DO NOTHING`. A replayed debit passed the sufficiency check again,
+moved the balance a second time, wrote no entry, and returned the original one.
+Measured before the fix: three identical debits of 30 against a balance of 100
+left **10**, with a single ledger entry for 30.
+
+**THE FALSE PREMISE.** This was left unfixed on the argument that inverting the
+order means claiming the idempotency key before knowing whether the funds are
+there — and since `reward_ledger_entries` is append-only by trigger, a claim
+made for a refused debit could never be withdrawn. The conclusion drawn was
+that the only way out was to THROW on insufficient funds instead of returning
+null, which is a change to how the conversion flow reports a refusal and so
+deserved a deliberate decision.
+
+**That conclusion does not follow, because the INSERT draws its rows `FROM
+moved`.** When the guarded UPDATE matches nothing — insufficient funds, wrong
+wallet, or a replay — there is no row to insert from, so *nothing is claimed*.
+A refusal costs the key nothing. The contract is unchanged: null still means
+"not enough", and `convert-value` still turns it into
+`InsufficientPointsError`.
+
+The lesson is narrow and worth stating plainly: "claiming the key first" and
+"guarding the update on the key" are not the same design, and the objection
+that applied to the first did not apply to the second.
+
+**Two things improved past the original scope:**
+
+- A wallet belonging to another tenant used to return null, indistinguishable
+  from a refusal — so a cross-tenant wallet id reached the customer as a
+  balance problem and left no trace of the real fault. It now throws.
+- A genuinely concurrent debit on one key (both callers passing the guard
+  before either commits) now throws rather than returning the other writer's
+  entry, so the caller's transaction rolls back the balance movement instead of
+  committing it on top of theirs.
+
+Covered by `test/integration/reward-wallet-debit.spec.ts`, five cases, verified
+by mutation: against the pre-fix code the replay case reports `expected 10 to
+be 70` and the cross-tenant case resolves null instead of rejecting.
+
+### Attachment media is never fetched — `is_downloaded` is a column nothing writes
+
+`message_attachments` carries `storage_key`, `is_downloaded`, `downloaded_at`,
+`mime_type`, `file_size_bytes`, `width`, `height` and `duration_ms`. A search
+of `src/` finds `is_downloaded` in exactly two places — the entity and the
+schema definition — and **nothing ever sets it**. There is no downloader.
+
+Measured on the dev database: **44 attachments, 0 with a `storage_key`, 0
+downloaded**, and every one of mime type, dimensions and duration NULL across
+all 44.
+
+**WHAT WE ACTUALLY HOLD** is a signed Meta CDN link and nothing else:
+
+```json
+{"type":"image","payload":{"url":"https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=…&signature=…"}}
+```
+
+Those links expire — about 24 hours for a story, per the note in
+`attachment-normalizer.ts`. When one does, that image, video or audio clip is
+gone, and `asset_id` does not bring it back.
+
+**WHAT THIS IS NOT.** An investigation on 2026-10-25 reported these fields as
+"available on arrival and not captured", against the standing rule to capture
+every field Meta gives. That reading is wrong and is recorded here so nobody
+chases it twice: the webhook payload carries `type` and `payload.url`, and
+nothing else. Mime type, dimensions and duration are not sent by Meta at all —
+they can only be learned by fetching the bytes. The one field hidden in that
+URL, `asset_id`, IS already extracted into `metadata.assetId` by
+`extractAssetId` (28 of the 44 rows carry one; the rest are kinds whose URL has
+none). **The ingest path is already capturing everything Meta gives.**
+
+So this is not a capture gap. It is a missing media pipeline, and it needs a
+decision before it needs code:
+
+- where the bytes live — object storage, bucket, region, encryption
+- who fetches them: a worker off `outbound_events`-style polling, or on ingest
+- what happens when a fetch fails or the link has already expired
+- retention — customer media is personal data, so how long, and deleted how
+- backpressure, because a resync burst wrote 43 attachments in 3.5 minutes and
+  a real backfill would be far larger
+
+**Until it is built**, treat every attachment as readable only while its CDN
+link lives, and do not let any feature promise otherwise.
+
+### VERIFY EVERY TRIGGER — six of the seven have never fired, once
+
+`TRIGGER_CATALOGUE` marks seven triggers `available: true`, and that flag is a
+promise with teeth: the contract REFUSES `available: false` on save, on the
+stated grounds that a rule built on a trigger with no producer "would save,
+report success, and never award anything". The flag is what separates the
+triggers we claim work from the ones we admit do not.
+
+**For six of the seven, that claim is untested.** Measured 2026-10-25 against
+the dev database, with live active rules configured on all seven:
+
+| trigger | awards ever |
+|---|---|
+| `direct_message_inbound` | **3** — verified end to end 2026-10-24 |
+| `story_mention` | 0 |
+| `story_reply` | 0 |
+| `comment_on_own_post` | 0 |
+| `comment_on_mentioned_post` | 0 |
+| `referral_entry` | 0 |
+| `postback_tapped` | 0 |
+
+Zero is not proof of a broken producer — nobody has sent a story mention at a
+rule that was listening. But it is not proof of a working one either, and
+`available: true` currently asserts the latter on six triggers nobody has
+watched fire. That is the same shape as every failure this codebase keeps
+rediscovering: configuration that saves, reports success, and does nothing.
+
+**What verifying one looks like** — the DM was done this way and it took one
+message:
+
+1. A live active rule on that trigger alone, points benefit, no hold, no cap.
+2. Perform the real interaction on the real account. **No synthetic webhooks** —
+   a fabricated payload proves the evaluator works, not that Meta sends what we
+   think it sends, which is the half that actually breaks.
+3. Confirm the chain: `inbound_events` row → `reward_awards` row `granted` →
+   points in `reward_wallets`.
+4. If it does not fire, find out which link broke — did Meta deliver the
+   webhook, did the projector raise the right `InboundEventType`, did
+   `findMatchingRules` match it — and record the answer.
+
+`referral_entry` and `postback_tapped` deserve attention first: both need
+something set up on the Meta side (an ad/link/QR, and a button with a payload)
+before they can fire at all, so "it did not fire" may mean "it was never
+possible to fire" rather than anything about our code.
+
+**Until each is verified**, treat its `available: true` as a claim rather than
+a fact, and say so to anyone building on it.
+
+### OPEN QUESTION — can we send media to a customer at all? **UNVERIFIED**
+
+> "so you mean there is no way we can send media from the code to the user?"
+
+Raised 2026-10-25 while tracing what the platform had and had not sent. **It is
+recorded here as a question, not an answer: nobody has checked yet.**
+
+**What is actually observed**, and it is only an observation: every
+`outbound_events` row that exists carries a text-only payload of the shape
+`{ "message": "..." }`, and all three surviving platform-dispatched messages
+have `message_kind = 'text'`. No row has ever carried an attachment.
+
+**What that does NOT establish.** Absence of a media send is not absence of the
+ability to send media — nobody has tried. The records are also incomplete:
+`outbound_events` ids 1–25 and `messages` ids 1–582 were hard-deleted at some
+unknown point (sequences were never reset, so those ids were used), so "it has
+never happened" cannot be asserted from this table either.
+
+**To answer it properly, check all four:**
+
+1. Does the outbound relay's Meta client build anything but a `text` message
+   body? (`src/workers/outbound-relay.worker.ts` and whatever send adapter it
+   calls.)
+2. Does the outbound payload have a schema, and does it admit attachments? The
+   enqueue path currently types `payload` loosely, so a media payload might be
+   *storable* and simply never *sent*.
+3. Does Meta's Instagram messaging API accept media from a business inside the
+   24-hour window, and in what form — a public URL, an uploaded `attachment_id`,
+   or both? This is a platform-capability question, not a code one, and the
+   answer belongs in `docs/platform-limitations.md`.
+4. If it can be sent by URL, where does the URL come from? We store no media of
+   our own — see the attachment entry above — so there is currently nothing to
+   point at.
+
+**Why it matters**: a reward that hands over a voucher image, a QR code or a
+receipt is a plausible next ask, and the answer decides whether that is a
+feature or a platform wall. Finding out by shipping and dead-lettering is the
+expensive way — which is exactly how the malformed recipient id was found on
+2026-10-24.
+
+### `issue_entitlement` — modelled end to end, with nothing to point at
+
+The handler, the expiry sweep and the ledger treatment all exist. What does not
+exist is an item catalogue: `itemRef` is free text, so a business can promise
+`FREE_COFFEE` with nothing in the system that knows what that is, nothing to
+redeem it against, and nothing to stop a typo becoming a different reward. It
+is marked `available: false` in `BENEFIT_CATALOGUE` and REFUSED on save rather
+than merely hidden, because a screen is not the only way to reach the API and a
+stored promise nobody can keep is worse than a missing option.
+
+
 Machinery that exists, is migrated, has indexes, and is never read.
 
 | | Size | What is missing |
@@ -389,6 +595,12 @@ Machinery that exists, is migrated, has indexes, and is never read.
 | **Token expiry warnings** | S | `SweeperWorker.flagExpiringTokens` emits a debug line and moves no token to an expiring state, so a channel whose token dies simply goes quiet. `EXPIRY_SWEEP_CRON` is validated, plumbed to config, and read by nothing. |
 | **Feature expiry** | S | Nothing acts on `enterprise_features.expires_at`; a feature never moves to `expired` on its own. |
 | **Channel retirement** | S | No code path writes `is_deleted = true` or moves a channel to `disconnected`/`expired`. The connect flow only upserts the Pages currently discovered, so a Page that goes away stays active forever. |
+| **Entitlement redemption** | L | `reserved` and `redeemed` are declared and unreachable: there is no redemption path. **Genuinely blocked** — redemption needs an item catalogue, which is a product decision rather than a missing branch. `expired` was in this entry too and should not have been: `expires_at` was already on every row, the status already existed, and the sweeper already had a cron, so nothing external was needed. Bundling a free fix with a blocked one is how it stayed unfixed; `SweeperWorker.expireEntitlements` now runs hourly. |
+| **Two permissions nothing enforces** | S | `features.decide` and `customers.manage` are declared, seeded and granted to role templates, and no endpoint consults either. **`enterprise.manage` is no longer among them** — the business settings route requires it, which is the first thing to do so. `features.decide` is redundant rather than missing — the route it describes sits behind `@RequirePlatformAdmin`, which is strictly narrower. `customers.manage` awaits a customer-mutating endpoint. Both read as controls and are not; either enforce or remove them when the endpoints arrive. |
+| **The e2e suite is not deterministic** | M | A different test times out on most full runs — a 408 or a `Query read timeout` after 40 to 140 seconds, always on a spec that makes many sequential requests (the 50-role ceiling, the OTP attempt budget). Every one of them passes in isolation in under a second, there is no connection leak at rest, and `fileParallelism: false` already serialises the files, so it is not files fighting each other. Five consecutive full runs took 322s, 48s, 227s, 189s and 45s. **The claim first written here — that the slow runs predated the guard and versioning changes — was wrong**, and checking it is what found the entry to be untrustworthy: every one of those logs contains `FEATURE_NOT_ENABLED`, so all five ran AFTER that change. The only measurements from before it are 42s and 43s, both green, and a clean baseline of the pre-change `src` and `test` then measured 44s, also green. So the suite may well have been made worse by that work rather than merely revealing something old; the honest position is that it is unproven either way. Four further runs then came back green at 44s, 45s, 52s and 64s, including the pre-change baseline, and the three slow runs turn out to cluster in one window when this machine was carrying heavy concurrent load — a seventeen-minute subagent across the 322s run, back-to-back suites and the dev API and workers across the other two. That is a correlation and not a mechanism: nothing was profiled, nothing reproduced once the machine quietened, and the sampler watching `pg_stat_activity` caught a green run and so saw nothing. SOP checkpoint 15 requires deterministic tests, and a suite that fails a random case under load still fails it in CI. Sized M because the next step is profiling the slow path under deliberate load rather than waiting to see it again. |
+| **Reversal is built and unreachable** | S | Taking an award back when the content behind it is deleted or hidden works end to end — `reversal_policy` on the rule, `reverseForDeletedContent`, the `Reversed` audit action, and tests for all of it. **It is deliberately off the wire**: neither create endpoint accepts the field and every rule is written `none`, so the engine path is dormant rather than broken. The reason is that what it should DO is unsettled — whether a hidden comment is the same as a deleted one, whether somebody who deletes and reposts earns twice, and whether reversing earns its keep at all when the hold already covers the common case. Put the field back when those are answered; do not mistake this for a missing feature. |
+| **Three audit entity types nothing writes** | S | Every one of the 19 `AuditAction` values is now written by something. Three `AuditEntityType` values are not. `channel` and `customer` await their endpoints — there is no channel-retirement path (see above) and no customer-mutating route, which is the same gap as the unenforced `customers.manage`. `verification` is different: it is **redundant rather than pending**, because a proven credential is recorded against the `identity` that owns it, which is the row anybody investigating would actually search. Remove it, or write it, when the next verification change lands. |
+| **Three error codes nothing throws** | S | `POST_NOT_FOUND`, `CUSTOMER_BLOCKED` and `OAUTH_DENIED` are in the status map with no throw site. `OAUTH_DENIED` is deliberate — the callback redirects with `status=cancelled` rather than erroring — and the other two await their endpoints. `FEATURE_NOT_ENABLED` was in this list and is now thrown by `PermissionsGuard`. |
 
 ---
 
@@ -396,25 +608,33 @@ Machinery that exists, is migrated, has indexes, and is never read.
 
 The schema supports all of these; nothing exposes them.
 
-- **Change an employee's role** after creation. Today a role is set once, at
-  creation, and cannot be changed. **S**
-- **Create or edit a role.** A business gets its four copied templates and cannot
-  alter them. **M**
-- **A business requesting a feature.** `access_requested`, the `features.request`
-  permission and the whole request path are modelled and unreachable — only an
-  admin can grant. **S**
+- ~~**Change an employee's role** after creation.~~ DONE —
+  `POST /roles/employees/:refId` replaces the set, refuses to leave the business
+  without an owner, and records both directions in the audit trail.
+- ~~**Create or edit a role.**~~ DONE — `POST /roles`, `PATCH /roles/:refId` and
+  `POST /roles/:refId/archive`, bounded by the actor's own authority level.
+- ~~**A business requesting a feature.**~~ DONE —
+  `POST /features/:featureKey/request`, with the admin decision on
+  `POST /platform/enterprises/:refId/features/:featureKey`.
 - ~~**Customer directory.**~~ DONE — `GET /customers`, searchable by name or
   handle, with the split given name and the Instagram handle, and a page in the
   portal.
 - ~~**Posts.**~~ DONE — synced by the backfill, served by `GET /posts` with
   previews, engagement counts and a channel filter, and a page in the portal.
   What is missing is a post DETAIL view showing its comment thread. **M**
-- **Comment hide and delete.** The outbound event types and relay senders exist;
-  no endpoint triggers them. **S**
+- ~~**Comment hide and delete.**~~ DONE —
+  `POST /conversations/:refId/messages/:messageRefId/moderate` for hide, unhide
+  and delete, with a replay path for a dead-lettered send.
 - **Password reset.** Configured as a token flow in `verification.config.ts`,
   with no endpoint. Note the same problem the invitation had: a token needs a
   link, so the reset page needs the reference and the secret in the URL. **M**
-- **Resend a verification code.** **S**
+- ~~**Resend a verification code.**~~ DONE — `POST /auth/resend`, behind the
+  per-destination hourly cap.
+
+> **Why five entries were wrong at once.** SOP checkpoint 0 sends the next
+> person here first and tells them to believe it, so a stale "not built" is how
+> a feature gets built twice. Checkpoint 20 is the other half of the fix: the
+> change that builds something closes its backlog entry in the same commit.
 
 ---
 
@@ -534,6 +754,86 @@ replicas, refresh-token rotation.
 - **Whether the test database stays separate.** It is separate now
   (`wouchh_test`), which is why a test run no longer wipes what you are clicking
   through. Keep it.
+
+---
+
+## 8. Reward programs
+
+Follow-on work for [`reward-programs-design.md`](./reward-programs-design.md).
+Both items are seams the design ships deliberately, not omissions — the
+surrounding system works without them.
+
+### 8.1 The award factor engine — M/L
+
+**What exists.** `UP_TO` rules declare a cap. A `FactorProvider` returns a value
+in `[0, 1]` and the award is `round(cap × factor)`, computed in basis points
+with the provider's output clamped to `[0, 10000]` at the boundary. V1 registers
+one implementation, **`constant_one`**, which returns `1.0` — so every `UP_TO`
+award pays the full cap and behaves exactly like `FIXED`.
+
+**What is missing.** The engine that returns a real factor. It is a pure
+function of the award context, which is what makes it safe to defer: nothing
+upstream or downstream changes when it lands.
+
+```ts
+interface FactorProvider {
+  readonly code: string;                        // stored per award
+  factor(ctx: AwardContext): Promise<number>;   // [0, 1]
+}
+```
+
+**Open before it can be built**, and these are product questions rather than
+engineering ones:
+
+- **What does it measure?** Content quality, sentiment, reach, follower count,
+  customer history, time since last award — or a weighted mix.
+- **Per-trigger or global?** A factor for a story mention and a factor for a DM
+  are probably not the same function.
+- **Who configures it?** A fixed platform algorithm, or something the enterprise
+  tunes per program.
+- **Is it explainable?** The award already snapshots `factor_bp`, the provider
+  code and the evaluation timestamp. If the engine becomes a weighted model, the
+  snapshot needs the inputs too, or "why did I only get 12 of 20 points?" has no
+  answer.
+
+**Two constraints the design already fixes**, which the engine must respect:
+
+1. **It runs at grant time**, at the end of the hold — not at event time. That
+   is what gives engagement metrics time to settle.
+2. **A zero factor must not consume the cap slot.** The award records
+   `SKIPPED_ZERO_FACTOR` and the counter is released with
+   `GREATEST(used - 1, 0)`. `constant_one` cannot reach this path, so **it needs
+   a test written now**, while the path is reasoned about, rather than when the
+   real provider first returns zero in production.
+
+**What blocks a signal-based engine.** Insights and `business_discovery` both
+refuse with Graph `#10` — the app does not hold those permissions. So there is
+no reach, no impressions, and no follower count for the person interacting with
+us. A story someone else posted has **no readable metric at all**. An engine
+scoring on reach needs a permission conversation before it needs code.
+
+### 8.2 Likes and shares are received and thrown away — S
+
+`feed` carries likes and shares alongside comments, discriminated by
+`value.item` — our own comment in `meta-webhook.service.ts` says so. But
+**`item: 'like'` is modelled nowhere**: the string does not appear in `src/`
+outside `like_count`. The change routes to the post projector, `toPostKind`
+falls through to `PostKind.Text`, and the fact that a specific person liked a
+specific post is discarded.
+
+We are told who liked a post and we keep none of it. That is a standing-rule
+violation — capture every field the platform gives us, because a field not
+captured on arrival usually cannot be captured later.
+
+**Cost is small**: read the actor and verb off a `like` feed change and record
+it. **Value is not** — "someone liked my post" is the first reward trigger an
+enterprise will ask for, and `POST_LIKE` cannot be offered in the UI until this
+exists.
+
+Two caveats for whoever picks it up: this path is **Facebook only**, and likes
+are **retractable**, so the trigger needs reversal on the `remove` verb or it is
+free money. Shares carry the same shape with the extra wrinkle that visibility
+depends on the sharer's audience.
 
 ---
 

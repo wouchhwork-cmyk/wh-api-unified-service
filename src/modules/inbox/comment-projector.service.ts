@@ -23,6 +23,7 @@ import {
   MentionKind,
   MessageKind,
   Platform,
+  RewardTriggerKind,
 } from '@/shared/enums';
 import { normalizeOptionalText } from '@/shared/utils/normalize';
 import { normalizeComment, normalizeMention } from './comment-normalizer';
@@ -31,6 +32,50 @@ import type { CanonicalComment, CommentModeration } from './comment-normalizer';
 export interface ProjectionOutcome {
   readonly projected: boolean;
   readonly reason?: string;
+  /**
+   * What was projected, for anything that reacts to it.
+   *
+   * Carried OUT of the projection rather than acted on inside it: the reward
+   * engine opens its own transaction per rule, and a reward failing must never
+   * roll back the customer's message appearing in the inbox. Absent when
+   * nothing was projected.
+   */
+  readonly trigger?: ProjectedTriggerFacts;
+  /**
+   * The content behind an award has gone. Carried out for the same reason the
+   * trigger is: reversing is a reaction, not part of the projection.
+   */
+  readonly reversal?: ProjectedReversalFacts;
+}
+
+/** Content that was removed or hidden, and the award it may have earned. */
+export interface ProjectedReversalFacts {
+  readonly enterpriseId: number;
+  readonly sourceRefKind: 'message' | 'post';
+  readonly sourceRefId: number;
+  readonly reasonCode: 'content_removed' | 'content_hidden';
+}
+
+/** The facts a downstream reaction needs, with no inbox types attached. */
+export interface ProjectedTriggerFacts {
+  readonly enterpriseId: number;
+  readonly customerId: number;
+  readonly channelId: number | null;
+  readonly sourceRefKind: 'message' | 'post';
+  readonly sourceRefId: number;
+  /** WHEN THEY ACTED, from the platform — not when we projected it. */
+  readonly occurredAtUtc: Date;
+  readonly content: string | null;
+  /**
+   * WHAT HAPPENED, named by the projector that saw it.
+   *
+   * This used to be the conversation kind, which the worker mapped through a
+   * three-entry table — so a story mention, a story reply, a tapped button and
+   * an ordinary DM all arrived as `direct_message_inbound` and four triggers in
+   * the catalogue could never fire. The projector holds the platform facts that
+   * tell them apart; the worker does not, and should not have to.
+   */
+  readonly triggerKind: RewardTriggerKind;
 }
 
 /**
@@ -230,7 +275,35 @@ export class CommentProjectorService {
 
     // No text: an edit's new body is the customer's words.
     this.logger.debug({ enterpriseId, action: moderation.action }, 'comment moderation applied');
-    return { projected: true };
+
+    /*
+     * An EDIT is not a reversal — editing is not new engagement and it is not
+     * the content disappearing either. An UNHIDE is deliberately not one
+     * either: reversal is terminal, because re-granting would need a cap slot
+     * the customer has already consumed and hide/unhide cycling would be a
+     * farming loop. Restoring value is a manual adjustment with a named actor.
+     */
+    const reasonCode =
+      moderation.action === 'removed'
+        ? ('content_removed' as const)
+        : moderation.action === 'hidden'
+          ? ('content_hidden' as const)
+          : null;
+
+    if (!reasonCode) return { projected: true };
+
+    const messageId = await this.messages.findIdByPlatformId(enterpriseId, moderation.commentId);
+    if (messageId === null) return { projected: true };
+
+    return {
+      projected: true,
+      reversal: {
+        enterpriseId,
+        sourceRefKind: 'message',
+        sourceRefId: messageId,
+        reasonCode,
+      },
+    };
   }
 
   /**
@@ -517,7 +590,22 @@ export class CommentProjectorService {
         'comment projected',
       );
 
-      return { projected: true };
+      return {
+        projected: true,
+        trigger: {
+          enterpriseId,
+          customerId: customer.customerId,
+          channelId,
+          sourceRefKind: 'message',
+          sourceRefId: inserted.id,
+          occurredAtUtc: occurredAt,
+          content: comment.text ?? null,
+          triggerKind:
+            conversationKind === ConversationKind.Mention
+              ? RewardTriggerKind.CommentOnMentionedPost
+              : RewardTriggerKind.CommentOnOwnPost,
+        },
+      };
     });
   }
 }

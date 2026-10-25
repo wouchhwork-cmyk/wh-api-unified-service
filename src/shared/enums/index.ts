@@ -10,4 +10,5 @@ export * from './identity.enum';
 export * from './ledger.enum';
 export * from './permission.enum';
 export * from './rate-limit.enum';
+export * from './reward.enum';
 export * from './sync.enum';

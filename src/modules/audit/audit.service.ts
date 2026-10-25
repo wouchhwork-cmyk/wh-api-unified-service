@@ -43,12 +43,35 @@ export class AuditService {
    * Records an event, joining the caller's transaction when there is one, so an
    * action that rolls back leaves no audit row claiming it happened.
    *
-   * A failure to audit is logged and swallowed. That is a deliberate trade and
-   * the only one available: throwing would turn an audit outage into an outage
-   * of every mutating endpoint. The error log is the compensating control.
+   * A FAILURE IS SWALLOWED ONLY OUTSIDE A TRANSACTION, and that distinction is
+   * not a refinement — it is the difference between a logged inconvenience and
+   * silently throwing away the caller's work.
+   *
+   * The original rule was "always swallow", on the reasoning that throwing
+   * would turn an audit outage into an outage of every mutating endpoint. That
+   * reasoning does not survive contact with Postgres. A failed statement puts
+   * the transaction into an ABORTED state; catching the error in JavaScript
+   * does not un-abort it. Measured against the real database:
+   *
+   *     INSERT INTO audit_logs ... (fails a foreign key)
+   *     SELECT 1            -> ERROR: current transaction is aborted
+   *     COMMIT              -> reports SUCCESS
+   *
+   * That last line is the whole problem. **Postgres turns a COMMIT on an
+   * aborted transaction into a ROLLBACK and reports success**, so swallowing
+   * here handed the caller a committed-looking result for work that had been
+   * thrown away entirely — and the log line said "the action itself was not
+   * rolled back", which was precisely backwards.
+   *
+   * So: inside a transaction the error is rethrown, the transaction manager
+   * rolls back honestly, and the caller gets a failure that matches reality.
+   * Outside one there is no transaction to poison, the state change has already
+   * committed on its own, and swallowing is still the right trade — a lost
+   * audit row is worth more than a failed request the user would have to retry.
    */
   async record(event: AuditEvent): Promise<void> {
     const actor = RequestContext.actor();
+    const insideTransaction = RequestContext.transactionManager() !== undefined;
 
     try {
       await this.logs.insert({
@@ -96,8 +119,17 @@ export class AuditService {
           actorEmployeeId: actor?.employeeId ?? null,
           actorStaffId: actor?.staffId ?? null,
         },
-        'FAILED TO WRITE AUDIT LOG — the action itself was not rolled back',
+        insideTransaction
+          ? 'FAILED TO WRITE AUDIT LOG — the action is being rolled back with it'
+          : 'FAILED TO WRITE AUDIT LOG — the action itself had already committed',
       );
+
+      /*
+       * The transaction is already unusable at this point; the only choice is
+       * whether the caller finds out now or is told their work succeeded when
+       * it did not.
+       */
+      if (insideTransaction) throw error;
     }
   }
 }

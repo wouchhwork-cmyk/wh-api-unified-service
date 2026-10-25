@@ -258,6 +258,24 @@ export class StaffMemberRepository extends BaseRepository {
    * request that was meant to adjust them, and no error path that puts them
    * back. The tenant-side equivalent has always been wrapped; this was not.
    */
+  /**
+   * The role names this staff member holds right now.
+   *
+   * Read before a replace, so the audit trail can say what was TAKEN as well
+   * as what was given. Names rather than ids: the audit row is read by a
+   * person, and an id tells them nothing.
+   */
+  async listRoleNamesForStaff(staffId: number): Promise<string[]> {
+    const rows = await this.query<{ name: string }>(
+      `SELECT r.name
+         FROM staff_roles sr
+         JOIN roles r ON r.id = sr.role_id AND r.scope = sr.role_scope
+        WHERE sr.staff_id = $1 AND r.is_deleted = false`,
+      [staffId],
+    );
+    return rows.map((row) => row.name);
+  }
+
   async replaceStaffRoles(input: {
     staffId: number;
     roleIds: readonly number[];

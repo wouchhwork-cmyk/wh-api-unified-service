@@ -12,7 +12,8 @@ export interface CreateEnterpriseInput {
   readonly mobileCallingCode: string | null;
   readonly mobileNationalNumber: string | null;
   readonly country: string;
-  readonly timezone: string;
+  /** Omitted at signup. A business chooses one in settings; until then NULL. */
+  readonly timezone?: string | null;
   readonly websiteUrl: string | null;
   readonly city: string | null;
   readonly state: string | null;
@@ -33,6 +34,30 @@ export class EnterpriseRepository extends BaseRepository {
    * single small column, deliberately not `findById`: that would hydrate the
    * whole row on every tenant request to read one field.
    */
+  /**
+   * Updates what a business may change about itself.
+   *
+   * The entity API, like `create` and the finders above — this is a single-row
+   * write by primary key, which is exactly the case the repository API is for.
+   * The tenant predicate is the primary key here: a business IS the tenant, so
+   * there is no wider row this could reach by accident.
+   *
+   * Returns the row as it now stands so the caller can record a version from
+   * it, and `null` when nothing matched — a missing or deleted business rather
+   * than a write that changed nothing.
+   */
+  async updateSettings(
+    id: number,
+    input: { timezone: string | null; currencyCode: string | null },
+  ): Promise<Enterprise | null> {
+    const { affected } = await this.repo(Enterprise).update(
+      { id, isDeleted: false },
+      { timezone: input.timezone, currencyCode: input.currencyCode },
+    );
+    if (!affected) return null;
+    return this.findById(id);
+  }
+
   async statusById(id: number): Promise<EnterpriseStatus | null> {
     const rows = await this.query<{ status: EnterpriseStatus }>(
       `SELECT status FROM enterprises WHERE id = $1 AND is_deleted = false LIMIT 1`,

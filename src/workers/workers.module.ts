@@ -13,6 +13,7 @@ import { OutboundEventRepository } from '@/database/repositories/outbound-event.
 import { PostRepository } from '@/database/repositories/post.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { EnterpriseFeatureRepository } from '@/database/repositories/enterprise-feature.repository';
+import { RewardEntitlementRepository } from '@/database/repositories/reward-entitlement.repository';
 import { QueueMetricsRepository } from '@/database/repositories/queue-metrics.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
@@ -30,6 +31,8 @@ import { QueueListenerService } from './queue-listener.service';
 import { RefreshSchedulerWorker } from './refresh-scheduler.worker';
 import { SweeperWorker } from './sweeper.worker';
 import { WebhookSubscriptionReconcilerWorker } from './webhook-subscription-reconciler.worker';
+import { RewardsModule } from '@/modules/rewards/rewards.module';
+import { RewardGrantWorker } from './reward-grant.worker';
 import { SendReconcilerWorker } from './send-reconciler.worker';
 
 /**
@@ -59,6 +62,9 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     // The projectors run here; the same code the API imports, in a process that
     // serves no traffic.
     InboxModule,
+    // Reward programs: the grant sweep and the content-deletion reversal both
+    // run here, for the same reason the projectors do.
+    RewardsModule,
   ],
   providers: [
     InboundEventRepository,
@@ -71,6 +77,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     SyncJobRepository,
     QueueMetricsRepository,
     EnterpriseFeatureRepository,
+    RewardEntitlementRepository,
     GraphApiClient,
     /*
      * The workers make most of the Graph calls in this system — backfills,
@@ -95,6 +102,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     WebhookSubscriptionService,
     WebhookSubscriptionReconcilerWorker,
     SendReconcilerWorker,
+    RewardGrantWorker,
   ],
 })
 export class WorkersModule {}

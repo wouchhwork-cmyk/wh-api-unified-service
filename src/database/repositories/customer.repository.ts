@@ -61,6 +61,43 @@ export class CustomerRepository extends BaseRepository {
    * enterprise. One index probe on customer_identifiers_value_uniq, and the
    * predicate matches the index exactly (active, not deleted).
    */
+  /**
+   * A customer by their public handle, scoped to the tenant.
+   *
+   * `first_seen_at` comes back because the reward engine's tenure condition
+   * needs it, and fetching it here saves a second round trip on a path that
+   * already has the row open.
+   */
+  async findByRefId(
+    enterpriseId: number,
+    refId: string,
+  ): Promise<{ id: number; refId: string; firstSeenAt: Date | null } | null> {
+    const rows = await this.query<{ id: number; refId: string; firstSeenAt: Date | null }>(
+      `SELECT id, ref_id AS "refId", first_seen_at AS "firstSeenAt"
+         FROM customers
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false`,
+      [enterpriseId, refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * When we first saw this customer, by internal id.
+   *
+   * Fetched LAZILY by the reward evaluator — only when a rule actually carries
+   * a tenure condition. Loading it on every projected event to serve a
+   * condition most rules do not use would be a query per message for nothing.
+   */
+  async findFirstSeenAt(enterpriseId: number, customerId: number): Promise<Date | null> {
+    const rows = await this.query<{ firstSeenAt: Date | null }>(
+      `SELECT first_seen_at AS "firstSeenAt"
+         FROM customers
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [enterpriseId, customerId],
+    );
+    return rows[0]?.firstSeenAt ?? null;
+  }
+
   async findByIdentifier(input: ResolveIdentifierInput): Promise<CustomerResolution | null> {
     const rows = await this.query<{ customer_id: number; id: number }>(
       `SELECT customer_id, id

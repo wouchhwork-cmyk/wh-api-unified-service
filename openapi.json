@@ -616,6 +616,36 @@
         "tags": [
           "enterprises"
         ]
+      },
+      "patch": {
+        "description": "The timezone set here is the ONE the whole product reads — reward cap periods, happy-hour windows, and anything added later. Nothing keeps its own copy, so changing it moves every one of them at once. Recorded in the audit trail and versioned, because an award granted last month was decided against the timezone in force last month.",
+        "operationId": "EnterprisesController_updateSettings_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Change the business’s own settings",
+        "tags": [
+          "enterprises"
+        ]
+      }
+    },
+    "/api/v1/enterprises/settings/options": {
+      "get": {
+        "description": "The canonical IANA timezone list and the ISO 4217 currency list as this runtime knows them, which are the SAME sets the settings endpoint validates against — so a client renders its dropdowns from here rather than hardcoding lists that could drift. Timezone abbreviations are deliberately absent: \"EST\" resolves to America/Panama and \"IST\" is claimed by three countries, so neither can be stored. Currencies are checked against the list rather than a three-letter shape, which used to accept \"XYZ\".",
+        "operationId": "EnterprisesController_settingsOptions_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "The values the settings form may offer",
+        "tags": [
+          "enterprises"
+        ]
       }
     },
     "/api/v1/features": {
@@ -926,6 +956,336 @@
         "summary": "Clear the unread badge",
         "tags": [
           "inbox"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs": {
+      "get": {
+        "description": "Archived programs are EXCLUDED unless asked for by status. They are kept for the record and never deleted, but a retired program in the working list is how somebody edits the wrong one.",
+        "operationId": "RewardsController_listPrograms_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Reward programs for this business",
+        "tags": [
+          "rewards"
+        ]
+      },
+      "post": {
+        "description": "A program starts as a draft. Cap periods and time windows resolve in the BUSINESS’s timezone, set once in business settings — a programme no longer carries its own, so two of them can never disagree about when Tuesday starts. window, so it cannot be changed casually later.",
+        "operationId": "RewardsController_createProgram_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create a reward program",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/dashboard": {
+      "get": {
+        "description": "Awards granted, held and reversed, customers rewarded, and net value per wallet. Value is NET of reversals and is never summed across currencies. Refusals are included: a program granting 12 and refusing 400 is working as configured, and that is worth seeing.",
+        "operationId": "RewardsController_dashboard_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What every program has actually done",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/configuration": {
+      "get": {
+        "description": "What `PUT /rewards/programs/:refId` takes, read back: triggers, rewards, cap, hold and the schedule as days rather than as the engine's slot list. ONE READ THAT ROUND TRIPS, so the form that edits a program loads exactly what it will send. ONLY ACTIVE RULES — retired versions are the history an old award resolves against, not what the program is now. `uniform: false` means the active rules do NOT agree on cap or hold, which happens when rules were added one at a time rather than through the program form; saving the form would flatten them to one shared answer, so a client should say so first.",
+        "operationId": "RewardsController_programConfiguration_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "A program in the shape its edit form needs — and its PUT accepts",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}": {
+      "put": {
+        "description": "A PUT, not a PATCH: the screen that edits a program is the screen that created it, so every field is restated and an omitted one is never ambiguous between \"cleared\" and \"untouched\". THE RULES ARE SUPERSEDED, NEVER EDITED — an award stores the rule id and rule version that decided it, so the old rules are switched off and kept readable while new versions are written beside them, chained through `supersedes_rule_id`. A trigger removed keeps its retired rule; a trigger added starts a lineage of its own. The program gains a version holding its whole configuration at this moment, and that version number is what later awards are stamped with. 404 if it does not exist, 409 if it is archived (archiving is one-way) or the internal name is taken.",
+        "operationId": "RewardsController_updateProgram_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Edit a program whole — the same form, the same body, one save",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/status": {
+      "patch": {
+        "description": "Status is the SWITCH, not the schedule. A program scheduled for next month is active with a future start date; there is no \"scheduled\" status because the date says it. ARCHIVING IS ONE-WAY: the program is kept and readable for ever, its rules stop matching, and it can never be switched back on. 409 if it already is.",
+        "operationId": "RewardsController_setProgramStatus_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Switch a program on, pause it, or archive it",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/triggers": {
+      "get": {
+        "description": "The SAME list the create endpoints validate against, so a client renders its picker from here rather than keeping a copy that drifts the day a producer is built. `available: false` means the trigger is modelled and nothing raises it yet — those are refused on save, not merely greyed out, because a screen is not the only way to reach this API and a rule that can never fire should not be storable.",
+        "operationId": "RewardsController_triggers_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Every trigger, grouped, and whether it can actually fire",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/benefits": {
+      "get": {
+        "description": "The companion to `GET /rewards/triggers`, and the SAME list the create endpoints validate against. `available: false` means the reward is modelled with nothing behind it yet — `issue_entitlement` has no item catalogue, so its `itemRef` is free text that nothing can redeem — and it is refused on save, not merely greyed out. `requiresTrigger` names the triggers a reward may only be used with: `convert_value` burns points and grants money in one step, which means something only at the moment a balance is worth converting, so it needs `points_balance_reached`.",
+        "operationId": "RewardsController_benefits_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Every reward, whether it can be chosen, and what it needs chosen with it",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/beneficiaries": {
+      "get": {
+        "description": "One row per customer, with how many awards this program granted, is still holding, and has reversed for them, newest activity first. CURSOR-PAGINATED and bounded: an offset page re-reads everything it skips and shifts under anybody rewarded while somebody is reading. THE REFUSALS ARE EXCLUDED — a `skipped_cap` row says somebody did NOT get something, and a beneficiary list built from those would name people who were never rewarded. `reversed` stays: it was granted and taken back, which is part of what this program did to that customer. There is no search here on purpose; looking a customer up is what the customer directory is for.",
+        "operationId": "RewardsController_programBeneficiaries_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Who this program has rewarded",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/programs/{refId}/versions": {
+      "get": {
+        "description": "Every change to a program appends a version holding its WHOLE configuration at that moment, not a diff — so reconstructing what was running last March is reading one row rather than replaying every edit since. An award made then was decided by the program as it stood then, which is why this exists alongside the audit log: the audit log says who changed it, this says what it became. Newest first. The forwarding credential is never recorded.",
+        "operationId": "RewardsController_programVersions_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What this program has looked like, version by version",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/rules": {
+      "get": {
+        "operationId": "RewardsController_listRules_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Rules in a program",
+        "tags": [
+          "rewards"
+        ]
+      },
+      "post": {
+        "description": "A rule is one trigger, a flat AND list of conditions, and one or more benefits applied all-or-nothing. An empty condition list means ALWAYS, never never.",
+        "operationId": "RewardsController_createRule_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create a rule",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/rules/{refId}/active": {
+      "patch": {
+        "operationId": "RewardsController_setRuleActive_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Switch a rule on or off",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/customers/{refId}/balances": {
+      "get": {
+        "description": "SEVERAL NUMBERS, never one. Points and each currency are separate wallets and are never netted — a total across them would be meaningless.",
+        "operationId": "RewardsController_balances_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What a customer holds",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/customers/{refId}/awards": {
+      "get": {
+        "description": "Includes awards that granted nothing. \"Why didn’t I get my points?\" is answered by a row saying skipped_cap with its period key.",
+        "operationId": "RewardsController_awards_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "A customer’s award history",
+        "tags": [
+          "rewards"
+        ]
+      }
+    },
+    "/api/v1/rewards/adjustments": {
+      "post": {
+        "description": "Behind its own permission, not rewards.manage: rewriting a rule changes what everybody earns in future, while this moves value for one named customer now. The reason lands in both the audit log and the ledger entry.",
+        "operationId": "RewardsController_adjust_v1",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Manually credit or debit a balance",
+        "tags": [
+          "rewards"
         ]
       }
     },

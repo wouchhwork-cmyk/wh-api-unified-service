@@ -165,6 +165,45 @@ export class PermissionRepository extends BaseRepository {
   }
 
   /**
+   * Which feature, if any, is the reason these permissions are missing.
+   *
+   * GATE 1 AND GATE 2 BOTH END IN A 403, and until now a client could not tell
+   * them apart. The resolved set simply omits a permission whose feature the
+   * business does not have, so "you lack the role" and "your business has not
+   * bought this" arrived as the same `PERMISSION_DENIED` — and the portal could
+   * not say which, so it could not tell an owner to ask an admin to switch the
+   * feature on. `FEATURE_NOT_ENABLED` existed for exactly this and nothing ever
+   * threw it.
+   *
+   * Asked ONLY on the denial path, which is rare, so the happy path pays
+   * nothing. Returns the FIRST blocking feature: one answers the question, and
+   * listing every one would describe the catalogue to somebody being refused.
+   */
+  async featureBlocking(
+    enterpriseId: number,
+    permissionCodes: readonly string[],
+  ): Promise<string | null> {
+    if (permissionCodes.length === 0) return null;
+
+    const rows = await this.query<{ featureKey: string }>(
+      `SELECT f.key AS "featureKey"
+         FROM permissions p
+         JOIN features f ON f.id = p.feature_id AND f.is_deleted = false
+         LEFT JOIN enterprise_features ef
+                ON ef.feature_id = p.feature_id
+               AND ef.enterprise_id = $1
+               AND ef.is_deleted = false
+        WHERE p.code = ANY($2::varchar[])
+          AND p.is_deleted = false
+          AND p.feature_id IS NOT NULL
+          AND (ef.status IS NULL OR ef.status <> $3)
+        LIMIT 1`,
+      [enterpriseId, [...permissionCodes], EnterpriseFeatureStatus.Active],
+    );
+    return rows[0]?.featureKey ?? null;
+  }
+
+  /**
    * A scoped staff member's permissions: only what their staff roles grant.
    *
    * Still subject to gate 1 — a permission whose feature the business does not

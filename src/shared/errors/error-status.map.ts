@@ -38,6 +38,15 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.ConnectionNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ChannelNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.CustomerNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.RewardProgramNotFound]: HttpStatus.NOT_FOUND,
+  /* 409, not 404: it exists and you can still read it. It just cannot move. */
+  [ErrorCode.RewardProgramArchived]: HttpStatus.CONFLICT,
+  [ErrorCode.RewardProgramNameTaken]: HttpStatus.CONFLICT,
+  /* 422: the request is well formed, the business is simply not configured for it. */
+  [ErrorCode.EnterpriseCurrencyNotSet]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [ErrorCode.EnterpriseTimezoneNotSet]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [ErrorCode.RewardRuleNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.RewardWalletNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ConversationNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.MessageNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.PostNotFound]: HttpStatus.NOT_FOUND,
@@ -69,6 +78,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
 
   // 422 — the request was understood but is not valid
   [ErrorCode.ValidationFailed]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [ErrorCode.RewardBenefitNotScalable]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.InvalidEmail]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.InvalidMobile]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.CredentialRequired]: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -99,6 +109,19 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
  * account-enumeration oracle (schema.md §11–12).
  */
 export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
+  [ErrorCode.RewardProgramNotFound]: 'That reward program does not exist.',
+  [ErrorCode.RewardProgramNameTaken]:
+    'Another program in this business already uses that internal name. The customer-facing name may be shared; this one identifies it for you.',
+  [ErrorCode.RewardProgramArchived]:
+    'That reward program is archived. Archiving is permanent — create a new program instead.',
+  [ErrorCode.EnterpriseCurrencyNotSet]:
+    'This business has not set a currency yet, so a rule cannot grant money. Set one in business settings, or grant points instead.',
+  [ErrorCode.EnterpriseTimezoneNotSet]:
+    'This business has not set a timezone yet, so a cap or a time window has no day to count against. Set one in business settings.',
+  [ErrorCode.RewardRuleNotFound]: 'That reward rule does not exist.',
+  [ErrorCode.RewardWalletNotFound]: 'That balance does not exist.',
+  [ErrorCode.RewardBenefitNotScalable]:
+    'That reward cannot be an "up to" amount, because it is not divisible. Choose a fixed amount.',
   [ErrorCode.AuthInvalidCredentials]: 'The email, mobile, or password is incorrect.',
   [ErrorCode.AuthCodeInvalid]: 'That code is not correct.',
   [ErrorCode.AuthCodeExpired]: 'That code has expired. Request a new one.',

@@ -933,7 +933,7 @@ Beyond auth (§7) and supply chain (§2):
 - **Secrets from a secret manager.** The token-encryption key (`schema.md` §14) and the verification HMAC pepper (§12) are never in the repo, an env file, or an image layer.
 - **Webhook signature verification** on every inbound platform request, before the payload is parsed, using the raw body.
 - **No sensitive data in URLs** — no tokens, no codes, no identifiers in query strings, since those land in access logs.
-- **Audit the sensitive actions**, per `schema.md` §25, including `is_impersonated` when Wouchh staff act inside an enterprise.
+- **Audit every state change**, per `schema.md` §25 and [`sop.md`](./sop.md) §9, including `is_impersonated` when Wouchh staff act inside an enterprise. "Sensitive actions" was the original wording and it was too soft to act on: nine audit actions ended up declared and written by nothing, and connecting or disconnecting a business's Instagram went unrecorded entirely. The SOP says which paths must write a row and which need not.
 - **Dependency and image scanning** blocking in CI; `pnpm audit` on a schedule as well as on PR.
 
 ---
@@ -1251,7 +1251,265 @@ flow-level account of all of it is [`backend-flows.md`](backend-flows.md).
   expired — up to fifteen minutes of full access after being switched off, which
   made "suspend" a suggestion rather than a control.
 
-### 19.8 Still open
+### 19.9 Phase 3 — the audit trail was not what it said it was
+
+Found by querying the database rather than by reading the code, which is the
+only reason it was found at all.
+
+- **`audit_logs` was not append-only.** §15 and `schema.md` §25 both specified a
+  `REVOKE` of `UPDATE` and `DELETE` from the application role, and the entity and
+  the repository each stated it as fact in a comment. The `REVOKE` is guarded on
+  the application role DIFFERING from the migration role — false on every
+  developer machine and anywhere `DB_APP_ROLE` is unset — so it had never run
+  anywhere. Measured: the role held `UPDATE`, `DELETE` and `TRUNCATE`, and both
+  statements succeeded against a real row. **A tamper tripwire attached to a row
+  the application can edit is not a tripwire.** Now enforced by a
+  `BEFORE UPDATE OR DELETE` trigger, which does not care which role is connected
+  — the mechanism `reward_ledger_entries` had used all along for the same reason.
+  `TRUNCATE` is deliberately still permitted (a row trigger cannot see it, and
+  the harness needs it), and DDL rights can still drop the trigger: it stops the
+  accidental `UPDATE` and the repair script, which is the realistic threat.
+- **Coverage was about half, and the enum proves it was not deliberate.** 9 of 19
+  `AuditAction` values and 5 of 15 `AuditEntityType` values were declared and
+  written by nothing. Provider connect and disconnect — which clears live tokens
+  and withdraws a business's authority over its own Instagram — wrote no row at
+  all, nor did comment moderation, replies, sign-in, failed sign-in, or signup.
+  **A vocabulary is not coverage**, which is now a rule: the change that writes an
+  enum member ships with the member.
+- **A revocation was recorded as a grant.** `replaceEmployeeRoles` always wrote
+  `role_granted` with metadata naming only the resulting set, so removing
+  somebody's role produced a row stating the opposite of what happened. A wrong
+  row is worse than no row, because it is read as fact. Both directions are
+  recorded now, as separate rows when one call does both, each carrying the whole
+  before/after.
+- **System-caused actions are audited, reversing an earlier decision.** The enum
+  argued that auditing awards would produce millions of rows saying `system` and
+  drown the handful naming a person. The premise is right and the conclusion was
+  wrong: granting a customer value IS an action the platform took, and "why does
+  this customer have 340 points" must be answerable whether or not a human was
+  involved. The drowning is an indexing problem, solved where it belongs —
+  `audit_logs_human_idx` is partial on `actor_kind <> 'system'`, so reviewing what
+  people did never pays for the volume of what the engine did.
+- **The actor stays unforgeable.** `AuditService` reads it from `RequestContext`
+  and nothing may pass one in. Where no session exists — an OAuth callback, a
+  signup, a worker tick — the row says `system` and the available attribution goes
+  in `metadata`. A route-specific override was considered and rejected: it is
+  exactly the hole the ambient read closes.
+
+### 19.10 Phase 3 — configuration gained a version history
+
+`audit_logs` cannot answer "what did this look like in March". `changes` holds
+whichever fields a call site named, so reconstructing a past state means
+replaying every diff since creation and trusting none omitted anything. Where
+configuration decides money that is not good enough: **an award made in March was
+decided by the program as it stood in March.**
+
+`entity_versions` (`schema.md` §26) holds a full snapshot per change, addressed
+by `entity_type` + `entity_id` so any entity can use it without a new table.
+Reward programs record one on create and on every status change, and
+`GET /rewards/programs/:refId/versions` serves the history.
+
+Three decisions worth keeping:
+
+- **The snapshot is stated by the call site, never serialised from the row.**
+  `forward_config` holds a credential reference, and the table is append-only, so
+  a secret written there could never be taken back out.
+- **The diff is derived by the service, not described by the caller.** Every call
+  site that describes its own change is one that can describe it wrongly — which
+  is precisely how the role revocation came to read as a grant.
+- **One generic table, not one per entity.** The cost is that `entity_id` is not a
+  foreign key; the same trade `audit_logs` already makes, for the same reason.
+
+### 19.11 What this left behind
+
+The rules all of the above produced live in [`sop.md`](./sop.md) — a checklist to
+work through for any change, bullets only, each pointing back into this document
+for the reasoning. The one that covers the rest: **a comment asserting a
+guarantee is not evidence of it.** A database-level guarantee now gets a test
+that attempts the forbidden thing and expects a rejection, and a control with a
+threshold gets a test proving it can actually fail.
+
+### 19.12 Phase 3 — what auditing the codebase against the SOP found
+
+The SOP was written, then run against the repository. Everything below was
+already shipped and already wrong.
+
+- **Swallowing a failed audit write inside a transaction destroys the caller's
+  work and reports success.** `AuditService` caught its own failure and logged
+  "the action itself was not rolled back", which is precisely backwards.
+  Measured against the real database:
+
+  ```
+  INSERT INTO audit_logs ...   -- fails a foreign key
+  SELECT 1                     -- ERROR: current transaction is aborted
+  COMMIT                       -- reports SUCCESS
+  ```
+
+  **Postgres converts a COMMIT on an aborted transaction into a ROLLBACK and
+  reports success.** So the swallow handed back a committed-looking result for
+  work that had been discarded entirely. Both `AuditService` and
+  `EntityVersionService` now rethrow when there is an ambient transaction, and
+  still swallow outside one, where the state change has already committed and a
+  lost row is the better of the two losses. The audit write also moved INSIDE
+  the transaction at every site that has one — it was outside at 33 of 36.
+
+- **`createProgram` was three independent commits**, so a failure after the
+  first left a reward program with no version 1 — the row its own comment said
+  must always exist.
+
+- **The staff role path still recorded a revocation as a grant.** The tenant
+  side was fixed and this was not, which is the worse half to miss: staff reach
+  crosses tenants, so that trail is the only thing separating support work from
+  an insider.
+
+- **`PATCH /rewards/rules/:refId/active` had no request schema.** It read
+  `body?.isActive === true`, so `{"isActive":"true"}`, `{"active":true}` and an
+  empty body all coerced to false, silently switched a money rule off, and
+  returned 200.
+
+- **Gate 1 and gate 2 were indistinguishable.** A permission whose feature the
+  business lacks is simply absent from the resolved set, so "you lack the role"
+  and "your business has not bought this" both arrived as `PERMISSION_DENIED` —
+  and `FEATURE_NOT_ENABLED` existed for the second and was thrown by nothing.
+  `PermissionsGuard` now asks, on the denial path only, whether a missing
+  permission is gated behind an inactive feature, and names it.
+
+- **Two cross-tenant tests proved nothing.** Both attacked a hardcoded uuid
+  belonging to nobody, with no second tenant in the test at all — deleting the
+  `enterprise_id` predicate would have left both passing. A not-found test
+  wearing a tenancy test's name is worse than no test, because the suite
+  reports it as coverage. Real ones now exist for the rewards and inbox write
+  routes, and writing them surfaced the same trap again: without granting the
+  attacker the feature first, every one of them passed on a gate-1 refusal
+  rather than the tenancy check.
+
+- **A bare `throw new Error` made a deliberate per-tenant cap answer 500**, and
+  `22P02` — a malformed uuid reaching a predicate — did the same.
+
+### 19.13 Phase 4 — business-level settings, and two defaults that lied
+
+- **A business fact lived on each feature that used it.** `reward_programs`
+  carried its own `timezone` and `default_currency_code`, copied at creation
+  and never reconciled, so two programmes in one business could disagree about
+  when Tuesday starts and what money means. Both now live on `enterprises` and
+  are read from there — joined onto the programme row once, as
+  `enterpriseTimezone` and `enterpriseCurrencyCode`, so there is a single
+  resolution point rather than a lookup wherever somebody needs one.
+
+- **`timezone` defaulted to `Asia/Kolkata` and signup never asked.** A business
+  in London therefore had a timezone it never picked: "once a day" resetting at
+  half past six in the evening, correctly, for entirely the wrong reason, with
+  nothing on any screen to reveal it. The default is gone, the column is
+  nullable, and signup no longer takes one.
+
+- **Neither value has a safe default, so neither has one.** NULL means "not
+  chosen", which is what makes it possible to ASK. A rule that counts days — a
+  cap or a time window — is refused while there is no timezone; a rule that
+  grants money is refused while there is no currency. Each has its own error
+  code (`ENTERPRISE_TIMEZONE_NOT_SET`, `ENTERPRISE_CURRENCY_NOT_SET`, both 422)
+  rather than a generic validation failure, because the remedy is a different
+  screen and the client is expected to offer to take somebody there. **A points
+  rule with no cap and no window needs neither and is never asked.**
+
+- **Accepted values are a SET, not a shape.** The timezone must be a canonical
+  IANA zone the runtime lists, and abbreviations are refused — measured, not
+  assumed: `Intl` resolves `EST` to `America/Panama` and `IST` to
+  `Asia/Calcutta`, and a try/catch check would have stored both. The currency
+  must be an ISO 4217 code from the runtime's list; the previous
+  `/^[A-Z]{3}$/` is a description of what a currency code looks like rather
+  than a test of whether it is one, and accepted `XYZ`, `ABC` and `ZZZ`.
+
+- **The client reads the lists from the server.** `GET
+  /enterprises/settings/options` serves both, so the set somebody can choose
+  from and the set the validator accepts are the same object and cannot drift
+  — including when the runtime's timezone database updates.
+
+- **The runtime path fails closed as well as the write path.** A business can
+  clear a setting after a rule already depends on it. A cap whose period cannot
+  be derived skips the award rather than awarding without enforcing the cap; a
+  time window with no timezone matches nothing; a money benefit with no
+  resolvable currency refuses rather than opening a wallet in a currency
+  nobody chose.
+
+- **`enterprise.manage` is now enforced somewhere.** It was declared, seeded,
+  used by the role templates to separate owner from manager, and consulted by
+  no endpoint. The settings route is the first thing to require it.
+
+### 19.15 Phase 5 — a programme is edited whole, and an award says what decided it
+
+Four decisions, recorded here because the next person to touch rewards will
+otherwise rediscover them by breaking one.
+
+**An edit supersedes the rules; it never edits them.** `reward_rules` has
+carried `version` and `supersedes_rule_id` since it was designed, and
+`reward_awards` carries `rule_id` + `rule_version`, because the row that
+decided a payment has to keep saying what it said at the time. So `PUT
+/rewards/programs/:refId` switches every active rule off, keeps it readable,
+and writes the next version beside it chained to the one it replaces. A trigger
+removed keeps its retired rule; a trigger added starts a lineage. Mutating a
+rule in place would silently rewrite the justification for every award ever
+made under it.
+
+**It is a PUT, not a PATCH.** The screen that edits a programme is the screen
+that created it, so every field is on screen and every field is in the body. A
+partial update would make an omitted field ambiguous — cleared, or untouched? —
+for configuration that decides who receives money. `GET
+/rewards/programs/:refId/configuration` returns exactly the shape the PUT
+accepts, so the form round-trips and the create path's rule expansion stays on
+the server rather than being reimplemented in a browser. That read also returns
+`uniform`, which is false when the active rules disagree about cap or hold: the
+form holds one of each, so saving would flatten them, and the client says so
+first.
+
+**An award records the programme version, not just the rule version.** The rule
+version said what was awarded; nothing said what it was part of. A programme can
+be renamed, rescheduled or have its whole rule set replaced, and an award made
+before any of that pointed only at the programme's current shape.
+`reward_awards.program_version` closes it. It is NULLABLE and stays nullable —
+awards made before the column exists were decided by a version nobody recorded,
+and backfilling `1` would state, in a column built to be trusted, something we
+do not know. `reward_programs.version` mirrors the counter `entity_versions`
+keeps, written in the same transaction, so the award path reads it off a row it
+has already loaded instead of running a `MAX()` per award.
+
+**The destination is a programme-level toggle, and it is honest about doing
+nothing yet.** `internal` leaves `forward_provider_code` NULL. `external`
+records the design's `'noop'` provider — intent recorded, nothing moved —
+because §13's forwarding pipeline is designed and unbuilt: `RewardEntryKind.ForwardOut`
+is the only part of it that exists in code. The portal says so on the field. It
+is one answer for the whole programme rather than one per reward, because two
+rewards paying into two systems would mean a customer's balance lived in two
+places with nothing reconciling them.
+
+**Which rewards may be chosen is a contract, not a screen.** `BENEFIT_CATALOGUE`
+carries `available`, `requiresTrigger` and `scalable`, is served at `GET
+/rewards/benefits`, and is refined against on both create paths. `issue_entitlement`
+is unavailable — `itemRef` is free text with no item catalogue behind it, so a
+business could promise `FREE_COFFEE` with nothing in the system that knows what
+that is. `convert_value` requires `points_balance_reached`, which is what §12
+already said: conversion is a trigger plus a benefit. `scalable` mirrors the
+handler's own flag and a unit test pins the two together, because a contract
+cannot import a service and the copy would otherwise drift.
+
+### 19.16 Phase 5 — what `pnpm test:schema` caught
+
+Two schema faults, neither visible on any existing database.
+
+**`db:sync` and the migrations disagreed about a money column.**
+`BusinessOwnsTheTimezone` dropped `reward_programs.default_currency_code`; the
+entity kept declaring it. Sync builds tables from entities, so it kept creating
+a column the migrated schema no longer had — two ways of provisioning one
+schema producing two schemas.
+
+**A database built from migrations alone could not be built at all.**
+`StaffRoles1758300000000` calls `applyLateTableObjects`, which indexes
+`entity_versions` — a table created six migrations later by
+`EntityVersions1759000000000`. Every existing database already had the table by
+the time anyone migrated again, so the chain only failed from zero, which is
+the one moment you least want to find it. The statements are now guarded on the
+table existing; the later migration creates them itself either way.
+
+### 19.14 Still open
 
 - **Verification delivery** has no provider. The seam exists and the flow is
   complete; in dev the code is logged, and in qa or prod a missing provider is

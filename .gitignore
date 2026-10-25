@@ -13,3 +13,10 @@ coverage/
 !.env.dev
 !.env.qa
 !.env.example
+
+# Auto-resume runtime state — logs, locks and the pending marker are local
+# to one machine and one task; the script and plist beside them are not.
+.claude/auto-resume*.log
+.claude/.auto-resume.*
+.claude/RESUME-PENDING
+.claude/.session-heartbeat

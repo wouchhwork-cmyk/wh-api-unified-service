@@ -23,6 +23,22 @@ const SENSITIVE_KEYS = [
   'appsecret_proof',
   'authorization',
   'cookie',
+  /*
+   * PERSONAL DATA, which the list did not cover.
+   *
+   * backend-design.md §13.2 names emails, phone numbers and the customer's
+   * `display_name` / `username` as never-logged, and the serialisers do keep
+   * them out of `req`/`res`/`err`. But the belt below reaches any object a
+   * service hands the logger, and none of these names were on it — so the rule
+   * held by discipline alone, which is the thing this list exists to stop
+   * depending on. Verified by sweep at the time: no call site logged one.
+   */
+  'email',
+  'mobile',
+  'phone',
+  'destination',
+  'displayName',
+  'username',
 ] as const;
 
 /**

@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
+import { SYNC_MAX_ATTEMPTS } from '@/shared/constants';
+import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { createTestDataSource, returningRows, truncateTenantData } from './db.harness';
 
 /**
@@ -258,5 +260,67 @@ describe('sync job queue', () => {
     // Lag is measurable, which is the whole point of the gauge.
     expect(sync?.oldestDueAgeSeconds).not.toBeNull();
     expect(sync?.oldestDueAgeSeconds).toBeGreaterThanOrEqual(0);
+  });
+  /**
+   * THE ATTEMPT BUDGET, driven until it is actually spent.
+   *
+   * The spec covered claiming, leasing and rate-limit parking, and never once
+   * took a job past its budget — so "a job that keeps failing eventually stops"
+   * was a property nothing checked. A retry loop with no proven terminal state
+   * is how a poisoned job gets retried for ever, and the backoff helper is what
+   * decides when to stop.
+   */
+  describe('a job that keeps failing', () => {
+    it('is retried while the budget holds and dead-lettered once it is spent', async () => {
+      const jobs = new SyncJobRepository(db);
+      const id = await enqueue('backfill_comments');
+
+      let status = '';
+      let attempts = 0;
+
+      /* One more turn than the budget allows, so the loop proves the budget
+       * ends rather than that the loop does. */
+      for (let attempt = 1; attempt <= SYNC_MAX_ATTEMPTS + 1; attempt += 1) {
+        const claimed = await jobs.claimBatch(`worker-${attempt}`, 10, 60);
+        const mine = claimed.find((job) => job.id === id);
+        if (!mine) break;
+
+        attempts = attempt;
+        const retry = scheduleRetry(mine.attemptCount, SYNC_MAX_ATTEMPTS);
+        await jobs.markFailed(
+          id,
+          `worker-${attempt}`,
+          'upstream exploded',
+          retry?.nextAttemptAt ?? null,
+        );
+
+        const row: { status: string }[] = await db.query(
+          `SELECT status FROM sync_jobs WHERE id = $1`,
+          [id],
+        );
+        status = row[0]?.status ?? '';
+        if (status === 'dead_letter') break;
+
+        /* Bring the retry forward so the next claim sees it as due. */
+        await db.query(
+          `UPDATE sync_jobs SET next_attempt_at = now() - interval '1 second' WHERE id = $1`,
+          [id],
+        );
+      }
+
+      expect(status).toBe('dead_letter');
+      expect(attempts).toBe(SYNC_MAX_ATTEMPTS);
+
+      /* Terminal means terminal: a dead-lettered job is never claimed again,
+       * however due it looks. */
+      const after = await jobs.claimBatch('worker-after', 10, 60);
+      expect(after.map((job) => job.id)).not.toContain(id);
+
+      const dead: { dead_lettered_at: Date | null }[] = await db.query(
+        `SELECT dead_lettered_at FROM sync_jobs WHERE id = $1`,
+        [id],
+      );
+      expect(dead[0]?.dead_lettered_at).not.toBeNull();
+    });
   });
 });

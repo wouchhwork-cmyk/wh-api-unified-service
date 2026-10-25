@@ -17,6 +17,7 @@ import {
   IdentifierSource,
   IdentifierVerificationStatus,
   Platform,
+  RewardTriggerKind,
   SyncJobKind,
   SyncTriggerKind,
 } from '@/shared/enums';
@@ -25,7 +26,7 @@ import { normalizeAttachments, type PlatformAttachment } from './attachment-norm
 import { normalizeOptionalText } from '@/shared/utils/normalize';
 
 /** Meta's messaging entry shape. */
-interface MessagingEvent {
+export interface MessagingEvent {
   readonly sender?: {
     readonly id?: string;
     /**
@@ -269,26 +270,7 @@ export class DirectMessageProjectorService {
      * was answering — and none of it is recoverable once the ledger row ages
      * out. Storing it costs a few bytes on a row we are already writing.
      */
-    const platformFacts: Record<string, unknown> = {};
-    if (media.isStoryMention) platformFacts.isStoryMention = true;
-    if (message.reply_to?.mid) platformFacts.replyToPlatformMessageId = message.reply_to.mid;
-    // The platform's own word for it. Derivable from the parent's direction —
-    // but only while we hold the parent, and a lost delivery is exactly when we
-    // do not.
-    if (message.reply_to?.is_self_reply !== undefined) {
-      platformFacts.replyIsSelfReply = message.reply_to.is_self_reply;
-    }
-    if (message.reply_to?.story?.id) platformFacts.replyToStoryId = message.reply_to.story.id;
-    if (message.reply_to?.story?.url) platformFacts.replyToStoryUrl = message.reply_to.story.url;
-    if (message.quick_reply?.payload) platformFacts.quickReplyPayload = message.quick_reply.payload;
-    /*
-     * What the tapped button MEANT, as distinct from what it said. An
-     * automation routes on this; an agent should never have to read it.
-     */
-    if (event.postback?.payload) platformFacts.postbackPayload = event.postback.payload;
-    if (event.postback?.mid) platformFacts.isPostback = true;
-    if (message.is_unsupported === true) platformFacts.isUnsupported = true;
-    if (event.referral) platformFacts.referral = event.referral;
+    const platformFacts = buildPlatformFacts(message, event, media.isStoryMention);
 
     /*
      * A RECOVERED MESSAGE WITH NOTHING IN IT.
@@ -513,7 +495,19 @@ export class DirectMessageProjectorService {
         { enterpriseId, conversationId: conversation.id, newCustomer: customer.created },
         'direct message projected',
       );
-      return { projected: true };
+      return {
+        projected: true,
+        trigger: {
+          enterpriseId,
+          customerId: customer.customerId,
+          channelId,
+          sourceRefKind: 'message',
+          sourceRefId: inserted.id,
+          occurredAtUtc: occurredAt,
+          content: message.text ?? null,
+          triggerKind: resolveDirectMessageTrigger(platformFacts),
+        },
+      };
     });
   }
 
@@ -824,4 +818,94 @@ export class DirectMessageProjectorService {
         : 'a message_edit for a message we never received — a resync is already in flight',
     };
   }
+}
+
+/**
+ * Which reward trigger an inbound DM actually is.
+ *
+ * EVERYTHING ARRIVES IN THE SAME THREAD. Instagram delivers a story mention, a
+ * reply to our story, a tapped ice-breaker and an ordinary message as messaging
+ * events on one conversation, so "it is a direct message" was all the reward
+ * engine ever knew — and four triggers in the catalogue could never fire. The
+ * facts that tell them apart were already being captured on the message, for a
+ * feature that did not exist yet. This is that feature.
+ *
+ * EXACTLY ONE TRIGGER PER EVENT, most specific first. A story mention is also,
+ * technically, an inbound direct message; firing both would pay a business's
+ * `story_mention` rule and their `direct_message_inbound` rule for one action,
+ * which is a double award nobody asked for. The specific one wins and the
+ * general one does not see it.
+ *
+ * Pure, and exported, so the precedence is testable without a database.
+ */
+export function resolveDirectMessageTrigger(
+  platformFacts: Record<string, unknown>,
+): RewardTriggerKind {
+  /* They put US in THEIR story. The attachment is the message. */
+  if (platformFacts.isStoryMention === true) return RewardTriggerKind.StoryMention;
+
+  /* They answered OUR story. Meta names the story it was a reply to. */
+  if (platformFacts.replyToStoryId !== undefined) return RewardTriggerKind.StoryReply;
+
+  /*
+   * How they ARRIVED — an ad, an m.me link, a QR code in the shop. Ranked above
+   * the button tap because it is the campaign event a business is paying to
+   * measure, and "scan this and get 50 points" is the rule it exists for.
+   */
+  if (platformFacts.referral !== undefined) return RewardTriggerKind.ReferralEntry;
+
+  /* An ice breaker, a template button or a quick reply: a deliberate tap. */
+  if (
+    platformFacts.isPostback === true ||
+    platformFacts.postbackPayload !== undefined ||
+    platformFacts.quickReplyPayload !== undefined
+  ) {
+    return RewardTriggerKind.PostbackTapped;
+  }
+
+  return RewardTriggerKind.DirectMessageInbound;
+}
+
+/**
+ * The platform facts worth keeping off an inbound message.
+ *
+ * Pure and exported so that ONE implementation is both shipped and tested.
+ * Verifying the reward triggers against real stored payloads with a
+ * hand-written copy of this logic would have proved only that the copy agreed
+ * with itself — and the risk here is entirely in the field names Meta uses.
+ *
+ * Each fact is raw material for a feature that may not exist yet: threading a
+ * reply to its parent, attributing a conversation to the ad that started it,
+ * showing which story a customer was answering. None of it is recoverable once
+ * the ledger row ages out, and it costs a few bytes on a row already being
+ * written.
+ */
+export function buildPlatformFacts(
+  message: NonNullable<MessagingEvent['message']>,
+  event: MessagingEvent,
+  isStoryMention: boolean,
+): Record<string, unknown> {
+  const facts: Record<string, unknown> = {};
+  if (isStoryMention) facts.isStoryMention = true;
+  if (message.reply_to?.mid) facts.replyToPlatformMessageId = message.reply_to.mid;
+  /*
+   * The platform's own word for it. Derivable from the parent's direction — but
+   * only while we hold the parent, and a lost delivery is exactly when we do
+   * not.
+   */
+  if (message.reply_to?.is_self_reply !== undefined) {
+    facts.replyIsSelfReply = message.reply_to.is_self_reply;
+  }
+  if (message.reply_to?.story?.id) facts.replyToStoryId = message.reply_to.story.id;
+  if (message.reply_to?.story?.url) facts.replyToStoryUrl = message.reply_to.story.url;
+  if (message.quick_reply?.payload) facts.quickReplyPayload = message.quick_reply.payload;
+  /*
+   * What the tapped button MEANT, as distinct from what it said. An automation
+   * routes on this; an agent should never have to read it.
+   */
+  if (event.postback?.payload) facts.postbackPayload = event.postback.payload;
+  if (event.postback?.mid) facts.isPostback = true;
+  if (message.is_unsupported === true) facts.isUnsupported = true;
+  if (event.referral) facts.referral = event.referral;
+  return facts;
 }

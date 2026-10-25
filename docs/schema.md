@@ -100,7 +100,12 @@ The redundancy between the parts and the E.164 string is deliberate and controll
 
 ### Every table has
 
-`id` · `created_at` · `updated_at` (trigger-maintained) · `is_deleted`. Tables addressed by a client also have `ref_id` (UUIDv4, `gen_random_uuid()`), exposed in code and APIs as `refId` — **the numeric `id` is never sent to a client**. The ledger tables have no `ref_id` by design; they are internal.
+`id` · `created_at` · `updated_at` (trigger-maintained) · `is_deleted`. Tables addressed by a client also have `ref_id` (UUIDv4, `gen_random_uuid()`), exposed in code and APIs as `refId` — **the numeric `id` is never sent to a client**. The **transport** ledgers (§23 `inbound_events`, §24 `outbound_events`) have no `ref_id` by design; they are internal.
+
+**The test is "does a client hold a handle and act on it", not "is the table append-only".** Two clarifications that have already been needed:
+
+- **Read ≠ addressed.** `message_attachments` (§22), `customer_engagements` (§18) and `customer_identifiers` (§17) are all read by clients and have **no** `ref_id` — you reach them through their parent and never act on one directly.
+- **A transport ledger is not a financial ledger.** The exemption above is about transport: nobody reverses a webhook delivery. A ledger that moves **value** is different — an entry gets reversed, disputed, and quoted back by support, so it needs a handle. `reward_ledger_entries` ([`reward-programs-design.md`](./reward-programs-design.md) §8.8) therefore **does** carry `ref_id`, because `adjust` and `reverses_entry_id` each address one specific entry. Applying the rule by the word "ledger" rather than by the test would have got that backwards.
 
 ### Soft delete vs uniqueness
 
@@ -206,7 +211,8 @@ The tenant. One row per business that signs up.
 | state       | VARCHAR(100) |                                             |                                    |
 | country     | VARCHAR(2)   | NOT NULL, DEFAULT 'IN'                      | ISO 3166-1 alpha-2                 |
 | pincode     | VARCHAR(10)  |                                             |                                    |
-| timezone    | VARCHAR(50)  | NOT NULL, DEFAULT 'Asia/Kolkata'            | Drives the business's reporting day |
+| timezone    | VARCHAR(50)  |                                             | **The one the whole product reads.** NULL = not chosen; see below |
+| currency_code | CHAR(3)    |                                             | ISO 4217. NULL = not chosen; a rule granting money is refused until it is |
 | status      | VARCHAR(30)  | NOT NULL, DEFAULT 'active'                  | `active` · `suspended`             |
 | is_deleted  | BOOLEAN      | NOT NULL, DEFAULT false                     |                                    |
 | created_at  | TIMESTAMPTZ  | NOT NULL, DEFAULT now()                     |                                    |
@@ -233,6 +239,34 @@ Login by a single credential cannot work if the same credential can appear on tw
 - `staff_members` — one row per **Wouchh employee**, for platform-wide reach that cannot be expressed as a list of employments.
 
 One person in three businesses is one `identities` row and three `enterprise_employees` rows.
+
+> **THE BUSINESS OWNS ITS TIMEZONE AND ITS CURRENCY, and nothing keeps a second copy.** Every
+> feature that needs to know what "today" or "6pm" or "money" means for a business reads these two
+> columns — reward cap periods, happy-hour windows, currency wallets, and whatever is added next.
+>
+> `reward_programs` used to carry its own `timezone` and `default_currency_code`, taken at
+> creation. Two programmes in one business could therefore disagree about when Tuesday starts and
+> what money means, with nothing to reconcile them. The copies were removed rather than
+> synchronised, because a copy that must be kept in sync is a copy that will not be.
+>
+> **BOTH ARE NULLABLE, and that is the deliberate part.** `timezone` was `NOT NULL DEFAULT
+> 'Asia/Kolkata'`, so a business in London had a timezone it never picked — "once a day" resetting
+> at half past six in the evening, correctly, for entirely the wrong reason, with nothing on any
+> screen to reveal it. Signup no longer asks and no longer defaults. A currency has no safe default
+> at all: paying somebody in rupees because nobody said otherwise is worse than refusing.
+>
+> So "not chosen" is representable, and the features that need one ask for it by name —
+> `ENTERPRISE_TIMEZONE_NOT_SET` and `ENTERPRISE_CURRENCY_NOT_SET`, both 422, each naming the
+> remedy so a client can offer to take somebody to the settings screen. A points rule with no cap
+> and no window needs neither and is never asked for either.
+>
+> **Accepted values are a set, not a shape.** The timezone must be a canonical IANA zone the
+> runtime lists; abbreviations are refused, because `Intl` resolves `EST` to `America/Panama` and
+> `IST` to `Asia/Calcutta`, and both would otherwise have been stored. The currency must be an ISO
+> 4217 code from the runtime's list; the old `/^[A-Z]{3}$/` accepted `XYZ`. `GET
+> /enterprises/settings/options` serves both lists, so a client's dropdown and the server's
+> validator are the same set.
+
 
 ## 2. `identities`
 
@@ -551,7 +585,7 @@ Catalogue of product features. Seeded by us.
 CREATE UNIQUE INDEX features_key_uniq ON features (key) WHERE is_deleted = false;
 ```
 
-**V1 features:** `unified_inbox` (DMs), `comment_management` (comments and replies), `post_insights` (posts and their metrics), `customer_directory` (the people who interacted).
+**V1 features:** `unified_inbox` (DMs), `comment_management` (comments and replies), `post_insights` (posts and their metrics), `customer_directory` (the people who interacted), `reward_programs` (points, value and benefits — gated because a wallet balance is a liability the business carries, so it is sold rather than self-served).
 
 ## 10. `enterprise_features`
 
@@ -1984,7 +2018,51 @@ The actor is split across three columns because "who did this" has three genuine
 >
 > `is_deleted` is kept for **repository-pattern consistency**: the shared base repository, its default scope, and the common row type all apply here with no special case. Nothing in the audit path ever sets it.
 >
-> Policy is not enforcement, so back it in the database: revoke `UPDATE` and `DELETE` on this table from the application role, leaving `INSERT` and `SELECT`. The tripwire then only ever fires on something with superuser access — exactly the case worth knowing about.
+> Policy is not enforcement, so it is backed in the database by a `BEFORE UPDATE OR DELETE` trigger that raises. The tripwire above then only ever fires on something that bypassed the trigger — exactly the case worth knowing about.
+>
+> **A trigger, and not the REVOKE this document originally specified.** A `REVOKE` only bites where the application role differs from the migration role, which is false on every developer machine and anywhere `DB_APP_ROLE` is unset. The guarded block did nothing, and for months this paragraph — and the entity, and the repository — asserted a database guarantee that was not in force: measured on a real database, the application role held `UPDATE`, `DELETE` and `TRUNCATE`, and both statements succeeded against a real row. The trigger does not care which role is connected. The `REVOKE` is kept as defence in depth where a separate role does exist.
+>
+> **The honest limits:** `TRUNCATE` is not blocked — a row trigger cannot see it, and the test harness needs it — and a role with DDL rights can drop the trigger. It stops the accidental `UPDATE` and the well-meaning repair script, which is the realistic threat.
+
+---
+
+## 26. `entity_versions`
+
+What a piece of configuration **looked like**, every time it changed. Append-only, like §25, and written beside it rather than instead of it.
+
+| Column               | Type        | Constraints                 | Notes                                                                     |
+| -------------------- | ----------- | --------------------------- | ------------------------------------------------------------------------- |
+| id                   | BIGSERIAL   | PK                          |                                                                           |
+| enterprise_id        | BIGINT      | NOT NULL, FK → enterprises(id) |                                                                        |
+| entity_type          | VARCHAR(50) | NOT NULL                    | `AuditEntityType` — which table `entity_id` points at                     |
+| entity_id            | BIGINT      | NOT NULL                    | PK of the versioned row. **Not an FK** — it points at whichever table      |
+| version              | INTEGER     | NOT NULL                    | 1 for the first. Unique per entity                                        |
+| snapshot             | JSONB       | NOT NULL, DEFAULT '{}'      | The **whole** entity after this change — **never credentials, never PII**  |
+| change_summary       | JSONB       | NOT NULL, DEFAULT '{}'      | What moved since the previous version. Derived, not supplied               |
+| actor_identity_id    | BIGINT      | FK → identities(id)         | NULL = system                                                             |
+| actor_employee_id    | BIGINT      | FK → enterprise_employees(id) |                                                                         |
+| actor_staff_id       | BIGINT      | FK → staff_members(id)      |                                                                           |
+| actor_kind           | VARCHAR(30) | NOT NULL                    | `employee` · `staff` · `system`                                           |
+| is_impersonated      | BOOLEAN     | NOT NULL, DEFAULT false     |                                                                           |
+| correlation_id       | VARCHAR(64) |                             | Ties this version to the `audit_logs` row from the same request            |
+| is_deleted           | BOOLEAN     | NOT NULL, DEFAULT false     | Repository-pattern consistency; nothing sets it                            |
+| created_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()     |                                                                           |
+| updated_at           | TIMESTAMPTZ | NOT NULL, DEFAULT now()     | Tripwire, as in §25                                                       |
+
+```sql
+CREATE UNIQUE INDEX entity_versions_uniq
+  ON entity_versions (enterprise_id, entity_type, entity_id, version);
+CREATE INDEX entity_versions_history_idx
+  ON entity_versions (enterprise_id, entity_type, entity_id, version DESC);
+```
+
+**Why this is not §25 with extra columns.** `audit_logs` answers *who changed this, and when*. Its `changes` column holds whichever fields the call site chose to name, so reconstructing a past state means replaying every diff since creation and trusting that none of them omitted anything. That is not good enough where the configuration decides money: **an award made last March was decided by the reward program as it stood last March**, and that has to be answerable by reading one row. So each version carries the entity whole, and a snapshot stands alone.
+
+**The version number is allocated by the database**, as `MAX(version) + 1` inside the `INSERT`. Two concurrent editors could still compute the same number; the unique index makes the loser fail loudly rather than overwrite a history that is supposed to be immutable.
+
+**The snapshot is stated by the call site, never serialised from the row.** A reward program carries `forward_config`, which holds a credential *reference*. Auto-capturing the row would write it into an append-only table that can never give it back, so each call site lists the fields it stores — redaction as a deliberate act rather than a filter somebody has to remember to maintain.
+
+`reward_rules` solve the same problem their own way, with a `version` column and `supersedes_rule_id`, and an award storing the rule version that decided it. Both are acceptable. An editable entity with **no** history is not.
 
 ---
 

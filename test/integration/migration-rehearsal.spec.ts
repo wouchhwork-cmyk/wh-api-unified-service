@@ -4,6 +4,11 @@ import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
 import { seedCatalogue } from '@/database/seed/catalogue.seed';
 import { ROLE_LEVEL, SystemRole } from '@/shared/enums';
+import {
+  createScratchAdminDataSource,
+  dropScratchDatabase,
+  recreateScratchDatabase,
+} from './db.harness';
 
 /**
  * A deploy rehearsal: the migrations, run against a database that already has a
@@ -57,10 +62,8 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
 
   beforeAll(async () => {
     const base = buildDataSourceOptions(loadConfiguration().database);
-    admin = new DataSource({ ...base, database: 'postgres', entities: [], migrations: [] });
-    await admin.initialize();
-    await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH}`);
-    await admin.query(`CREATE DATABASE ${SCRATCH}`);
+    admin = await createScratchAdminDataSource();
+    await recreateScratchDatabase(admin, SCRATCH);
 
     /*
      * THE WORLD AS THE PREVIOUS RELEASE LEFT IT. Only the migrations that
@@ -107,7 +110,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('migrating a database that already h
   afterAll(async () => {
     if (db?.isInitialized) await db.destroy();
     if (admin?.isInitialized) {
-      await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH}`);
+      await dropScratchDatabase(admin, SCRATCH);
       await admin.destroy();
     }
   }, 300_000);

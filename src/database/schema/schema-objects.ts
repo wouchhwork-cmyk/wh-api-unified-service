@@ -3,7 +3,7 @@
  *
  * 88 statements: two extensions, the updated_at trigger function, 34 unique
  * indexes, 69 foreign keys, 55 supporting indexes, 2 CHECK constraints, the
- * per-table updated_at triggers, and the grant that makes audit_logs
+ * per-table updated_at triggers, and the trigger that makes audit_logs
  * append-only in the database rather than merely by policy.
  *
  * THIS FILE EXISTS BECAUSE TYPEORM'S SYNCHRONISER CANNOT EXPRESS ANY OF IT.
@@ -864,6 +864,19 @@ export async function applyPostTableObjects(
       CREATE INDEX audit_logs_staff_access_idx
       ON audit_logs (enterprise_id, actor_staff_id, created_at DESC) WHERE actor_staff_id IS NOT NULL
     `);
+  /*
+   * "WHAT DID A PERSON DO", kept cheap however much the engine writes.
+   *
+   * System-caused rows — every reward grant and every reversal — will outnumber
+   * human ones by orders of magnitude. That imbalance was once the argument for
+   * not recording them at all; this is the answer that keeps both. The index is
+   * PARTIAL on the human rows, so a review of staff and employee activity scans
+   * only those and never pays for the volume beside them.
+   */
+  await run(`
+      CREATE INDEX audit_logs_human_idx
+      ON audit_logs (enterprise_id, created_at DESC) WHERE actor_kind <> 'system'
+    `);
 
   // =======================================================================
   // 6. CHECK constraints
@@ -906,15 +919,51 @@ export async function applyPostTableObjects(
   // =======================================================================
   // 8. audit_logs is append-only in the DATABASE, not just by policy
   //
-  // Policy is not enforcement. With UPDATE and DELETE revoked, the updated_at
-  // tripwire can only ever fire on something with elevated access — which is
-  // exactly the case worth knowing about.
+  // A TRIGGER FIRST, because the REVOKE below cannot carry this alone and for
+  // a long time it only looked as though it did.
   //
-  // Applied only when the application role is distinct from the migration
-  // role; in dev they are the same user and revoking would break the trigger.
-  // DB_APP_ROLE is what sets the GUC this reads — without it, nothing here
-  // happens, which is what "the control is not configured" should look like.
+  // The REVOKE applies only when the application role is DISTINCT from the
+  // migration role. Everywhere the two are the same user — every developer
+  // machine, and any deployment that has not set DB_APP_ROLE — the guarded
+  // block does nothing at all. Measured on the dev database rather than
+  // assumed: the application role held UPDATE, DELETE and TRUNCATE on
+  // `audit_logs`, and both an UPDATE and a DELETE against a real row
+  // succeeded. The entity and the repository each described the table as
+  // append-only in the database while that was true of neither.
+  //
+  // The trigger does not care which role is connected, so the guarantee no
+  // longer depends on a deployment detail. It is the same mechanism
+  // `reward_ledger_entries` already uses, for the same reason.
+  //
+  // THE HONEST LIMIT, stated as it is for the ledger: a role with DDL rights
+  // can drop this trigger. It stops the accidental UPDATE and the well-meaning
+  // repair script, which is the realistic threat. It is not a defence against
+  // someone who can already reshape the schema.
+  //
+  // TRUNCATE is deliberately NOT blocked. A row trigger does not see it, and
+  // the test harness truncates this table between cases — the same bargain the
+  // ledger strikes.
   // =======================================================================
+  await run(`
+    CREATE OR REPLACE FUNCTION audit_logs_is_append_only()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      RAISE EXCEPTION 'audit_logs is append-only: % is not permitted.', TG_OP;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await run(`
+    CREATE TRIGGER audit_logs_append_only
+      BEFORE UPDATE OR DELETE ON audit_logs
+      FOR EACH ROW EXECUTE FUNCTION audit_logs_is_append_only()
+  `);
+
+  /*
+   * Kept as defence in depth for a deployment that DOES run under a separate
+   * application role: the trigger stops the write, the grant stops it being
+   * attempted. Still a no-op where the roles are the same, which is now
+   * harmless rather than load-bearing.
+   */
   await run(`
       DO $$
       DECLARE app_role text := current_setting('wouchh.app_role', true);
@@ -995,4 +1044,62 @@ export async function applyLateTableObjects(run: SqlRunner): Promise<void> {
       ALTER TABLE staff_roles ADD CONSTRAINT staff_roles_role_fk
       FOREIGN KEY (role_id, role_scope) REFERENCES roles (id, scope)
     `);
+
+  await run(`
+    CREATE OR REPLACE FUNCTION entity_versions_is_append_only()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      RAISE EXCEPTION 'entity_versions is append-only: % is not permitted. Write a new version.', TG_OP;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+
+  // =======================================================================
+  // entity_versions — the configuration history
+  //
+  // TypeORM builds the table from the entity; none of what makes it correct
+  // can be expressed there. The unique index is what stops two concurrent
+  // editors both writing version 4, and the trigger is what makes a history
+  // a history rather than a mutable table that happens to have versions in it.
+  //
+  // GUARDED ON THE TABLE EXISTING, and that guard is not defensive noise.
+  //
+  // This function has TWO callers at two different moments. `db:sync` calls it
+  // after TypeORM has built every table from the entities, so the table is
+  // always there. `StaffRoles1758300000000` calls it so that a migrated
+  // database ends up identical to a synced one — and that migration runs SIX
+  // migrations before `EntityVersions1759000000000` creates the table. So on a
+  // database built from migrations alone, from zero, these statements used to
+  // run against a relation that did not exist yet and the whole chain failed.
+  //
+  // It was invisible on every existing database, because every existing
+  // database already had the table by the time anyone migrated again. It would
+  // have appeared the first time somebody provisioned a new environment from
+  // migrations — which is the one moment you least want to discover it.
+  //
+  // The later migration creates the index, the constraint and the trigger
+  // itself, so skipping here loses nothing: the table arrives fully formed
+  // either way.
+  // =======================================================================
+  await run(`
+    DO $do$
+    BEGIN
+      IF to_regclass('public.entity_versions') IS NULL THEN RETURN; END IF;
+
+      EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS entity_versions_uniq
+                 ON entity_versions (enterprise_id, entity_type, entity_id, version)';
+      EXECUTE 'CREATE INDEX IF NOT EXISTS entity_versions_history_idx
+                 ON entity_versions (enterprise_id, entity_type, entity_id, version DESC)';
+      EXECUTE 'ALTER TABLE entity_versions
+                 DROP CONSTRAINT IF EXISTS entity_versions_enterprise_fk';
+      EXECUTE 'ALTER TABLE entity_versions
+                 ADD CONSTRAINT entity_versions_enterprise_fk
+                 FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+      EXECUTE 'DROP TRIGGER IF EXISTS entity_versions_append_only ON entity_versions';
+      EXECUTE 'CREATE TRIGGER entity_versions_append_only
+                 BEFORE UPDATE OR DELETE ON entity_versions
+                 FOR EACH ROW EXECUTE FUNCTION entity_versions_is_append_only()';
+    END
+    $do$
+  `);
 }

@@ -1,0 +1,254 @@
+import { Injectable } from '@nestjs/common';
+import { RewardProgramStatus } from '@/shared/enums';
+import { BaseRepository } from './base.repository';
+
+export interface RewardProgramRow {
+  readonly id: number;
+  readonly refId: string;
+  /** The INTERNAL identifier, unique per business, case insensitively. */
+  readonly name: string;
+  /** What customers will see. Not unique, no format rules, NULL until chosen. */
+  readonly displayName: string | null;
+  readonly status: RewardProgramStatus;
+  /**
+   * WHICH VERSION THIS PROGRAM IS ON. Mirrored from `entity_versions`, which
+   * stays the authority; it is on the row so the award path can stamp it onto
+   * an award without a second query on a hot path.
+   */
+  readonly version: number;
+  /**
+   * THE BUSINESS'S, not the programme's, and named so nobody mistakes it.
+   *
+   * A programme used to carry its own copy of each, taken at creation and
+   * never reconciled, so two programmes in one business could disagree about
+   * when Tuesday starts and what money means. They are joined from
+   * `enterprises` here — one resolution point, read by every caller — rather
+   * than looked up separately wherever they happen to be needed.
+   */
+  /** NULL = the business has not chosen one; anything needing a calendar day is refused. */
+  readonly enterpriseTimezone: string | null;
+  /** NULL = the business has not chosen one; a money benefit is refused. */
+  readonly enterpriseCurrencyCode: string | null;
+  readonly startsAt: Date | null;
+  readonly endsAt: Date | null;
+  readonly forwardProviderCode: string | null;
+}
+
+/*
+ * Aliased, because every read now joins `enterprises`. The join is INNER: a
+ * programme without a business cannot exist — the foreign key says so — and a
+ * LEFT join would invite a NULL timezone that every caller would then have to
+ * defend against for a row that cannot occur.
+ */
+const COLUMNS = `p.id, p.ref_id AS "refId", p.name, p.display_name AS "displayName", p.status,
+       p.version,
+       e.timezone AS "enterpriseTimezone",
+       e.currency_code AS "enterpriseCurrencyCode",
+       p.starts_at AS "startsAt", p.ends_at AS "endsAt",
+       p.forward_provider_code AS "forwardProviderCode"`;
+
+const FROM = `FROM reward_programs p JOIN enterprises e ON e.id = p.enterprise_id`;
+
+@Injectable()
+export class RewardProgramRepository extends BaseRepository {
+  /**
+   * Inserts, then reads back through the join.
+   *
+   * `RETURNING` cannot reach the joined business columns, and the alternative
+   * — returning the bare programme and letting callers wonder why the
+   * timezone is missing on a freshly created one — is the kind of difference
+   * that only shows up in the one code path nobody tested. Two statements in
+   * the caller's transaction is the cheaper honesty.
+   */
+  async create(input: {
+    enterpriseId: number;
+    name: string;
+    displayName: string | null;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    /** NULL = the value stays in Wouchh. See REWARD_DESTINATIONS. */
+    forwardProviderCode: string | null;
+  }): Promise<RewardProgramRow> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `INSERT INTO reward_programs
+              (enterprise_id, name, display_name, starts_at, ends_at, forward_provider_code)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [
+        input.enterpriseId,
+        input.name,
+        input.displayName,
+        input.startsAt,
+        input.endsAt,
+        input.forwardProviderCode,
+      ],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) throw new Error('create program returned no row');
+
+    const created = await this.findById(input.enterpriseId, id);
+    if (!created) throw new Error('create program could not read the row back');
+    return created;
+  }
+
+  async findByRefId(enterpriseId: number, refId: string): Promise<RewardProgramRow | null> {
+    const rows = await this.query<RewardProgramRow>(
+      `SELECT ${COLUMNS} ${FROM}
+        WHERE p.enterprise_id = $1 AND p.ref_id = $2 AND p.is_deleted = false`,
+      [enterpriseId, refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async findById(enterpriseId: number, id: number): Promise<RewardProgramRow | null> {
+    const rows = await this.query<RewardProgramRow>(
+      `SELECT ${COLUMNS} ${FROM}
+        WHERE p.enterprise_id = $1 AND p.id = $2 AND p.is_deleted = false`,
+      [enterpriseId, id],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The programmes a business works with.
+   *
+   * ARCHIVED ONES ARE EXCLUDED BY DEFAULT and asked for by name. They are kept
+   * for the record — what ran, what it spent, what it awarded — but a retired
+   * programme cluttering the working list is how somebody edits the wrong one.
+   */
+  async list(
+    enterpriseId: number,
+    limit: number,
+    status: RewardProgramStatus | null = null,
+  ): Promise<RewardProgramRow[]> {
+    return this.query<RewardProgramRow>(
+      `SELECT ${COLUMNS} ${FROM}
+        WHERE p.enterprise_id = $1 AND p.is_deleted = false
+          AND ($3::varchar IS NULL AND p.status <> $4 OR p.status = $3::varchar)
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT $2`,
+      [enterpriseId, limit, status, RewardProgramStatus.Archived],
+    );
+  }
+
+  /**
+   * Moves the switch.
+   *
+   * ARCHIVED IS TERMINAL, and the guard is in the WHERE clause rather than a
+   * read followed by a write: two concurrent requests, one archiving and one
+   * reactivating, would both pass a check-then-write and the loser would
+   * resurrect a programme somebody had just retired.
+   *
+   * Three outcomes, distinguished, because a silent zero-row UPDATE is how a
+   * 404 becomes a 200 — and how "this is archived" becomes "this does not
+   * exist", which sends somebody looking for a programme they are staring at.
+   */
+  async setStatus(
+    enterpriseId: number,
+    refId: string,
+    status: RewardProgramStatus,
+  ): Promise<'moved' | 'archived' | 'missing'> {
+    const { rows } = await this.mutate<{ status: RewardProgramStatus }>(
+      `UPDATE reward_programs SET status = $3
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
+          AND status <> $4
+      RETURNING status`,
+      [enterpriseId, refId, status, RewardProgramStatus.Archived],
+    );
+    if (rows.length > 0) return 'moved';
+
+    /* Only on the failure path, so the ordinary case stays one statement. */
+    const existing = await this.findByRefId(enterpriseId, refId);
+    return existing ? 'archived' : 'missing';
+  }
+
+  /**
+   * Takes the programme's row lock, so two edits of it cannot interleave.
+   *
+   * WITHOUT THIS, two concurrent PUTs produce a mess that no constraint
+   * catches. Both deactivate the active rules; the second blocks, then finds
+   * nothing left to deactivate, so it believes this trigger has no history and
+   * writes VERSION 1 rules superseding nothing — live, beside the version 2
+   * rules the first edit just created and the second just switched off. The
+   * lineage breaks and the older version number is the one left running.
+   *
+   * `reward_rules_version_uniq` does not help: it is `(enterprise_id, id,
+   * version)` and `id` is the primary key, so it is unique whatever the
+   * version says. Nothing in the schema orders two edits of one programme.
+   *
+   * Taken BEFORE anything is read or written, so both editors queue on the
+   * same row and the second sees the first's committed result — including its
+   * rules — and supersedes them properly.
+   *
+   * Returns false when the programme is gone, so the caller can 404 rather
+   * than proceed against nothing.
+   */
+  async lockForUpdate(enterpriseId: number, id: number): Promise<boolean> {
+    const rows = await this.query<{ id: number }>(
+      `SELECT id FROM reward_programs
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        FOR UPDATE`,
+      [enterpriseId, id],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * The programme's own fields. Its rules are replaced separately.
+   *
+   * ARCHIVED IS REFUSED IN THE WHERE CLAUSE, not checked first. A programme
+   * archived between the read and this write would otherwise be edited anyway
+   * — the gap is small and it is still a gap, and archiving is one-way
+   * precisely so nothing resurrects a retired programme.
+   *
+   * `reward_programs_name_uniq` may still raise on the internal name; the
+   * service maps it to the 409 that names the field, rather than letting a
+   * constraint violation surface as a 500.
+   */
+  async updateDetails(input: {
+    enterpriseId: number;
+    id: number;
+    name: string;
+    displayName: string | null;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    forwardProviderCode: string | null;
+  }): Promise<'updated' | 'archived' | 'missing'> {
+    const { rows } = await this.mutate<{ id: number }>(
+      `UPDATE reward_programs
+          SET name = $3, display_name = $4, starts_at = $5, ends_at = $6,
+              forward_provider_code = $7
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+          AND status <> $8
+      RETURNING id`,
+      [
+        input.enterpriseId,
+        input.id,
+        input.name,
+        input.displayName,
+        input.startsAt,
+        input.endsAt,
+        input.forwardProviderCode,
+        RewardProgramStatus.Archived,
+      ],
+    );
+    if (rows.length > 0) return 'updated';
+
+    const existing = await this.findById(input.enterpriseId, input.id);
+    return existing ? 'archived' : 'missing';
+  }
+
+  /**
+   * Mirrors the number `entity_versions` just allocated onto the programme row.
+   *
+   * WRITTEN IN THE SAME TRANSACTION as the version row it mirrors, never on
+   * its own — the two disagreeing is worse than the lookup this avoids.
+   */
+  async setVersion(enterpriseId: number, id: number, version: number): Promise<void> {
+    await this.mutate(
+      `UPDATE reward_programs SET version = $3
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [enterpriseId, id, version],
+    );
+  }
+}

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
+import { OUTBOUND_RATE_LIMIT_MAX_WAIT_MS } from '@/shared/constants';
 import { MAX_SEND_ATTEMPTS } from '@/shared/constants';
 import { DestinationKind, OutboundEventStatus, OutboundEventType, Platform } from '@/shared/enums';
 import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
@@ -293,5 +294,72 @@ describe('outbound settlement guards', () => {
       [id],
     );
     expect(rows[0]?.dead_lettered_at).not.toBeNull();
+  });
+  /**
+   * THE WAIT CAP, proven to bite.
+   *
+   * A rate-limited send is PARKED rather than failed, and the attempt is
+   * refunded, so a provider throttling us does not burn the message's budget.
+   * That is right, and on its own it is unbounded: a send that is throttled
+   * every time would be parked for ever, refunding its attempt each round, and
+   * never reach a terminal state anybody could see. `maxWaitMs` is what stops
+   * that, measured from `created_at` rather than from the attempt — and nothing
+   * tested that it ever fires.
+   */
+  describe('the rate-limit wait cap', () => {
+    it('parks a young message and refunds its attempt', async () => {
+      const id = await enqueue('park-young');
+      const [claimed] = await outbound.claimDueBatch('worker-1', 10, 60);
+      expect(claimed?.id).toBe(id);
+
+      const outcome = await outbound.markRateLimited({
+        id,
+        leaseOwner: 'worker-1',
+        retryAt: new Date(Date.now() + 60_000),
+        error: 'rate limited',
+        maxWaitMs: OUTBOUND_RATE_LIMIT_MAX_WAIT_MS,
+      });
+
+      expect(outcome).toBe('parked');
+      const row: { status: string; attempt_count: number }[] = await db.query(
+        `SELECT status, attempt_count FROM outbound_events WHERE id = $1`,
+        [id],
+      );
+      expect(row[0]?.status).toBe('pending');
+      /* Claimed once, then refunded: the throttle cost it nothing. */
+      expect(row[0]?.attempt_count).toBe(0);
+    });
+
+    it('dead-letters one that has been waiting longer than the cap', async () => {
+      const id = await enqueue('park-old');
+      const [claimed] = await outbound.claimDueBatch('worker-1', 10, 60);
+      expect(claimed?.id).toBe(id);
+
+      /* Older than the cap. The cap counts from creation, so this is the one
+       * state that distinguishes "throttled briefly" from "never going out". */
+      await db.query(
+        `UPDATE outbound_events SET created_at = now() - interval '2 days' WHERE id = $1`,
+        [id],
+      );
+
+      const outcome = await outbound.markRateLimited({
+        id,
+        leaseOwner: 'worker-1',
+        retryAt: new Date(Date.now() + 60_000),
+        error: 'rate limited',
+        maxWaitMs: OUTBOUND_RATE_LIMIT_MAX_WAIT_MS,
+      });
+
+      expect(outcome).toBe('dead_lettered');
+      const row: { status: string; dead_lettered_at: Date | null; next_attempt_at: Date | null }[] =
+        await db.query(
+          `SELECT status, dead_lettered_at, next_attempt_at FROM outbound_events WHERE id = $1`,
+          [id],
+        );
+      expect(row[0]?.status).toBe('dead_letter');
+      expect(row[0]?.dead_lettered_at).not.toBeNull();
+      /* And it is not also scheduled to come back. */
+      expect(row[0]?.next_attempt_at).toBeNull();
+    });
   });
 });

@@ -4,6 +4,7 @@ export enum FeatureKey {
   CommentManagement = 'comment_management',
   PostInsights = 'post_insights',
   CustomerDirectory = 'customer_directory',
+  RewardPrograms = 'reward_programs',
 }
 
 export enum FeatureStatus {

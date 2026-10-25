@@ -9,6 +9,7 @@
  */
 
 import { AuditLog } from './audit-log.entity';
+import { EntityVersion } from './entity-version.entity';
 import { Channel } from './channel.entity';
 import { Conversation } from './conversation.entity';
 import { CustomerEngagement } from './customer-engagement.entity';
@@ -36,9 +37,20 @@ import { StaffMember } from './staff-member.entity';
 import { StaffRole } from './staff-role.entity';
 import { SyncJob } from './sync-job.entity';
 import { Verification } from './verification.entity';
+import { RewardProgram } from './reward-program.entity';
+import { RewardRule } from './reward-rule.entity';
+import { RewardRuleBenefit } from './reward-rule-benefit.entity';
+import { RewardRuleCondition } from './reward-rule-condition.entity';
+import { RewardAward } from './reward-award.entity';
+import { RewardAwardBenefit } from './reward-award-benefit.entity';
+import { RewardCapCounter } from './reward-cap-counter.entity';
+import { RewardWallet } from './reward-wallet.entity';
+import { RewardLedgerEntry } from './reward-ledger-entry.entity';
+import { RewardEntitlement } from './reward-entitlement.entity';
 
 export { BaseEntity, PublicEntity } from './base.entity';
 export { AuditLog } from './audit-log.entity';
+export { EntityVersion } from './entity-version.entity';
 export { Channel } from './channel.entity';
 export { Conversation } from './conversation.entity';
 export { CustomerEngagement } from './customer-engagement.entity';
@@ -66,6 +78,16 @@ export { StaffMember } from './staff-member.entity';
 export { StaffRole } from './staff-role.entity';
 export { SyncJob } from './sync-job.entity';
 export { Verification } from './verification.entity';
+export { RewardProgram } from './reward-program.entity';
+export { RewardRule } from './reward-rule.entity';
+export { RewardRuleBenefit } from './reward-rule-benefit.entity';
+export { RewardRuleCondition } from './reward-rule-condition.entity';
+export { RewardAward } from './reward-award.entity';
+export { RewardAwardBenefit } from './reward-award-benefit.entity';
+export { RewardCapCounter } from './reward-cap-counter.entity';
+export { RewardWallet } from './reward-wallet.entity';
+export { RewardLedgerEntry } from './reward-ledger-entry.entity';
+export { RewardEntitlement } from './reward-entitlement.entity';
 
 /** The array TypeORM is configured with. */
 export const ENTITIES = [
@@ -97,4 +119,15 @@ export const ENTITIES = [
   StaffRole,
   SyncJob,
   Verification,
+  RewardProgram,
+  RewardRule,
+  RewardRuleBenefit,
+  RewardRuleCondition,
+  RewardAward,
+  RewardAwardBenefit,
+  RewardCapCounter,
+  RewardWallet,
+  RewardLedgerEntry,
+  RewardEntitlement,
+  EntityVersion,
 ];

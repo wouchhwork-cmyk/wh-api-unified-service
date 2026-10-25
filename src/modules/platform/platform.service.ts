@@ -416,22 +416,69 @@ export class PlatformService {
      * meant to change which ones they had, with no error path that puts them
      * back. `createStaff` above has always been wrapped; this was not.
      */
-    await this.tx.runInTransaction(() =>
-      this.staff.replaceStaffRoles({
+    const { added, revoked } = await this.tx.runInTransaction(async () => {
+      /* Read inside the transaction, before the replace: the audit record
+       * needs what this person held, and reading it outside would race the
+       * very write it is describing. */
+      const previous = await this.staff.listRoleNamesForStaff(target.id);
+      await this.staff.replaceStaffRoles({
         staffId: target.id,
         roleIds: wanted.map((role) => role.id),
         grantedByStaffId: actingStaffId,
-      }),
-    );
+      });
 
-    await this.audit.record({
-      action: AuditAction.RoleGranted,
-      entityType: AuditEntityType.StaffMember,
-      entityId: target.id,
-      enterpriseId: null,
-      metadata: { roles: wanted.map((role) => role.name) },
+      const before = [...previous].sort();
+      const after = wanted.map((role) => role.name).sort();
+      const gained = after.filter((name) => !before.includes(name));
+      const lost = before.filter((name) => !after.includes(name));
+      const changes = { roles: { from: before, to: after } };
+
+      if (lost.length > 0) {
+        await this.audit.record({
+          action: AuditAction.RoleRevoked,
+          entityType: AuditEntityType.StaffMember,
+          entityId: target.id,
+          enterpriseId: null,
+          changes,
+          metadata: { revoked: lost },
+        });
+      }
+
+      if (gained.length > 0) {
+        await this.audit.record({
+          action: AuditAction.RoleGranted,
+          entityType: AuditEntityType.StaffMember,
+          entityId: target.id,
+          enterpriseId: null,
+          changes,
+          metadata: { granted: gained },
+        });
+      }
+
+      return { added: gained, revoked: lost };
     });
-    this.logger.info({ roleCount: wanted.length }, 'staff roles replaced');
+
+    /*
+     * A REPLACE CAN TAKE ROLES AWAY, AND ON THE STAFF PATH THAT MATTERS MOST.
+     *
+     * This recorded `role_granted` unconditionally, naming only the resulting
+     * set — so removing somebody's staff role produced a row stating the
+     * opposite of what happened, and stripping them entirely wrote
+     * `role_granted` with `roles: []`.
+     *
+     * The tenant side was fixed and this was not, which is the worse half to
+     * miss: staff reach crosses tenant boundaries, so this trail is the only
+     * thing separating legitimate support work from an insider granting
+     * themselves access to a customer's data.
+     *
+     * Both directions are recorded above, inside the transaction, as separate
+     * rows when one call does both — the same shape as
+     * `RolesService.setEmployeeRoles`.
+     */
+    this.logger.info(
+      { roleCount: wanted.length, granted: added.length, revoked: revoked.length },
+      'staff roles replaced',
+    );
   }
 
   async overview(): Promise<PlatformOverview> {

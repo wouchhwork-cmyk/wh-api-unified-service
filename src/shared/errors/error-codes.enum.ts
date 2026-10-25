@@ -69,6 +69,48 @@ export enum ErrorCode {
   ConnectionNotFound = 'CONNECTION_NOT_FOUND',
   ChannelNotFound = 'CHANNEL_NOT_FOUND',
   CustomerNotFound = 'CUSTOMER_NOT_FOUND',
+
+  /* REWARD PROGRAMS. */
+  RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',
+  RewardProgramArchived = 'REWARD_PROGRAM_ARCHIVED',
+
+  /**
+   * Two programmes in one business cannot share an INTERNAL name.
+   *
+   * The unique index has always enforced it; nothing mapped it, so a
+   * duplicate answered 500 and told the caller the server had broken when
+   * they had simply reused a name. The customer-facing `displayName` has no
+   * such rule and never will — two programmes may greet people identically.
+   */
+  RewardProgramNameTaken = 'REWARD_PROGRAM_NAME_TAKEN',
+  /**
+   * A rule would grant money and nobody has said in what.
+   *
+   * Its own code rather than a validation failure, because the remedy is not
+   * "fix this field" — it is "go and set your business's currency", which is
+   * a different screen. The client needs to tell them that and take them
+   * there, and it can only do so if the refusal says which problem it is.
+   */
+  EnterpriseCurrencyNotSet = 'ENTERPRISE_CURRENCY_NOT_SET',
+
+  /**
+   * A rule needs to know where the day starts and nobody has said.
+   *
+   * Same shape as the currency above and for the same reason: the remedy is
+   * a different screen, so the refusal has to say which problem it is.
+   */
+  EnterpriseTimezoneNotSet = 'ENTERPRISE_TIMEZONE_NOT_SET',
+  RewardRuleNotFound = 'REWARD_RULE_NOT_FOUND',
+  RewardWalletNotFound = 'REWARD_WALLET_NOT_FOUND',
+  /**
+   * The benefit cannot be "up to".
+   *
+   * Its own code rather than a generic validation failure because the caller
+   * can act on it: a free coffee is not divisible, so a factor has nothing to
+   * scale, and the fix is to pick a fixed amount rather than to correct a
+   * field's format.
+   */
+  RewardBenefitNotScalable = 'REWARD_BENEFIT_NOT_SCALABLE',
   ConversationNotFound = 'CONVERSATION_NOT_FOUND',
   MessageNotFound = 'MESSAGE_NOT_FOUND',
   PostNotFound = 'POST_NOT_FOUND',

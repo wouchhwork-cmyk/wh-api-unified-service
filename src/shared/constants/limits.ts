@@ -512,6 +512,16 @@ export const SEND_READ_BACK_MATCH_WINDOW_MS = 10 * 60 * 1000;
 /** How often ambiguous sends are read back. */
 export const SEND_RECONCILE_CRON = '*/10 * * * *';
 
+/**
+ * How often held reward awards are checked for a lapsed hold.
+ *
+ * Every minute, because a hold is already measured in hours and a customer
+ * waiting an extra minute past it notices nothing — while a longer tick would
+ * make the shortest useful hold an hour rather than whatever the enterprise
+ * configured.
+ */
+export const REWARD_GRANT_CRON = '* * * * *';
+
 /** A ceiling per run, so one sweep costs a bounded number of Graph calls. */
 export const SEND_RECONCILE_BATCH = 25;
 

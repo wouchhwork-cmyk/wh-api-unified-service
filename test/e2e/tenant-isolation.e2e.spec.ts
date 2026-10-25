@@ -567,6 +567,260 @@ describe('one business cannot reach another', () => {
     });
   });
 
+  /**
+   * REWARDS, which had no cross-tenant HTTP coverage at all.
+   *
+   * `reward-tenant-isolation.spec.ts` is the backstop underneath these and it
+   * is a good one — composite foreign keys, driven in raw SQL — but it never
+   * goes through a controller, so it cannot establish that a SERVICE resolves
+   * a refId with an `enterprise_id` predicate. Two of these routes are writes
+   * and two read a customer's financial position.
+   */
+  describe('rewards', () => {
+    /** Switches the feature on for a business and returns a program of its own. */
+    async function withRewards(business: Business): Promise<string> {
+      const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+      await http()
+        .post(`/api/v1/platform/enterprises/${business.refId}/features/reward_programs`)
+        .set(auth(admin.body.data.accessToken as string))
+        .send({ status: 'active' })
+        .expect(200);
+
+      const program = await http()
+        .post('/api/v1/rewards/programs')
+        .set(auth(business.token))
+        .send({ name: 'Monsoon' })
+        .expect(201);
+      return program.body.data.refId as string;
+    }
+
+    it('cannot read another business’s program history', async () => {
+      const theirs = await withRewards(rival);
+      await withRewards(acme);
+
+      /* A REAL program belonging to a REAL other tenant — not a refId that
+       * exists nowhere, which would pass with the predicate removed. */
+      await http()
+        .get(`/api/v1/rewards/programs/${theirs}/versions`)
+        .set(auth(acme.token))
+        .expect(404);
+    });
+
+    it('cannot archive another business’s program', async () => {
+      const theirs = await withRewards(rival);
+      await withRewards(acme);
+
+      await http()
+        .patch(`/api/v1/rewards/programs/${theirs}/status`)
+        .set(auth(acme.token))
+        .send({ status: 'archived' })
+        .expect(404);
+
+      /* And it is untouched: a 404 that still performed the write would be
+       * the worse outcome of the two. */
+      const theirView = await http()
+        .get('/api/v1/rewards/programs')
+        .set(auth(rival.token))
+        .expect(200);
+      expect(theirView.body.data.items[0].status).toBe('draft');
+    });
+
+    it('cannot switch another business’s rule on or off', async () => {
+      const theirProgram = await withRewards(rival);
+      await withRewards(acme);
+
+      const theirRule = await http()
+        .post('/api/v1/rewards/rules')
+        .set(auth(rival.token))
+        .send({
+          programRefId: theirProgram,
+          triggerKind: 'direct_message_inbound',
+          benefits: [{ benefitKind: 'grant_points', config: { points: 10 } }],
+          conditions: [],
+        })
+        .expect(201);
+
+      await http()
+        .patch(`/api/v1/rewards/rules/${theirRule.body.data.refId}/active`)
+        .set(auth(acme.token))
+        .send({ isActive: false })
+        .expect(404);
+    });
+
+    it('cannot list another business’s rules', async () => {
+      const theirs = await withRewards(rival);
+      await withRewards(acme);
+
+      await http()
+        .get(`/api/v1/rewards/rules?programRefId=${theirs}`)
+        .set(auth(acme.token))
+        .expect(404);
+    });
+
+    /**
+     * A customer's balance and award history are financial data about a named
+     * person. Both are addressed by a customer refId, and a customer belongs to
+     * exactly one business.
+     */
+    it('cannot read another business’s customer balances or awards', async () => {
+      await withRewards(acme);
+
+      const theirCustomer: { ref_id: string }[] = await db.query(
+        `INSERT INTO customers (enterprise_id, first_source, status)
+         SELECT e.id, 'direct_message', 'active' FROM enterprises e WHERE e.ref_id = $1
+         RETURNING ref_id`,
+        [rival.refId],
+      );
+      const refId = theirCustomer[0]?.ref_id as string;
+
+      await http()
+        .get(`/api/v1/rewards/customers/${refId}/balances`)
+        .set(auth(acme.token))
+        .expect(404);
+      await http()
+        .get(`/api/v1/rewards/customers/${refId}/awards`)
+        .set(auth(acme.token))
+        .expect(404);
+    });
+  });
+
+  /**
+   * THE INBOX WRITE ROUTES, which had no cross-tenant coverage.
+   *
+   * Five of them take a conversation `:refId`, and three of those act on a
+   * customer's content or speak to them in the business's name. A refId that
+   * resolves without an `enterprise_id` predicate is the whole attack.
+   */
+  describe('inbox', () => {
+    /**
+     * The attacker must get PAST gate 1, or the test proves nothing.
+     *
+     * Without the features, every call below is refused by the commercial gate
+     * with `FEATURE_NOT_ENABLED` before tenancy is ever considered — a green
+     * test asserting the wrong refusal. Granting them to the attacker leaves
+     * the tenant predicate as the only thing standing in the way, which is
+     * exactly what is under test.
+     */
+    async function withInbox(business: Business): Promise<void> {
+      const admin = await http().post('/api/v1/auth/login').send(platformAdminLogin()).expect(200);
+      const adminAuth = auth(admin.body.data.accessToken as string);
+      for (const feature of ['unified_inbox', 'comment_management']) {
+        await http()
+          .post(`/api/v1/platform/enterprises/${business.refId}/features/${feature}`)
+          .set(adminAuth)
+          .send({ status: 'active' })
+          .expect(200);
+      }
+    }
+
+    /** The smallest conversation a moderation or reply call will accept. */
+    async function seedConversation(business: Business): Promise<string> {
+      const enterprise: { id: string }[] = await db.query(
+        `SELECT id FROM enterprises WHERE ref_id = $1`,
+        [business.refId],
+      );
+      const enterpriseId = enterprise[0]?.id;
+
+      const connection: { id: string }[] = await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token)
+         VALUES ($1,'meta','social',$2,'envelope') RETURNING id`,
+        [enterpriseId, `fbu-${business.refId}`],
+      );
+      const channel: { id: string }[] = await db.query(
+        `INSERT INTO channels
+           (provider_connection_id, enterprise_id, platform, channel_kind,
+            platform_channel_id, name)
+         VALUES ($1,$2,'facebook','page',$3,'Page') RETURNING id`,
+        [connection[0]?.id, enterpriseId, `PAGE_${business.refId}`],
+      );
+      const customer: { id: string }[] = await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source, first_channel_id)
+         VALUES ($1,'Grace','facebook_comment',$2) RETURNING id`,
+        [enterpriseId, channel[0]?.id],
+      );
+      const post: { id: string }[] = await db.query(
+        `INSERT INTO posts
+           (enterprise_id, channel_id, platform, platform_post_id, post_kind, status, published_at)
+         VALUES ($1,$2,'facebook',$3,'image','published', now()) RETURNING id`,
+        [enterpriseId, channel[0]?.id, `POST_${business.refId}`],
+      );
+      const conversation: { ref_id: string; id: string }[] = await db.query(
+        `INSERT INTO conversations
+           (enterprise_id, channel_id, customer_id, post_id, platform, conversation_kind,
+            platform_thread_id, status, message_count, last_message_at)
+         VALUES ($1,$2,$3,$4,'facebook','comment_thread',$5,'open',1, now())
+         RETURNING ref_id, id`,
+        [enterpriseId, channel[0]?.id, customer[0]?.id, post[0]?.id, `thread-${business.refId}`],
+      );
+      await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, customer_id, direction, message_kind, body, status,
+            platform_sent_at, platform_message_id)
+         VALUES ($1,$2,$3,'inbound','text','is this open on Sundays?','delivered', now(), $4)`,
+        [enterpriseId, conversation[0]?.id, customer[0]?.id, `CM_${business.refId}`],
+      );
+      return conversation[0]?.ref_id as string;
+    }
+
+    it('cannot reply into another business’s conversation', async () => {
+      await withInbox(acme);
+      const theirs = await seedConversation(rival);
+
+      await http()
+        .post(`/api/v1/conversations/${theirs}/reply`)
+        .set(auth(acme.token))
+        .send({ body: 'we are open', idempotencyKey: 'cross-tenant-reply' })
+        .expect(404);
+    });
+
+    it('cannot assign another business’s conversation', async () => {
+      await withInbox(acme);
+      const theirs = await seedConversation(rival);
+
+      await http()
+        .post(`/api/v1/conversations/${theirs}/assign`)
+        .set(auth(acme.token))
+        .send({ employeeRefId: acme.agentEmployeeRefId })
+        .expect(404);
+    });
+
+    it('cannot moderate a comment in another business’s conversation', async () => {
+      await withInbox(acme);
+      const theirs = await seedConversation(rival);
+      const message: { ref_id: string }[] = await db.query(
+        `SELECT m.ref_id FROM messages m
+           JOIN conversations c ON c.id = m.conversation_id
+          WHERE c.ref_id = $1`,
+        [theirs],
+      );
+
+      await http()
+        .post(`/api/v1/conversations/${theirs}/messages/${message[0]?.ref_id}/moderate`)
+        .set(auth(acme.token))
+        .send({ action: 'hide' })
+        .expect(404);
+
+      /* And the comment is untouched — a 404 that still queued the hide would
+       * be the worse of the two outcomes. */
+      const after: { is_hidden_on_platform: boolean }[] = await db.query(
+        `SELECT is_hidden_on_platform FROM messages WHERE ref_id = $1`,
+        [message[0]?.ref_id],
+      );
+      expect(after[0]?.is_hidden_on_platform).toBe(false);
+    });
+
+    it('cannot refresh attachments on another business’s conversation', async () => {
+      await withInbox(acme);
+      const theirs = await seedConversation(rival);
+
+      await http()
+        .post(`/api/v1/conversations/${theirs}/attachments/refresh`)
+        .set(auth(acme.token))
+        .expect(404);
+    });
+  });
+
   describe('what the database refuses regardless of the code', () => {
     it('cannot pair one business’s employee with another’s role', async () => {
       /*

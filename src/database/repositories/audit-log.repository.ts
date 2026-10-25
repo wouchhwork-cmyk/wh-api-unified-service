@@ -19,9 +19,14 @@ export interface AuditLogInsert {
 }
 
 /**
- * INSERT and SELECT only, by grant as well as by policy: the migration revokes
- * UPDATE and DELETE on audit_logs from the application role, so there is no
+ * INSERT and SELECT only, enforced by the database as well as by policy: a
+ * BEFORE UPDATE OR DELETE trigger on `audit_logs` raises, so there is no
  * `update` method here to be tempted by — and no way to add one that would work.
+ *
+ * The trigger rather than the REVOKE is what carries this. The REVOKE is
+ * conditional on the application role differing from the migration role, which
+ * it does not on a developer machine or anywhere DB_APP_ROLE is unset, so for a
+ * long time this comment described a guarantee that was not in force.
  */
 @Injectable()
 export class AuditLogRepository extends BaseRepository {

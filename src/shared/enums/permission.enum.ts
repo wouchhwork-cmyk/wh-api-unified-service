@@ -20,6 +20,7 @@ export enum PermissionResource {
   Roles = 'roles',
   Features = 'features',
   Enterprise = 'enterprise',
+  Rewards = 'rewards',
 }
 
 /** The action half. */
@@ -35,6 +36,15 @@ export enum PermissionAction {
   Request = 'request',
   /** Staff-side approval or refusal of an enterprise's feature request. */
   Decide = 'decide',
+  /**
+   * Moving value for ONE named customer — a manual reward credit or debit.
+   *
+   * Its own action rather than a flavour of `manage`, because the two are
+   * different powers: `manage` rewrites what everybody earns in future, while
+   * `adjust` moves money now, for a person, and belongs on the support desk
+   * without the program-editing rights beside it.
+   */
+  Adjust = 'adjust',
 }
 
 /**
@@ -85,6 +95,20 @@ export enum Permission {
 
   CustomersView = 'customers.view',
   CustomersManage = 'customers.manage',
+
+  /*
+   * REWARD PROGRAMS. A rule decides who receives value, so editing one is a
+   * money decision and is audited (reward-programs-design.md §17).
+   *
+   * `rewards.adjust` is deliberately separate from `rewards.manage`: writing a
+   * rule changes what everybody earns in future, while adjusting a balance
+   * moves value for ONE named customer right now. The second is the one a
+   * support agent needs and the one that wants its own audit trail, so a role
+   * can carry it without being able to rewrite the program.
+   */
+  RewardsView = 'rewards.view',
+  RewardsManage = 'rewards.manage',
+  RewardsAdjust = 'rewards.adjust',
 
   EmployeesView = 'employees.view',
   EmployeesInvite = 'employees.invite',

@@ -59,6 +59,12 @@ const FEATURES: readonly FeatureSeed[] = [
     name: 'Customer Directory',
     description: 'The people who interacted, and their identifiers across platforms.',
   },
+  {
+    key: FeatureKey.RewardPrograms,
+    name: 'Reward Programs',
+    description:
+      'Turning social activity into points, value and benefits, with wallets and a ledger.',
+  },
 ];
 
 // ===========================================================================
@@ -90,6 +96,17 @@ const FEATURE_BY_RESOURCE: Readonly<Record<PermissionResource, FeatureKey | null
   [PermissionResource.Mentions]: FeatureKey.UnifiedInbox,
   [PermissionResource.Posts]: FeatureKey.PostInsights,
   [PermissionResource.Customers]: FeatureKey.CustomerDirectory,
+  /*
+   * GATED, unlike the account-running resources below it.
+   *
+   * Rewards moves money — a business holds a liability the moment a wallet has
+   * a balance — so it is a commercial decision, not something a tenant switches
+   * on by granting themselves a role. Gating it costs nothing a feature that
+   * had already shipped would cost: nobody holds `reward_programs` yet, so
+   * there is no tenant to go dark (contrast Mentions above, which rides the
+   * inbox feature for exactly that reason).
+   */
+  [PermissionResource.Rewards]: FeatureKey.RewardPrograms,
   [PermissionResource.Channels]: null,
   [PermissionResource.Employees]: null,
   [PermissionResource.Roles]: null,
@@ -133,6 +150,10 @@ const PERMISSION_SCOPES: Readonly<Record<Permission, PermissionScope>> = {
   [Permission.CustomersView]: PermissionScope.Both,
   [Permission.CustomersManage]: PermissionScope.Enterprise,
 
+  [Permission.RewardsView]: PermissionScope.Both,
+  [Permission.RewardsManage]: PermissionScope.Enterprise,
+  [Permission.RewardsAdjust]: PermissionScope.Enterprise,
+
   [Permission.EmployeesView]: PermissionScope.Both,
   [Permission.EmployeesInvite]: PermissionScope.Enterprise,
   [Permission.EmployeesManage]: PermissionScope.Enterprise,
@@ -175,6 +196,9 @@ const PERMISSION_DESCRIPTIONS: Readonly<Record<Permission, string>> = {
 
   [Permission.CustomersView]: 'See customer records and their platform identifiers.',
   [Permission.CustomersManage]: 'Edit, merge, and archive customer records.',
+  [Permission.RewardsView]: 'See reward programs, rules, balances, and award history.',
+  [Permission.RewardsManage]: 'Create and edit reward programs and their rules.',
+  [Permission.RewardsAdjust]: "Manually credit or debit a customer's reward balance.",
 
   [Permission.EmployeesView]: 'See the people who belong to this enterprise.',
   [Permission.EmployeesInvite]: 'Invite a person to this enterprise.',
@@ -466,6 +490,8 @@ interface Summary {
   readonly table: string;
   readonly inserted: number;
   readonly existing: number;
+  /** Rows already present that this seed had to CHANGE, not just skip. */
+  readonly corrected?: number;
 }
 
 async function seedFeatures(
@@ -533,6 +559,33 @@ async function seedPermissions(
     ],
   );
 
+  /*
+   * A GATE THAT CHANGED HAS TO BE REWRITTEN, and the insert above cannot do it:
+   * `ON CONFLICT DO NOTHING` skips the row entirely, so a permission seeded
+   * once with `feature_id NULL` would keep skipping gate 1 forever however many
+   * times the catalogue said otherwise. That is not hypothetical — it is how
+   * `rewards.*` shipped ungated: the catalogue was the source of truth for new
+   * databases and silently powerless over every existing one.
+   *
+   * Narrow by construction: only `feature_id`, only where it differs, and
+   * `IS DISTINCT FROM` because NULL is the value being corrected on both sides.
+   * `updated_at` is left alone — a trigger maintains it.
+   */
+  const regated = await run<{ code: string }>(
+    manager,
+    `UPDATE permissions p
+        SET feature_id = s.feature_id
+       FROM unnest($1::varchar[], $2::bigint[]) AS s(code, feature_id)
+      WHERE p.code = s.code
+        AND p.is_deleted = false
+        AND p.feature_id IS DISTINCT FROM s.feature_id
+      RETURNING p.code`,
+    [
+      PERMISSION_CATALOGUE.map((seed) => seed.code),
+      PERMISSION_CATALOGUE.map((seed) => featureIdFor(seed.featureKey)),
+    ],
+  );
+
   const codes = PERMISSION_CATALOGUE.map((seed) => seed.code);
   const byCode = await idsByKey(
     manager,
@@ -547,6 +600,7 @@ async function seedPermissions(
       table: 'permissions',
       inserted: inserted.length,
       existing: PERMISSION_CATALOGUE.length - inserted.length,
+      corrected: regated.length,
     },
     byCode,
   ];
@@ -670,9 +724,11 @@ function report(
 
   console.log('seed — global catalogue (no tenant data)\n');
   for (const summary of summaries) {
+    const corrected =
+      summary.corrected && summary.corrected > 0 ? `, ${summary.corrected} re-gated` : '';
     console.log(
       `  ${summary.table.padEnd(width)}  ${String(summary.inserted).padStart(3)} inserted, ` +
-        `${String(summary.existing).padStart(3)} already present`,
+        `${String(summary.existing).padStart(3)} already present${corrected}`,
     );
   }
 

@@ -15,6 +15,7 @@ import { RolesModule } from '@/modules/roles/roles.module';
 import { EnterprisesModule } from '@/modules/enterprises/enterprises.module';
 import { HealthModule } from '@/modules/health/health.module';
 import { InboxModule } from '@/modules/inbox/inbox.module';
+import { RewardsModule } from '@/modules/rewards/rewards.module';
 import { PlatformModule } from '@/modules/platform/platform.module';
 import { CryptoModule } from '@/shared/crypto';
 import {
@@ -86,6 +87,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
     RolesModule,
     EnterprisesModule,
     InboxModule,
+    RewardsModule,
     CatalogueModule,
     PlatformModule,
     HealthModule,

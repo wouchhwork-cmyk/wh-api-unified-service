@@ -14,6 +14,7 @@ import {
   ActorKind,
   AuditAction,
   AuditEntityType,
+  AuditStatus,
   DeliveryChannel,
   EmployeeKind,
   EmployeeStatus,
@@ -94,6 +95,24 @@ export class AuthService {
     // timing oracle this is meant to remove.
     if (!identity) {
       await this.hasher.verifyPassword(await this.decoyHash(), request.password);
+      /*
+       * A FAILURE AGAINST NO ACCOUNT, and it still earns a row: repeated
+       * attempts from one address against addresses that do not exist is what
+       * credential stuffing looks like, and the IP is on the row.
+       *
+       * `entityId` is null because there is genuinely no subject, and the
+       * credential that was tried is NOT recorded — writing it would put an
+       * address or a phone number, quite possibly a real person's, into the
+       * audit trail on the say-so of an unauthenticated caller.
+       */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: null,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'no_such_credential', credentialKind: credential.kind },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -123,6 +142,14 @@ export class AuthService {
        * running: counting further would only let a third party keep extending
        * somebody else's lockout.
        */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'locked' },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -132,6 +159,19 @@ export class AuthService {
         MAX_FAILED_LOGINS,
         LOGIN_LOCK_DURATION_MS,
       );
+      /*
+       * The reason is ours to keep, not the caller's to learn: the response
+       * stays the single generic error, while the row says which of the three
+       * failures this was. That asymmetry is the point of auditing it.
+       */
+      await this.audit.record({
+        action: AuditAction.LoginFailed,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId: null,
+        status: AuditStatus.Failure,
+        metadata: { reason: 'bad_password' },
+      });
       throw new AppException(ErrorCode.AuthInvalidCredentials);
     }
 
@@ -201,11 +241,23 @@ export class AuthService {
     const identity = await this.identities.findById(identityId);
     if (!identity) throw new AppException(ErrorCode.AuthInvalidCredentials);
 
+    /*
+     * HASHED BEFORE THE TRANSACTION OPENS, which signup already does and this
+     * path never did.
+     *
+     * argon2id is deliberately expensive — that is the whole point of it — and
+     * awaiting it inside the transaction holds a pooled connection open, with
+     * a transaction on it, for the entire key derivation. The pool is ten
+     * connections; invitations accepted together therefore queue behind each
+     * other's CPU work for no reason involving the database at all.
+     *
+     * backend-design.md §19.7 records this exact mistake being fixed for
+     * signup, with the same reasoning. It was not carried across to here.
+     */
+    const passwordHash = await this.hasher.hashPassword(newPassword);
+
     await this.tx.runInTransaction(async () => {
-      await this.identities.updatePasswordHash(
-        identity.id,
-        await this.hasher.hashPassword(newPassword),
-      );
+      await this.identities.updatePasswordHash(identity.id, passwordHash);
 
       // The column is chosen by matching the destination that was actually
       // proven, so accepting an email invite can never mark a mobile verified.
@@ -256,6 +308,31 @@ export class AuthService {
        * the request they are making.
        */
       const revoked = await this.sessions.revokeAllForIdentity(identity.id);
+
+      /*
+       * FOUR STATE CHANGES AND NOT ONE ROW, until now.
+       *
+       * In this transaction a password hash is set, a credential is stamped
+       * verified, an employment or a staff member is activated, and every other
+       * session that identity holds is revoked. The only record it produced was
+       * the `login` written downstream, which says nothing about any of it.
+       *
+       * One row for one event — "the invitation was accepted" — with what moved
+       * in `metadata`. Inside the transaction, so a rolled-back acceptance
+       * leaves no row claiming somebody joined.
+       *
+       * No address, no name, no password of any form: the identity id and the
+       * employment are the audit facts.
+       */
+      await this.audit.record({
+        action: AuditAction.Updated,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId,
+        changes: { passwordSet: true, credentialVerified: true },
+        metadata: { reason: 'invitation_accepted', sessionsRevoked: revoked },
+      });
+
       if (revoked > 0) {
         this.logger.info(
           { identityId: identity.id, revoked },
@@ -293,10 +370,32 @@ export class AuthService {
      * identity's own values, so verifying an email can never mark a mobile
      * verified.
      */
-    if (identity.email !== null && identity.email === verifiedDestination) {
-      await this.identities.markCredentialVerified(identity.id, 'email');
-    } else if (identity.mobile !== null && identity.mobile === verifiedDestination) {
-      await this.identities.markCredentialVerified(identity.id, 'mobile');
+    const credential =
+      identity.email !== null && identity.email === verifiedDestination
+        ? 'email'
+        : identity.mobile !== null && identity.mobile === verifiedDestination
+          ? 'mobile'
+          : null;
+
+    if (credential !== null) {
+      await this.identities.markCredentialVerified(identity.id, credential);
+
+      /*
+       * A COLUMN ON `identities` CHANGED, so it is recorded. `AuditAction.Verified`
+       * was declared and written by nothing — the vocabulary existed and the
+       * coverage did not, which is the pattern the SOP now refuses.
+       *
+       * WHICH credential, never its value: "email" and "mobile" say what was
+       * proven; the address itself is PII and stays out.
+       */
+      await this.audit.record({
+        action: AuditAction.Verified,
+        entityType: AuditEntityType.Identity,
+        entityId: identity.id,
+        enterpriseId: null,
+        changes: { [`${credential}VerifiedAt`]: { from: null, to: 'now' } },
+        metadata: { credential },
+      });
     }
 
     return this.completeLogin(identity, meta);
@@ -313,6 +412,33 @@ export class AuthService {
     const staffRecord = await this.staff.findActiveByIdentity(identity.id);
 
     await this.identities.recordSuccessfulLogin(identity.id);
+
+    /*
+     * THE TRAIL HAD NEITHER ENTRANCES NOR ORDINARY EXITS. Neither `login` nor
+     * `logout` was recorded — only "sign out everywhere" — so the audit log
+     * could show a session ending that it had no record of beginning, and most
+     * sessions left no trace at all. A successful sign-in is the single event
+     * an incident review starts from.
+     *
+     * Recorded HERE because every successful login converges on this method,
+     * whether it needed a second factor or not. Recording it at the two call
+     * sites instead would miss one the first time a third appears.
+     *
+     * THE ACTOR IS `system` AND THE SUBJECT IS THE ENTITY. There is no JWT yet
+     * — the session is being created by this very call — so the guard chain has
+     * built no ActorContext. `entity_id` names the identity that signed in,
+     * which is the question this row answers. IP and user-agent come from the
+     * request context on their own.
+     *
+     * NO CREDENTIAL, EVER: not the address, not the number, not a masked form
+     * of either. The identity id is the whole of what is recorded.
+     */
+    await this.audit.record({
+      action: AuditAction.Login,
+      entityType: AuditEntityType.Identity,
+      entityId: identity.id,
+      enterpriseId: null,
+    });
 
     /*
      * ANY of our own people get a session with no enterprise — not only the
@@ -521,7 +647,26 @@ export class AuthService {
       this.hasher.hashOpaqueToken(refreshToken),
     );
     // Logging out an already-dead session is a success, not an error.
-    if (session) await this.sessions.revoke(session.id);
+    if (!session) return;
+
+    await this.sessions.revoke(session.id);
+
+    /*
+     * ONLY "SIGN OUT EVERYWHERE" WAS RECORDED, so the trail showed the rare
+     * event and missed the ordinary one — and a session could end with no row
+     * saying it had.
+     *
+     * Not inside a transaction: the revoke above stands alone, and a lost
+     * audit row is a better outcome than a sign-out that appears to fail and
+     * leaves the person unsure whether they are still signed in.
+     */
+    await this.audit.record({
+      action: AuditAction.Logout,
+      entityType: AuditEntityType.Identity,
+      entityId: session.identityId,
+      enterpriseId: null,
+      metadata: { scope: 'one_session' },
+    });
   }
 
   /**

@@ -52,6 +52,11 @@ export const PERMISSION_GROUPS: Readonly<Record<PermissionResource, PermissionGr
     description: 'The directory of people this business has talked to.',
     order: 50,
   },
+  [PermissionResource.Rewards]: {
+    label: 'Reward programs',
+    description: 'Engagement programs, rules, balances, and manual adjustments.',
+    order: 55,
+  },
   [PermissionResource.Channels]: {
     label: 'Connected accounts',
     description: 'The Facebook Pages and Instagram accounts this business has connected.',

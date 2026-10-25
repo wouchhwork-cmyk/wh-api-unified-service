@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
+import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { createTestDataSource, returningRows, truncateTenantData } from './db.harness';
 
 /**
@@ -204,5 +205,57 @@ describe('transport ledger', () => {
     // Once it completes it leaves the live slot, so a scheduled refresh can run.
     await db.query(`UPDATE sync_jobs SET status = 'completed', completed_at = now()`);
     expect(await enqueue()).toBe(true);
+  });
+  /**
+   * THE PROJECTION ATTEMPT BUDGET, driven until it is spent.
+   *
+   * `max_attempts` on the row is what stops a poisoned webhook being retried
+   * for ever, and nothing exercised it: the spec proved rows are claimed
+   * exactly once and never that a row stops being claimed. A retry loop with
+   * no proven terminal state is the one that runs until somebody notices the
+   * backlog.
+   */
+  describe('an event that cannot be projected', () => {
+    it('is retried while the budget holds and dead-lettered once it is spent', async () => {
+      const inbound = new InboundEventRepository(db);
+      await insertEvent('meta:comment:poison');
+      const [id] = await claim('worker-1', 1);
+      if (id === undefined) throw new Error('nothing claimed');
+
+      const budget: { max_attempts: number }[] = await db.query(
+        `SELECT max_attempts FROM inbound_events WHERE id = $1`,
+        [id],
+      );
+      const maxAttempts = budget[0]?.max_attempts ?? 0;
+      expect(maxAttempts).toBeGreaterThan(1);
+
+      /* The first failure is a retry, not a death: the budget is not spent. */
+      await inbound.markFailed(id, 'worker-1', 'projector exploded', new Date(Date.now() - 1000));
+      let row: { status: string; attempt_count: number }[] = await db.query(
+        `SELECT status, attempt_count FROM inbound_events WHERE id = $1`,
+        [id],
+      );
+      expect(row[0]?.status).toBe('failed');
+
+      /* Keep claiming and failing until the row has spent its attempts. */
+      for (let attempt = 2; attempt <= maxAttempts; attempt += 1) {
+        const [again] = await claim(`worker-${attempt}`, 1);
+        if (again === undefined) break;
+        await inbound.markFailed(
+          again,
+          `worker-${attempt}`,
+          'projector exploded',
+          new Date(Date.now() - 1000),
+        );
+      }
+
+      row = await db.query(`SELECT status, attempt_count FROM inbound_events WHERE id = $1`, [id]);
+      expect(row[0]?.status).toBe('dead_letter');
+      expect(row[0]?.attempt_count).toBeGreaterThanOrEqual(maxAttempts);
+
+      /* Terminal: a dead-lettered event is never claimed again, however due
+       * it looks — the claim predicate only takes `pending` and `failed`. */
+      expect(await claim('worker-after', 10)).not.toContain(id);
+    });
   });
 });

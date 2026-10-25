@@ -137,7 +137,7 @@ export class Verification extends PublicEntity {
    * answers the hourly cap. Both are configuration — "without them this endpoint
    * is a free SMS pump billed to us".
    */
-  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION })
+  @Column({ type: 'timestamptz', precision: TIMESTAMP_PRECISION, default: () => 'now()' })
   lastSentAt!: Date;
 
   /** The send itself, via the transactional outbox — "did it leave our system". */

@@ -10,7 +10,24 @@ import { MAX_PROJECTION_ATTEMPTS } from '@/shared/constants';
 import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
+import type {
+  ProjectedReversalFacts,
+  ProjectedTriggerFacts,
+  ProjectionOutcome,
+} from '@/modules/inbox/comment-projector.service';
+import { RewardGrantService } from '@/modules/rewards/reward-grant.service';
+import { RuleEvaluatorService } from '@/modules/rewards/rule-evaluator.service';
 
+/**
+ * Which reward trigger a projected conversation represents.
+ *
+ * A comment on OUR post and a comment on somebody else's that tags us are
+ * different things to an enterprise writing a rule — one is engagement on
+ * their own content, the other is reach into somebody else's audience — so
+ * they are separate triggers rather than one with a flag.
+ *
+ * A kind absent from this map simply does not drive rewards.
+ */
 /**
  * Projects ledger rows into the domain.
  *
@@ -44,10 +61,7 @@ interface ProjectionContext {
   readonly attemptCount: number;
 }
 
-type Projector = (
-  context: ProjectionContext,
-  payload: unknown,
-) => Promise<{ projected: boolean; reason?: string }>;
+type Projector = (context: ProjectionContext, payload: unknown) => Promise<ProjectionOutcome>;
 
 @Injectable()
 export class InboundProjectorWorker extends BasePoller {
@@ -61,6 +75,8 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly comments: CommentProjectorService,
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
+    private readonly rewards: RuleEvaluatorService,
+    private readonly rewardGrants: RewardGrantService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(InboundProjectorWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -158,6 +174,8 @@ export class InboundProjectorWorker extends BasePoller {
 
         if (outcome.projected) {
           await this.inbound.markProcessed(event.id, this.leaseOwner);
+          await this.offerToRewards(outcome.trigger);
+          await this.reverseRewards(outcome.reversal);
         } else {
           // Not an error: the event was understood and deliberately not
           // projected — an echo of our own send, a like rather than a comment,
@@ -195,5 +213,83 @@ export class InboundProjectorWorker extends BasePoller {
     }
 
     return claimed.length;
+  }
+  /**
+   * Offers a projected event to the reward engine.
+   *
+   * AFTER the projection is marked processed, and deliberately so. The reward
+   * engine opens its own transaction per rule, and a rule misbehaving must
+   * never hold up — or roll back — the customer's message appearing in the
+   * inbox. The inbox is the product; rewards are a reaction to it.
+   *
+   * The cost of that choice is honest: a crash between marking processed and
+   * this call loses the reward for that event. The alternative is worse —
+   * coupling a customer's message to a reward rule's correctness — and the
+   * ledger's exactly-once index means a replay of the whole event is safe if
+   * recovery is ever wanted.
+   */
+  private async offerToRewards(trigger: ProjectedTriggerFacts | undefined): Promise<void> {
+    if (!trigger) return;
+
+    try {
+      await this.rewards.onTriggerEvent({
+        enterpriseId: trigger.enterpriseId,
+        customerId: trigger.customerId,
+        /* Named by the projector that saw the event, not re-derived here from
+         * a conversation kind that cannot tell a story mention from a DM. */
+        triggerKind: trigger.triggerKind,
+        sourceRefKind: trigger.sourceRefKind,
+        sourceRefId: trigger.sourceRefId,
+        channelId: trigger.channelId,
+        occurredAtUtc: trigger.occurredAtUtc,
+        content: trigger.content,
+        /*
+         * Not fetched. The tenure condition needs it, and loading a customer
+         * row for every projected event to serve a condition most rules do not
+         * use is the wrong trade — the condition fails closed without it,
+         * which is the safe direction.
+         */
+        customerFirstSeenAt: null,
+        /* An inbound message knows nothing about a balance; only a credit
+         * does, and that is what produces the threshold event. */
+        pointsBalance: null,
+      });
+    } catch (error) {
+      // Never fails the projection. The event is already processed.
+      this.logger.warn(
+        { err: error, sourceRefId: trigger.sourceRefId },
+        'reward evaluation failed for a projected event',
+      );
+    }
+  }
+  /**
+   * The content behind an award was removed or hidden. Take the award back.
+   *
+   * Only rules that asked for it react — reversalPolicy is per rule, because
+   * whether a deleted comment should cost the customer their points is a
+   * business decision rather than a platform fact.
+   *
+   * Same placement and same reasoning as offerToRewards: after the event is
+   * processed, and never able to fail it. A reversal that does not happen is
+   * recoverable from the award row; a projection that does not happen is a
+   * customer's message missing from the inbox.
+   */
+  private async reverseRewards(reversal: ProjectedReversalFacts | undefined): Promise<void> {
+    if (!reversal) return;
+
+    try {
+      const reversed = await this.rewardGrants.reverseForDeletedContent(reversal);
+      if (reversed > 0) {
+        this.logger.info(
+          { sourceRefId: reversal.sourceRefId, reversed, reason: reversal.reasonCode },
+          'reward awards reversed for removed content',
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, sourceRefId: reversal.sourceRefId },
+        'reward reversal failed for removed content',
+      );
+    }
   }
 }

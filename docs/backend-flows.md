@@ -30,7 +30,7 @@ pairs that sound interchangeable and are not: **identity vs employee**, and
 | **Staff employee** | `staff_members` | One of *our* people. `has_all_enterprise_access = true` means every business, present and future — the platform admin. Staff never sign up; there is no route that creates one from outside. |
 | **Role** | `roles` | A named bundle of actions, owned by one business. The four enterprise templates (owner, manager, agent, viewer) are **copied into each business at signup**, because a template row belongs to no business and is structurally unassignable. |
 | **Permission** | `permissions` | The global catalogue of grantable actions, as `resource.action` — `conversations.reply`. Each one optionally names the feature that gates it. |
-| **Feature** | `features` | The product catalogue: `unified_inbox`, `comment_management`, `post_insights`, `customer_directory`. |
+| **Feature** | `features` | The product catalogue: `unified_inbox`, `comment_management`, `post_insights`, `customer_directory`, `reward_programs`. |
 | **Enterprise feature** | `enterprise_features` | What one business is entitled to, and where that entitlement is in its lifecycle. **`status = 'active'` is the only thing that means "on"** — there is no separate boolean, deliberately, because that would be a second answer to the same question. |
 
 ### Signing in
@@ -339,7 +339,7 @@ actions available to a business's staff **at all**; a role cannot grant what the
 business does not have.
 
 The catalogue is `unified_inbox`, `comment_management`, `post_insights`,
-`customer_directory`. A business that has never had a feature has no row for it,
+`customer_directory`, `reward_programs`. A business that has never had a feature has no row for it,
 which reads the same as not enabled.
 
 An admin may grant a feature the business never asked for — that is how a plan

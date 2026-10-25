@@ -5,9 +5,14 @@ import { BaseEntity } from './base.entity';
 
 /**
  * schema.md §25 — append-only activity log. The service layer only ever
- * INSERTs, and the database backs that up: `UPDATE` and `DELETE` are revoked
- * from the application role. No `ref_id`: nothing addresses a log row by a
- * public identifier.
+ * INSERTs, and the database backs that up with a BEFORE UPDATE OR DELETE
+ * trigger that raises. No `ref_id`: nothing addresses a log row by a public
+ * identifier.
+ *
+ * The trigger is what enforces it. A REVOKE is also issued, but only where the
+ * application role differs from the migration role — so on every machine where
+ * they are the same it does nothing, and this paragraph claimed a database
+ * guarantee that did not exist until the trigger was added.
  *
  * Two inherited columns are here on purpose, and neither is working state:
  *

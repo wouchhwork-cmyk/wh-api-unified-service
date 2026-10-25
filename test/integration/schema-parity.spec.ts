@@ -3,6 +3,11 @@ import { DataSource } from 'typeorm';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
 import { syncSchema } from '@/database/schema/provision';
+import {
+  createScratchAdminDataSource,
+  dropScratchDatabase,
+  recreateScratchDatabase,
+} from './db.harness';
 
 /**
  * The migration and `pnpm db:sync` must produce the SAME schema.
@@ -34,6 +39,7 @@ interface SchemaFacts {
   notNulls: string[];
   triggers: string[];
   columns: string[];
+  defaults: string[];
 }
 
 /*
@@ -88,24 +94,17 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
   let admin: DataSource;
 
   beforeAll(async () => {
-    admin = new DataSource({
-      ...buildDataSourceOptions(loadConfiguration().database),
-      database: 'postgres',
-      entities: [],
-      migrations: [],
-    });
-    await admin.initialize();
+    admin = await createScratchAdminDataSource();
 
     for (const name of [MIGRATED, SYNCED]) {
-      await admin.query(`DROP DATABASE IF EXISTS ${name}`);
-      await admin.query(`CREATE DATABASE ${name}`);
+      await recreateScratchDatabase(admin, name);
     }
   }, 180_000);
 
   afterAll(async () => {
     if (!admin?.isInitialized) return;
     for (const name of [MIGRATED, SYNCED]) {
-      await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+      await dropScratchDatabase(admin, name);
     }
     await admin.destroy();
   }, 180_000);
@@ -173,6 +172,33 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
         SELECT table_name || '.' || column_name || ':' || data_type AS value
           FROM information_schema.columns
          WHERE table_schema = 'public'`),
+      /*
+       * DEFAULTS, which used to be a blind spot.
+       *
+       * An entity declaring `@Column({ type: 'int' })` where the migration
+       * says `INTEGER NOT NULL DEFAULT 1` produced two databases that agreed
+       * on every column, type, index and constraint — and differed on whether
+       * an INSERT omitting the column worked. The migration path accepted it;
+       * the sync path raised a not-null violation. Caught by a feature test,
+       * which is one layer too late.
+       *
+       * Normalised because the two paths spell the same default differently:
+       * TypeORM emits `'draft'::character varying` where the migration emits
+       * `'draft'`, and `nextval(...)` names a sequence per database.
+       */
+      defaults: (
+        await rows(`
+        SELECT table_name || '.' || column_name || '=' || column_default AS value
+          FROM information_schema.columns
+         WHERE table_schema = 'public' AND column_default IS NOT NULL`)
+      ).map((value) =>
+        value
+          .replace(/::[a-z ]+(\[\])?/g, '')
+          .replace(/nextval\('[^']+'(::regclass)?\)/g, 'nextval()')
+          // TypeORM quotes a numeric default ('30'); the migration writes it
+          // bare (30). Postgres stores the same value either way.
+          .replace(/='(-?\d+)'$/, '=$1'),
+      ),
     };
   }
 
@@ -212,6 +238,7 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
       expect(fromSync.foreignKeys).toEqual(fromMigration.foreignKeys);
       expect(fromSync.checks).toEqual(fromMigration.checks);
       expect(fromSync.triggers).toEqual(fromMigration.triggers);
+      expect(withoutLedger(fromSync.defaults)).toEqual(withoutLedger(fromMigration.defaults));
 
       // A guard against the comparison passing because both sides are empty.
       expect(fromMigration.foreignKeys.length).toBeGreaterThan(60);
@@ -221,10 +248,16 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
        * percentages and counts, one keeping a role's level in range, and one
        * pinning a staff-role grant to a staff-scoped role.
        *
+       * Five more from the reward schema, each tying COLUMNS together rather
+       * than listing allowed values — a house account has no customer, a points
+       * wallet has no currency, an `up_to` benefit has a cap and a `fixed` one
+       * does not, a factor stays inside 0..10000, and a cap counter never
+       * exceeds its own cap.
+       *
        * Counted rather than merely compared so that a constraint quietly
        * disappearing from BOTH paths still fails here.
        */
-      expect(fromMigration.checks).toHaveLength(8);
+      expect(fromMigration.checks).toHaveLength(13);
     } finally {
       await synced.destroy();
       await migrated.destroy();

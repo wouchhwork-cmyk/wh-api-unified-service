@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post, Req } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { CurrentScopedActor, Public, RequirePermission } from '@/shared/decorators';
@@ -9,6 +9,7 @@ import {
   type SignupRequest,
   type SignupResponse,
 } from '@/shared/contracts/enterprises/signup.contract';
+import { UpdateBusinessSettingsSchema } from '@/shared/contracts/enterprises/settings.contract';
 import { EnterprisesService, type EnterpriseSummary } from './enterprises.service';
 import { VerificationDeliveryService } from '../auth/verification-delivery.service';
 import { EnterpriseOnboardingService } from './enterprise-onboarding.service';
@@ -85,5 +86,39 @@ export class EnterprisesController {
     @CurrentScopedActor() actor: ActorContext & { enterpriseId: number },
   ): Promise<EnterpriseSummary> {
     return this.enterprisesService.current(actor.enterpriseId);
+  }
+
+  @Get('settings/options')
+  @RequirePermission(Permission.EnterpriseView)
+  @ApiOperation({
+    summary: 'The values the settings form may offer',
+    description:
+      'The canonical IANA timezone list and the ISO 4217 currency list as this runtime knows ' +
+      'them, which are the SAME sets the settings endpoint validates against — so a client ' +
+      'renders its dropdowns from here rather than hardcoding lists that could drift. ' +
+      'Timezone abbreviations are deliberately absent: "EST" resolves to America/Panama and ' +
+      '"IST" is claimed by three countries, so neither can be stored. Currencies are checked ' +
+      'against the list rather than a three-letter shape, which used to accept "XYZ".',
+  })
+  settingsOptions(): { timezones: readonly string[]; currencies: readonly string[] } {
+    return this.enterprisesService.settingsOptions();
+  }
+
+  @Patch('current')
+  @RequirePermission(Permission.EnterpriseManage)
+  @ApiOperation({
+    summary: 'Change the business’s own settings',
+    description:
+      'The timezone set here is the ONE the whole product reads — reward cap periods, ' +
+      'happy-hour windows, and anything added later. Nothing keeps its own copy, so changing ' +
+      'it moves every one of them at once. Recorded in the audit trail and versioned, because ' +
+      'an award granted last month was decided against the timezone in force last month.',
+  })
+  async updateSettings(
+    @CurrentScopedActor() actor: ActorContext & { enterpriseId: number },
+    @Body() body: unknown,
+  ): Promise<EnterpriseSummary> {
+    const input = UpdateBusinessSettingsSchema.parse(body);
+    return this.enterprisesService.updateSettings(actor.enterpriseId, input);
   }
 }
