@@ -105,15 +105,33 @@ export class RewardWalletRepository extends BaseRepository {
   }
 
   /**
-   * Removes value ONLY if there is enough.
+   * Removes value ONLY if there is enough, and only once per idempotency key.
    *
-   * ONE STATEMENT. The check and the mutation are the same UPDATE, so no
-   * isolation level has to cover a gap — there is no gap. Zero rows affected
-   * means insufficient funds, and the caller must treat that as a refusal
-   * rather than an error to retry.
+   * THE SUFFICIENCY CHECK AND THE REPLAY GUARD ARE THE SAME UPDATE, so no
+   * isolation level has to cover a gap — there is no gap, in either direction.
    *
-   * Read-then-check-then-write is rejected: two concurrent debits both read the
-   * same balance, both pass, and both write. That is the shape of
+   * This method used to debit first and write the entry second, with
+   * `ON CONFLICT DO NOTHING` on the insert. That is the money bug `post()` was
+   * repaired for, and it was live here too: a REPLAYED debit passed the
+   * sufficiency check a second time, moved the balance again, wrote no entry,
+   * and returned the original one — so the wallet and its ledger disagreed
+   * permanently while the caller was told it had succeeded.
+   *
+   * IT WAS LEFT UNFIXED ON A FALSE PREMISE, recorded here because the reasoning
+   * is the useful part. The argument was that inverting the order means
+   * claiming the idempotency key BEFORE knowing whether the funds are there,
+   * and a claim cannot be withdrawn from an append-only table — so a refusal
+   * would leave a key claimed for a debit that never happened, and the only way
+   * out would be to THROW on insufficient funds rather than return null.
+   *
+   * That is not what this shape does. The INSERT draws its rows `FROM moved`,
+   * so when the UPDATE matches nothing — insufficient funds, wrong wallet,
+   * replay — there is no row to insert and NOTHING IS CLAIMED. A refusal costs
+   * the key nothing, and the contract stays as it was: null means "not enough",
+   * which `convert-value` turns into `InsufficientPointsError`.
+   *
+   * Read-then-check-then-write remains rejected: two concurrent debits both
+   * read the same balance, both pass, and both write. That is the shape of
    * CVE-2026-31824, where an ORM made it worse by flushing an absolute value
    * instead of an increment so the writers overwrote one another.
    */
@@ -122,60 +140,47 @@ export class RewardWalletRepository extends BaseRepository {
       throw new Error('debitIfSufficient needs a negative amount');
     }
     const required = Math.abs(input.amount);
-    const { rows } = await this.mutate<{ balance: number }>(
-      `UPDATE reward_wallets
-          SET balance = balance - $3, version = version + 1
-        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false
-          AND balance >= $3
-      RETURNING balance`,
-      [input.walletId, input.enterpriseId, required],
-    );
-    const updated = rows[0];
-    if (!updated) return null;
-    return this.insertEntry(input, updated.balance);
-  }
-
-  /**
-   * Writes the entry on its own, for the one caller that still needs to.
-   *
-   * KNOWN DEFECT, LEFT DELIBERATELY — see `docs/backlog.md`. `post()` was
-   * inverted so the ledger claim gates the balance change; `debitIfSufficient`
-   * above still debits first and writes second, so a REPLAYED debit moves the
-   * balance twice and writes one entry.
-   *
-   * It is not fixed here because the fix changes its contract. Inverting it
-   * means claiming the key before knowing whether the funds are there — and
-   * when they are not, the claimed row cannot be withdrawn, because
-   * `reward_ledger_entries` is append-only by trigger. The only way out is to
-   * THROW on insufficient funds instead of returning null, and "not enough
-   * points" is currently a refusal the conversion handler expects to receive
-   * rather than an error. That is a decision about the conversion flow, not a
-   * repair to a repository.
-   *
-   * The practical exposure is narrower than `post()`'s was: the only caller is
-   * `convert-value`, whose own replay would have to get past the award claim
-   * first.
-   */
-  private async insertEntry(input: PostEntryInput, balanceAfter: number): Promise<LedgerEntryRow> {
     const returning = `id, ref_id AS "refId", wallet_id AS "walletId",
               entry_kind AS "entryKind", amount, balance_after AS "balanceAfter",
               occurred_at_utc AS "occurredAtUtc", recorded_at_utc AS "recordedAtUtc",
               reason_code AS "reasonCode", rule_id AS "ruleId"`;
 
     const { rows } = await this.mutate<LedgerEntryRow>(
-      `INSERT INTO reward_ledger_entries
-              (enterprise_id, wallet_id, entry_kind, amount, balance_after,
-               award_id, rule_id, rule_version, group_ref, reverses_entry_id,
-               idempotency_key, actor_kind, actor_id, reason_code, occurred_at_utc)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-       ON CONFLICT (enterprise_id, idempotency_key) DO NOTHING
-       RETURNING ${returning}`,
+      `WITH moved AS (
+         UPDATE reward_wallets
+            SET balance = balance - $15,
+                version = version + 1
+          WHERE id = $2 AND enterprise_id = $1 AND is_deleted = false
+            AND balance >= $15
+            AND NOT EXISTS (
+                  SELECT 1 FROM reward_ledger_entries
+                   WHERE enterprise_id = $1 AND idempotency_key = $10
+                )
+         RETURNING balance
+       ),
+       written AS (
+         INSERT INTO reward_ledger_entries
+                (enterprise_id, wallet_id, entry_kind, amount, balance_after,
+                 award_id, rule_id, rule_version, group_ref, reverses_entry_id,
+                 idempotency_key, actor_kind, actor_id, reason_code, occurred_at_utc)
+         SELECT $1, $2, $3, $4, moved.balance,
+                $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14
+           FROM moved
+         ON CONFLICT (enterprise_id, idempotency_key) DO NOTHING
+         RETURNING ${returning}
+       )
+       SELECT * FROM written
+       UNION ALL
+       SELECT ${returning}
+         FROM reward_ledger_entries
+        WHERE enterprise_id = $1 AND idempotency_key = $10
+          AND NOT EXISTS (SELECT 1 FROM moved)`,
       [
         input.enterpriseId,
         input.walletId,
         input.entryKind,
         input.amount,
-        balanceAfter,
         input.awardId ?? null,
         input.ruleId ?? null,
         input.ruleVersion ?? null,
@@ -186,22 +191,58 @@ export class RewardWalletRepository extends BaseRepository {
         input.actorId ?? null,
         input.reasonCode ?? null,
         input.occurredAtUtc,
+        required,
       ],
     );
-    const inserted = rows[0];
-    if (inserted) return inserted;
 
-    const existing = await this.query<LedgerEntryRow>(
-      `SELECT ${returning}
-         FROM reward_ledger_entries
+    const entry = rows[0];
+    if (entry) return entry;
+
+    /*
+     * NOTHING CAME BACK, which has three causes and they are not the same
+     * answer. A bare `return null` would report all three as "not enough
+     * points", and two of them are bugs rather than refusals.
+     */
+    const claimed = await this.query<{ id: number }>(
+      `SELECT id FROM reward_ledger_entries
         WHERE enterprise_id = $1 AND idempotency_key = $2`,
       [input.enterpriseId, input.idempotencyKey],
     );
-    const found = existing[0];
-    if (!found) {
-      throw new Error('ledger insert conflicted but the existing entry was not found');
+    if (claimed[0]) {
+      /*
+       * The key exists, yet the UNION arm did not return it — so `moved` was
+       * NOT empty: this call debited the balance and then lost the insert to a
+       * concurrent writer holding the same key. The debit must not stand, and
+       * we cannot tell our own movement from theirs, so throw and let the
+       * caller's transaction roll it back. Returning their entry would commit
+       * our debit on top of theirs: the very double-movement this guard exists
+       * to prevent.
+       *
+       * Reachable only by two genuinely concurrent debits on one key. The
+       * ordinary replay never gets here, because the UNION arm returns the
+       * existing entry and we have already returned above.
+       */
+      throw new Error(
+        `concurrent debit claimed idempotency key for wallet ${input.walletId}; rolling back`,
+      );
     }
-    return found;
+
+    const wallet = await this.query<{ id: number }>(
+      `SELECT id FROM reward_wallets
+        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false`,
+      [input.walletId, input.enterpriseId],
+    );
+    if (!wallet[0]) {
+      /*
+       * Not a refusal. The wallet does not exist, or belongs to another
+       * business — previously indistinguishable from "not enough points",
+       * which meant a cross-tenant wallet id was reported to the customer as a
+       * balance problem and left no trace of the real fault.
+       */
+      throw new Error(`reward wallet ${input.walletId} not found for this enterprise`);
+    }
+
+    return null;
   }
 
   /**

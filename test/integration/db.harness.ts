@@ -84,3 +84,106 @@ export function returningRows<T>(result: unknown): T[] {
   }
   return Array.isArray(result) ? (result as T[]) : [];
 }
+
+/**
+ * The scratch databases the two pre-deploy gates create and drop.
+ *
+ * An ALLOWLIST, not a convention. A database name cannot be a bound parameter —
+ * Postgres has no placeholder for an identifier — so these statements
+ * interpolate, which is the one thing this codebase forbids everywhere else.
+ * Membership of this set is what makes the interpolation safe: an identifier
+ * that is not one of these three never reaches the SQL, so no caller can aim
+ * `DROP DATABASE` at `wouchh_dev` by passing a variable that turned out to hold
+ * something else.
+ */
+const SCRATCH_DATABASES: ReadonlySet<string> = new Set([
+  'wouchh_parity_migrated',
+  'wouchh_parity_synced',
+  'wouchh_migration_rehearsal',
+]);
+
+function assertScratchDatabase(name: string): void {
+  if (!SCRATCH_DATABASES.has(name)) {
+    throw new Error(`refusing to drop ${name}: not one of the suite's scratch databases`);
+  }
+}
+
+/**
+ * How long a scratch-database DDL statement may take.
+ *
+ * NOT the application's `DB_STATEMENT_TIMEOUT_MS`, and that distinction is the
+ * whole point of this helper. Ten seconds is the right budget for a statement
+ * serving an HTTP request — the database should give up before the HTTP layer
+ * does. It is the WRONG budget for `DROP DATABASE`, which forces a checkpoint:
+ * run straight after the full suite, with a dirty buffer pool and a run of WAL
+ * to flush, the drop regularly takes longer than ten seconds and the CLIENT
+ * gives up first.
+ *
+ * That is what the "flake" in this gate actually was. It presents as
+ * `QueryFailedError: Query read timeout` inside `afterAll`, which vitest
+ * reports as a FAILED FILE whose tests all passed — a shape that invites a
+ * hunt for a leaked connection. `pg_stat_activity` showed none: the database
+ * being dropped had nothing connected to it at all.
+ *
+ * Bounded rather than disabled. `statement_timeout = 0` would hang the suite
+ * instead of failing it, and this sits comfortably under the 180s/300s hook
+ * budgets the two gates already declare.
+ */
+const SCRATCH_DDL_TIMEOUT_MS = 120_000;
+
+/**
+ * The `postgres`-database connection the two pre-deploy gates issue their
+ * CREATE and DROP from.
+ *
+ * One place, so both gates get the same timeout. They were each building this
+ * inline from `buildDataSourceOptions`, which silently handed them the
+ * application's request-sized budget.
+ */
+export async function createScratchAdminDataSource(): Promise<DataSource> {
+  const base = buildDataSourceOptions(loadConfiguration().database);
+  const admin = new DataSource({
+    ...base,
+    database: 'postgres',
+    entities: [],
+    migrations: [],
+    extra: {
+      ...base.extra,
+      statement_timeout: SCRATCH_DDL_TIMEOUT_MS,
+      query_timeout: SCRATCH_DDL_TIMEOUT_MS,
+    },
+  });
+  await admin.initialize();
+  return admin;
+}
+
+/**
+ * Drops a scratch database, first evicting anything still connected to it.
+ *
+ * WHY THE EVICTION. `DROP DATABASE` refuses outright while any session is
+ * connected — `database "x" is being accessed by other users` — and a run that
+ * is killed partway (ctrl-C, a worker timeout, an editor restart) leaves
+ * exactly that. The next run then fails in `beforeAll`, which vitest reports as
+ * a failed FILE with its tests skipped rather than as a connection problem, and
+ * it keeps failing until the orphaned backend dies on its own.
+ *
+ * This is bounded in a way a general-purpose helper would not be: it only ever
+ * touches the three databases above, all of which this suite creates, owns and
+ * drops within a single run. It never runs against a database holding anything
+ * a person would miss.
+ */
+export async function dropScratchDatabase(admin: DataSource, name: string): Promise<void> {
+  assertScratchDatabase(name);
+  await admin.query(
+    `SELECT pg_terminate_backend(pid)
+       FROM pg_stat_activity
+      WHERE datname = $1 AND pid <> pg_backend_pid()`,
+    [name],
+  );
+  await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+}
+
+/** The same drop, followed by a fresh empty database of that name. */
+export async function recreateScratchDatabase(admin: DataSource, name: string): Promise<void> {
+  await dropScratchDatabase(admin, name);
+  await admin.query(`CREATE DATABASE ${name}`);
+}

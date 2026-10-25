@@ -398,40 +398,50 @@ nothing about where it goes.
 **To close it**: the provider interface, one real provider, the transit leg,
 the outbox consumer, and an alarm on a non-zero transit balance.
 
-### `debitIfSufficient` still debits before it writes — a replayed debit moves twice
+### ~~`debitIfSufficient` still debits before it writes~~ — **DONE 25 Oct 2026**
 
-Found in the PR review on 2026-10-25, alongside the same defect in `post()`,
-which WAS fixed. This one is left deliberately because fixing it changes a
-contract rather than repairing a statement.
+Fixed, and the entry is kept because **the reason it was deferred was wrong**,
+which is the part worth not repeating.
 
-**The defect.** `debitIfSufficient` updates the wallet first, guarded on
-`balance >= required`, and writes the ledger entry afterwards with
-`ON CONFLICT (enterprise_id, idempotency_key) DO NOTHING`. A replayed debit
-therefore passes the sufficiency guard again, moves the balance a second time,
-writes no entry, and returns the original one — so the wallet and its ledger
-disagree and the caller is told it succeeded. Exactly what `post()` did.
+**The defect was real.** `debitIfSufficient` updated the wallet first, guarded
+on `balance >= required`, and wrote the ledger entry afterwards with
+`ON CONFLICT DO NOTHING`. A replayed debit passed the sufficiency check again,
+moved the balance a second time, wrote no entry, and returned the original one.
+Measured before the fix: three identical debits of 30 against a balance of 100
+left **10**, with a single ledger entry for 30.
 
-**Why it was not fixed with it.** `post()` was repaired by guarding the UPDATE
-on "no entry holds this key yet", which works because its only failure mode is
-"wallet not found", and that throws. `debitIfSufficient` has a second outcome:
-insufficient funds, which it reports by returning NULL and the conversion
-handler treats as a refusal rather than an error.
+**THE FALSE PREMISE.** This was left unfixed on the argument that inverting the
+order means claiming the idempotency key before knowing whether the funds are
+there — and since `reward_ledger_entries` is append-only by trigger, a claim
+made for a refused debit could never be withdrawn. The conclusion drawn was
+that the only way out was to THROW on insufficient funds instead of returning
+null, which is a change to how the conversion flow reports a refusal and so
+deserved a deliberate decision.
 
-Inverting it means claiming the idempotency key before knowing whether the
-funds are there — and when they are not, the claimed row cannot be withdrawn,
-because `reward_ledger_entries` is append-only by trigger. The only way out is
-to THROW on insufficient funds instead of returning null. That is a decision
-about how the conversion flow reports a refusal, not a repository fix, and it
-deserves to be made deliberately.
+**That conclusion does not follow, because the INSERT draws its rows `FROM
+moved`.** When the guarded UPDATE matches nothing — insufficient funds, wrong
+wallet, or a replay — there is no row to insert from, so *nothing is claimed*.
+A refusal costs the key nothing. The contract is unchanged: null still means
+"not enough", and `convert-value` still turns it into
+`InsufficientPointsError`.
 
-**Exposure**: the only caller is `convert-value`, whose replay would have to get
-past the award claim first — so this is narrower than `post()`'s was, which was
-reachable from every manual adjustment. It is not zero.
+The lesson is narrow and worth stating plainly: "claiming the key first" and
+"guarding the update on the key" are not the same design, and the objection
+that applied to the first did not apply to the second.
 
-**To close it**: decide whether `InsufficientPointsError` should be thrown from
-the repository rather than signalled by null; then apply the same guard
-`post()` now uses, and add the replay test that `post()` now has
-(`test/e2e/reward-adjustment.e2e.spec.ts`).
+**Two things improved past the original scope:**
+
+- A wallet belonging to another tenant used to return null, indistinguishable
+  from a refusal — so a cross-tenant wallet id reached the customer as a
+  balance problem and left no trace of the real fault. It now throws.
+- A genuinely concurrent debit on one key (both callers passing the guard
+  before either commits) now throws rather than returning the other writer's
+  entry, so the caller's transaction rolls back the balance movement instead of
+  committing it on top of theirs.
+
+Covered by `test/integration/reward-wallet-debit.spec.ts`, five cases, verified
+by mutation: against the pre-fix code the replay case reports `expected 10 to
+be 70` and the cross-tenant case resolves null instead of rejecting.
 
 ### Attachment media is never fetched — `is_downloaded` is a column nothing writes
 

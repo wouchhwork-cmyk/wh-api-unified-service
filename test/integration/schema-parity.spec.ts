@@ -3,6 +3,11 @@ import { DataSource } from 'typeorm';
 import { buildDataSourceOptions } from '@/database/data-source';
 import { loadConfiguration } from '@/config/configuration';
 import { syncSchema } from '@/database/schema/provision';
+import {
+  createScratchAdminDataSource,
+  dropScratchDatabase,
+  recreateScratchDatabase,
+} from './db.harness';
 
 /**
  * The migration and `pnpm db:sync` must produce the SAME schema.
@@ -89,24 +94,17 @@ describe.skipIf(!process.env.SCHEMA_PARITY)('the migration and db:sync agree', (
   let admin: DataSource;
 
   beforeAll(async () => {
-    admin = new DataSource({
-      ...buildDataSourceOptions(loadConfiguration().database),
-      database: 'postgres',
-      entities: [],
-      migrations: [],
-    });
-    await admin.initialize();
+    admin = await createScratchAdminDataSource();
 
     for (const name of [MIGRATED, SYNCED]) {
-      await admin.query(`DROP DATABASE IF EXISTS ${name}`);
-      await admin.query(`CREATE DATABASE ${name}`);
+      await recreateScratchDatabase(admin, name);
     }
   }, 180_000);
 
   afterAll(async () => {
     if (!admin?.isInitialized) return;
     for (const name of [MIGRATED, SYNCED]) {
-      await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+      await dropScratchDatabase(admin, name);
     }
     await admin.destroy();
   }, 180_000);
