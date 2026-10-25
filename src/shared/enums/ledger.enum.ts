@@ -74,7 +74,22 @@ export enum InboundEventType {
   PermissionChange = 'permission_change',
 }
 
-/** schema.md §24 — selects the sender AND the write-back handler. */
+/**
+ * schema.md §24 — selects the sender AND the write-back handler.
+ *
+ * EVERY MEMBER HERE HAS A SENDER, and the relay's switch is exhaustive over
+ * this enum, so adding one without wiring it is a COMPILE error rather than a
+ * dead letter discovered in production.
+ *
+ * It did not used to be. `post_publish` and `verification_send` sat here with
+ * no sender anywhere — `verification_send` documented as "through the same
+ * transactional outbox" when verification codes have always gone out through
+ * `VerificationDeliveryService` and have never touched this table. Nothing
+ * enqueued either, so neither was a live defect; what they were is a list that
+ * read like a feature inventory and was not one. A migration cites
+ * `VerificationSend` as the "precedent for a non-Meta sender" on that basis,
+ * and there was no precedent.
+ */
 export enum OutboundEventType {
   CommentReply = 'comment_reply',
   /**
@@ -89,9 +104,6 @@ export enum OutboundEventType {
   DirectMessage = 'direct_message',
   CommentHide = 'comment_hide',
   CommentDelete = 'comment_delete',
-  PostPublish = 'post_publish',
-  /** Verification code delivery, through the same transactional outbox. */
-  VerificationSend = 'verification_send',
 }
 
 /**

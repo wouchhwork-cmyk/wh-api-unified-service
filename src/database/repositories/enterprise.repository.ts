@@ -48,11 +48,32 @@ export class EnterpriseRepository extends BaseRepository {
    */
   async updateSettings(
     id: number,
-    input: { timezone: string | null; currencyCode: string | null },
+    input: {
+      timezone: string | null;
+      currencyCode: string | null;
+      /** Absent = leave it alone. `null` = clear it. The two differ. */
+      displayName?: string | null | undefined;
+    },
   ): Promise<Enterprise | null> {
     const { affected } = await this.repo(Enterprise).update(
       { id, isDeleted: false },
-      { timezone: input.timezone, currencyCode: input.currencyCode },
+      {
+        timezone: input.timezone,
+        currencyCode: input.currencyCode,
+        /*
+         * OMITTED RATHER THAN SET TO UNDEFINED. TypeORM treats a key holding
+         * `undefined` as "do not touch", which happens to be the behaviour
+         * wanted here — but relying on that would make a correct outcome
+         * depend on a library detail nobody stated. Spreading the key in only
+         * when there is a value says it outright.
+         *
+         * Tested against `undefined` rather than `'displayName' in input`:
+         * a key present but undefined is a caller saying nothing, not a caller
+         * asking for null, and the two must not be conflated. `null` is
+         * distinct from both and clears the name.
+         */
+        ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+      },
     );
     if (!affected) return null;
     return this.findById(id);

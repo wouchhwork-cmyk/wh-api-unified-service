@@ -37,7 +37,9 @@ import {
   GraphSubscribedAppsSchema,
   GraphTokenResponseSchema,
 } from './graph.schemas';
+import { MentionReplyKind } from './graph.types';
 import type {
+  MentionReplyTarget,
   GraphAccountsResponse,
   GraphConversation,
   GraphDebugTokenResponse,
@@ -1066,31 +1068,47 @@ export class GraphApiClient {
   }
 
   /**
-   * Answers a comment that @mentioned us.
+   * Answers a mention — and the CALLER SAYS WHICH OF THE TWO ACTS IT MEANS.
    *
    * NOT `POST /{comment-id}/replies`, which only works on media we own — a
    * mention is on somebody else's post and that edge fails there. Meta's
-   * mentions edge exists for exactly this and posts the reply as a sub-thread
-   * comment beneath the mention.
+   * mentions edge exists for exactly this.
    *
-   * `comment_id` is what distinguishes the two shapes: with it, this replies to
-   * the comment that named us; without it, it comments on a post that named us
-   * in its caption.
+   * THE EDGE DOES TWO DIFFERENT THINGS depending on whether `comment_id` is
+   * sent, and they are not variations of one act:
+   *
+   *   - WITH it: a reply nested under the comment that named us. Visible to
+   *     that comment's readers.
+   *   - WITHOUT it: a NEW TOP-LEVEL COMMENT on a stranger's post. Visible to
+   *     everyone who looks at the post, in the business's own name.
+   *
+   * This used to take `commentId?: string | null` and decide by truthiness, so
+   * the second act was what you got whenever the first one's id was missing.
+   * A lost id, a renamed metadata key, a projector that filed the mention
+   * without its comment — any of those turned "reply to the person who
+   * mentioned us" into "post a public comment on their post", with nothing in
+   * the type, the call or the logs to say so.
+   *
+   * `MentionReplyTarget` makes that unsayable: the nested form cannot be
+   * constructed without a `commentId`, and the top-level form has to be asked
+   * for by name. Deriving which one applies stays a decision the caller makes
+   * explicitly, where the context to make it correctly actually exists.
    */
   async replyToMention(
     instagramUserId: string,
-    target: { readonly mediaId: string; readonly commentId?: string | null },
+    target: MentionReplyTarget,
     message: string,
     accessToken: string,
   ): Promise<SendResult> {
+    const body =
+      target.kind === MentionReplyKind.ReplyUnderComment
+        ? { media_id: target.mediaId, message, comment_id: target.commentId }
+        : { media_id: target.mediaId, message };
+
     const result = await this.request('POST', `${instagramUserId}/mentions`, {
       schema: GraphCreatedIdSchema,
       accessToken,
-      body: {
-        media_id: target.mediaId,
-        message,
-        ...(target.commentId ? { comment_id: target.commentId } : {}),
-      },
+      body,
     });
     return { platformId: result.id };
   }

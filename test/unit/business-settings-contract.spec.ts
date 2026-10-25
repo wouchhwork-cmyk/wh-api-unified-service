@@ -110,3 +110,66 @@ describe('business settings', () => {
     expect(parsed.success).toBe(false);
   });
 });
+
+/**
+ * The customer-facing business name.
+ *
+ * Its whole job is to be shown to somebody who is not in the business, so the
+ * interesting cases are the ones about what reaches a customer and what a save
+ * does to a name nobody mentioned.
+ */
+describe('the customer-facing name', () => {
+  const parse = (body: Record<string, unknown>) =>
+    UpdateBusinessSettingsSchema.safeParse({
+      timezone: 'Asia/Kolkata',
+      currencyCode: 'INR',
+      ...body,
+    });
+
+  /**
+   * THE COMPATIBILITY CASE, and the reason the field is optional.
+   *
+   * This body is exactly what a client written before the field existed
+   * sends. It must still be accepted, and — the part that matters — it must
+   * NOT carry an instruction about the name, or every such save would wipe a
+   * name the business had chosen.
+   */
+  it('accepts a body that never mentions it, and says nothing about the name', () => {
+    const result = parse({});
+    expect(result.success).toBe(true);
+    expect(result.data).not.toHaveProperty('displayName');
+    expect(result.data?.displayName).toBeUndefined();
+  });
+
+  /** Absent and null are different requests: leave it alone vs clear it. */
+  it('distinguishes "not mentioned" from an explicit null', () => {
+    expect(parse({}).data?.displayName).toBeUndefined();
+
+    const cleared = parse({ displayName: null });
+    expect(cleared.success).toBe(true);
+    expect(cleared.data?.displayName).toBeNull();
+  });
+
+  it('keeps marketing copy intact — emoji, punctuation, mixed script', () => {
+    for (const name of ['Acme ☕', "Joe's Diner!", 'कैफे Acme', 'ACME — since 1998']) {
+      expect(parse({ displayName: name }).data?.displayName).toBe(name);
+    }
+  });
+
+  it('trims, and treats a blank name as no name rather than storing it', () => {
+    expect(parse({ displayName: '  Acme  ' }).data?.displayName).toBe('Acme');
+    expect(parse({ displayName: '' }).data?.displayName).toBeNull();
+    expect(parse({ displayName: '   ' }).data?.displayName).toBeNull();
+  });
+
+  /** "No format rules" cannot mean "no limit" — the column is VARCHAR(160). */
+  it('refuses a name longer than the column holds', () => {
+    expect(parse({ displayName: 'a'.repeat(160) }).success).toBe(true);
+    expect(parse({ displayName: 'a'.repeat(161) }).success).toBe(false);
+  });
+
+  /** Still a strict object: a typo must not be silently discarded. */
+  it('refuses an unknown field', () => {
+    expect(parse({ displayname: 'Acme' }).success).toBe(false);
+  });
+});

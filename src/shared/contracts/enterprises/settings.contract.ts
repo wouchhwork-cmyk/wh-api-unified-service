@@ -127,6 +127,38 @@ export const CurrencyCodeSchema = z
  * they sit on the same row.
  */
 export const UpdateBusinessSettingsSchema = z.strictObject({
+  /**
+   * What CUSTOMERS are told the business is called.
+   *
+   * The business's own `name` is usually its registered entity, because that
+   * is what gets typed at signup — and "Acme Foods Pvt Ltd" is a poor way to
+   * open a thank-you message. This is the name that goes in front of a
+   * customer, and it is editable here precisely because it IS a preference:
+   * unlike name, slug and email it addresses nobody and identifies nothing, so
+   * changing it breaks no URL and collides with no other business.
+   *
+   * It is marketing copy — emoji, punctuation, mixed script, whatever the
+   * business wants to be called. Bounded at 160 anyway, matching a reward
+   * programme's display name, because "no checks" cannot mean "no limit".
+   * Trimmed, and an empty string becomes NULL rather than a name that renders
+   * as nothing.
+   *
+   * OPTIONAL, AND THAT IS A COMPATIBILITY DECISION, not an oversight. This is
+   * a strict full-restatement PUT: `timezone` and `currencyCode` are required
+   * and a caller that omits one is refused. Making this one required would
+   * break every client that already saves settings, and giving it
+   * `.default(null)` would be worse — a client written before this field
+   * existed would silently CLEAR the business's chosen name on every save.
+   * Absent therefore means "leave it as it is", and `null` means "clear it".
+   * Those are different requests and the service treats them as such.
+   */
+  displayName: z
+    .string()
+    .trim()
+    .max(160)
+    .transform((value) => (value.length === 0 ? null : value))
+    .nullable()
+    .optional(),
   /*
    * NULLABLE for the same reason the currency is: "not chosen" is a real
    * answer. It used to default to Asia/Kolkata at signup, so a business in

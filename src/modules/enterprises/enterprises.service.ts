@@ -14,6 +14,13 @@ import { AppException, ErrorCode } from '@/shared/errors';
 export interface EnterpriseSummary {
   readonly refId: string;
   readonly name: string;
+  /**
+   * What customers are told the business is called.
+   *
+   * NULL = not chosen. A client with something to show a customer falls back
+   * to `name`; this field never guesses on their behalf.
+   */
+  readonly displayName: string | null;
   readonly slug: string;
   /** NULL = this business has not chosen one yet. */
   readonly timezone: string | null;
@@ -84,6 +91,9 @@ export class EnterprisesService {
         changes: {
           timezone: { from: before.timezone, to: updated.timezone },
           currencyCode: { from: before.currencyCode, to: updated.currencyCode },
+          /* Recorded whether or not it moved, like the other two: "it was not
+           * changed in this edit" is part of what an audit row answers. */
+          displayName: { from: before.displayName, to: updated.displayName },
         },
       });
 
@@ -94,12 +104,17 @@ export class EnterprisesService {
         /* Settings only. Name, slug and email are identity rather than
          * preference and are not editable here, so they are not snapshotted
          * here either — a snapshot should describe what this surface controls. */
-        snapshot: { timezone: updated.timezone, currencyCode: updated.currencyCode },
+        snapshot: {
+          timezone: updated.timezone,
+          currencyCode: updated.currencyCode,
+          displayName: updated.displayName,
+        },
       });
 
       return {
         refId: updated.refId,
         name: updated.name,
+        displayName: updated.displayName,
         slug: updated.slug,
         timezone: updated.timezone,
         currencyCode: updated.currencyCode,
@@ -120,6 +135,7 @@ export class EnterprisesService {
     return {
       refId: enterprise.refId,
       name: enterprise.name,
+      displayName: enterprise.displayName,
       slug: enterprise.slug,
       timezone: enterprise.timezone,
       currencyCode: enterprise.currencyCode,

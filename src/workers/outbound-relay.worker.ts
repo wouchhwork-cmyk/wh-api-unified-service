@@ -9,6 +9,7 @@ import {
 } from '@/database/repositories/outbound-event.repository';
 import { ProviderConnectionRepository } from '@/database/repositories/provider-connection.repository';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
+import { MentionReplyKind, mentionReplyTarget } from '@/modules/connections/graph/graph.types';
 import { MetaUsageCollector } from '@/modules/connections/graph/meta-usage.collector';
 import { GraphApiError } from '@/modules/connections/graph/graph-api.error';
 import { isAmbiguousFailure, mapGraphError } from '@/modules/connections/graph/graph-error.mapper';
@@ -423,10 +424,48 @@ export class OutboundRelayWorker extends BasePoller {
         if (!payload.mediaId) {
           throw new Error('the mention has no post recorded, so it cannot be answered');
         }
+
+        /*
+         * WHICH OF THE TWO ACTS THIS IS, decided here and recorded.
+         *
+         * A mention with a comment is answered UNDER that comment. A caption
+         * mention has no comment to nest under, so the only way to answer it
+         * is a top-level comment on the post — a public comment on a
+         * stranger's post, in the business's name.
+         *
+         * The difference used to be implicit: the client took an optional
+         * `commentId` and chose by truthiness, so a missing id silently
+         * produced the public act instead of the private one. `enqueue` reads
+         * the id from the mention's stored metadata, and metadata is exactly
+         * the kind of thing that goes missing — so the fallback was the loud
+         * one and nothing said it had happened.
+         *
+         * It is still derived from the same field. What changed is that the
+         * derivation happens ONCE, in the open, and the result is named in the
+         * log line below, so "why did we comment on their post?" has an
+         * answer that does not require re-reading the client.
+         */
+        const target = mentionReplyTarget({
+          mediaId: payload.mediaId,
+          commentId: payload.commentId,
+        });
+
+        this.logger.info(
+          {
+            eventId: event.id,
+            channelId: event.channelId,
+            mentionReplyKind: target.kind,
+            mediaId: target.mediaId,
+          },
+          target.kind === MentionReplyKind.TopLevelComment
+            ? 'answering a caption mention with a top-level comment on their post'
+            : 'answering a mention under the comment that named us',
+        );
+
         const result = await this.graph.replyToMention(
           // The mentions edge hangs off OUR user node, not the comment.
           platformChannelId,
-          { mediaId: payload.mediaId, commentId: payload.commentId ?? null },
+          target,
           payload.message,
           token,
         );
@@ -461,9 +500,24 @@ export class OutboundRelayWorker extends BasePoller {
         await this.graph.deleteComment(payload.commentId, token);
         return null;
       }
-      default:
-        // A type with no sender is a wiring gap, not a transient failure.
-        throw new Error(`no sender for event_type "${event.eventType}"`);
+      default: {
+        /*
+         * UNREACHABLE AT COMPILE TIME, and that is the point.
+         *
+         * `never` makes this switch exhaustive over `OutboundEventType`: a new
+         * member added without a case here fails to build, rather than
+         * enqueuing fine and dead-lettering once somebody uses it. Two members
+         * used to sit in that state — see the enum's own note.
+         *
+         * The throw stays for runtime, because `event_type` is a varchar and a
+         * row written by an older deploy can hold a string this build has never
+         * heard of. Dead-lettering it with the value named is the right
+         * outcome: refusing to CLAIM it would leave the row pending for ever
+         * with nothing to notice.
+         */
+        const unsendable: never = event.eventType;
+        throw new Error(`no sender for event_type "${String(unsendable)}"`);
+      }
     }
   }
 

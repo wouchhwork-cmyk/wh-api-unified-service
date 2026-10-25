@@ -16,6 +16,22 @@ export class Enterprise extends PublicEntity {
   name!: string;
 
   /**
+   * What CUSTOMERS are told the business is called.
+   *
+   * `name` is the business's own record of itself — often the registered
+   * entity, because that is what gets typed at signup. This is the one that
+   * appears in a message to a customer, and the two are allowed to differ.
+   *
+   * NULL means the business has not chosen one, which is a real state and not
+   * the same as choosing its legal name. A caller with something to render
+   * falls back to `name`; nothing invents a value here.
+   *
+   * Not unique and not format-checked — see the migration for why.
+   */
+  @Column({ type: 'varchar', length: 160, nullable: true })
+  displayName!: string | null;
+
+  /**
    * URL-safe identifier. Unique only among live rows (partial unique index
    * `WHERE is_deleted = false`), because a slug is a reusable business
    * identifier — deleting an enterprise frees its slug.

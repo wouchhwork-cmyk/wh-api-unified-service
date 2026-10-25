@@ -278,3 +278,61 @@ export interface ResolvedMention {
    */
   readonly postComments: readonly ResolvedMentionReply[];
 }
+
+/**
+ * WHICH PUBLIC ACT a reply to a mention performs.
+ *
+ * Meta's mentions edge takes an optional `comment_id` and does two materially
+ * different things with it, so this is a decision rather than a detail — see
+ * `GraphApiClient.replyToMention`. Naming them stops the second one being what
+ * happens by accident when the first one's id goes missing.
+ */
+export enum MentionReplyKind {
+  /** A reply nested under the comment that named us. */
+  ReplyUnderComment = 'reply_under_comment',
+  /**
+   * A NEW top-level comment on somebody else's post, in the business's name.
+   *
+   * The only way to answer a CAPTION mention, which has no comment to nest
+   * under — correct there, and never a fallback anywhere else.
+   */
+  TopLevelComment = 'top_level_comment',
+}
+
+/**
+ * The target of a mention reply, shaped so the nested form cannot be built
+ * without the comment it nests under.
+ */
+export type MentionReplyTarget =
+  | {
+      readonly kind: MentionReplyKind.ReplyUnderComment;
+      readonly mediaId: string;
+      readonly commentId: string;
+    }
+  | {
+      readonly kind: MentionReplyKind.TopLevelComment;
+      readonly mediaId: string;
+    };
+
+/**
+ * Chooses which act a mention reply is, from what the mention recorded.
+ *
+ * ONE NAMED HOME for a decision that used to be made by truthiness inside the
+ * Graph client's argument list. The derivation is the same — a mention with a
+ * comment is answered under it, a caption mention has no comment to nest under
+ * — but it now produces a NAMED kind that the caller can log, test and reason
+ * about, instead of an optional field whose absence quietly changed the
+ * outcome from a private reply to a public comment on a stranger's post.
+ */
+export function mentionReplyTarget(input: {
+  readonly mediaId: string;
+  readonly commentId?: string | null | undefined;
+}): MentionReplyTarget {
+  return input.commentId
+    ? {
+        kind: MentionReplyKind.ReplyUnderComment,
+        mediaId: input.mediaId,
+        commentId: input.commentId,
+      }
+    : { kind: MentionReplyKind.TopLevelComment, mediaId: input.mediaId };
+}

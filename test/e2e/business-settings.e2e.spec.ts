@@ -455,4 +455,100 @@ describe('business settings', () => {
     );
     expect(versions[0]?.snapshot).toMatchObject({ currencyCode: 'GBP' });
   });
+
+  /**
+   * The name customers are shown, which the business chooses for itself.
+   *
+   * `name` is what got typed at signup and is usually the registered entity.
+   * This is the one that reaches a customer in a message, and the cases worth
+   * pinning are about what a SAVE does to it — particularly a save that never
+   * mentions it, which is what every client written before the field existed
+   * sends.
+   */
+  describe('the customer-facing name', () => {
+    it('is null until the business chooses one', async () => {
+      const { auth } = await business();
+      const read = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(read.body.data.displayName).toBeNull();
+      /* Not backfilled from the signup name: unset must stay distinguishable
+       * from "they chose to show their registered entity". */
+      expect(read.body.data.name).toBe(SIGNUP.business.name);
+    });
+
+    it('is saved, read back, and survives a save that does not mention it', async () => {
+      const { auth } = await business();
+
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Asia/Kolkata', currencyCode: 'INR', displayName: '  Acme ☕  ' })
+        .expect(200);
+
+      const saved = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(saved.body.data.displayName).toBe('Acme ☕');
+
+      /*
+       * THE REGRESSION THIS GUARDS. The settings PUT is a full restatement,
+       * so an older client sends timezone and currency and nothing else. If
+       * the field defaulted instead of being optional, this request would
+       * silently clear a name the business had chosen, on every save.
+       */
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Europe/London', currencyCode: 'GBP' })
+        .expect(200);
+
+      const after = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(after.body.data.displayName).toBe('Acme ☕');
+      expect(after.body.data.timezone).toBe('Europe/London');
+    });
+
+    it('is cleared by an explicit null, which absence does not do', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Asia/Kolkata', currencyCode: 'INR', displayName: 'Acme' })
+        .expect(200);
+
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Asia/Kolkata', currencyCode: 'INR', displayName: null })
+        .expect(200);
+
+      const after = await http().get('/api/v1/enterprises/current').set(auth).expect(200);
+      expect(after.body.data.displayName).toBeNull();
+    });
+
+    it('refuses a name longer than the column holds', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Asia/Kolkata', currencyCode: 'INR', displayName: 'x'.repeat(161) })
+        .expect(422);
+    });
+
+    it('records the change in the audit trail and the version history', async () => {
+      const { auth } = await business();
+      await http()
+        .patch('/api/v1/enterprises/current')
+        .set(auth)
+        .send({ timezone: 'Asia/Kolkata', currencyCode: 'INR', displayName: 'Acme' })
+        .expect(200);
+
+      const audit: { changes: Record<string, unknown> }[] = await db.query(
+        `SELECT changes FROM audit_logs
+          WHERE entity_type = 'enterprise' AND action = 'updated' ORDER BY id DESC LIMIT 1`,
+      );
+      expect(audit[0]?.changes).toMatchObject({ displayName: { from: null, to: 'Acme' } });
+
+      const versions: { snapshot: Record<string, unknown> }[] = await db.query(
+        `SELECT snapshot FROM entity_versions WHERE entity_type = 'enterprise' ORDER BY version DESC`,
+      );
+      expect(versions[0]?.snapshot).toMatchObject({ displayName: 'Acme' });
+    });
+  });
 });
