@@ -5,6 +5,7 @@ import {
   isExpiringMediaUrl,
   isStableMediaUrl,
   normalizeAttachments,
+  isRecoverableMedia,
 } from '@/modules/inbox/attachment-normalizer';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '@/shared/constants';
 import { MediaKind, MessageKind } from '@/shared/enums';
@@ -471,5 +472,39 @@ describe('a mime type is evidence, and ends the guessing', () => {
     expect(
       withMime('image', 'image/jpeg', 'https://media2.giphy.com/media/v1/x.gif')?.mediaKind,
     ).toBe(MediaKind.Gif);
+  });
+});
+
+/**
+ * Whether the client should bother asking for a fresh link.
+ *
+ * THE RULE EXISTS TO STOP A LOOP OF POINTLESS REQUESTS. A client's memory of
+ * having already tried lives in the tab, so it dies on every reload — and a
+ * thread of long-dead media would ask again on each reopening, for ever. The
+ * server records the conclusion once and the client reads it.
+ */
+describe('whether a fresh link could still be had', () => {
+  it('says yes for an attachment nobody has written off', () => {
+    expect(isRecoverableMedia({})).toBe(true);
+    expect(isRecoverableMedia({ assetId: '1089599720212101' })).toBe(true);
+  });
+
+  it('says no once a refresh has looked and not found it', () => {
+    expect(isRecoverableMedia({ beyondReachAt: '2026-10-27T15:07:18.964Z' })).toBe(false);
+  });
+
+  /*
+   * Null is the same answer as absent. `jsonb_set` and a hand-written row can
+   * both leave the key present and empty, and "the key exists" is not the
+   * question being asked.
+   */
+  it('treats a null stamp as never written off', () => {
+    expect(isRecoverableMedia({ beyondReachAt: null })).toBe(true);
+  });
+
+  /* The flag is about reachability alone — a permanent link that fails is a
+   * different problem, and the caller gates on `expires` for that. */
+  it('says nothing about whether the link currently works', () => {
+    expect(isRecoverableMedia({ stableUrl: true })).toBe(true);
   });
 });

@@ -37,7 +37,7 @@ import {
   type ReplyResponse,
 } from '@/shared/contracts/inbox/inbox.contract';
 import { InboxService } from './inbox.service';
-import { isExpiringMediaUrl } from './attachment-normalizer';
+import { isExpiringMediaUrl, isRecoverableMedia } from './attachment-normalizer';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
 
@@ -645,6 +645,20 @@ function toMessage(
        * stableUrl records.
        */
       expires: attachment.storageKey === null && attachment.metadata.stableUrl !== true,
+      /*
+       * Whether asking for a fresh link could still work.
+       *
+       * FALSE MEANS DO NOT ASK. Meta serves details for only the 20 most
+       * recent messages of a thread — past that it reports the message as
+       * deleted — so once a refresh has looked and failed, no later refresh
+       * can succeed either. The server records that conclusion the first
+       * time, and this is how the client learns it WITHOUT making the call.
+       *
+       * Without it the client cannot know: its own "already tried" state
+       * lives in the tab, so every reload of a thread full of long-dead media
+       * fired another refresh to be told the same permanent thing.
+       */
+      recoverable: isRecoverableMedia(attachment.metadata),
       platformType: attachment.metadata.platformType ?? null,
       /** The whole bag. Unstable by design — see `platformDetails` on a message. */
       platformDetails: attachment.metadata,

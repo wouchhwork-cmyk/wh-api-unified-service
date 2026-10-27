@@ -502,3 +502,22 @@ export function toWebhookAttachments(
 
   return translated;
 }
+
+/**
+ * Whether asking Meta for a fresh link to this attachment could still work.
+ *
+ * FALSE MEANS DO NOT ASK, and it is the server's recorded conclusion rather
+ * than a guess. Meta serves details for only the 20 most recent messages of a
+ * thread — older ones come back reported as deleted — so once a refresh has
+ * looked for an attachment and not found it, no later refresh can find it
+ * either. `beyondReachAt` is written the first time that happens.
+ *
+ * It exists as a rule with a name because it is read in two places that must
+ * agree: the query that chooses what to refresh, and the field that tells a
+ * client whether to bother. A client's own memory of having tried lives in the
+ * tab and dies on reload, so without this every reopening of a thread full of
+ * long-dead media spends a request to be told the same permanent thing.
+ */
+export function isRecoverableMedia(metadata: Record<string, unknown>): boolean {
+  return metadata.beyondReachAt === undefined || metadata.beyondReachAt === null;
+}
