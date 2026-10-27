@@ -85,6 +85,24 @@ export class InboxService {
    */
   private readonly mentionRefreshesInFlight = new Set<number>();
 
+  /**
+   * Attachment refreshes already running, by conversation.
+   *
+   * A PROMISE, not a flag, because unlike the mention refresh this one answers
+   * a caller. Every dead image in a thread arrives at the same moment asking
+   * the same question; they share one read of the thread and one answer,
+   * rather than each spending a Graph call to learn the same thing.
+   *
+   * Per process, like the mention guard: this is here for the realistic case
+   * — one agent's thread full of broken media, and a few colleagues looking at
+   * once — not for cross-replica coordination, which would be a distributed
+   * lock around a single request.
+   */
+  private readonly attachmentRefreshesInFlight = new Map<
+    number,
+    Promise<{ refreshed: number; beyondReach: number }>
+  >();
+
   constructor(
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
@@ -683,8 +701,36 @@ export class InboxService {
     // that reading the thread did not already show, so it is a read.
     const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'view');
 
+    /*
+     * ONE READ PER THREAD AT A TIME. A thread of 36 dead images produces 36
+     * simultaneous asks; without this they are 36 reads of one thread, and
+     * the answer each gets is identical.
+     */
+    const running = this.attachmentRefreshesInFlight.get(conversation.id);
+    if (running) return running;
+
+    const work = this.runAttachmentRefresh(enterpriseId, conversation).finally(() => {
+      this.attachmentRefreshesInFlight.delete(conversation.id);
+    });
+    this.attachmentRefreshesInFlight.set(conversation.id, work);
+    return work;
+  }
+
+  private async runAttachmentRefresh(
+    enterpriseId: number,
+    conversation: ConversationRow,
+  ): Promise<{ refreshed: number; beyondReach: number }> {
     const stored = await this.attachments.listRefreshable(enterpriseId, conversation.id);
-    if (stored.length === 0) return { refreshed: 0, beyondReach: 0 };
+    if (stored.length === 0) {
+      /*
+       * Nothing left worth asking about — either the thread has no expiring
+       * media, or everything expiring has already been written off. The count
+       * is still reported truthfully, so a client is told "there is
+       * unrecoverable media here" without Meta being asked again to say so.
+       */
+      const known = await this.attachments.countBeyondReach(enterpriseId, conversation.id);
+      return { refreshed: 0, beyondReach: known };
+    }
 
     const channel = await this.channels.findBackfillContext(enterpriseId, conversation.channelId);
     if (!channel?.effectiveAccessToken || channel.reauthRequired) {
@@ -725,13 +771,24 @@ export class InboxService {
     }
 
     const updates: { id: number; sourceUrl: string; mimeType?: string }[] = [];
+    const unreachable: number[] = [];
     let beyondReach = 0;
 
     for (const [platformMessageId, rows] of byMessage) {
       const links = fresh.get(platformMessageId);
       if (!links) {
-        // Outside the window Meta returned. Permanently unrecoverable.
+        /*
+         * Outside the window Meta returned, and PERMANENTLY so: a message only
+         * moves further from the newest, so it can never come back into the
+         * window. Recorded, not merely counted — otherwise the next viewer
+         * spends another Graph read to reach the same conclusion.
+         *
+         * Reached only after a SUCCESSFUL read. Every failure above returns
+         * early, so "we could not ask" never gets written down as "it is
+         * gone".
+         */
         beyondReach += rows.length;
+        for (const row of rows) unreachable.push(row.id);
         continue;
       }
       /*
@@ -760,9 +817,10 @@ export class InboxService {
     }
 
     const refreshed = await this.attachments.refreshSourceUrls(enterpriseId, updates);
+    const writtenOff = await this.attachments.markBeyondReach(enterpriseId, unreachable);
 
     this.logger.info(
-      { enterpriseId, conversationId: conversation.id, refreshed, beyondReach },
+      { enterpriseId, conversationId: conversation.id, refreshed, beyondReach, writtenOff },
       'refreshed expired attachment links',
     );
     return { refreshed, beyondReach };

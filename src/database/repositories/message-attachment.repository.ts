@@ -117,6 +117,16 @@ export class MessageAttachmentRepository extends BaseRepository {
           AND a.source_url IS NOT NULL
           AND m.platform_message_id IS NOT NULL
           AND a.metadata->>'stableUrl' IS DISTINCT FROM 'true'
+          /*
+           * ALREADY KNOWN UNRECOVERABLE, so never asked about again.
+           *
+           * Meta returns only the most recent messages of a thread. A message
+           * outside that window can never re-enter it — it only gets older
+           * relative to the newest — so "we asked and it was not there" is a
+           * permanent answer, and this is what stops every future viewer
+           * spending a Graph call to rediscover it.
+           */
+          AND a.metadata->>'beyondReachAt' IS NULL
         ORDER BY m.platform_message_id, a.sort_order`,
       [this.requireEnterprise(enterpriseId), conversationId],
     );
@@ -176,5 +186,53 @@ export class MessageAttachmentRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), ids, urls, mimes],
     );
     return affected;
+  }
+
+  /**
+   * Records that these attachments are past the window Meta will return.
+   *
+   * THE SECOND THING THAT EVER MUTATES AN ATTACHMENT, and unlike the link
+   * refresh above it does not change what was sent — it records what WE now
+   * know about reaching it. Without it the conclusion is thrown away: the
+   * count is reported to one caller and every later viewer spends another
+   * Graph read to reach the same permanent answer.
+   *
+   * ONLY CALLED AFTER A SUCCESSFUL READ. A token failure, a network error or
+   * a refused call must never land here — those mean "we could not ask", not
+   * "it is gone", and writing this off on a transient error would discard
+   * media that is still there.
+   */
+  async markBeyondReach(enterpriseId: number, ids: readonly number[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const { rows } = await this.mutate<{ id: number }>(
+      `UPDATE message_attachments
+          SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb),
+                '{beyondReachAt}',
+                to_jsonb(now()::text),
+                true
+              ),
+              updated_at = now()
+        WHERE enterprise_id = $1
+          AND id = ANY($2::bigint[])
+          AND metadata->>'beyondReachAt' IS NULL
+      RETURNING id`,
+      [this.requireEnterprise(enterpriseId), [...ids]],
+    );
+    return rows.length;
+  }
+
+  /** How many of this thread's attachments are already written off. */
+  async countBeyondReach(enterpriseId: number, conversationId: number): Promise<number> {
+    const rows = await this.query<{ n: string }>(
+      `SELECT count(*) AS n
+         FROM message_attachments a
+         JOIN messages m ON m.id = a.message_id AND m.enterprise_id = a.enterprise_id
+        WHERE a.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND a.metadata->>'beyondReachAt' IS NOT NULL`,
+      [this.requireEnterprise(enterpriseId), conversationId],
+    );
+    return Number(rows[0]?.n ?? 0);
   }
 }

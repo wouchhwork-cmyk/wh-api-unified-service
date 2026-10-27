@@ -256,4 +256,75 @@ describe('refreshing expired attachment links', () => {
       expect(await attachments.refreshSourceUrls(enterpriseId, [])).toBe(0);
     });
   });
+
+  /**
+   * Writing off what cannot come back.
+   *
+   * THE SCALE PROBLEM THIS SOLVES. `beyondReach` used to be counted, reported
+   * once and forgotten — so a thread whose media is past Meta's window asked
+   * Meta again on every viewer's broken image, for ever, to be told the same
+   * permanent thing. Recording it is what makes the second ask free.
+   */
+  describe('attachments past the window Meta will return', () => {
+    it('is never offered for refresh again once written off', async () => {
+      const id = await seedAttachment(enterpriseId, conversationId, 'MSG_GONE', DEAD);
+      expect(await attachments.listRefreshable(enterpriseId, conversationId)).toHaveLength(1);
+
+      expect(await attachments.markBeyondReach(enterpriseId, [id])).toBe(1);
+
+      expect(await attachments.listRefreshable(enterpriseId, conversationId)).toEqual([]);
+      expect(await attachments.countBeyondReach(enterpriseId, conversationId)).toBe(1);
+    });
+
+    /* Called once per failed read; a thread re-asked must not grow the count. */
+    it('writes an attachment off once, however often it is marked', async () => {
+      const id = await seedAttachment(enterpriseId, conversationId, 'MSG_GONE_2', DEAD);
+      expect(await attachments.markBeyondReach(enterpriseId, [id])).toBe(1);
+      expect(await attachments.markBeyondReach(enterpriseId, [id])).toBe(0);
+      expect(await attachments.countBeyondReach(enterpriseId, conversationId)).toBe(1);
+    });
+
+    /* The stamp says WHEN we concluded it, which is the only way to tell a
+     * row written off last month from one written off by a bug today. */
+    it('records when the conclusion was reached', async () => {
+      const id = await seedAttachment(enterpriseId, conversationId, 'MSG_GONE_3', DEAD);
+      await attachments.markBeyondReach(enterpriseId, [id]);
+      const rows: { at: string | null }[] = await db.query(
+        `SELECT metadata->>'beyondReachAt' AS at FROM message_attachments WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.at).toBeTruthy();
+      expect(Number.isNaN(Date.parse(rows[0]!.at!))).toBe(false);
+    });
+
+    /* Keeps whatever else the row already said about itself. */
+    it('leaves the rest of the metadata alone', async () => {
+      const id = await seedAttachment(enterpriseId, conversationId, 'MSG_GONE_4', DEAD, 0, {
+        assetId: '1089599720212101',
+      });
+      await attachments.markBeyondReach(enterpriseId, [id]);
+      const rows: { asset: string | null }[] = await db.query(
+        `SELECT metadata->>'assetId' AS asset FROM message_attachments WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.asset).toBe('1089599720212101');
+    });
+
+    it('refuses to write off another business\u2019s attachment', async () => {
+      /* Their own conversation: the message FK is composite, so an id from
+       * this tenant would not even insert. */
+      const rivalConversation = await seedConversation(otherEnterpriseId, 'IG_9', 'fbu9');
+      const theirs = await seedAttachment(otherEnterpriseId, rivalConversation, 'MSG_THEIRS', DEAD);
+      expect(await attachments.markBeyondReach(enterpriseId, [theirs])).toBe(0);
+      const rows: { at: string | null }[] = await db.query(
+        `SELECT metadata->>'beyondReachAt' AS at FROM message_attachments WHERE id = $1`,
+        [theirs],
+      );
+      expect(rows[0]?.at).toBeNull();
+    });
+
+    it('does nothing when there is nothing to write off', async () => {
+      expect(await attachments.markBeyondReach(enterpriseId, [])).toBe(0);
+    });
+  });
 });
