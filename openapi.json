@@ -1321,6 +1321,36 @@
         ]
       }
     },
+    "/api/v1/platform/media-analysis": {
+      "get": {
+        "description": "Returns the instruction sent to the model, the model it is sent to, and the state of the analysis queue broken down by status and media kind. The queue counts are PLATFORM-WIDE and deliberately so: they are how staff watch a pipeline that spans every business. They are counts, never content — no description, transcript or customer text is returned here.",
+        "operationId": "PlatformController_mediaAnalysisOverview_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "How media is described, and how the queue is doing",
+        "tags": [
+          "platform"
+        ]
+      },
+      "put": {
+        "description": "A full restatement of both fields. The version is bumped on every save, and every analysis records the version that produced it — so a description that reads oddly can be traced to the exact instruction behind it, long after the instruction has moved on. Existing descriptions are NOT re-run: changing the prompt changes what happens next, not what already happened.",
+        "operationId": "PlatformController_updateMediaAnalysis_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Change the instruction, or the model",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/v1/platform/rate-limits": {
       "get": {
         "description": "Two meters, because Meta runs two. The app pool is one allowance for the whole developer app, drained by the connect and token paths; the business pools are per business per product and carry the inbox. Every figure Meta gives is a PERCENTAGE of an allowance it never states, so usedPercent is authoritative for how close a pool is to refusal and callsInWindow is ours, for volume. A null percentage means Meta sent no header, which is unknown rather than zero.",
