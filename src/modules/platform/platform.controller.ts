@@ -35,6 +35,8 @@ import {
   MediaAnalysisConsoleService,
   type MediaAnalysisOverview,
 } from './media-analysis-console.service';
+import { ChatConsoleService, type ChatSettingsOverview } from './chat-console.service';
+import { UpdateChatSettingsSchema } from '@/shared/contracts/platform/chat-settings.contract';
 import { UpdateMediaAnalysisSettingsSchema } from '@/shared/contracts/platform/media-analysis.contract';
 import {
   PlatformService,
@@ -57,6 +59,7 @@ export class PlatformController {
     private readonly platform: PlatformService,
     private readonly rateLimits: RateLimitService,
     private readonly mediaAnalysis: MediaAnalysisConsoleService,
+    private readonly chat: ChatConsoleService,
   ) {}
 
   @Get('media-analysis')
@@ -95,6 +98,40 @@ export class PlatformController {
 
     const input = UpdateMediaAnalysisSettingsSchema.parse(body);
     return this.mediaAnalysis.update(input, actor.staffId);
+  }
+
+  @Get('chat')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'What the assistant is told, and which model is told it',
+    description:
+      'Returns the standing instruction sent with every conversation, the model it is sent to, ' +
+      'and whether the provider is switched on in this environment. No conversation content is ' +
+      'returned here — this is the configuration behind replies, never the replies themselves.',
+  })
+  async chatSettings(): Promise<ChatSettingsOverview> {
+    return this.chat.overview();
+  }
+
+  @Put('chat')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'Change the instruction, or the model',
+    description:
+      'A full restatement of both fields. The version is bumped on every save and every reply ' +
+      'records the version that produced it, so an answer that reads oddly can be traced to the ' +
+      'exact wording behind it. Conversations already answered are NOT replayed.',
+  })
+  async updateChatSettings(@Body() body: unknown): Promise<ChatSettingsOverview> {
+    /*
+     * Staff, not an employee of a business: this controller is unscoped, so
+     * the id recorded against the setting is the staff member's own.
+     */
+    const actor = RequestContext.actor();
+    if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
+
+    const input = UpdateChatSettingsSchema.parse(body);
+    return this.chat.update(input, actor.staffId);
   }
 
   @Get('rate-limits')

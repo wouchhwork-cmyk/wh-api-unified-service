@@ -3,45 +3,16 @@ import OpenAI from 'openai';
 import { AppConfigService } from '@/config';
 import { CHAT_MAX_TURNS, CHAT_MAX_TURN_CHARS } from '@/shared/constants';
 import { withDeadline } from '@/shared/utils/deadline';
-import { ChatError, ChatFailure } from './openai.errors';
+import {
+  AiProvider,
+  type AiProviderId,
+  type ChatProvider,
+  type ChatReply,
+  type ChatRequest,
+  type ChatTurn,
+} from './ai.provider';
+import { ChatError, ChatFailure } from './chat.errors';
 import { parseChatReply } from './openai.parse';
-
-/** Who said it. The model's own replies come back as `assistant`. */
-export type ChatRole = 'user' | 'assistant';
-
-export interface ChatTurn {
-  readonly role: ChatRole;
-  readonly text: string;
-}
-
-export interface ChatUsage {
-  readonly inputTokens: number | null;
-  readonly outputTokens: number | null;
-  readonly totalTokens: number | null;
-  /** Input tokens served from cache, billed at a fraction of the rest. */
-  readonly cachedInputTokens: number | null;
-  /** Billed as output and never shown to anybody. */
-  readonly reasoningTokens: number | null;
-}
-
-export interface ChatReply {
-  readonly text: string;
-  readonly usage: ChatUsage;
-  /** The cap stopped it mid-sentence. The text is real but unfinished. */
-  readonly truncated: boolean;
-  readonly model: string;
-}
-
-export interface ChatRequest {
-  /** Oldest first. The last turn is what the model is answering. */
-  readonly turns: readonly ChatTurn[];
-  /** The standing instruction — who the model is, how it should answer. */
-  readonly instructions?: string;
-  /** Overrides the environment's model for this one call. */
-  readonly model?: string;
-  /** Overrides the environment's ceiling for this one call. */
-  readonly maxOutputTokens?: number;
-}
 
 /**
  * The one place this service holds a text conversation with OpenAI.
@@ -62,7 +33,9 @@ export interface ChatRequest {
  * "the model had nothing to say" must never look the same to a caller.
  */
 @Injectable()
-export class OpenAiClient {
+export class OpenAiClient implements ChatProvider {
+  readonly id: AiProviderId = AiProvider.OpenAi;
+
   private client: OpenAI | null = null;
 
   constructor(private readonly config: AppConfigService) {}
@@ -164,7 +137,7 @@ export class OpenAiClient {
       );
     }
 
-    return parseChatReply(raw, chosenModel);
+    return parseChatReply(raw, chosenModel, this.id);
   }
 
   /**

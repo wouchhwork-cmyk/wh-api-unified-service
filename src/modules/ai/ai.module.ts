@@ -4,6 +4,8 @@ import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import { GeminiClient } from './gemini.client';
 import { OpenAiClient } from './openai.client';
+import { ChatService } from './chat.service';
+import { ModelRouter } from './model-router.service';
 import { MediaDownloader } from './media-downloader';
 import { MediaAnalysisService } from './media-analysis.service';
 
@@ -23,6 +25,8 @@ import { MediaAnalysisService } from './media-analysis.service';
   providers: [
     GeminiClient,
     OpenAiClient,
+    ModelRouter,
+    ChatService,
     MediaDownloader,
     MediaAnalysisService,
     MediaAnalysisRepository,
@@ -32,6 +36,8 @@ import { MediaAnalysisService } from './media-analysis.service';
     MediaAnalysisService,
     GeminiClient,
     OpenAiClient,
+    ModelRouter,
+    ChatService,
     MediaAnalysisRepository,
     PlatformSettingRepository,
   ],

@@ -1,5 +1,5 @@
-import { ChatError, ChatFailure } from './openai.errors';
-import type { ChatReply, ChatUsage } from './openai.client';
+import { ChatError, ChatFailure } from './chat.errors';
+import type { AiProviderId, ChatReply, ChatUsage } from './ai.provider';
 
 /**
  * The reply, read out of a response object we did not design.
@@ -11,7 +11,7 @@ import type { ChatReply, ChatUsage } from './openai.client';
  * comes back empty, and an empty answer RAISES rather than returning '': a
  * caller must not be handed a blank reply that looks like a real one.
  */
-export function parseChatReply(raw: unknown, model: string): ChatReply {
+export function parseChatReply(raw: unknown, model: string, provider: AiProviderId): ChatReply {
   const row = raw as
     | {
         output_text?: unknown;
@@ -43,7 +43,7 @@ export function parseChatReply(raw: unknown, model: string): ChatReply {
     );
   }
 
-  return { text, usage: usageOf(raw), truncated, model };
+  return { text, usage: usageOf(raw), truncated, model, provider };
 }
 
 function replyTextOf(row: { output_text?: unknown; output?: unknown } | null | undefined): string {

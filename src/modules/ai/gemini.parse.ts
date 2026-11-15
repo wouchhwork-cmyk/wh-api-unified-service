@@ -47,7 +47,7 @@ export function parseMediaDescription(raw: unknown): MediaDescription {
   return { summary: candidate.slice(0, 4000), transcript: null, readable: true };
 }
 
-function outputTextOf(raw: unknown): string | null {
+export function outputTextOf(raw: unknown): string | null {
   const row = raw as { output_text?: unknown; steps?: unknown } | null;
   if (typeof row?.output_text === 'string' && row.output_text.trim().length > 0) {
     return row.output_text;

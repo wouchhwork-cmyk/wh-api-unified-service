@@ -669,3 +669,33 @@ export const CHAT_MAX_TURNS = 40;
 
 /** One turn's text. Comfortably longer than anything a person types at once. */
 export const CHAT_MAX_TURN_CHARS = 8_000;
+
+/**
+ * The ceiling on one chat reply, whichever provider writes it.
+ *
+ * A property of the FEATURE rather than of a vendor: what bounds a reply is
+ * how long a reply should be. Output is the expensive half everywhere, and on
+ * the providers that think before answering it is charged for thinking nobody
+ * ever sees — so a ceiling is the only instruction that is arithmetic rather
+ * than a request.
+ */
+export const CHAT_MAX_OUTPUT_TOKENS = 600;
+
+/**
+ * How much of a thread the assistant is shown.
+ *
+ * Enough for the conversation to make sense, bounded because every turn is
+ * billed again on every reply — and because the useful context of a support
+ * conversation is the recent part of it. Older history is not free to send
+ * and rarely changes the answer.
+ */
+export const CHATBOT_CONTEXT_MESSAGES = 20;
+
+/** How much of one message the assistant is shown, so a pasted essay cannot dominate. */
+export const CHATBOT_MESSAGE_CHARS = 1_500;
+
+/** How much of a media description is worth carrying into a reply. */
+export const CHATBOT_MEDIA_CHARS = 400;
+
+/** How many links and contacts of a business profile go into the context. */
+export const CHATBOT_PROFILE_ENTRIES = 8;

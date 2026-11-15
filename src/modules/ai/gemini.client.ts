@@ -2,9 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { AppConfigService } from '@/config';
 import { withDeadline } from '@/shared/utils/deadline';
-import { MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shared/constants';
+import { CHAT_MAX_OUTPUT_TOKENS, MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shared/constants';
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
-import { parseMediaDescription } from './gemini.parse';
+import { ChatError, ChatFailure } from './chat.errors';
+import { outputTextOf, parseMediaDescription } from './gemini.parse';
+import {
+  AiProvider,
+  type AiProviderId,
+  type ChatProvider,
+  type ChatReply,
+  type ChatRequest,
+  type ChatTurn,
+} from './ai.provider';
 
 export interface MediaDescription {
   readonly summary: string | null;
@@ -39,7 +48,9 @@ export interface AnalysisOutcome {
  * feature ran and found nothing" must not look the same in the ledger.
  */
 @Injectable()
-export class GeminiClient {
+export class GeminiClient implements ChatProvider {
+  readonly id: AiProviderId = AiProvider.Gemini;
+
   private client: GoogleGenAI | null = null;
 
   constructor(private readonly config: AppConfigService) {}
@@ -163,6 +174,103 @@ export class GeminiClient {
       usage: this.usageOf(raw),
       model: input.model,
     };
+  }
+
+  /**
+   * Holds a text conversation.
+   *
+   * THE HISTORY IS FLATTENED INTO ONE TEXT PART, which is not how OpenAI's
+   * client does it and is deliberate. The interactions API types a part by
+   * kind rather than by speaker, and inventing a role field we have not seen
+   * accepted would fail at the only moment that matters — in front of a
+   * customer. A labelled transcript is a shape every model reads, and the
+   * labels are what keep "what they said" apart from "what we said".
+   *
+   * It costs the same tokens either way: the whole history is sent on every
+   * turn regardless, because nothing is stored on their side.
+   */
+  async chat(request: ChatRequest): Promise<ChatReply> {
+    if (!this.enabled) {
+      throw new ChatError(
+        ChatFailure.Disabled,
+        'gemini is not configured in this environment',
+        false,
+      );
+    }
+    const ai = this.sdk();
+    const { timeoutMs, storeInteractions, model } = this.config.gemini;
+    const chosenModel = request.model?.trim() || model;
+
+    let raw: unknown;
+    try {
+      raw = await withDeadline(
+        ai.interactions.create({
+          model: chosenModel,
+          store: storeInteractions,
+          /*
+           * Gemini has no separate chat budget of its own: the cap is the
+           * chat feature's, because what bounds a reply is how long a reply
+           * should be, not whose model wrote it.
+           */
+          generation_config: {
+            max_output_tokens: request.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
+          },
+          input: [{ type: 'text', text: this.transcriptOf(request) }],
+        } as never),
+        timeoutMs,
+        () =>
+          new ChatError(
+            ChatFailure.Timeout,
+            `the model did not answer within ${timeoutMs}ms`,
+            true,
+          ),
+      );
+    } catch (error) {
+      if (error instanceof ChatError) throw error;
+      /* The message, never the conversation that produced it. */
+      throw new ChatError(
+        ChatFailure.CallFailed,
+        error instanceof Error ? error.message : 'the chat call failed',
+        false,
+      );
+    }
+
+    const text = outputTextOf(raw)?.trim() ?? '';
+    if (text.length === 0) {
+      throw new ChatError(ChatFailure.NoReply, 'the model returned no text', false);
+    }
+
+    const usage = this.usageOf(raw);
+    return {
+      text,
+      usage: {
+        ...usage,
+        /* Gemini reports neither, and null is how a caller tells that apart
+         * from a genuine zero when it adds up what a conversation cost. */
+        cachedInputTokens: null,
+        reasoningTokens: null,
+      },
+      truncated: (raw as { status?: unknown } | null)?.status === 'incomplete',
+      model: chosenModel,
+      provider: this.id,
+    };
+  }
+
+  /**
+   * The conversation as one labelled block.
+   *
+   * The instruction goes FIRST and the turns follow it, so the standing rules
+   * are read before the text they are meant to govern — including the rule
+   * that says text inside the conversation is content, never a command.
+   */
+  private transcriptOf(request: ChatRequest): string {
+    const instructions = request.instructions?.trim() ?? '';
+    const lines = request.turns.map(
+      (turn: ChatTurn) => `${turn.role === 'user' ? 'Them' : 'You'}: ${turn.text.trim()}`,
+    );
+    return [instructions, instructions.length > 0 ? '' : null, ...lines, '', 'You:']
+      .filter((line): line is string => line !== null)
+      .join('\n');
   }
 
   /**

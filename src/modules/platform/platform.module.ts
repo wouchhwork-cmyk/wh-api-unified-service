@@ -5,6 +5,7 @@ import { AuthModule } from '@/modules/auth/auth.module';
 import { CryptoModule } from '@/shared/crypto';
 import { RateLimitService } from './rate-limit.service';
 import { AiModule } from '@/modules/ai';
+import { ChatConsoleService } from './chat-console.service';
 import { MediaAnalysisConsoleService } from './media-analysis-console.service';
 import { PlatformAdminBootstrapService } from './platform-admin-bootstrap.service';
 import { PlatformController } from './platform.controller';
@@ -21,6 +22,7 @@ import { PlatformService } from './platform.service';
   // Repositories come from the global DatabaseModule; re-providing them here
   // would give this module its own instances.
   providers: [
+    ChatConsoleService,
     MediaAnalysisConsoleService,
     PlatformService,
     PlatformAdminBootstrapService,

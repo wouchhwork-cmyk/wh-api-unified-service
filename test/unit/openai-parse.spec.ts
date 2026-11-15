@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseChatReply, usageOf } from '@/modules/ai/openai.parse';
-import { ChatError, ChatFailure } from '@/modules/ai/openai.errors';
+import { ChatError, ChatFailure } from '@/modules/ai/chat.errors';
 
 /**
  * Reading a reply out of a response shape we do not own.
@@ -12,7 +12,7 @@ import { ChatError, ChatFailure } from '@/modules/ai/openai.errors';
  */
 describe('parseChatReply', () => {
   it('takes the convenience field when it has text', () => {
-    const reply = parseChatReply({ output_text: '  hello there  ' }, 'gpt-6-luna');
+    const reply = parseChatReply({ output_text: '  hello there  ' }, 'gpt-6-luna', 'openai');
     expect(reply.text).toBe('hello there');
     expect(reply.truncated).toBe(false);
     expect(reply.model).toBe('gpt-6-luna');
@@ -28,6 +28,7 @@ describe('parseChatReply', () => {
         ],
       },
       'gpt-6-luna',
+      'openai',
     );
     expect(reply.text).toBe('the real answer');
   });
@@ -41,6 +42,7 @@ describe('parseChatReply', () => {
           ],
         },
         'gpt-6-luna',
+        'openai',
       ),
     ).toThrow(ChatError);
   });
@@ -53,6 +55,7 @@ describe('parseChatReply', () => {
         incomplete_details: { reason: 'max_output_tokens' },
       },
       'gpt-6-luna',
+      'openai',
     );
     expect(reply.truncated).toBe(true);
     expect(reply.text).toBe('half a sent');
@@ -60,7 +63,7 @@ describe('parseChatReply', () => {
 
   it('refuses an empty answer instead of returning a blank message', () => {
     try {
-      parseChatReply({ output_text: '   ' }, 'gpt-6-luna');
+      parseChatReply({ output_text: '   ' }, 'gpt-6-luna', 'openai');
       expect.unreachable('an empty reply must raise');
     } catch (error) {
       expect(error).toBeInstanceOf(ChatError);
@@ -78,6 +81,7 @@ describe('parseChatReply', () => {
           incomplete_details: { reason: 'max_output_tokens' },
         },
         'gpt-6-luna',
+        'openai',
       );
       expect.unreachable('an empty reply must raise');
     } catch (error) {

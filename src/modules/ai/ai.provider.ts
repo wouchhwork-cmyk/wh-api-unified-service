@@ -1,0 +1,80 @@
+/**
+ * The shape every model provider presents, so nothing above this line has to
+ * know which one answered.
+ *
+ * THE PROVIDER IS AN ARGUMENT, NOT AN IMPLEMENTATION DETAIL. Callers name the
+ * provider they want and get back the same `ChatReply` whichever one it was —
+ * which is what makes the choice a setting somebody can change rather than a
+ * release somebody has to ship. The two differ in ways that matter (Gemini
+ * reads audio and video inline, OpenAI is cheaper per text token), so the
+ * right answer changes with the job and with the week.
+ */
+
+export const AiProvider = {
+  OpenAi: 'openai',
+  Gemini: 'gemini',
+} as const;
+
+export type AiProviderId = (typeof AiProvider)[keyof typeof AiProvider];
+
+/** Every provider id, for validating one that arrived from outside. */
+export const AI_PROVIDER_IDS = Object.values(AiProvider) as readonly AiProviderId[];
+
+export function isAiProviderId(value: unknown): value is AiProviderId {
+  return typeof value === 'string' && AI_PROVIDER_IDS.includes(value as AiProviderId);
+}
+
+/** Who said it. The model's own replies come back as `assistant`. */
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatTurn {
+  readonly role: ChatRole;
+  readonly text: string;
+}
+
+export interface ChatUsage {
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+  /** Input served from cache, billed at a fraction. Null where unreported. */
+  readonly cachedInputTokens: number | null;
+  /** Billed as output and never shown to anybody. Null where unreported. */
+  readonly reasoningTokens: number | null;
+}
+
+export interface ChatReply {
+  readonly text: string;
+  readonly usage: ChatUsage;
+  /** The cap stopped it mid-sentence. The text is real but unfinished. */
+  readonly truncated: boolean;
+  readonly model: string;
+  /** Which provider actually answered — the one thing a caller cannot infer. */
+  readonly provider: AiProviderId;
+}
+
+export interface ChatRequest {
+  /** Oldest first. The last turn is what the model is answering. */
+  readonly turns: readonly ChatTurn[];
+  /** The standing instruction — who the model is, how it should answer. */
+  readonly instructions?: string;
+  /** Overrides the provider's configured model for this one call. */
+  readonly model?: string;
+  /** Overrides the provider's configured ceiling for this one call. */
+  readonly maxOutputTokens?: number;
+}
+
+/**
+ * What a provider must be able to do to be routable.
+ *
+ * Deliberately ONE METHOD. A provider is not a grab bag of everything its
+ * vendor sells — it is the capability this product dispatches on. Media
+ * description is a second capability with a different shape and a different
+ * set of providers that can honestly implement it (OpenAI's API takes no
+ * audio or video inline), so it is not bolted on here.
+ */
+export interface ChatProvider {
+  readonly id: AiProviderId;
+  /** False when this environment has no key for it. */
+  readonly enabled: boolean;
+  chat(request: ChatRequest): Promise<ChatReply>;
+}

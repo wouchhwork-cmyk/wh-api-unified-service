@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AppConfigService } from '@/config';
 import { OpenAiClient } from '@/modules/ai/openai.client';
-import { ChatError, ChatFailure } from '@/modules/ai/openai.errors';
+import { ChatError, ChatFailure } from '@/modules/ai/chat.errors';
 import { CHAT_MAX_TURNS, CHAT_MAX_TURN_CHARS } from '@/shared/constants';
 
 /**

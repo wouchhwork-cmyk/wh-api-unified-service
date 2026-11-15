@@ -30,6 +30,7 @@ import { AwardsRecordTheProgramVersion1759300000000 } from './migrations/1759300
 import { EnterpriseDisplayName1759500000000 } from './migrations/1759500000000-EnterpriseDisplayName';
 import { EnterpriseProfile1759600000000 } from './migrations/1759600000000-EnterpriseProfile';
 import { MediaAnalysis1759700000000 } from './migrations/1759700000000-MediaAnalysis';
+import { ChatSettings1759800000000 } from './migrations/1759800000000-ChatSettings';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -105,6 +106,7 @@ export function buildDataSourceOptions(
       EnterpriseDisplayName1759500000000,
       EnterpriseProfile1759600000000,
       MediaAnalysis1759700000000,
+      ChatSettings1759800000000,
     ],
     migrationsTableName: 'schema_migrations',
 
