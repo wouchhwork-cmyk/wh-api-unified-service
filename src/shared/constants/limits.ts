@@ -638,3 +638,16 @@ export const MEDIA_ANALYSIS_RETRY_BASE_MS = 60_000;
  * on a guess.
  */
 export const MEDIA_ANALYSIS_ALLOWED_MIME_PREFIXES = ['image/', 'audio/', 'video/'] as const;
+
+/**
+ * The most a description may cost in output tokens.
+ *
+ * A real one measured 108. Four hundred is generous room for a wordy image
+ * and still a CEILING — the output column is the expensive one
+ * ($2.50/M against $0.30/M for input) and it is charged "including thinking
+ * tokens", so it is the half that can run away without anybody noticing.
+ *
+ * A cap is better than a plea in the prompt: an instruction to be brief is
+ * advice the model may ignore, this is arithmetic it cannot.
+ */
+export const MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS = 400;

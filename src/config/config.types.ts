@@ -84,8 +84,11 @@ export interface GeminiConfig {
   readonly apiKey: string;
   /** Config rather than constant — Google retires model ids on its own schedule. */
   readonly model: string;
-  /** Pins the request/response contract, like `graphApiVersion` does for Meta. */
-  readonly apiRevision: string;
+  /**
+   * `v1beta` or `v1`. Inline media is refused on v1, so this is load-bearing
+   * rather than cosmetic — see the env schema.
+   */
+  readonly apiVersion: string;
   readonly timeoutMs: number;
   readonly maxRetries: number;
   /**

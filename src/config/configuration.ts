@@ -154,7 +154,7 @@ export function loadConfiguration(): Configuration {
       enabled: env.GEMINI_ENABLED,
       apiKey: env.GEMINI_API_KEY,
       model: env.GEMINI_MODEL,
-      apiRevision: env.GEMINI_API_REVISION,
+      apiVersion: env.GEMINI_API_VERSION,
       timeoutMs: env.GEMINI_TIMEOUT_MS,
       maxRetries: env.GEMINI_MAX_RETRIES,
       storeInteractions: env.GEMINI_STORE_INTERACTIONS,

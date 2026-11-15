@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { AppConfigService } from '@/config';
+import { MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shared/constants';
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { parseMediaDescription } from './gemini.parse';
 
@@ -63,7 +64,17 @@ export class GeminiClient {
         true,
       );
     }
-    this.client ??= new GoogleGenAI({ apiKey: this.config.gemini.apiKey });
+    /*
+     * THE VERSION IS PASSED, NOT LEFT TO THE SDK. Its default is v1, which
+     * refuses inline media — the first real image failed with
+     * "The value 'image' is not supported for 'input[1].type' in v1". Sending
+     * media IS this client's only job, so the version it needs is not an
+     * optional extra.
+     */
+    this.client ??= new GoogleGenAI({
+      apiKey: this.config.gemini.apiKey,
+      apiVersion: this.config.gemini.apiVersion,
+    });
     return this.client;
   }
 
@@ -95,6 +106,25 @@ export class GeminiClient {
         ai.interactions.create({
           model: input.model,
           store: storeInteractions,
+          /*
+           * NOTHING IS REQUESTED THAT IS NOT NEEDED, and that is deliberate
+           * rather than incidental:
+           *
+           *   - NO `tools`. Search grounding bills separately — $14 per 1,000
+           *     grounded prompts past the free allowance — and describing a
+           *     photo somebody just sent needs nothing from the web. A tool
+           *     declaration is also tokens on every single request.
+           *   - NO deep-research or agent model. Those exist for multi-step
+           *     work; this is one question about one file.
+           *   - NO stored interaction unless configured, so there is no
+           *     conversation history accumulating against a one-shot call.
+           *
+           * The output is CAPPED. It is the expensive half — $2.50/M against
+           * $0.30/M for input, and charged including thinking tokens — and an
+           * instruction to be brief is advice a model may ignore, where this
+           * is arithmetic it cannot.
+           */
+          generation_config: { max_output_tokens: MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS },
           input: [
             { type: 'text', text: input.prompt },
             {

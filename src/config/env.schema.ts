@@ -132,11 +132,17 @@ export const EnvSchema = z
      */
     GEMINI_MODEL: z.string().min(1).default('gemini-3.5-flash-lite'),
     /**
-     * Pins the request/response contract. Google versions this API by header,
-     * so leaving it unset would mean the shape we parse changes under us
-     * without a deploy — the same reason GRAPH_API_VERSION is pinned.
+     * The API version the SDK talks to, and it is NOT cosmetic.
+     *
+     * `v1` refuses inline media outright — the first real image came back
+     * `400 The value 'image' is not supported for 'input[1].type' in v1, it is
+     * available in v1beta`. Describing media is the entire feature, so v1beta
+     * is the working default rather than the adventurous one.
+     *
+     * Pinned for the same reason `GRAPH_API_VERSION` is: left to the SDK's
+     * default, the shape we parse would change under us without a deploy.
      */
-    GEMINI_API_REVISION: z.string().min(1).default('2026-05-20'),
+    GEMINI_API_VERSION: z.string().min(1).default('v1beta'),
     /**
      * A model call is on a customer-facing path, so it must give up before the
      * request does. Longer than a database statement, shorter than the HTTP
