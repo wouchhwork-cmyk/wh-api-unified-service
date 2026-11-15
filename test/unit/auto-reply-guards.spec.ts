@@ -45,21 +45,19 @@ function serviceWith(over: {
   } as unknown as EnterpriseRepository;
 
   const messagesCarrying = vi.fn().mockResolvedValue([100]);
-  const messages = {
-    messagesCarrying,
-    assistantContextFor: vi.fn().mockResolvedValue(
-      over.context === null
-        ? null
-        : {
-            conversationId: 7,
-            conversationRefId: 'conv-ref',
-            status: ConversationStatus.Open,
-            messagesSince: 0,
-            pendingMedia: 0,
-            ...over.context,
-          },
-    ),
-  } as unknown as MessageRepository;
+  const assistantContextFor = vi.fn().mockResolvedValue(
+    over.context === null
+      ? null
+      : {
+          conversationId: 7,
+          conversationRefId: 'conv-ref',
+          status: ConversationStatus.Open,
+          messagesSince: 0,
+          pendingMedia: 0,
+          ...over.context,
+        },
+  );
+  const messages = { messagesCarrying, assistantContextFor } as unknown as MessageRepository;
 
   const draftReplyForAutomation = over.draftFails
     ? vi.fn().mockRejectedValue(new Error('the model call failed'))
@@ -86,7 +84,13 @@ function serviceWith(over: {
     { record } as unknown as AuditService,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
   );
-  return { service, draftReply: draftReplyForAutomation, replyAsAssistant, record, messages };
+  return {
+    service,
+    draftReply: draftReplyForAutomation,
+    replyAsAssistant,
+    record,
+    assistantContextFor,
+  };
 }
 
 describe('automatic reply: when it stays quiet', () => {
@@ -151,9 +155,8 @@ describe('automatic reply: when the customer keeps typing', () => {
    * check proves the ANSWER is still current when it goes.
    */
   it('throws the draft away when a newer message arrived while it was written', async () => {
-    const { service, replyAsAssistant, record, messages } = serviceWith({});
-    const context = messages.assistantContextFor as ReturnType<typeof vi.fn>;
-    context
+    const { service, replyAsAssistant, record, assistantContextFor } = serviceWith({});
+    assistantContextFor
       .mockResolvedValueOnce({
         conversationId: 7,
         conversationRefId: 'conv-ref',
@@ -177,10 +180,10 @@ describe('automatic reply: when the customer keeps typing', () => {
   });
 
   it('checks again after drafting, not only before', async () => {
-    const { service, messages } = serviceWith({});
+    const { service, assistantContextFor } = serviceWith({});
     await service.considerReplying(1, 100);
     // Twice: once to decide whether to answer, once to decide whether to send.
-    expect(messages.assistantContextFor).toHaveBeenCalledTimes(2);
+    expect(assistantContextFor).toHaveBeenCalledTimes(2);
   });
 });
 
