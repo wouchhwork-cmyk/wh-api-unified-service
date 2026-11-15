@@ -264,8 +264,7 @@ export class InboxService {
     attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
     analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
   }> {
-    const conversation = await this.conversations.findByRefId(enterpriseId, conversationRefId);
-    if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
+    const conversation = await this.resolveConversation(enterpriseId, conversationRefId);
 
     const messages = await this.messages.listThread(
       enterpriseId,
@@ -995,12 +994,22 @@ export class InboxService {
       throw new AppException(ErrorCode.AuthNoActiveEmployment);
     }
 
-    // Validation and reads happen BEFORE the transaction opens, so it stays short.
-    const conversation = await this.requireConversation(
-      actor.enterpriseId,
-      input.conversationRefId,
-      'reply',
-    );
+    /*
+     * Validation and reads happen BEFORE the transaction opens, so it stays
+     * short.
+     *
+     * AN AUTOMATED SEND RESOLVES THE ROW WITHOUT THE COLLEAGUE CHECK, for
+     * the reason the actorless thread read exists: there is no colleague.
+     * Everything else below applies unchanged — the closed thread, the
+     * messaging window, the channel's health, the idempotency key — because
+     * an automated reply is not a privileged one. Only the question "which
+     * employee may answer this kind of thread" is meaningless here, and only
+     * that question is skipped.
+     */
+    const conversation =
+      actor.automated === true
+        ? await this.resolveConversation(actor.enterpriseId, input.conversationRefId)
+        : await this.requireConversation(actor.enterpriseId, input.conversationRefId, 'reply');
 
     /*
      * A CLOSED THREAD IS CLOSED. Only `archived` refused a reply, so an agent
@@ -1717,13 +1726,30 @@ export class InboxService {
    * otherwise silently get the most permissive reading. Making it required
    * turns that into a compile error.
    */
+  /**
+   * The row, tenant-scoped, with no question of who is asking.
+   *
+   * SEPARATED FROM THE PERMISSION CHECK because the two answer different
+   * questions and only one of them has an answer in a worker. "Does this
+   * business own a conversation with this ref" is about the tenant boundary
+   * and is enforced here by `enterpriseId`. "May this colleague open it" is
+   * about a person, and a background job is not one.
+   */
+  private async resolveConversation(
+    enterpriseId: number,
+    conversationRefId: string,
+  ): Promise<ConversationRow> {
+    const conversation = await this.conversations.findByRefId(enterpriseId, conversationRefId);
+    if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
+    return conversation;
+  }
+
   private async requireConversation(
     enterpriseId: number,
     conversationRefId: string,
     action: ConversationAction,
   ): Promise<ConversationRow> {
-    const conversation = await this.conversations.findByRefId(enterpriseId, conversationRefId);
-    if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
+    const conversation = await this.resolveConversation(enterpriseId, conversationRefId);
 
     const needed = permissionFor(conversation.conversationKind, action);
     const held = RequestContext.actor()?.permissions;

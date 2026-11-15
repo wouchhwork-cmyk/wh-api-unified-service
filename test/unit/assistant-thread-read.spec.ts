@@ -78,6 +78,72 @@ describe('reading a thread for the assistant', () => {
   });
 });
 
+/**
+ * The SECOND site of the same bug, found the same way: the first fix let the
+ * assistant read the thread, and it then failed identically on the send.
+ *
+ * Asserted by what it fails with. A send that gets past the actor gate goes
+ * on to the channel check and complains about THAT — so "it no longer
+ * answers CONVERSATION_NOT_FOUND" is the precise claim, with no mock deep
+ * enough to pretend a message was delivered.
+ */
+describe('sending without a colleague behind it', () => {
+  const CONVERSATION_ROW = {
+    id: 7,
+    refId: 'conv-ref',
+    conversationKind: 'direct_message',
+    status: 'open',
+    customerId: 3,
+    channelId: 11,
+    lastInboundAt: new Date(),
+    contextMetadata: {},
+    platform: 'instagram',
+  };
+
+  function sendableInbox() {
+    const service = Object.create(InboxService.prototype) as InboxService;
+    Object.assign(service, {
+      conversations: { findByRefId: vi.fn().mockResolvedValue(CONVERSATION_ROW) },
+      messages: { findByIdempotencyKey: vi.fn().mockResolvedValue(null) },
+      /* Null send context: the next refusal after the gate we are testing. */
+      channels: { findSendContext: vi.fn().mockResolvedValue(null) },
+    });
+    return service;
+  }
+
+  const INPUT = {
+    conversationRefId: 'conv-ref',
+    body: 'we open at nine',
+    idempotencyKey: 'assistant:100',
+    internalNote: false,
+    assistant: { provider: 'openai', model: 'gpt-6-luna' },
+  };
+
+  it('gets past the gate that has no answer for a worker', async () => {
+    const service = sendableInbox();
+    await expect(service.replyAsAssistant(2, INPUT)).rejects.toMatchObject({
+      // Not CONVERSATION_NOT_FOUND: the colleague check is behind it now.
+      code: ErrorCode.ChannelNotFound,
+    });
+  });
+
+  it('still refuses a person who may not answer this thread', async () => {
+    const service = sendableInbox();
+    await RequestContext.run({ correlationId: 'test' }, async () => {
+      await expect(service.reply({ enterpriseId: 2, employeeId: 9 }, INPUT)).rejects.toMatchObject({
+        code: ErrorCode.ConversationNotFound,
+      });
+    });
+  });
+
+  it('still refuses a send with no employee and no automation flag', async () => {
+    const service = sendableInbox();
+    await expect(service.reply({ enterpriseId: 2, employeeId: null }, INPUT)).rejects.toMatchObject(
+      { code: ErrorCode.AuthNoActiveEmployment },
+    );
+  });
+});
+
 describe('which door the chatbot uses', () => {
   function chatbotWith() {
     const inbox = {
