@@ -23,6 +23,8 @@ function serviceWith(over: {
   businessOptedIn?: boolean;
   providerEnabled?: boolean;
   context?: Record<string, unknown> | null;
+  fallbackMessage?: string;
+  draftFails?: boolean;
 }) {
   const chat = {
     currentSettings: vi.fn().mockResolvedValue({
@@ -31,6 +33,7 @@ function serviceWith(over: {
       prompt: 'be brief',
       version: 1,
       autoReply: over.platformAutoReply ?? true,
+      fallbackMessage: over.fallbackMessage ?? 'Stepping away, back shortly.',
     }),
     enabledFor: vi.fn().mockReturnValue(over.providerEnabled ?? true),
   } as unknown as ChatService;
@@ -53,15 +56,17 @@ function serviceWith(over: {
     ),
   } as unknown as MessageRepository;
 
-  const draftReplyForAutomation = vi.fn().mockResolvedValue({
-    text: 'we open at nine',
-    usage: { inputTokens: 10, outputTokens: 4 },
-    truncated: false,
-    model: 'gpt-6-luna',
-    provider: 'openai',
-    promptVersion: 1,
-    context: { messages: 3, mediaDescriptions: 1, hasBusinessProfile: true },
-  });
+  const draftReplyForAutomation = over.draftFails
+    ? vi.fn().mockRejectedValue(new Error('the model call failed'))
+    : vi.fn().mockResolvedValue({
+        text: 'we open at nine',
+        usage: { inputTokens: 10, outputTokens: 4 },
+        truncated: false,
+        model: 'gpt-6-luna',
+        provider: 'openai',
+        promptVersion: 1,
+        context: { messages: 3, mediaDescriptions: 1, hasBusinessProfile: true },
+      });
   const replyAsAssistant = vi
     .fn()
     .mockResolvedValue({ messageRefId: 'msg-ref', status: 'pending' });
@@ -131,6 +136,71 @@ describe('automatic reply: when it stays quiet', () => {
      */
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: AuditStatus.Error }));
     expect(JSON.stringify(record.mock.calls[0])).toContain('settings exploded');
+  });
+});
+
+describe('automatic reply: when it cannot answer', () => {
+  /*
+   * Silence is the worst outcome here. With automatic replies on, every fast
+   * answer has already told the customer that somebody is there — so a model
+   * failure that says nothing does not read as "no reply", it reads as being
+   * ignored by someone who was plainly around a moment ago.
+   */
+  it('tells the customer something rather than going quiet', async () => {
+    const { service, replyAsAssistant } = serviceWith({ draftFails: true });
+    await service.considerReplying(1, 100);
+
+    expect(replyAsAssistant).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        body: 'Stepping away, back shortly.',
+        // Its own key: an apology must not consume the reply's, or a later
+        // real answer to the same message could never be sent.
+        idempotencyKey: 'assistant-fallback:100',
+      }),
+    );
+  });
+
+  it('never tells the customer why', async () => {
+    const { service, replyAsAssistant } = serviceWith({ draftFails: true });
+    await service.considerReplying(1, 100);
+    const sent = JSON.stringify(replyAsAssistant.mock.calls[0]);
+    expect(sent).not.toContain('the model call failed');
+  });
+
+  it('puts the real reason in the trail instead', async () => {
+    const { service, record } = serviceWith({ draftFails: true });
+    await service.considerReplying(1, 100);
+    const recorded = JSON.stringify(record.mock.calls);
+    expect(recorded).toContain('the model call failed');
+    expect(recorded).toContain('could_not_answer');
+  });
+
+  it('apologises for a missing key too, which the customer cannot tell apart', async () => {
+    const { service, replyAsAssistant } = serviceWith({ providerEnabled: false });
+    await service.considerReplying(1, 100);
+    expect(replyAsAssistant).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ idempotencyKey: 'assistant-fallback:100' }),
+    );
+  });
+
+  it('says nothing when the business chose to say nothing', async () => {
+    const { service, replyAsAssistant, record } = serviceWith({
+      draftFails: true,
+      fallbackMessage: '',
+    });
+    await service.considerReplying(1, 100);
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+    expect(JSON.stringify(record.mock.calls)).toContain('"fallbackSent":false');
+  });
+
+  it('does not apologise when a colleague has already answered', async () => {
+    // Overtaken is not a failure: somebody got there first, and an apology
+    // on top of their reply would be noise in front of the customer.
+    const { service, replyAsAssistant } = serviceWith({ context: { messagesSince: 1 } });
+    await service.considerReplying(1, 100);
+    expect(replyAsAssistant).not.toHaveBeenCalled();
   });
 });
 

@@ -42,6 +42,7 @@ describe('chat settings', () => {
       provider: 'gemini',
       model: 'gemini-3.5-flash',
       prompt: 'Be extremely brief.',
+      fallbackMessage: 'Stepping away, back shortly.',
     });
     await expect(service.currentSettings()).resolves.toEqual({
       provider: 'gemini',
@@ -49,6 +50,7 @@ describe('chat settings', () => {
       prompt: 'Be extremely brief.',
       version: 3,
       autoReply: false,
+      fallbackMessage: 'Stepping away, back shortly.',
     });
   });
 

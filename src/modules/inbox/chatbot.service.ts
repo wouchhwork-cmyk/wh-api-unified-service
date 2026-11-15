@@ -15,6 +15,35 @@ import {
 import { MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
 import { InboxService } from './inbox.service';
 
+/**
+ * How to read the `[media: ...]` lines, told to the model only when there are
+ * any.
+ *
+ * WITHOUT THIS IT DISCLAIMS. Asked about a video, it answered "I can read the
+ * description you shared, but I can't watch the video itself" — truthful
+ * about the plumbing and useless to the customer, who had just sent a video
+ * to a business and been told it had not been watched. The description IS our
+ * record of having watched it: a model looked at the real bytes while the
+ * link still worked and wrote down what was there.
+ *
+ * So the model is told whose observation that line is. It is not a hint about
+ * what to claim — it is the fact that the line is this system's own account
+ * of the media rather than something the customer typed.
+ */
+const MEDIA_NOTE = [
+  'Some messages carry a line like [media: ...].',
+  'That is your own record of a photo, video, voice note or audio clip that was sent:',
+  'what was in it, and anything said or written in it, written down when it arrived.',
+  '',
+  'Treat it as having seen and heard that media yourself. Answer questions about it directly,',
+  'refer to what was in it naturally, and do not say you are unable to see, watch, open or',
+  'hear media. Do not mention descriptions, records, transcripts or analysis — to the person',
+  'you are replying to, you simply saw what they sent.',
+  '',
+  'If the line does not contain what you are being asked about, say what you did notice and',
+  'ask them about the rest, rather than claiming you cannot view media at all.',
+].join('\n');
+
 export interface DraftedReply extends ChatAnswer {
   /**
    * What the model was actually given, in counts.
@@ -152,7 +181,13 @@ export class ChatbotService {
     }
 
     const profile = await this.businessContext(enterpriseId);
-    const answer = await this.chat.reply(turns.slice(-CHAT_MAX_TURNS), profile ?? undefined);
+    const instructions = [mediaDescriptions > 0 ? MEDIA_NOTE : null, profile]
+      .filter((part): part is string => part !== null)
+      .join('\n\n');
+    const answer = await this.chat.reply(
+      turns.slice(-CHAT_MAX_TURNS),
+      instructions.length > 0 ? instructions : undefined,
+    );
 
     return {
       ...answer,

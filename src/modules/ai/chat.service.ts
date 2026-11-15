@@ -17,6 +17,8 @@ export interface ChatSettings {
   readonly provider: AiProviderId;
   /** The platform's kill switch for automatic replies. Off unless stored true. */
   readonly autoReply: boolean;
+  /** Sent to the customer when a reply cannot be produced. Empty = say nothing. */
+  readonly fallbackMessage: string;
   readonly model: string;
   readonly prompt: string;
   readonly version: number;
@@ -36,6 +38,16 @@ export interface ChatAnswer extends ChatReply {
  * other people wrote, and text that arrives inside a conversation is content
  * to answer, never a command to obey.
  */
+/**
+ * The apology of last resort, for a database that cannot be read.
+ *
+ * Deliberately vague about the cause. A customer does not need to hear that
+ * a model call failed, and "we are having technical difficulties" invites a
+ * question nobody here can answer either.
+ */
+const FALLBACK_APOLOGY =
+  "Sorry, I have to step away for something urgent — I'll get back to you shortly.";
+
 const FALLBACK_PROMPT = [
   'You are a helpful assistant replying inside a business tool.',
   '',
@@ -104,6 +116,10 @@ export class ChatService {
        * to let an assistant answer customers, and only that decision counts.
        */
       autoReply: stored?.value.autoReply === true,
+      fallbackMessage:
+        typeof stored?.value.fallbackMessage === 'string'
+          ? stored.value.fallbackMessage.trim()
+          : FALLBACK_APOLOGY,
       /*
        * The model falls back PER PROVIDER, because a model id means nothing
        * outside the provider that serves it — "gpt-6-luna" is not a thing

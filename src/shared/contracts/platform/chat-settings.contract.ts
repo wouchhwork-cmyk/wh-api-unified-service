@@ -28,6 +28,18 @@ export const UpdateChatSettingsSchema = z.strictObject({
    */
   autoReply: z.boolean(),
   /**
+   * What the customer hears when the assistant cannot answer.
+   *
+   * With automatic replies on, every fast answer has told the customer that
+   * somebody is there — so a failure that says nothing reads as being
+   * ignored. This is the short human line sent instead.
+   *
+   * EMPTY MEANS SEND NOTHING, which is a real choice: a business may prefer
+   * silence to an apology it did not write. Bounded hard, because it is a
+   * fixed string sent to customers and nothing about it needs length.
+   */
+  fallbackMessage: z.string().trim().max(500),
+  /**
    * The model id, UNCONSTRAINED BY AN ENUM on purpose.
    *
    * OpenAI retires these on their own schedule — `gpt-5-nano` shuts down on

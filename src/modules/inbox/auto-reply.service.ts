@@ -16,6 +16,8 @@ const Skip = {
   Gone: 'message_or_conversation_missing',
   Closed: 'conversation_closed',
   Overtaken: 'conversation_moved_on',
+  /** The draft could not be produced, so the customer got the fallback. */
+  Failed: 'could_not_answer',
 } as const;
 
 type SkipReason = (typeof Skip)[keyof typeof Skip];
@@ -110,17 +112,23 @@ export class AutoReplyService {
     if (!enterprise?.autoReplyEnabled) {
       return this.skipQuietly(enterpriseId, messageId, Skip.BusinessOff);
     }
+    const context = await this.messages.assistantContextFor(enterpriseId, messageId);
+    if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
+
     if (!this.chat.enabledFor(settings.provider)) {
-      /* Audited rather than quiet: somebody turned this on and expects it to
-       * work, so a missing key is a fault rather than a preference. */
-      return this.record(enterpriseId, messageId, AuditStatus.Failure, {
+      /*
+       * A fault rather than a preference: somebody turned this on and expects
+       * it to work. The customer still hears something, because from where
+       * they are sitting a missing API key and a broken model are the same
+       * silence.
+       */
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.NoProvider,
         provider: settings.provider,
       });
+      await this.sendFallback(enterpriseId, messageId, context.conversationRefId, settings, null);
+      return;
     }
-
-    const context = await this.messages.assistantContextFor(enterpriseId, messageId);
-    if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
 
     if (
       context.status === ConversationStatus.Closed ||
@@ -148,10 +156,20 @@ export class AutoReplyService {
     }
 
     /* The actorless read: a worker has no employee whose permissions to check. */
-    const draft = await this.chatbot.draftReplyForAutomation(
-      enterpriseId,
-      context.conversationRefId,
-    );
+    let draft;
+    try {
+      draft = await this.chatbot.draftReplyForAutomation(enterpriseId, context.conversationRefId);
+    } catch (error) {
+      /*
+       * THE CUSTOMER IS NOT LEFT IN SILENCE. Every fast answer before this
+       * one has told them somebody is there, so a model failure that says
+       * nothing reads as being ignored — which is worse than never having
+       * answered quickly at all. They get a short human line instead, and
+       * the real reason goes to the trail rather than to them.
+       */
+      await this.sendFallback(enterpriseId, messageId, context.conversationRefId, settings, error);
+      return;
+    }
 
     /*
      * WHAT WROTE IT, carried into both the message row and the audit row the
@@ -220,6 +238,73 @@ export class AutoReplyService {
    * `system`: there is no request context in a worker, which is the honest
    * answer about who sent this.
    */
+  /**
+   * The apology, when there is no answer to send.
+   *
+   * ITS OWN IDEMPOTENCY KEY, distinct from the reply's, so a redelivered
+   * webhook cannot apologise twice — and so a later successful reply to the
+   * same message is still possible, rather than being swallowed by a key an
+   * apology already used.
+   *
+   * SILENT WHEN THE TEXT IS EMPTY. A business that would rather say nothing
+   * than send an apology it did not write has made a choice, and this
+   * respects it.
+   *
+   * IT NEVER RAISES. This runs because something already went wrong; a
+   * failure here would replace a recorded fault with an unrecorded one.
+   */
+  private async sendFallback(
+    enterpriseId: number,
+    messageId: number,
+    conversationRefId: string,
+    settings: { fallbackMessage: string },
+    cause: unknown,
+  ): Promise<void> {
+    const reason = cause instanceof Error ? cause.message : null;
+    const text = settings.fallbackMessage.trim();
+
+    if (text.length === 0) {
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
+        skipped: Skip.Failed,
+        fallbackSent: false,
+        ...(reason ? { failed: reason } : {}),
+      });
+      return;
+    }
+
+    try {
+      const sent = await this.inbox.replyAsAssistant(enterpriseId, {
+        conversationRefId,
+        body: text,
+        idempotencyKey: `assistant-fallback:${messageId}`,
+        internalNote: false,
+        assistant: { fallback: true, inReplyToMessageId: messageId },
+      });
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
+        skipped: Skip.Failed,
+        fallbackSent: true,
+        messageRefId: sent.messageRefId,
+        ...(reason ? { failed: reason } : {}),
+      });
+      this.logger.warn(
+        { enterpriseId, conversationRefId, messageRefId: sent.messageRefId, reason },
+        'assistant could not answer; sent the fallback message',
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, enterpriseId, conversationRefId, reason },
+        'assistant could not answer and the fallback could not be sent either',
+      );
+      await this.record(enterpriseId, messageId, AuditStatus.Error, {
+        skipped: Skip.Failed,
+        fallbackSent: false,
+        ...(reason ? { failed: reason } : {}),
+      }).catch(() => {
+        /* Already the failure path; an audit write must not become the throw. */
+      });
+    }
+  }
+
   private async record(
     enterpriseId: number,
     messageId: number,

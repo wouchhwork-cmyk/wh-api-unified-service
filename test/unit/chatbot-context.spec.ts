@@ -141,6 +141,35 @@ describe('chatbot context', () => {
     expect(draft.context.mediaDescriptions).toBe(0);
   });
 
+  it('tells the model the media line is its own seeing, not a quote', async () => {
+    /*
+     * Asked "did you watch it?", it answered "I can read the description you
+     * shared, but I can't watch the video itself" — true about the plumbing,
+     * and useless to a customer who had just sent a video to a business.
+     */
+    const { service, reply } = serviceWith({
+      messages: [message(1, { body: 'did you watch it?' })],
+      attachmentsByMessageId: new Map([[1, [{ mediaKey: 'asset:9' }]]]),
+      analysisByKey: new Map([
+        [
+          'asset:9',
+          { status: MediaAnalysisStatus.Done, summary: 'A dog on a skateboard', transcript: null },
+        ],
+      ]),
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    const instructions = reply.mock.calls[0]?.[1] as string;
+    expect(instructions).toContain('your own record');
+    expect(instructions).toContain('do not say you are unable to see');
+  });
+
+  it('does not explain the media convention when there is no media', async () => {
+    const { service, reply } = serviceWith({ messages: [message(1)] });
+    await service.draftReply(1, 'conv-ref');
+    expect(reply.mock.calls[0]?.[1] as string).not.toContain('[media:');
+  });
+
   it('tells the model who it is replying for, from the business profile', async () => {
     const { service, reply } = serviceWith({ messages: [message(1)] });
     const draft = await service.draftReply(1, 'conv-ref');

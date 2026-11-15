@@ -11,6 +11,7 @@ import { UpdateChatSettingsSchema } from '@/shared/contracts/platform/chat-setti
 const VALID = {
   provider: 'openai',
   autoReply: false,
+  fallbackMessage: 'Stepping away, back shortly.',
   model: 'gpt-6-luna',
   prompt: 'You are a helpful assistant replying inside a business tool. Be brief.',
 };
@@ -35,6 +36,7 @@ describe('chat settings contract', () => {
     const parsed = UpdateChatSettingsSchema.parse({
       provider: 'openai',
       autoReply: false,
+      fallbackMessage: '  Stepping away.  ',
       model: '  gpt-6-luna  ',
       prompt: `  ${VALID.prompt}  `,
     });
@@ -58,6 +60,13 @@ describe('chat settings contract', () => {
     expect(issuesFor({ prompt: 'be nice' })).toContain('prompt');
     expect(issuesFor({ prompt: 'x'.repeat(8_001) })).toContain('prompt');
     expect(issuesFor({ prompt: 'x'.repeat(8_000) })).toEqual([]);
+  });
+
+  it('accepts an empty fallback, which means saying nothing at all', () => {
+    // A real choice: a business may prefer silence to an apology it did not
+    // write. Only ABSENCE is refused, because that is a client that forgot.
+    expect(issuesFor({ fallbackMessage: '' })).toEqual([]);
+    expect(issuesFor({ fallbackMessage: 'x'.repeat(501) })).toContain('fallbackMessage');
   });
 
   it('refuses a field nobody asked for, rather than silently dropping it', () => {

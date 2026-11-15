@@ -8,6 +8,8 @@ export interface ChatSettingsOverview {
   readonly provider: AiProviderId;
   /** The platform-wide switch for automatic replies. Businesses opt in separately. */
   readonly autoReply: boolean;
+  /** What a customer hears when the assistant cannot answer. */
+  readonly fallbackMessage: string;
   /** False when this environment has no key for the chosen provider. */
   readonly enabled: boolean;
   /**
@@ -41,6 +43,7 @@ export class ChatConsoleService {
     return {
       provider: current.provider,
       autoReply: current.autoReply,
+      fallbackMessage: current.fallbackMessage,
       enabled: this.chat.enabledFor(current.provider),
       availableProviders: this.chat.availableProviders(),
       model: current.model,
@@ -72,6 +75,7 @@ export class ChatConsoleService {
       {
         provider: input.provider,
         autoReply: input.autoReply,
+        fallbackMessage: input.fallbackMessage,
         model: input.model,
         prompt: input.prompt,
       },
