@@ -7,6 +7,7 @@ import type {
   CryptoConfig,
   DatabaseConfig,
   GeminiConfig,
+  OpenAiConfig,
   MetaConfig,
   OtpConfig,
   PlatformAdminConfig,
@@ -47,6 +48,9 @@ export class AppConfigService {
   }
   get gemini(): GeminiConfig {
     return this.all.gemini;
+  }
+  get openai(): OpenAiConfig {
+    return this.all.openai;
   }
   get otp(): OtpConfig {
     return this.all.otp;

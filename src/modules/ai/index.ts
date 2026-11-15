@@ -2,5 +2,8 @@ export * from './ai.module';
 export * from './gemini.client';
 export * from './gemini.errors';
 export * from './media-analysis.service';
+export * from './openai.client';
+export * from './openai.errors';
+export * from './openai.parse';
 export * from './media-downloader';
 export * from './gemini.parse';

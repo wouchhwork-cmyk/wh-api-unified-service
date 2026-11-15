@@ -99,6 +99,43 @@ export interface GeminiConfig {
   readonly storeInteractions: boolean;
 }
 
+/**
+ * How hard a model may think, as the API spells it, plus the empty string for
+ * "send no preference at all" — the escape hatch for a model that rejects a
+ * level it does not implement.
+ */
+export type ReasoningEffortSetting =
+  | ''
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
+
+export interface OpenAiConfig {
+  /** Off means no call is made and no key is needed. */
+  readonly enabled: boolean;
+  /** Secret. Never logged and never included in an error response. */
+  readonly apiKey: string;
+  /** Config rather than constant — OpenAI retires model ids on its own schedule. */
+  readonly model: string;
+  /** Per attempt. The SDK retries beneath it, so the client bounds the total. */
+  readonly timeoutMs: number;
+  readonly maxRetries: number;
+  /** The ceiling on one reply, thinking included — reasoning tokens bill as output. */
+  readonly maxOutputTokens: number;
+  /** `none` through `max`; empty means the field is not sent at all. */
+  readonly reasoningEffort: ReasoningEffortSetting;
+  /**
+   * Whether OpenAI keeps the response server-side. Their default is true and
+   * retention is at least 30 days, so this is sent on every call rather than
+   * left out.
+   */
+  readonly storeResponses: boolean;
+}
+
 export interface OtpConfig {
   /** When false nothing is sent and every code is `staticCode`. */
   readonly realtimeEnabled: boolean;
@@ -124,6 +161,7 @@ export interface Configuration {
   readonly worker: WorkerConfig;
   readonly meta: MetaConfig;
   readonly gemini: GeminiConfig;
+  readonly openai: OpenAiConfig;
   readonly otp: OtpConfig;
   readonly platformAdmin: PlatformAdminConfig;
 }

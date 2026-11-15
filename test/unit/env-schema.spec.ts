@@ -110,3 +110,44 @@ describe('production environment refusals', () => {
     expect(issuesFor({ NODE_ENV: 'dev', OTP_STATIC_CODE: '1234' })).toEqual([]);
   });
 });
+
+describe('model provider configuration', () => {
+  it('needs a key only once the provider is switched on', () => {
+    expect(issuesFor({ NODE_ENV: 'dev', OPENAI_ENABLED: 'true' })).toContain('OPENAI_API_KEY');
+    expect(issuesFor({ NODE_ENV: 'dev', OPENAI_ENABLED: 'false' })).toEqual([]);
+  });
+
+  it('refuses to let production store customer conversation at OpenAI', () => {
+    expect(
+      issuesFor({
+        OPENAI_ENABLED: 'true',
+        OPENAI_API_KEY: 'sk-real',
+        OPENAI_STORE_RESPONSES: 'true',
+      }),
+    ).toContain('OPENAI_STORE_RESPONSES');
+    expect(
+      issuesFor({
+        NODE_ENV: 'dev',
+        OPENAI_ENABLED: 'true',
+        OPENAI_API_KEY: 'sk-real',
+        OPENAI_STORE_RESPONSES: 'true',
+      }),
+    ).toEqual([]);
+  });
+
+  /*
+   * The defaults are a decision, not a formality: a model that is retired in
+   * December, a provider's own storage default of true, or a reasoning budget
+   * on a chat reply would each cost real money or real privacy while every
+   * test still passed.
+   */
+  it('defaults to the cheapest model OpenAI will still be serving, and to nothing it charges extra for', () => {
+    const parsed = EnvSchema.safeParse({ ...PROD_BASE, OTP_REALTIME_ENABLED: 'true' });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.OPENAI_MODEL).toBe('gpt-6-luna');
+    expect(parsed.data.OPENAI_ENABLED).toBe(false);
+    expect(parsed.data.OPENAI_STORE_RESPONSES).toBe(false);
+    expect(parsed.data.OPENAI_REASONING_EFFORT).toBe('none');
+  });
+});

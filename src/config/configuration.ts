@@ -159,6 +159,16 @@ export function loadConfiguration(): Configuration {
       maxRetries: env.GEMINI_MAX_RETRIES,
       storeInteractions: env.GEMINI_STORE_INTERACTIONS,
     },
+    openai: {
+      enabled: env.OPENAI_ENABLED,
+      apiKey: env.OPENAI_API_KEY,
+      model: env.OPENAI_MODEL,
+      timeoutMs: env.OPENAI_TIMEOUT_MS,
+      maxRetries: env.OPENAI_MAX_RETRIES,
+      maxOutputTokens: env.OPENAI_MAX_OUTPUT_TOKENS,
+      reasoningEffort: env.OPENAI_REASONING_EFFORT,
+      storeResponses: env.OPENAI_STORE_RESPONSES,
+    },
     otp: {
       realtimeEnabled: env.OTP_REALTIME_ENABLED,
       staticCode: env.OTP_STATIC_CODE,

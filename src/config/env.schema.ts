@@ -162,6 +162,71 @@ export const EnvSchema = z
      */
     GEMINI_STORE_INTERACTIONS: booleanish.default(false),
 
+    // --- OpenAI (text chat) ----------------------------------------------
+    /**
+     * OFF BY DEFAULT, the same bargain `GEMINI_ENABLED` strikes: with it off
+     * nothing is sent to OpenAI, no key is required, and the service boots.
+     *
+     * A SEPARATE SWITCH FROM GEMINI'S, deliberately. They are two providers
+     * with two keys, two bills and two retention policies, doing two
+     * different jobs — Gemini describes media, this one holds text
+     * conversations. One switch for both would turn on a provider nobody
+     * asked for.
+     */
+    OPENAI_ENABLED: booleanish.default(false),
+    /** Secret. Never logged, never returned, never defaulted to anything. */
+    OPENAI_API_KEY: z.string().default(''),
+    /**
+     * The model id: the cheapest one OpenAI will still be answering with.
+     *
+     * `gpt-5-nano` is cheaper on paper — $0.05 / $0.40 per million tokens
+     * against $0.10 / $0.50 here — and it is NOT the default, because OpenAI
+     * has it deprecated with shutdown on 11 December 2026 and names
+     * `gpt-6-luna` as its own replacement. A default that stops answering in
+     * three weeks saves cents and costs an outage.
+     *
+     * CONFIG RATHER THAN CONSTANT for the reason `GEMINI_MODEL` is: the
+     * retirement schedule belongs to them, so a model change must be an
+     * environment change rather than a release.
+     */
+    OPENAI_MODEL: z.string().min(1).default('gpt-6-luna'),
+    /**
+     * PER ATTEMPT, NOT PER CALL. The SDK retries underneath us, so the worst
+     * case is this multiplied by `OPENAI_MAX_RETRIES + 1` — which is why the
+     * client bounds the total itself instead of trusting that product to stay
+     * small.
+     */
+    OPENAI_TIMEOUT_MS: positiveInt.default(30_000),
+    OPENAI_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+    /**
+     * The ceiling on one reply, and it is not only about length.
+     *
+     * Output is the expensive half — $0.50/M against $0.10/M on `gpt-6-luna`
+     * — and REASONING TOKENS BILL AS OUTPUT: thinking we are charged for and
+     * never see. The API's own minimum is 16.
+     */
+    OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(16).max(4_000).default(600),
+    /**
+     * How hard the model thinks before answering: `none` through `max`.
+     *
+     * `none` BECAUSE THIS IS CHAT. Thinking is billed as output, and a
+     * conversational reply does not need a reasoning budget. Empty sends no
+     * field at all, which is the escape hatch for a model that rejects a
+     * level — OpenAI documents that not every model supports every value.
+     */
+    OPENAI_REASONING_EFFORT: z
+      .enum(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+      .default('none'),
+    /**
+     * Whether OpenAI keeps the response server-side.
+     *
+     * OFF, AND THAT IS THE OPPOSITE OF THEIR DEFAULT: the API stores every
+     * response for at least 30 days unless told not to. What passes through
+     * here is a customer's conversation, so the retention is a thing an
+     * environment decides out loud rather than inherits.
+     */
+    OPENAI_STORE_RESPONSES: booleanish.default(false),
+
     // --- Verification delivery / OTP (backend-design.md §12) --------------
     /**
      * OFF means no provider is called and every issued code is the fixed
@@ -236,6 +301,33 @@ export const EnvSchema = z
           'GEMINI_STORE_INTERACTIONS must be set deliberately in prod: it leaves ' +
           'customer message content with Google for 55 days (paid tier) and is ' +
           'only safe on a paid key',
+      });
+    }
+    /*
+     * A key is required only when the provider is switched on — the same
+     * bargain Gemini and Meta strike, so a developer needs no OpenAI account
+     * to run the service.
+     */
+    if (env.OPENAI_ENABLED && !env.OPENAI_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OPENAI_API_KEY'],
+        message: 'OPENAI_API_KEY is required when OPENAI_ENABLED=true',
+      });
+    }
+    /*
+     * REFUSED IN PRODUCTION for the reason `GEMINI_STORE_INTERACTIONS` is:
+     * OpenAI keeps a stored response for at least 30 days, and what we send
+     * it is customers' conversation. Storing that in prod is a considered
+     * choice about retention, never an accident of defaults.
+     */
+    if (env.NODE_ENV === 'prod' && env.OPENAI_ENABLED && env.OPENAI_STORE_RESPONSES) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OPENAI_STORE_RESPONSES'],
+        message:
+          'OPENAI_STORE_RESPONSES must be set deliberately in prod: it leaves ' +
+          'customer conversation content with OpenAI for at least 30 days',
       });
     }
     // Meta config is only required when the integration is switched on, so a

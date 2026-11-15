@@ -651,3 +651,21 @@ export const MEDIA_ANALYSIS_ALLOWED_MIME_PREFIXES = ['image/', 'audio/', 'video/
  * advice the model may ignore, this is arithmetic it cannot.
  */
 export const MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS = 400;
+
+/**
+ * How much conversation goes to the model in one call.
+ *
+ * A chat history grows forever if nobody stops it, and every turn is paid for
+ * again on every single reply — so the bound is not a safety net, it is the
+ * difference between a cost that settles and one that climbs with the length
+ * of the conversation.
+ *
+ * The client REFUSES past these rather than quietly dropping the oldest
+ * turns: which part of somebody's history is worth losing is a decision for
+ * the caller that knows what the conversation is for, not for the adapter
+ * that happens to notice the array is long.
+ */
+export const CHAT_MAX_TURNS = 40;
+
+/** One turn's text. Comfortably longer than anything a person types at once. */
+export const CHAT_MAX_TURN_CHARS = 8_000;

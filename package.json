@@ -65,6 +65,7 @@
     "libphonenumber-js": "1.13.11",
     "nestjs-pino": "4.6.1",
     "nestjs-zod": "5.5.0",
+    "openai": "7.55.0",
     "pg": "8.23.0",
     "pino-http": "11.0.0",
     "reflect-metadata": "0.2.2",
