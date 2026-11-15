@@ -759,6 +759,45 @@ export async function applyPostTableObjects(
       WHERE is_downloaded = false AND status = 'active' AND is_deleted = false
     `);
 
+  /*
+   * MEDIA ANALYSIS, GUARDED — these objects belong to tables and columns that
+   * migration 1759700000000 creates, seven migrations after this file first
+   * runs.
+   *
+   * The same trap `entity_versions` fell into below: this file is executed by
+   * the INITIAL migration as well as by db:sync, so an unguarded index here
+   * breaks a migrate-from-zero entirely while looking fine on every database
+   * that already exists. The later migration creates all three itself, so
+   * skipping here loses nothing.
+   */
+  await run(`
+    DO $do$
+    BEGIN
+      IF to_regclass('public.media_analyses') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE media_analyses
+                   DROP CONSTRAINT IF EXISTS media_analyses_enterprise_fk';
+        EXECUTE 'ALTER TABLE media_analyses
+                   ADD CONSTRAINT media_analyses_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS media_analyses_due_idx
+                   ON media_analyses (COALESCE(next_attempt_at, created_at), id)
+                   WHERE status IN (''pending'',''failed'')';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS media_analyses_stats_idx
+                   ON media_analyses (status, media_kind)';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'message_attachments' AND column_name = 'media_key'
+      ) THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS message_attachments_media_key_idx
+                   ON message_attachments (enterprise_id, media_key)
+                   WHERE media_key IS NOT NULL';
+      END IF;
+    END
+    $do$;
+  `);
+
   // --- the ledger claim scans -------------------------------------------
   // Ordered on (priority, due-time, id): priority is numeric so smaller runs
   // sooner, and COALESCE keeps a brand-new event from sorting behind every

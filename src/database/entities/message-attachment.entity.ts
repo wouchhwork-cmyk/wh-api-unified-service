@@ -78,6 +78,17 @@ export class MessageAttachment extends BaseEntity {
   downloadedAt!: Date | null;
 
   /** Alt text, sticker pack, platform extras. */
+  /**
+   * The media's STABLE identity across CDN link refreshes.
+   *
+   * `asset:<id>` when Meta gave one, otherwise `msg:<platformMessageId>:<sortOrder>`.
+   * It is what joins an attachment to its `media_analyses` row, so two
+   * attachments carrying the same asset share one analysis instead of paying
+   * for it twice. Null only for a row too old or too sparse to key.
+   */
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  mediaKey!: string | null;
+
   @Column({ type: 'jsonb', default: () => "'{}'" })
   metadata!: Record<string, unknown>;
 

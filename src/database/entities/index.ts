@@ -23,7 +23,9 @@ import { Identity } from './identity.entity';
 import { InboundEvent } from './inbound-event.entity';
 import { EmployeeRole } from './employee-role.entity';
 import { ProviderApiUsage } from './provider-api-usage.entity';
+import { MediaAnalysis } from './media-analysis.entity';
 import { MessageAttachment } from './message-attachment.entity';
+import { PlatformSetting } from './platform-setting.entity';
 import { Message } from './message.entity';
 import { OauthState } from './oauth-state.entity';
 import { OutboundEvent } from './outbound-event.entity';
@@ -90,6 +92,9 @@ export { RewardLedgerEntry } from './reward-ledger-entry.entity';
 export { RewardEntitlement } from './reward-entitlement.entity';
 
 /** The array TypeORM is configured with. */
+export * from './media-analysis.entity';
+export * from './platform-setting.entity';
+
 export const ENTITIES = [
   AuditLog,
   Channel,
@@ -105,8 +110,10 @@ export const ENTITIES = [
   InboundEvent,
   EmployeeRole,
   ProviderApiUsage,
+  MediaAnalysis,
   MessageAttachment,
   Message,
+  PlatformSetting,
   OauthState,
   OutboundEvent,
   Permission,
