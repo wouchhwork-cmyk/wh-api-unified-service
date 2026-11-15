@@ -4,6 +4,8 @@ import { AuditModule } from '@/modules/audit';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { CryptoModule } from '@/shared/crypto';
 import { RateLimitService } from './rate-limit.service';
+import { AiModule } from '@/modules/ai';
+import { MediaAnalysisConsoleService } from './media-analysis-console.service';
 import { PlatformAdminBootstrapService } from './platform-admin-bootstrap.service';
 import { PlatformController } from './platform.controller';
 import { PlatformService } from './platform.service';
@@ -14,10 +16,15 @@ import { PlatformService } from './platform.service';
    * a verification, and it uses the same one implementation of hashing, expiry,
    * attempt limiting and single use as every other invitation in the codebase.
    */
-  imports: [AppConfigModule, AuditModule, AuthModule, CryptoModule],
+  imports: [AiModule, AppConfigModule, AuditModule, AuthModule, CryptoModule],
   controllers: [PlatformController],
   // Repositories come from the global DatabaseModule; re-providing them here
   // would give this module its own instances.
-  providers: [PlatformService, PlatformAdminBootstrapService, RateLimitService],
+  providers: [
+    MediaAnalysisConsoleService,
+    PlatformService,
+    PlatformAdminBootstrapService,
+    RateLimitService,
+  ],
 })
 export class PlatformModule {}

@@ -7,6 +7,7 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
+import { AiModule } from '@/modules/ai';
 import { AuditModule } from '@/modules/audit';
 import { GraphApiClient } from '@/modules/connections/graph/graph-api.client';
 import { SendReconciliationService } from './send-reconciliation.service';
@@ -62,7 +63,7 @@ const PROVIDERS = [
  * code, in a process that serves no traffic.
  */
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, AiModule],
   controllers: [InboxController],
   providers: PROVIDERS,
   exports: [

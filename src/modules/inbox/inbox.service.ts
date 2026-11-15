@@ -14,6 +14,8 @@ import {
   type AttachmentRow,
 } from '@/database/repositories/message-attachment.repository';
 import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
+import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
+import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { OutboundEventRepository } from '@/database/repositories/outbound-event.repository';
 import { TransactionManager } from '@/database/transaction';
@@ -107,6 +109,7 @@ export class InboxService {
     private readonly conversations: ConversationRepository,
     private readonly messages: MessageRepository,
     private readonly attachments: MessageAttachmentRepository,
+    private readonly mediaAnalysis: MediaAnalysisService,
     private readonly syncJobs: SyncJobRepository,
     private readonly outbound: OutboundEventRepository,
     private readonly channels: ChannelRepository,
@@ -246,6 +249,8 @@ export class InboxService {
     conversation: ConversationRow;
     messages: MessageRow[];
     attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
+    /** One description per unique media on this page, keyed by `mediaKey`. */
+    analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
     /**
      * Who wrote the comments in a mention's surrounding thread, for the ones we
      * already hold. Meta returns that thread anonymous; this is what we can
@@ -307,6 +312,20 @@ export class InboxService {
      */
     const withMedia = messages.filter((message) => message.hasAttachments).map((m) => m.id);
     const attachmentRows = await this.attachments.listForMessages(enterpriseId, withMedia);
+
+    /*
+     * THE DESCRIPTIONS, in one query for the whole page.
+     *
+     * This is what a thread shows once the media itself has gone: Meta's links
+     * expire and cannot be re-issued past the newest 20 messages, so for an
+     * older conversation the description is the only remaining account of what
+     * was sent. Keyed on `mediaKey` rather than on the attachment, so two
+     * messages carrying the same asset share one answer.
+     */
+    const analyses = await this.mediaAnalysis.resultsFor(enterpriseId, [
+      ...new Set(attachmentRows.map((row) => row.mediaKey).filter((key): key is string => !!key)),
+    ]);
+    const analysisByKey = new Map(analyses.map((row) => [row.mediaKey, row]));
 
     const attachmentsByMessageId = new Map<number, AttachmentRow[]>();
     for (const row of attachmentRows) {
@@ -370,6 +389,7 @@ export class InboxService {
       conversation,
       messages,
       attachmentsByMessageId,
+      analysisByKey,
       knownAuthors,
       parentMention,
       failedModerationCommentIds,

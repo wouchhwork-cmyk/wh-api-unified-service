@@ -117,6 +117,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=18101327498358721',
         sortOrder: 0,
         metadata: { platformType: 'story_mention', assetId: '18101327498358721', stableUrl: false },
+        mediaKey: null,
       },
     ]);
     expect(written).toBe(1);
@@ -148,6 +149,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://x.test/2',
         sortOrder: 1,
         metadata: {},
+        mediaKey: null,
       },
       {
         enterpriseId,
@@ -156,6 +158,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://x.test/1',
         sortOrder: 0,
         metadata: {},
+        mediaKey: null,
       },
     ]);
 
@@ -177,6 +180,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://x.test/a',
         sortOrder: 0,
         metadata: {},
+        mediaKey: null,
       },
       {
         enterpriseId,
@@ -185,6 +189,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://x.test/b',
         sortOrder: 0,
         metadata: {},
+        mediaKey: null,
       },
     ]);
 
@@ -202,6 +207,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://x.test/secret',
         sortOrder: 0,
         metadata: {},
+        mediaKey: null,
       },
     ]);
 
@@ -232,6 +238,7 @@ describe('message attachments', () => {
         sourceUrl: 'https://media2.giphy.com/media/v1.Y2lk/gKrbnqo25MlI2TUC78/200.gif',
         sortOrder: 0,
         metadata: { platformType: 'image', stableUrl: true },
+        mediaKey: null,
       },
     ]);
 

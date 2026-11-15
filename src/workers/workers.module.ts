@@ -24,7 +24,9 @@ import { CryptoModule } from '@/shared/crypto';
 import { buildLoggerConfig } from '@/shared/logging/logger.config';
 import { BackfillWorker } from './backfill.worker';
 import { InboundProjectorWorker } from './inbound-projector.worker';
+import { AiModule } from '@/modules/ai';
 import { LeaseReaperWorker } from './lease-reaper.worker';
+import { MediaAnalysisWorker } from './media-analysis.worker';
 import { OutboundRelayWorker } from './outbound-relay.worker';
 import { QueueGaugeWorker } from './queue-gauge.worker';
 import { QueueListenerService } from './queue-listener.service';
@@ -45,6 +47,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
  */
 @Module({
   imports: [
+    AiModule,
     AppConfigModule,
     CryptoModule,
     LoggerModule.forRootAsync({
@@ -89,6 +92,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     OutboundRelayWorker,
     BackfillWorker,
     LeaseReaperWorker,
+    MediaAnalysisWorker,
     QueueGaugeWorker,
     QueueListenerService,
     RefreshSchedulerWorker,

@@ -594,3 +594,47 @@ export const MAX_CONVERSATION_SUBJECT_CHARS = 500;
  * round trip rather than four, and the response is small either way.
  */
 export const GRAPH_ACCOUNTS_PER_PAGE = 100;
+
+/*
+ * ---------------------------------------------------------------------------
+ * Media analysis — describing a piece of media before its link dies.
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * The most we will download and send to a model, in bytes.
+ *
+ * Inline media is base64-encoded in the request, which inflates it by about a
+ * third — so this is the BYTE figure that stays under the request limit once
+ * encoded, not the limit itself. 6 MB of bytes is roughly 8 MB on the wire,
+ * which leaves comfortable room for the prompt beside it.
+ *
+ * Anything larger is recorded as `MEDIA_TOO_LARGE` rather than streamed: a
+ * voice note or a phone photo is far below this, and a file that is not is
+ * almost certainly not the thing a shop owner needs described.
+ */
+export const MEDIA_ANALYSIS_MAX_BYTES = 6 * 1024 * 1024;
+
+/** A dying CDN link does not get long to answer. */
+export const MEDIA_DOWNLOAD_TIMEOUT_MS = 15_000;
+
+/** How many media the analyser claims at once. */
+export const MEDIA_ANALYSIS_BATCH_SIZE = 5;
+
+/**
+ * The lease an analyser holds. Comfortably longer than a download plus a model
+ * call, so a slow one is not reclaimed underneath itself.
+ */
+export const MEDIA_ANALYSIS_LEASE_SECONDS = 180;
+
+/** Backoff between attempts on a transient failure. */
+export const MEDIA_ANALYSIS_RETRY_BASE_MS = 60_000;
+
+/**
+ * What a model may be asked to read.
+ *
+ * An allowlist rather than "anything the platform sent": a mime type we have
+ * not thought about is one whose bytes we would be forwarding to a third party
+ * on a guess.
+ */
+export const MEDIA_ANALYSIS_ALLOWED_MIME_PREFIXES = ['image/', 'audio/', 'video/'] as const;

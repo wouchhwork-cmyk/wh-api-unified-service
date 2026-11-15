@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   DEFAULT_PAGE_SIZE,
@@ -22,6 +32,11 @@ import { RequestContext } from '@/shared/context';
 import { AppException, ErrorCode } from '@/shared/errors';
 import { RateLimitService, type RateLimitOverview, type UsagePoint } from './rate-limit.service';
 import {
+  MediaAnalysisConsoleService,
+  type MediaAnalysisOverview,
+} from './media-analysis-console.service';
+import { UpdateMediaAnalysisSettingsSchema } from '@/shared/contracts/platform/media-analysis.contract';
+import {
   PlatformService,
   type EnterpriseDetail,
   type EnterpriseListItem,
@@ -41,7 +56,46 @@ export class PlatformController {
   constructor(
     private readonly platform: PlatformService,
     private readonly rateLimits: RateLimitService,
+    private readonly mediaAnalysis: MediaAnalysisConsoleService,
   ) {}
+
+  @Get('media-analysis')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'How media is described, and how the queue is doing',
+    description:
+      'Returns the instruction sent to the model, the model it is sent to, and the state of the ' +
+      'analysis queue broken down by status and media kind. The queue counts are PLATFORM-WIDE ' +
+      'and deliberately so: they are how staff watch a pipeline that spans every business. They ' +
+      'are counts, never content — no description, transcript or customer text is returned here.',
+  })
+  async mediaAnalysisOverview(): Promise<MediaAnalysisOverview> {
+    return this.mediaAnalysis.overview();
+  }
+
+  @Put('media-analysis')
+  @RequirePlatformAdmin()
+  @ApiOperation({
+    summary: 'Change the instruction, or the model',
+    description:
+      'A full restatement of both fields. The version is bumped on every save, and every ' +
+      'analysis records the version that produced it — so a description that reads oddly can be ' +
+      'traced to the exact instruction behind it, long after the instruction has moved on. ' +
+      'Existing descriptions are NOT re-run: changing the prompt changes what happens next, not ' +
+      'what already happened.',
+  })
+  async updateMediaAnalysis(@Body() body: unknown): Promise<MediaAnalysisOverview> {
+    /*
+     * Staff, not an employee of a business — this controller is deliberately
+     * unscoped. The id recorded on the setting is therefore the staff member's
+     * own, which is who actually changed it.
+     */
+    const actor = RequestContext.actor();
+    if (!actor?.staffId) throw new AppException(ErrorCode.PermissionDenied);
+
+    const input = UpdateMediaAnalysisSettingsSchema.parse(body);
+    return this.mediaAnalysis.update(input, actor.staffId);
+  }
 
   @Get('rate-limits')
   @RequirePlatformAdmin()

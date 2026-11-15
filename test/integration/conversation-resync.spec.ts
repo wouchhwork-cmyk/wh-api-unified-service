@@ -6,6 +6,7 @@ import { MessageAttachmentRepository } from '@/database/repositories/message-att
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
+import type { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
 import { Platform, SyncJobKind, SyncJobStatus, SyncTriggerKind } from '@/shared/enums';
 import { ORPHAN_EDIT_GRACE_ATTEMPTS } from '@/shared/constants';
@@ -32,6 +33,11 @@ function silentLogger(): never {
  * two-column one makes two customers' resyncs collide, so the second person to
  * need repair never gets it.
  */
+/** Media analysis is not what these cases test; it must simply not run. */
+function stubMediaAnalysis(): MediaAnalysisService {
+  return { queue: async () => 0 } as unknown as MediaAnalysisService;
+}
+
 describe('conversation resync jobs', () => {
   let db: DataSource;
   let syncJobs: SyncJobRepository;
@@ -197,6 +203,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
 
     const event: { id: string }[] = await db.query(
@@ -247,6 +259,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
 
     const event: { id: string }[] = await db.query(
@@ -287,6 +305,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const event = async (key: string): Promise<number> => {
       const rows: { id: string }[] = await db.query(
@@ -339,6 +363,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
@@ -376,6 +406,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const event = async (key: string): Promise<number> => {
       const rows: { id: string }[] = await db.query(
@@ -433,6 +469,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
@@ -481,6 +523,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
@@ -531,6 +579,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const event = async (key: string): Promise<number> => {
       const rows: { id: string }[] = await db.query(
@@ -585,6 +639,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const otherEnterprise = await seedEnterpriseWithChannel();
 
@@ -642,6 +702,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const event = async (key: string): Promise<number> => {
       const rows: { id: string }[] = await db.query(
@@ -716,6 +782,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
 
     const customer: { id: string }[] = await db.query(
@@ -779,6 +851,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
 
     const customer: { id: string }[] = await db.query(
@@ -837,6 +915,7 @@ describe('conversation resync jobs', () => {
         syncJobs,
         new TransactionManager(db, silentLogger()),
         silentLogger(),
+        stubMediaAnalysis(),
       );
     });
 
@@ -1012,6 +1091,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
@@ -1102,6 +1187,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const event = async (key: string): Promise<number> => {
       const rows: { id: string }[] = await db.query(
@@ -1138,6 +1229,12 @@ describe('conversation resync jobs', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
     const rows: { id: string }[] = await db.query(
       `INSERT INTO inbound_events
@@ -1194,6 +1291,12 @@ describe('an orphan message_edit', () => {
       syncJobs,
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
   }
 
@@ -1482,6 +1585,12 @@ describe('subscribed webhooks nobody had ever sent us', () => {
       new SyncJobRepository(db),
       new TransactionManager(db, silentLogger()),
       silentLogger(),
+      /*
+       * These cases are about resync and projection, not about descriptions.
+       * A stub keeps them from reaching a model, and `queue` never throwing is
+       * the contract the projector relies on anyway.
+       */
+      stubMediaAnalysis(),
     );
 
   const ledgerRow = async (dedupKey: string): Promise<number> => {

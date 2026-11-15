@@ -9,10 +9,18 @@ export interface InsertAttachmentInput {
   readonly sourceUrl: string | null;
   readonly sortOrder: number;
   readonly metadata: Record<string, unknown>;
+  /**
+   * The media's identity across link refreshes — see `mediaKeyFor`. Null when
+   * the row carries neither an asset id nor a platform message id, which is
+   * rare and means it simply cannot be deduplicated or described.
+   */
+  readonly mediaKey: string | null;
 }
 
 export interface AttachmentRow {
   readonly messageId: number;
+  /** Joins this attachment to its description — see `mediaKeyFor`. */
+  readonly mediaKey: string | null;
   readonly mediaKind: MediaKind;
   readonly sourceUrl: string | null;
   readonly storageKey: string | null;
@@ -49,14 +57,15 @@ export class MessageAttachmentRepository extends BaseRepository {
         input.sourceUrl,
         input.sortOrder,
         JSON.stringify(input.metadata),
+        input.mediaKey,
       );
-      const base = params.length - 6;
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::jsonb)`;
+      const base = params.length - 7;
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}::jsonb, $${base + 7})`;
     });
 
     const { rows } = await this.mutate<{ id: number }>(
       `INSERT INTO message_attachments
-         (enterprise_id, message_id, media_kind, source_url, sort_order, metadata)
+         (enterprise_id, message_id, media_kind, source_url, sort_order, metadata, media_key)
        VALUES ${tuples.join(', ')}
        RETURNING id`,
       params,
@@ -80,7 +89,8 @@ export class MessageAttachmentRepository extends BaseRepository {
     return this.query<AttachmentRow>(
       `SELECT message_id AS "messageId", media_kind AS "mediaKind",
               source_url AS "sourceUrl", storage_key AS "storageKey",
-              sort_order AS "sortOrder", status, metadata
+              sort_order AS "sortOrder", status, metadata,
+              media_key AS "mediaKey"
          FROM message_attachments
         WHERE enterprise_id = $1
           AND message_id = ANY($2::bigint[])

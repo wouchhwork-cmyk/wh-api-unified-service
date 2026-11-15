@@ -10,6 +10,8 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
 import { TransactionManager } from '@/database/transaction';
 import { ORPHAN_EDIT_GRACE_ATTEMPTS } from '@/shared/constants';
+import { assetIdFromMetadata, mediaKeyFor } from '@/shared/utils/media-key';
+import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import {
   ConversationKind,
   CustomerFirstSource,
@@ -152,6 +154,7 @@ export class DirectMessageProjectorService {
     private readonly syncJobs: SyncJobRepository,
     private readonly tx: TransactionManager,
     @InjectPinoLogger(DirectMessageProjectorService.name) private readonly logger: PinoLogger,
+    private readonly mediaAnalysis: MediaAnalysisService,
   ) {}
 
   async project(
@@ -449,15 +452,43 @@ export class DirectMessageProjectorService {
        * thread endpoint renders as an empty bubble.
        */
       if (media.attachments.length > 0) {
-        await this.attachments.insertMany(
-          media.attachments.map((attachment) => ({
-            enterpriseId,
-            messageId: inserted.id,
-            mediaKind: attachment.mediaKind,
-            sourceUrl: attachment.sourceUrl,
+        /*
+         * THE KEY IS WRITTEN HERE, at the only moment everything needed to
+         * build it is in hand. It is what lets a refreshed link — same media,
+         * new signature — find the description we already paid for instead of
+         * buying a second one.
+         */
+        const keyed = media.attachments.map((attachment) => ({
+          enterpriseId,
+          messageId: inserted.id,
+          mediaKind: attachment.mediaKind,
+          sourceUrl: attachment.sourceUrl,
+          sortOrder: attachment.sortOrder,
+          metadata: attachment.metadata,
+          mediaKey: mediaKeyFor({
+            assetId: assetIdFromMetadata(attachment.metadata),
+            platformMessageId,
             sortOrder: attachment.sortOrder,
-            metadata: attachment.metadata,
-          })),
+          }),
+        }));
+        await this.attachments.insertMany(keyed);
+
+        /*
+         * QUEUED NOW, WHILE THE LINK IS FRESHEST. Meta's media links expire
+         * and cannot be re-issued past the newest 20 messages of a thread, so
+         * the moment of arrival is the one time the bytes are reliably
+         * reachable. `queue` never throws: a description is worth having and
+         * never worth losing the message over.
+         */
+        await this.mediaAnalysis.queue(
+          enterpriseId,
+          keyed
+            .filter((row): row is typeof row & { mediaKey: string } => row.mediaKey !== null)
+            .map((row) => ({
+              mediaKey: row.mediaKey,
+              mediaKind: row.mediaKind,
+              mimeType: typeof row.metadata.mimeType === 'string' ? row.metadata.mimeType : null,
+            })),
         );
       }
 
@@ -645,15 +676,43 @@ export class DirectMessageProjectorService {
       if (!inserted) return { projected: false, reason: 'our own message was already recorded' };
 
       if (media.attachments.length > 0) {
-        await this.attachments.insertMany(
-          media.attachments.map((attachment) => ({
-            enterpriseId,
-            messageId: inserted.id,
-            mediaKind: attachment.mediaKind,
-            sourceUrl: attachment.sourceUrl,
+        /*
+         * THE KEY IS WRITTEN HERE, at the only moment everything needed to
+         * build it is in hand. It is what lets a refreshed link — same media,
+         * new signature — find the description we already paid for instead of
+         * buying a second one.
+         */
+        const keyed = media.attachments.map((attachment) => ({
+          enterpriseId,
+          messageId: inserted.id,
+          mediaKind: attachment.mediaKind,
+          sourceUrl: attachment.sourceUrl,
+          sortOrder: attachment.sortOrder,
+          metadata: attachment.metadata,
+          mediaKey: mediaKeyFor({
+            assetId: assetIdFromMetadata(attachment.metadata),
+            platformMessageId,
             sortOrder: attachment.sortOrder,
-            metadata: attachment.metadata,
-          })),
+          }),
+        }));
+        await this.attachments.insertMany(keyed);
+
+        /*
+         * QUEUED NOW, WHILE THE LINK IS FRESHEST. Meta's media links expire
+         * and cannot be re-issued past the newest 20 messages of a thread, so
+         * the moment of arrival is the one time the bytes are reliably
+         * reachable. `queue` never throws: a description is worth having and
+         * never worth losing the message over.
+         */
+        await this.mediaAnalysis.queue(
+          enterpriseId,
+          keyed
+            .filter((row): row is typeof row & { mediaKey: string } => row.mediaKey !== null)
+            .map((row) => ({
+              mediaKey: row.mediaKey,
+              mediaKind: row.mediaKind,
+              mimeType: typeof row.metadata.mimeType === 'string' ? row.metadata.mimeType : null,
+            })),
         );
       }
 

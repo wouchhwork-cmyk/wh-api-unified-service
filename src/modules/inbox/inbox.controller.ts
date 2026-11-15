@@ -38,6 +38,8 @@ import {
 } from '@/shared/contracts/inbox/inbox.contract';
 import { InboxService } from './inbox.service';
 import { isExpiringMediaUrl, isRecoverableMedia } from './attachment-normalizer';
+import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
+import { MediaAnalysisStatus } from '@/shared/enums';
 
 type ScopedActor = ActorContext & { enterpriseId: number };
 
@@ -245,6 +247,7 @@ export class InboxController {
           result.attachmentsByMessageId.get(row.id) ?? [],
           row.platformMessageId !== null &&
             result.failedModerationCommentIds.has(row.platformMessageId),
+          result.analysisByKey,
         ),
       ),
       /*
@@ -507,6 +510,7 @@ function toMessage(
   row: MessageRow,
   attachments: readonly AttachmentRow[],
   moderationFailed: boolean,
+  analyses: ReadonlyMap<string, AnalysisResultRow>,
 ): Record<string, unknown> {
   return {
     refId: row.refId,
@@ -634,6 +638,19 @@ function toMessage(
     attachments: attachments.map((attachment) => ({
       mediaKind: attachment.mediaKind,
       url: attachment.sourceUrl,
+      /*
+       * WHAT THIS MEDIA WAS, in words, once nobody can open it any more.
+       *
+       * Meta's links expire and cannot be re-issued past the newest 20
+       * messages of a thread, so for an older conversation this is the only
+       * surviving account of what a customer sent. Present whether or not the
+       * link still works — a description beside a picture is useful; a
+       * description instead of one is the whole point.
+       *
+       * Null while the analysis is queued, when it failed, or when the media
+       * was never a kind worth describing.
+       */
+      analysis: describedAs(attachment, analyses),
       /*
        * Whether this link will stop working.
        *
@@ -1219,4 +1236,22 @@ function toConversationSummary(
     messageCount: row.messageCount,
     lastMessageAt: row.lastMessageAt,
   };
+}
+
+/**
+ * The description attached to this media, when one exists and says something.
+ *
+ * ONLY A FINISHED ANALYSIS IS SHOWN. Queued, in flight and failed are states a
+ * reader cannot act on, and "we are still looking at this" beside a dead image
+ * is worse than silence — it promises something that may never arrive.
+ */
+function describedAs(
+  attachment: AttachmentRow,
+  analyses: ReadonlyMap<string, AnalysisResultRow>,
+): { summary: string | null; transcript: string | null; describedAt: Date | null } | null {
+  if (!attachment.mediaKey) return null;
+  const row = analyses.get(attachment.mediaKey);
+  if (!row || row.status !== MediaAnalysisStatus.Done) return null;
+  if (!row.summary && !row.transcript) return null;
+  return { summary: row.summary, transcript: row.transcript, describedAt: row.analyzedAt };
 }
