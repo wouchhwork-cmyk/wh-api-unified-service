@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { AppConfigService } from '@/config';
+import { withDeadline } from '@/shared/utils/deadline';
 import { MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shared/constants';
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { parseMediaDescription } from './gemini.parse';
@@ -102,7 +103,7 @@ export class GeminiClient {
 
     let raw: unknown;
     try {
-      raw = await this.withTimeout(
+      raw = await withDeadline(
         ai.interactions.create({
           model: input.model,
           store: storeInteractions,
@@ -135,6 +136,12 @@ export class GeminiClient {
           ],
         } as never),
         timeoutMs,
+        () =>
+          new MediaAnalysisError(
+            MediaFailure.ModelFailed,
+            `the model did not answer within ${timeoutMs}ms`,
+            false,
+          ),
       );
     } catch (error) {
       if (error instanceof MediaAnalysisError) throw error;
@@ -182,34 +189,5 @@ export class GeminiClient {
       outputTokens: read('total_output_tokens'),
       totalTokens: read('total_tokens'),
     };
-  }
-
-  /**
-   * A model call on a customer-facing path must give up before the request
-   * does. The SDK's own timeout handling is not relied on here: an external
-   * call with no bound of ours is an outage waiting for a slow day.
-   */
-  private async withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        work,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new MediaAnalysisError(
-                  MediaFailure.ModelFailed,
-                  `the model did not answer within ${ms}ms`,
-                  false,
-                ),
-              ),
-            ms,
-          );
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
   }
 }
