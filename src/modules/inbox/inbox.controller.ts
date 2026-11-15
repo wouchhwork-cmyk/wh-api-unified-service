@@ -36,6 +36,7 @@ import {
   ThreadQuerySchema,
   type ReplyResponse,
 } from '@/shared/contracts/inbox/inbox.contract';
+import { ChatbotService, type DraftedReply } from './chatbot.service';
 import { InboxService } from './inbox.service';
 import { isExpiringMediaUrl, isRecoverableMedia } from './attachment-normalizer';
 import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
@@ -49,6 +50,7 @@ export class InboxController {
   constructor(
     private readonly inbox: InboxService,
     private readonly events: InboxEventsService,
+    private readonly chatbot: ChatbotService,
   ) {}
 
   @Get()
@@ -339,6 +341,25 @@ export class InboxController {
       internalNote: parsed.internalNote,
       replyToMessageRefId: parsed.replyToMessageRefId,
     });
+  }
+
+  @Post(':refId/ai-reply')
+  @RequireAnyPermission(...anyPermissionFor('reply'))
+  @ApiOperation({
+    summary: 'Draft a reply from the context we already hold',
+    description:
+      'Reads the recent thread, the descriptions of any media in it — including media whose ' +
+      'platform link has since expired — and what the business says about itself in its profile, ' +
+      'and asks the configured model for a reply. The provider, model and standing instruction ' +
+      'are platform settings, changed in the console rather than in a release. ' +
+      'NOTHING IS SENT: the draft comes back for a person to read, edit and send through the ' +
+      'ordinary reply endpoint, which is where idempotency and the outbound ledger live.',
+  })
+  async draftReply(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+  ): Promise<DraftedReply> {
+    return this.chatbot.draftReply(actor.enterpriseId, RefIdParamSchema.parse(refId));
   }
 
   @Post(':refId/assign')

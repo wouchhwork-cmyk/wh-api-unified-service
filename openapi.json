@@ -836,6 +836,31 @@
         ]
       }
     },
+    "/api/v1/conversations/{refId}/ai-reply": {
+      "post": {
+        "description": "Reads the recent thread, the descriptions of any media in it — including media whose platform link has since expired — and what the business says about itself in its profile, and asks the configured model for a reply. The provider, model and standing instruction are platform settings, changed in the console rather than in a release. NOTHING IS SENT: the draft comes back for a person to read, edit and send through the ordinary reply endpoint, which is where idempotency and the outbound ledger live.",
+        "operationId": "InboxController_draftReply_v1",
+        "parameters": [
+          {
+            "name": "refId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Draft a reply from the context we already hold",
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
     "/api/v1/conversations/{refId}/assign": {
       "post": {
         "operationId": "InboxController_assign_v1",
@@ -1339,6 +1364,36 @@
       "put": {
         "description": "A full restatement of both fields. The version is bumped on every save, and every analysis records the version that produced it — so a description that reads oddly can be traced to the exact instruction behind it, long after the instruction has moved on. Existing descriptions are NOT re-run: changing the prompt changes what happens next, not what already happened.",
         "operationId": "PlatformController_updateMediaAnalysis_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Change the instruction, or the model",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/chat": {
+      "get": {
+        "description": "Returns the standing instruction sent with every conversation, the model it is sent to, and whether the provider is switched on in this environment. No conversation content is returned here — this is the configuration behind replies, never the replies themselves.",
+        "operationId": "PlatformController_chatSettings_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "What the assistant is told, and which model is told it",
+        "tags": [
+          "platform"
+        ]
+      },
+      "put": {
+        "description": "A full restatement of both fields. The version is bumped on every save and every reply records the version that produced it, so an answer that reads oddly can be traced to the exact wording behind it. Conversations already answered are NOT replayed.",
+        "operationId": "PlatformController_updateChatSettings_v1",
         "parameters": [],
         "responses": {
           "200": {

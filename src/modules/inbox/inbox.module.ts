@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
+import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { ConversationRepository } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
@@ -16,11 +17,14 @@ import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
 import { InboxController } from './inbox.controller';
 import { InboxEventsService } from './inbox-events.service';
+import { ChatbotService } from './chatbot.service';
 import { InboxService } from './inbox.service';
 import { PostProjectorService } from './post-projector.service';
 
 const PROVIDERS = [
   InboxService,
+  ChatbotService,
+  EnterpriseRepository,
   SendReconciliationService,
   InboxEventsService,
   CommentProjectorService,
