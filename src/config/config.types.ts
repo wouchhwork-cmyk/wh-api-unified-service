@@ -77,6 +77,25 @@ export interface MetaConfig {
   readonly frontendDashboardUrl: string;
 }
 
+export interface GeminiConfig {
+  /** Off means no call is made and no key is needed. */
+  readonly enabled: boolean;
+  /** Secret. Never logged and never included in an error response. */
+  readonly apiKey: string;
+  /** Config rather than constant — Google retires model ids on its own schedule. */
+  readonly model: string;
+  /** Pins the request/response contract, like `graphApiVersion` does for Meta. */
+  readonly apiRevision: string;
+  readonly timeoutMs: number;
+  readonly maxRetries: number;
+  /**
+   * Whether Google keeps the interaction server-side, which is what makes
+   * multi-turn work without resending history — at the cost of customer
+   * message content living there for 55 days.
+   */
+  readonly storeInteractions: boolean;
+}
+
 export interface OtpConfig {
   /** When false nothing is sent and every code is `staticCode`. */
   readonly realtimeEnabled: boolean;
@@ -101,6 +120,7 @@ export interface Configuration {
   readonly verification: Readonly<Record<VerificationKind, VerificationKindConfig>>;
   readonly worker: WorkerConfig;
   readonly meta: MetaConfig;
+  readonly gemini: GeminiConfig;
   readonly otp: OtpConfig;
   readonly platformAdmin: PlatformAdminConfig;
 }

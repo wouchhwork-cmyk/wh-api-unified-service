@@ -150,6 +150,15 @@ export function loadConfiguration(): Configuration {
       webhookVerifyToken: env.META_WEBHOOK_VERIFY_TOKEN,
       frontendDashboardUrl: env.FRONTEND_DASHBOARD_URL,
     },
+    gemini: {
+      enabled: env.GEMINI_ENABLED,
+      apiKey: env.GEMINI_API_KEY,
+      model: env.GEMINI_MODEL,
+      apiRevision: env.GEMINI_API_REVISION,
+      timeoutMs: env.GEMINI_TIMEOUT_MS,
+      maxRetries: env.GEMINI_MAX_RETRIES,
+      storeInteractions: env.GEMINI_STORE_INTERACTIONS,
+    },
     otp: {
       realtimeEnabled: env.OTP_REALTIME_ENABLED,
       staticCode: env.OTP_STATIC_CODE,

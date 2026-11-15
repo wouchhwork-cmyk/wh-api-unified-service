@@ -6,6 +6,7 @@ import type {
   Configuration,
   CryptoConfig,
   DatabaseConfig,
+  GeminiConfig,
   MetaConfig,
   OtpConfig,
   PlatformAdminConfig,
@@ -43,6 +44,9 @@ export class AppConfigService {
   }
   get meta(): MetaConfig {
     return this.all.meta;
+  }
+  get gemini(): GeminiConfig {
+    return this.all.gemini;
   }
   get otp(): OtpConfig {
     return this.all.otp;

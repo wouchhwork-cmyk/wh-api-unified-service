@@ -100,6 +100,56 @@ export const EnvSchema = z
     META_WEBHOOK_VERIFY_TOKEN: z.string().default(''),
     FRONTEND_DASHBOARD_URL: z.string().default(''),
 
+    // --- Gemini (the conversational model) --------------------------------
+    /**
+     * OFF BY DEFAULT, and the default is the point.
+     *
+     * With it off nothing is sent to Google, no key is required, and the whole
+     * service boots and runs — the same bargain `META_ENABLED` strikes. Turning
+     * it on means customer message content leaves our infrastructure, which is
+     * a decision an environment makes deliberately rather than one that arrives
+     * with a deploy.
+     */
+    GEMINI_ENABLED: booleanish.default(false),
+    /** Secret. Never logged, never returned, never defaulted to anything. */
+    GEMINI_API_KEY: z.string().default(''),
+    /**
+     * The model id, CONFIG RATHER THAN CONSTANT because Google retires these on
+     * their own schedule and has already scheduled two for automatic
+     * re-routing. A model change must be an environment change, not a release.
+     *
+     * `gemini-2.5-flash-lite` is the cheapest of the current family by some
+     * margin — $0.10 / $0.40 per million tokens against $0.30 / $2.50 for
+     * `gemini-3.5-flash-lite`, which is what Google recommends to new
+     * projects. The 2.5 family is documented as limited to existing users, so
+     * whether this id works at all is a property of the KEY, not of the code.
+     */
+    GEMINI_MODEL: z.string().min(1).default('gemini-2.5-flash-lite'),
+    /**
+     * Pins the request/response contract. Google versions this API by header,
+     * so leaving it unset would mean the shape we parse changes under us
+     * without a deploy — the same reason GRAPH_API_VERSION is pinned.
+     */
+    GEMINI_API_REVISION: z.string().min(1).default('2026-05-20'),
+    /**
+     * A model call is on a customer-facing path, so it must give up before the
+     * request does. Longer than a database statement, shorter than the HTTP
+     * timeout above it.
+     */
+    GEMINI_TIMEOUT_MS: positiveInt.default(30_000),
+    GEMINI_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+    /**
+     * Whether Google may keep the interaction, which is what makes
+     * `previous_interaction_id` work — the server holds the history instead of
+     * us resending it.
+     *
+     * OFF BY DEFAULT because the content is customers' messages and the
+     * retention is Google's: 55 days on the paid tier, 1 day on the free one.
+     * On the free tier that content is also used to improve their products.
+     * Convenience is not a reason to make that choice silently.
+     */
+    GEMINI_STORE_INTERACTIONS: booleanish.default(false),
+
     // --- Verification delivery / OTP (backend-design.md §12) --------------
     /**
      * OFF means no provider is called and every issued code is the fixed
@@ -147,6 +197,35 @@ export const EnvSchema = z
     RATE_LIMIT_ENABLED: booleanish.default(true),
   })
   .superRefine((env, ctx) => {
+    /*
+     * A key is required only when the model is switched on — so a developer
+     * can run the whole service without a Google account, exactly as they can
+     * without Meta credentials.
+     */
+    if (env.GEMINI_ENABLED && !env.GEMINI_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GEMINI_API_KEY'],
+        message: 'GEMINI_API_KEY is required when GEMINI_ENABLED=true',
+      });
+    }
+    /*
+     * REFUSED IN PRODUCTION. On the free tier Google states that content is
+     * "used to improve our products"; these are customers' private messages,
+     * and a paid key is what turns that off. Storage is also how a conversation
+     * keeps its history server-side, so prod turning it on is a considered
+     * choice about a 55-day retention rather than an accident of defaults.
+     */
+    if (env.NODE_ENV === 'prod' && env.GEMINI_ENABLED && env.GEMINI_STORE_INTERACTIONS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GEMINI_STORE_INTERACTIONS'],
+        message:
+          'GEMINI_STORE_INTERACTIONS must be set deliberately in prod: it leaves ' +
+          'customer message content with Google for 55 days (paid tier) and is ' +
+          'only safe on a paid key',
+      });
+    }
     // Meta config is only required when the integration is switched on, so a
     // developer can boot the whole service without Meta credentials.
     if (env.META_ENABLED) {
