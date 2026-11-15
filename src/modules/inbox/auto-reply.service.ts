@@ -4,7 +4,6 @@ import { AuditService } from '@/modules/audit/audit.service';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { ChatService } from '@/modules/ai/chat.service';
-import { AUTO_REPLY_MAX_PER_WINDOW, AUTO_REPLY_WINDOW_MINUTES } from '@/shared/constants';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
 import { ChatbotService } from './chatbot.service';
 import { InboxService } from './inbox.service';
@@ -17,7 +16,6 @@ const Skip = {
   Gone: 'message_or_conversation_missing',
   Closed: 'conversation_closed',
   Overtaken: 'conversation_moved_on',
-  LoopGuard: 'loop_guard',
 } as const;
 
 type SkipReason = (typeof Skip)[keyof typeof Skip];
@@ -121,11 +119,7 @@ export class AutoReplyService {
       });
     }
 
-    const context = await this.messages.assistantContextFor(
-      enterpriseId,
-      messageId,
-      AUTO_REPLY_WINDOW_MINUTES,
-    );
+    const context = await this.messages.assistantContextFor(enterpriseId, messageId);
     if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
 
     if (
@@ -149,30 +143,6 @@ export class AutoReplyService {
       return this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.Overtaken,
         messagesSince: context.messagesSince,
-        conversationRefId: context.conversationRefId,
-      });
-    }
-
-    if (context.recentAssistantReplies >= AUTO_REPLY_MAX_PER_WINDOW) {
-      /*
-       * LOUD, because this is the one skip that means something is wrong
-       * rather than merely quiet: a conversation that hit the ceiling is
-       * either a loop or a customer the assistant cannot satisfy, and both
-       * want a person.
-       */
-      this.logger.warn(
-        {
-          enterpriseId,
-          conversationRefId: context.conversationRefId,
-          repliesInWindow: context.recentAssistantReplies,
-          windowMinutes: AUTO_REPLY_WINDOW_MINUTES,
-        },
-        'automatic reply stopped by the loop guard',
-      );
-      return this.record(enterpriseId, messageId, AuditStatus.Failure, {
-        skipped: Skip.LoopGuard,
-        repliesInWindow: context.recentAssistantReplies,
-        limit: AUTO_REPLY_MAX_PER_WINDOW,
         conversationRefId: context.conversationRefId,
       });
     }

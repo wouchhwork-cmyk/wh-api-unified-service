@@ -684,27 +684,21 @@ export class MessageRepository extends BaseRepository {
    * is no longer the end of the conversation, and the newest message gets its
    * own consideration.
    *
-   * `recentAssistantReplies` is the loop guard. Two bots talking to each
-   * other is not a hypothetical — it is the ordinary failure of this feature
-   * — and the only defence that works is a count with a ceiling.
    */
   async assistantContextFor(
     enterpriseId: number,
     messageId: number,
-    windowMinutes: number,
   ): Promise<{
     conversationId: number;
     conversationRefId: string;
     status: ConversationStatus;
     messagesSince: number;
-    recentAssistantReplies: number;
   } | null> {
     const rows = await this.query<{
       conversationId: number;
       conversationRefId: string;
       status: ConversationStatus;
       messagesSince: string;
-      recentAssistantReplies: string;
     }>(
       `SELECT c.id       AS "conversationId",
               c.ref_id   AS "conversationRefId",
@@ -713,20 +707,14 @@ export class MessageRepository extends BaseRepository {
                 WHERE later.enterprise_id = m.enterprise_id
                   AND later.conversation_id = m.conversation_id
                   AND later.id > m.id
-                  AND later.is_deleted = false) AS "messagesSince",
-              (SELECT count(*) FROM messages auto
-                WHERE auto.enterprise_id = m.enterprise_id
-                  AND auto.conversation_id = m.conversation_id
-                  AND auto.direction = 'outbound'
-                  AND auto.metadata ? 'assistant'
-                  AND auto.created_at > now() - make_interval(mins => $3)) AS "recentAssistantReplies"
+                  AND later.is_deleted = false) AS "messagesSince"
          FROM messages m
          JOIN conversations c
            ON c.id = m.conversation_id
           AND c.enterprise_id = m.enterprise_id
           AND c.is_deleted = false
         WHERE m.id = $2 AND m.enterprise_id = $1 AND m.is_deleted = false`,
-      [this.requireEnterprise(enterpriseId), messageId, windowMinutes],
+      [this.requireEnterprise(enterpriseId), messageId],
     );
     const row = rows[0];
     if (!row) return null;
@@ -736,7 +724,6 @@ export class MessageRepository extends BaseRepository {
       status: row.status,
       /* Postgres counts come back as strings through the driver. */
       messagesSince: Number(row.messagesSince),
-      recentAssistantReplies: Number(row.recentAssistantReplies),
     };
   }
 

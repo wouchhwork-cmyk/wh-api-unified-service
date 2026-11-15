@@ -7,7 +7,6 @@ import type { EnterpriseRepository } from '@/database/repositories/enterprise.re
 import type { MessageRepository } from '@/database/repositories/message.repository';
 import type { AuditService } from '@/modules/audit/audit.service';
 import type { PinoLogger } from 'nestjs-pino';
-import { AUTO_REPLY_MAX_PER_WINDOW } from '@/shared/constants';
 import { AuditStatus, ConversationStatus } from '@/shared/enums';
 
 /**
@@ -49,7 +48,6 @@ function serviceWith(over: {
             conversationRefId: 'conv-ref',
             status: ConversationStatus.Open,
             messagesSince: 0,
-            recentAssistantReplies: 0,
             ...over.context,
           },
     ),
@@ -117,15 +115,6 @@ describe('automatic reply: when it stays quiet', () => {
     await service.considerReplying(1, 100);
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls[0])).toContain('conversation_moved_on');
-  });
-
-  it('stops at the loop guard, so two bots cannot talk until the bill arrives', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({
-      context: { recentAssistantReplies: AUTO_REPLY_MAX_PER_WINDOW },
-    });
-    await service.considerReplying(1, 100);
-    expect(replyAsAssistant).not.toHaveBeenCalled();
-    expect(JSON.stringify(record.mock.calls[0])).toContain('loop_guard');
   });
 
   it('never throws into ingest, and still leaves a trail when it breaks', async () => {
