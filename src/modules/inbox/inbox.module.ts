@@ -17,6 +17,7 @@ import { CommentProjectorService } from './comment-projector.service';
 import { DirectMessageProjectorService } from './direct-message-projector.service';
 import { InboxController } from './inbox.controller';
 import { InboxEventsService } from './inbox-events.service';
+import { AutoReplyService } from './auto-reply.service';
 import { ChatbotService } from './chatbot.service';
 import { InboxService } from './inbox.service';
 import { PostProjectorService } from './post-projector.service';
@@ -24,6 +25,7 @@ import { PostProjectorService } from './post-projector.service';
 const PROVIDERS = [
   InboxService,
   ChatbotService,
+  AutoReplyService,
   EnterpriseRepository,
   SendReconciliationService,
   InboxEventsService,
@@ -72,6 +74,8 @@ const PROVIDERS = [
   providers: PROVIDERS,
   exports: [
     InboxService,
+    /* The worker runs it: a reply decided in a process that serves no traffic. */
+    AutoReplyService,
     SendReconciliationService,
     CommentProjectorService,
     DirectMessageProjectorService,

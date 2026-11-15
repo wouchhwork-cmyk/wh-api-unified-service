@@ -19,6 +19,15 @@ export const UpdateChatSettingsSchema = z.strictObject({
    */
   provider: z.enum(AiProvider),
   /**
+   * The platform's own switch for automatic replies.
+   *
+   * A KILL SWITCH, NOT A CONSENT. Each business opts in for itself; this says
+   * whether we are willing to run any of it at all, so an assistant behaving
+   * badly can be stopped everywhere in one edit instead of business by
+   * business while it keeps talking.
+   */
+  autoReply: z.boolean(),
+  /**
    * The model id, UNCONSTRAINED BY AN ENUM on purpose.
    *
    * OpenAI retires these on their own schedule — `gpt-5-nano` shuts down on

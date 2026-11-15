@@ -298,6 +298,17 @@ export const BusinessContactSchema = z
  */
 export const UpdateBusinessSettingsSchema = z.strictObject({
   /**
+   * Whether the assistant may answer this business's customers by itself.
+   *
+   * OPTIONAL FOR THE SAME COMPATIBILITY REASON `displayName` is, and for a
+   * second one that matters more: a client written before this field existed
+   * would, with a default, switch the assistant OFF on every unrelated save —
+   * or, worse, a future default of true would switch it on. Absent means
+   * "leave it as it is", which is the only safe reading of silence about an
+   * automation that talks to customers.
+   */
+  autoReply: z.boolean().optional(),
+  /**
    * What CUSTOMERS are told the business is called.
    *
    * The business's own `name` is usually its registered entity, because that

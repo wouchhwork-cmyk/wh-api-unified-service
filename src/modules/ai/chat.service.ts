@@ -15,6 +15,8 @@ export const CHAT_SETTING_KEY = 'chat';
 
 export interface ChatSettings {
   readonly provider: AiProviderId;
+  /** The platform's kill switch for automatic replies. Off unless stored true. */
+  readonly autoReply: boolean;
   readonly model: string;
   readonly prompt: string;
   readonly version: number;
@@ -96,6 +98,12 @@ export class ChatService {
 
     return {
       provider: chosen,
+      /*
+       * ANYTHING BUT A STORED `true` IS OFF. A missing field, a string, a
+       * row that has never been written — none of them is somebody deciding
+       * to let an assistant answer customers, and only that decision counts.
+       */
+      autoReply: stored?.value.autoReply === true,
       /*
        * The model falls back PER PROVIDER, because a model id means nothing
        * outside the provider that serves it — "gpt-6-luna" is not a thing

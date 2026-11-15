@@ -66,6 +66,17 @@ export class Enterprise extends PublicEntity {
   @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
   links!: BusinessLink[];
 
+  /**
+   * Whether the assistant may answer this business's customers by itself.
+   *
+   * FALSE UNTIL SOMEBODY SAYS OTHERWISE. It is their customers and their name
+   * on the reply, so the consent is theirs to give — and the platform has a
+   * switch of its own that must also be on, which is what makes stopping the
+   * assistant everywhere a single edit.
+   */
+  @Column({ type: 'boolean', default: false })
+  autoReplyEnabled!: boolean;
+
   /** How a customer reaches a person. Same storage trade as `links`. */
   @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
   contacts!: BusinessContact[];

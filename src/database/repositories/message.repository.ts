@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { MessageDirection, MessageKind, MessageStatus } from '@/shared/enums';
+import { ConversationStatus, MessageDirection, MessageKind, MessageStatus } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
 
 export interface InsertInboundMessageInput {
@@ -28,7 +28,12 @@ export interface InsertOutboundMessageInput {
   readonly enterpriseId: number;
   readonly conversationId: number;
   readonly customerId: number | null;
-  readonly sentByEmployeeId: number;
+  /**
+   * NULL when nothing human sent it. The column has always allowed it; the
+   * type did not, which is the only reason an automated send could not be
+   * recorded honestly as having no author.
+   */
+  readonly sentByEmployeeId: number | null;
   readonly body: string;
   readonly messageKind: MessageKind;
   /** Client-supplied, so a double-click cannot post twice. */
@@ -42,10 +47,23 @@ export interface InsertOutboundMessageInput {
    * the data from something the customer can read.
    */
   readonly isInternalNote: boolean;
+  /**
+   * Provenance for a message nobody typed: which assistant wrote it, with
+   * what model and under which version of the instruction.
+   *
+   * In metadata rather than in a column of its own, deliberately. It is
+   * descriptive rather than queried, and a jsonb field costs no migration to
+   * extend the day the assistant records something else.
+   */
+  readonly metadata?: Record<string, unknown> | undefined;
 }
 
 export interface MessageRow {
   readonly id: number;
+  /** The assistant wrote this one and sent it without a person reading it. */
+  readonly isAutomated?: boolean;
+  /** Which model wrote it, for a reader who wants to know. */
+  readonly assistantModel?: string | null;
   readonly refId: string;
   readonly direction: MessageDirection;
   readonly body: string | null;
@@ -656,13 +674,79 @@ export class MessageRepository extends BaseRepository {
    * the transactional outbox rule. The relay sends after commit; nothing here
    * touches the network.
    */
+  /**
+   * Everything an automatic reply needs to decide whether to speak, in one
+   * read rather than four.
+   *
+   * `messagesSince` is the race guard: between a customer's message arriving
+   * and the model answering it, an agent may have replied, or the customer
+   * may have sent three more. Either way the thing this was going to answer
+   * is no longer the end of the conversation, and the newest message gets its
+   * own consideration.
+   *
+   * `recentAssistantReplies` is the loop guard. Two bots talking to each
+   * other is not a hypothetical — it is the ordinary failure of this feature
+   * — and the only defence that works is a count with a ceiling.
+   */
+  async assistantContextFor(
+    enterpriseId: number,
+    messageId: number,
+    windowMinutes: number,
+  ): Promise<{
+    conversationId: number;
+    conversationRefId: string;
+    status: ConversationStatus;
+    messagesSince: number;
+    recentAssistantReplies: number;
+  } | null> {
+    const rows = await this.query<{
+      conversationId: number;
+      conversationRefId: string;
+      status: ConversationStatus;
+      messagesSince: string;
+      recentAssistantReplies: string;
+    }>(
+      `SELECT c.id       AS "conversationId",
+              c.ref_id   AS "conversationRefId",
+              c.status   AS "status",
+              (SELECT count(*) FROM messages later
+                WHERE later.enterprise_id = m.enterprise_id
+                  AND later.conversation_id = m.conversation_id
+                  AND later.id > m.id
+                  AND later.is_deleted = false) AS "messagesSince",
+              (SELECT count(*) FROM messages auto
+                WHERE auto.enterprise_id = m.enterprise_id
+                  AND auto.conversation_id = m.conversation_id
+                  AND auto.direction = 'outbound'
+                  AND auto.metadata ? 'assistant'
+                  AND auto.created_at > now() - make_interval(mins => $3)) AS "recentAssistantReplies"
+         FROM messages m
+         JOIN conversations c
+           ON c.id = m.conversation_id
+          AND c.enterprise_id = m.enterprise_id
+          AND c.is_deleted = false
+        WHERE m.id = $2 AND m.enterprise_id = $1 AND m.is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), messageId, windowMinutes],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      conversationId: row.conversationId,
+      conversationRefId: row.conversationRefId,
+      status: row.status,
+      /* Postgres counts come back as strings through the driver. */
+      messagesSince: Number(row.messagesSince),
+      recentAssistantReplies: Number(row.recentAssistantReplies),
+    };
+  }
+
   async insertOutbound(input: InsertOutboundMessageInput): Promise<{ id: number; refId: string }> {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, customer_id, sent_by_employee_id,
           message_kind, body, idempotency_key, parent_message_id, status, is_read,
-          is_internal_note)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11)
+          is_internal_note, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12::jsonb)
        RETURNING id, ref_id`,
       [
         this.requireEnterprise(input.enterpriseId),
@@ -681,6 +765,7 @@ export class MessageRepository extends BaseRepository {
          */
         input.isInternalNote ? MessageStatus.Delivered : MessageStatus.Pending,
         input.isInternalNote,
+        JSON.stringify(input.metadata ?? {}),
       ],
     );
     const row = rows[0];
@@ -806,6 +891,10 @@ export class MessageRepository extends BaseRepository {
     return this.query<MessageRow>(
       `SELECT m.id, m.ref_id AS "refId", m.direction, m.body,
               m.message_kind AS "messageKind", m.status,
+              -- Who sent it: the sender is selected below, and these two say
+              -- when the answer is "nothing human did".
+              (m.metadata ? 'assistant') AS "isAutomated",
+              m.metadata->'assistant'->>'model' AS "assistantModel",
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
               (m.platform_message_id IS NOT NULL

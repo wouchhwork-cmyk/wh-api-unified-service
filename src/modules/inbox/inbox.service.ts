@@ -904,11 +904,39 @@ export class InboxService {
    * inline would lose the reply whenever the process died in between — and would
    * hold a transaction open across a third-party call.
    */
-  async reply(
-    actor: { enterpriseId: number; employeeId: number | null },
-    input: ReplyInput,
+  /**
+   * A reply with nobody behind it.
+   *
+   * THE ONLY DOOR to an automated send, and it is a thin one on purpose:
+   * every check `reply` makes — the closed thread, the messaging window, the
+   * channel's health, the idempotency key — applies identically, because an
+   * automated reply is not a privileged one. All this adds is that there is
+   * no employee to record, and a stamp saying what wrote it.
+   */
+  async replyAsAssistant(
+    enterpriseId: number,
+    input: ReplyInput & { assistant: Record<string, unknown> },
   ): Promise<ReplyResult> {
-    if (actor.employeeId === null) throw new AppException(ErrorCode.AuthNoActiveEmployment);
+    return this.reply({ enterpriseId, employeeId: null, automated: true }, input);
+  }
+
+  async reply(
+    actor: {
+      enterpriseId: number;
+      employeeId: number | null;
+      /**
+       * Set ONLY by `replyAsAssistant` below. It is the single thing that
+       * excuses a send with no employee behind it, and it is not reachable
+       * from a request: the controller passes a ScopedActor, which has no
+       * such field to set.
+       */
+      automated?: boolean;
+    },
+    input: ReplyInput & { assistant?: Record<string, unknown> },
+  ): Promise<ReplyResult> {
+    if (actor.employeeId === null && actor.automated !== true) {
+      throw new AppException(ErrorCode.AuthNoActiveEmployment);
+    }
 
     // Validation and reads happen BEFORE the transaction opens, so it stays short.
     const conversation = await this.requireConversation(
@@ -1049,6 +1077,12 @@ export class InboxService {
         // way whoever wrote the reply.
         parentMessageId: replyTarget?.id ?? null,
         isInternalNote: input.internalNote,
+        /*
+         * Stamped so a reply nobody typed can never be mistaken for one that
+         * was — in the thread, in an export, or a year later in a dispute
+         * about what the business told a customer.
+         */
+        ...(input.assistant ? { metadata: { assistant: input.assistant } } : {}),
       });
 
       if (!input.internalNote) {
@@ -1177,6 +1211,17 @@ export class InboxService {
           conversationId: conversation.id,
           internalNote: input.internalNote,
           platform: conversation.platform,
+          /*
+           * WHO SENT IT, when the answer is "nothing human did".
+           *
+           * The actor on this row already resolves to `system` for an
+           * automated send, because a worker has no request context — but
+           * "system" is a category, not an answer. These fields name the
+           * provider, the model and the version of the instruction that
+           * wrote the words, which is what somebody actually needs the day a
+           * customer asks why the business told them something.
+           */
+          ...(input.assistant ? { automatic: true, assistant: input.assistant } : {}),
         },
       });
 

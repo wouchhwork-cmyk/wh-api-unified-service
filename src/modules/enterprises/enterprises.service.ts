@@ -29,6 +29,8 @@ export interface EnterpriseSummary {
   readonly links: readonly BusinessLink[];
   /** How a customer reaches a person. */
   readonly contacts: readonly BusinessContact[];
+  /** Whether the assistant may answer customers by itself. */
+  readonly autoReply: boolean;
   readonly slug: string;
   /** NULL = this business has not chosen one yet. */
   readonly timezone: string | null;
@@ -104,7 +106,10 @@ export class EnterprisesService {
     if (!before) throw new AppException(ErrorCode.EnterpriseNotFound);
 
     return this.tx.runInTransaction(async () => {
-      const updated = await this.enterprises.updateSettings(enterpriseId, input);
+      const updated = await this.enterprises.updateSettings(enterpriseId, {
+        ...input,
+        ...(input.autoReply !== undefined ? { autoReplyEnabled: input.autoReply } : {}),
+      });
       if (!updated) throw new AppException(ErrorCode.EnterpriseNotFound);
 
       await this.audit.record({
@@ -133,6 +138,13 @@ export class EnterprisesService {
           about: { from: before.about === null, to: updated.about === null },
           links: { from: before.links.length, to: updated.links.length },
           contacts: { from: before.contacts.length, to: updated.contacts.length },
+          /*
+           * RECORDED IN FULL, unlike the lists beside it. This one is not
+           * contact details; it is the answer to "who turned the assistant
+           * loose on customers, and when" — which is the first question
+           * anybody will ask the day a reply goes wrong.
+           */
+          autoReply: { from: before.autoReplyEnabled, to: updated.autoReplyEnabled },
         },
       });
 
@@ -150,6 +162,7 @@ export class EnterprisesService {
           about: updated.about,
           links: updated.links,
           contacts: updated.contacts,
+          autoReply: updated.autoReplyEnabled,
         },
       });
 
@@ -160,6 +173,7 @@ export class EnterprisesService {
         about: updated.about,
         links: updated.links,
         contacts: updated.contacts,
+        autoReply: updated.autoReplyEnabled,
         slug: updated.slug,
         timezone: updated.timezone,
         currencyCode: updated.currencyCode,
@@ -184,6 +198,7 @@ export class EnterprisesService {
       about: enterprise.about,
       links: enterprise.links,
       contacts: enterprise.contacts,
+      autoReply: enterprise.autoReplyEnabled,
       slug: enterprise.slug,
       timezone: enterprise.timezone,
       currencyCode: enterprise.currencyCode,

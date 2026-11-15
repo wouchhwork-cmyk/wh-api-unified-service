@@ -10,6 +10,7 @@ import { UpdateChatSettingsSchema } from '@/shared/contracts/platform/chat-setti
  */
 const VALID = {
   provider: 'openai',
+  autoReply: false,
   model: 'gpt-6-luna',
   prompt: 'You are a helpful assistant replying inside a business tool. Be brief.',
 };
@@ -33,6 +34,7 @@ describe('chat settings contract', () => {
   it('trims both text fields rather than storing the typist’s whitespace', () => {
     const parsed = UpdateChatSettingsSchema.parse({
       provider: 'openai',
+      autoReply: false,
       model: '  gpt-6-luna  ',
       prompt: `  ${VALID.prompt}  `,
     });
@@ -73,5 +75,8 @@ describe('chat settings contract', () => {
     expect(
       UpdateChatSettingsSchema.safeParse({ provider: 'openai', model: 'gpt-6-luna' }).success,
     ).toBe(false);
+    // The switch that sends real messages is never inferred from silence.
+    const { autoReply: _omitted, ...withoutSwitch } = VALID;
+    expect(UpdateChatSettingsSchema.safeParse(withoutSwitch).success).toBe(false);
   });
 });

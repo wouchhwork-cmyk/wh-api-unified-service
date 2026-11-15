@@ -58,6 +58,8 @@ export class EnterpriseRepository extends BaseRepository {
       /** A list is replaced WHOLE; absent leaves the stored list untouched. */
       links?: readonly BusinessLink[] | undefined;
       contacts?: readonly BusinessContact[] | undefined;
+      /** Absent = leave it alone, exactly like the fields above. */
+      autoReplyEnabled?: boolean | undefined;
     },
   ): Promise<Enterprise | null> {
     const { affected } = await this.repo(Enterprise).update(
@@ -87,6 +89,9 @@ export class EnterpriseRepository extends BaseRepository {
          */
         ...(input.links !== undefined ? { links: [...input.links] } : {}),
         ...(input.contacts !== undefined ? { contacts: [...input.contacts] } : {}),
+        ...(input.autoReplyEnabled !== undefined
+          ? { autoReplyEnabled: input.autoReplyEnabled }
+          : {}),
       },
     );
     if (!affected) return null;

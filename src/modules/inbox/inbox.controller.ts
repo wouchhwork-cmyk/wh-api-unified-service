@@ -735,6 +735,16 @@ function toMessage(
     // webhook rather than typed by somebody here.
     sentBy: row.sentByRefId ? { refId: row.sentByRefId, name: row.sentByName } : null,
     /*
+     * SENT BY NOTHING HUMAN, and said out loud.
+     *
+     * `sentBy` is null both for a customer's own message and for one the
+     * assistant wrote, which makes it unusable for telling them apart — and
+     * "did a person at this business actually say this?" is the question a
+     * reader needs answered most urgently about an automated reply.
+     */
+    automated: row.isAutomated === true,
+    assistantModel: row.isAutomated === true ? (row.assistantModel ?? null) : null,
+    /*
      * WHO WROTE IT, when a customer did. A comment thread carries several
      * different people, and without this the client drew every one of them as
      * an unnamed "inbound" — so an agent could not tell who said what, or that

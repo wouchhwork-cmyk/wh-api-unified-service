@@ -699,3 +699,18 @@ export const CHATBOT_MEDIA_CHARS = 400;
 
 /** How many links and contacts of a business profile go into the context. */
 export const CHATBOT_PROFILE_ENTRIES = 8;
+
+/**
+ * The loop guard for automatic replies: how many the assistant may send into
+ * one conversation within the window below.
+ *
+ * TWO BOTS TALKING TO EACH OTHER is the ordinary failure of this feature, not
+ * an exotic one — an auto-responder on the other side, a notification account,
+ * a customer's own assistant. Neither side needs to be faulty for the exchange
+ * to run until somebody notices the bill. A ceiling is the only defence that
+ * works without understanding the conversation.
+ */
+export const AUTO_REPLY_MAX_PER_WINDOW = 5;
+
+/** The window that ceiling is counted over. */
+export const AUTO_REPLY_WINDOW_MINUTES = 60;

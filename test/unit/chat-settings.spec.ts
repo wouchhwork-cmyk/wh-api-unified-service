@@ -48,6 +48,7 @@ describe('chat settings', () => {
       model: 'gemini-3.5-flash',
       prompt: 'Be extremely brief.',
       version: 3,
+      autoReply: false,
     });
   });
 

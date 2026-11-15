@@ -6,6 +6,8 @@ import type { UpdateChatSettingsInput } from '@/shared/contracts/platform/chat-s
 
 export interface ChatSettingsOverview {
   readonly provider: AiProviderId;
+  /** The platform-wide switch for automatic replies. Businesses opt in separately. */
+  readonly autoReply: boolean;
   /** False when this environment has no key for the chosen provider. */
   readonly enabled: boolean;
   /**
@@ -38,6 +40,7 @@ export class ChatConsoleService {
     const current = await this.chat.currentSettings();
     return {
       provider: current.provider,
+      autoReply: current.autoReply,
       enabled: this.chat.enabledFor(current.provider),
       availableProviders: this.chat.availableProviders(),
       model: current.model,
@@ -66,7 +69,12 @@ export class ChatConsoleService {
   ): Promise<ChatSettingsOverview> {
     await this.settings.put(
       CHAT_SETTING_KEY,
-      { provider: input.provider, model: input.model, prompt: input.prompt },
+      {
+        provider: input.provider,
+        autoReply: input.autoReply,
+        model: input.model,
+        prompt: input.prompt,
+      },
       employeeId,
     );
     return this.overview();

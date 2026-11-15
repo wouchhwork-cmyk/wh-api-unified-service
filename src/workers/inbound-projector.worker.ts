@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
+import { AutoReplyService } from '@/modules/inbox/auto-reply.service';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
@@ -75,6 +76,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly comments: CommentProjectorService,
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
+    private readonly assistant: AutoReplyService,
     private readonly rewards: RuleEvaluatorService,
     private readonly rewardGrants: RewardGrantService,
     protected readonly config: AppConfigService,
@@ -174,6 +176,22 @@ export class InboundProjectorWorker extends BasePoller {
 
         if (outcome.projected) {
           await this.inbound.markProcessed(event.id, this.leaseOwner);
+          /*
+           * AFTER THE PROJECTION COMMITS, never inside it. Drafting is a model
+           * call and sending is an HTTP call; either inside the projector's
+           * transaction would hold row locks on a customer's conversation for
+           * seconds at a time.
+           *
+           * Direct messages only. A comment is public and a mention is
+           * somebody else's post — both are answerable, and neither is a
+           * thing to answer automatically without deciding that separately.
+           */
+          if (event.eventType === InboundEventType.DirectMessage && outcome.trigger) {
+            await this.assistant.considerReplying(
+              outcome.trigger.enterpriseId,
+              outcome.trigger.sourceRefId,
+            );
+          }
           await this.offerToRewards(outcome.trigger);
           await this.reverseRewards(outcome.reversal);
         } else {

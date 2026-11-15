@@ -481,6 +481,13 @@ describe('the shared inbox', () => {
     // platform-console test asserts it never does.
     const message = thread.body.data.messages[0];
     expect(Object.keys(message).sort()).toEqual([
+      /*
+       * Added when the assistant started sending replies by itself. `sentBy`
+       * is null both for a customer's own message and for one the assistant
+       * wrote, so a reader had no way to tell which words the business
+       * actually chose — these two say it outright.
+       */
+      'assistantModel',
       // Added when attachments started being stored: a message whose entire
       // content is its media used to arrive here as an empty body.
       'attachments',
@@ -488,6 +495,7 @@ describe('the shared inbox', () => {
       // thread named none of them, so two people's comments were both drawn as
       // an unnamed "inbound".
       'author',
+      'automated',
       'body',
       'canBeRepliedTo',
       'contentUnavailable',
