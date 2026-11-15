@@ -86,7 +86,7 @@ function serviceWith(over: {
     { record } as unknown as AuditService,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
   );
-  return { service, draftReply: draftReplyForAutomation, replyAsAssistant, record };
+  return { service, draftReply: draftReplyForAutomation, replyAsAssistant, record, messages };
 }
 
 describe('automatic reply: when it stays quiet', () => {
@@ -141,6 +141,46 @@ describe('automatic reply: when it stays quiet', () => {
      */
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: AuditStatus.Error }));
     expect(JSON.stringify(record.mock.calls[0])).toContain('settings exploded');
+  });
+});
+
+describe('automatic reply: when the customer keeps typing', () => {
+  /*
+   * The draft takes seconds, and people type in bursts. The check before
+   * drafting proves the question was current when we started; only a second
+   * check proves the ANSWER is still current when it goes.
+   */
+  it('throws the draft away when a newer message arrived while it was written', async () => {
+    const { service, replyAsAssistant, record, messages } = serviceWith({});
+    const context = messages.assistantContextFor as ReturnType<typeof vi.fn>;
+    context
+      .mockResolvedValueOnce({
+        conversationId: 7,
+        conversationRefId: 'conv-ref',
+        status: ConversationStatus.Open,
+        messagesSince: 0,
+        pendingMedia: 0,
+      })
+      /* They said something else while the model was writing. */
+      .mockResolvedValueOnce({
+        conversationId: 7,
+        conversationRefId: 'conv-ref',
+        status: ConversationStatus.Open,
+        messagesSince: 1,
+        pendingMedia: 0,
+      });
+
+    await service.considerReplying(1, 100);
+
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+    expect(JSON.stringify(record.mock.calls)).toContain('draftDiscarded');
+  });
+
+  it('checks again after drafting, not only before', async () => {
+    const { service, messages } = serviceWith({});
+    await service.considerReplying(1, 100);
+    // Twice: once to decide whether to answer, once to decide whether to send.
+    expect(messages.assistantContextFor).toHaveBeenCalledTimes(2);
   });
 });
 

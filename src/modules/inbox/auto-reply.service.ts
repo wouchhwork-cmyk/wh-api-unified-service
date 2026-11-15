@@ -5,6 +5,7 @@ import { EnterpriseRepository } from '@/database/repositories/enterprise.reposit
 import { MessageRepository } from '@/database/repositories/message.repository';
 import { ChatService } from '@/modules/ai/chat.service';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
+import { AUTO_REPLY_SETTLE_MS } from '@/shared/constants';
 import { ChatbotService } from './chatbot.service';
 import { InboxService } from './inbox.service';
 
@@ -114,6 +115,14 @@ export class AutoReplyService {
     if (!enterprise?.autoReplyEnabled) {
       return this.skipQuietly(enterpriseId, messageId, Skip.BusinessOff);
     }
+    /*
+     * A MOMENT BEFORE READING ANYTHING. People type in bursts, and answering
+     * the first of three messages means answering a third of a question. The
+     * pause is after the switches, so it costs nothing at all for the
+     * businesses that have this turned off — which is almost all of them.
+     */
+    await this.settle();
+
     const context = await this.messages.assistantContextFor(enterpriseId, messageId);
     if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
 
@@ -185,6 +194,34 @@ export class AutoReplyService {
        * the real reason goes to the trail rather than to them.
        */
       await this.sendFallback(enterpriseId, messageId, context.conversationRefId, settings, error);
+      return;
+    }
+
+    /*
+     * ASK AGAIN BEFORE SENDING IT.
+     *
+     * The draft took seconds, and a customer can say three more things in
+     * that time. The check before drafting proves the question was current
+     * when we started; only this one proves the ANSWER is still current when
+     * it goes. Without it the assistant interrupts somebody mid-thought with
+     * a reply to a sentence they have already moved past.
+     *
+     * The draft is thrown away rather than sent. It is already paid for, and
+     * sending it would compound a wasted call with a confusing message —
+     * the newer message is about to be considered on its own merits anyway.
+     */
+    const current = await this.messages.assistantContextFor(enterpriseId, messageId);
+    if (!current || current.messagesSince > 0) {
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
+        skipped: Skip.Overtaken,
+        messagesSince: current?.messagesSince ?? null,
+        draftDiscarded: true,
+        conversationRefId: context.conversationRefId,
+      });
+      this.logger.info(
+        { enterpriseId, conversationRefId: context.conversationRefId },
+        'discarded a draft: the conversation moved on while it was being written',
+      );
       return;
     }
 
@@ -304,6 +341,18 @@ export class AutoReplyService {
       holdSent: text.length > 0,
       conversationRefId,
     });
+  }
+
+  /**
+   * The pause before thinking.
+   *
+   * Its own method so the reason has somewhere to live, and so a test can
+   * see it. Deliberately not configurable: it is short enough that nobody
+   * will want it shorter, and a setting for it would be a setting somebody
+   * has to understand.
+   */
+  private async settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, AUTO_REPLY_SETTLE_MS));
   }
 
   /**

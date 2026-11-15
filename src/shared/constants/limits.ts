@@ -699,3 +699,17 @@ export const CHATBOT_MEDIA_CHARS = 400;
 
 /** How many links and contacts of a business profile go into the context. */
 export const CHATBOT_PROFILE_ENTRIES = 8;
+
+/**
+ * How long an automatic reply waits before it starts thinking.
+ *
+ * PEOPLE TYPE IN BURSTS. A question arrives as three messages a second
+ * apart, and answering the first one instantly means answering a third of a
+ * question — then racing the rest of it. A moment's pause costs a customer
+ * nothing they would notice and lets the thought finish arriving.
+ *
+ * It is also the cheapest half of staying current: the pause happens before
+ * anything is read, so what follows sees the newest state rather than a
+ * snapshot taken a second too early.
+ */
+export const AUTO_REPLY_SETTLE_MS = 1_000;
