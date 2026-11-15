@@ -118,13 +118,19 @@ export const EnvSchema = z
      * their own schedule and has already scheduled two for automatic
      * re-routing. A model change must be an environment change, not a release.
      *
-     * `gemini-2.5-flash-lite` is the cheapest of the current family by some
-     * margin — $0.10 / $0.40 per million tokens against $0.30 / $2.50 for
-     * `gemini-3.5-flash-lite`, which is what Google recommends to new
-     * projects. The 2.5 family is documented as limited to existing users, so
-     * whether this id works at all is a property of the KEY, not of the code.
+     * `gemini-2.5-flash-lite` WAS the default, at $0.10 / $0.40 per million
+     * tokens against $0.30 / $2.50 here — roughly a third of the input cost
+     * and a sixth of the output. It is not reachable: Google documents the 2.5
+     * family as limited to existing users, and a new key is refused outright:
+     *
+     *   404 models/gemini-2.5-flash-lite is no longer available to new users.
+     *       Please update your code to use models/gemini-3.5-flash-lite
+     *
+     * Tested with a real key on 15 November 2026. Whether a model id resolves
+     * is a property of the KEY, not of this code — which is the reason this is
+     * configuration rather than a constant, and why switching cost one line.
      */
-    GEMINI_MODEL: z.string().min(1).default('gemini-2.5-flash-lite'),
+    GEMINI_MODEL: z.string().min(1).default('gemini-3.5-flash-lite'),
     /**
      * Pins the request/response contract. Google versions this API by header,
      * so leaving it unset would mean the shape we parse changes under us

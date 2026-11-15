@@ -203,7 +203,7 @@ export class MediaAnalysis1759700000000 implements MigrationInterface {
        ON CONFLICT (key) DO NOTHING`,
       [
         JSON.stringify({
-          model: 'gemini-2.5-flash-lite',
+          model: 'gemini-3.5-flash-lite',
           prompt: [
             'You are describing a piece of media a customer sent to a business on social media.',
             'The media itself will be deleted by the platform; your description is the only record that will survive.',
