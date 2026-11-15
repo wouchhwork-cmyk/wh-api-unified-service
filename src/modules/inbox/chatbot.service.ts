@@ -54,15 +54,64 @@ export class ChatbotService {
     private readonly chat: ChatService,
   ) {}
 
+  /**
+   * For a person who asked for a draft.
+   *
+   * Reads the thread THE WAY THAT PERSON WOULD, permission check included:
+   * somebody who may not open a conversation may not have a model summarise
+   * it for them either.
+   */
   async draftReply(enterpriseId: number, conversationRefId: string): Promise<DraftedReply> {
-    const thread = await this.inbox.readThread(
+    return this.draftFrom(
       enterpriseId,
-      conversationRefId,
-      CHATBOT_CONTEXT_MESSAGES,
-      null,
-      null,
+      await this.inbox.readThread(
+        enterpriseId,
+        conversationRefId,
+        CHATBOT_CONTEXT_MESSAGES,
+        null,
+        null,
+      ),
     );
+  }
 
+  /**
+   * For the worker, where there is no person at all.
+   *
+   * A SEPARATE ENTRY RATHER THAN A FLAG. `readThread` ends in a permission
+   * check against the current actor, and a background job has none — which is
+   * why the first automatic reply failed with "conversation not found" for a
+   * conversation that plainly existed. A boolean threaded through the normal
+   * path would have fixed it and left a parameter that turns off a permission
+   * check sitting on a method a controller calls. Two doors, each honest
+   * about who may walk through it.
+   *
+   * The tenant boundary is untouched: `enterpriseId` scopes every query on
+   * both paths. What this one skips is which COLLEAGUE may look, and there
+   * is no colleague.
+   */
+  async draftReplyForAutomation(
+    enterpriseId: number,
+    conversationRefId: string,
+  ): Promise<DraftedReply> {
+    return this.draftFrom(
+      enterpriseId,
+      await this.inbox.readThreadForAssistant(
+        enterpriseId,
+        conversationRefId,
+        CHATBOT_CONTEXT_MESSAGES,
+      ),
+    );
+  }
+
+  /** Everything after the read, which is identical whoever asked. */
+  private async draftFrom(
+    enterpriseId: number,
+    thread: {
+      messages: MessageRow[];
+      attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
+      analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
+    },
+  ): Promise<DraftedReply> {
     /*
      * Newest first out of the repository, because that is what a reader
      * pages through. A model reads a conversation the way it happened.

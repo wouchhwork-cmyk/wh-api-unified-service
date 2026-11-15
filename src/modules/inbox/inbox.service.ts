@@ -239,6 +239,63 @@ export class InboxService {
     return { queued };
   }
 
+  /**
+   * The same thread, for a background job that has no employee behind it.
+   *
+   * WHY NOT `readThread`: that one ends in a permission check against
+   * `RequestContext.actor()`, and a worker has no actor — so it answered
+   * "conversation not found" for a conversation that plainly exists. The
+   * check is about WHICH COLLEAGUE may open a thread, and there is no
+   * colleague here; it is not the tenant boundary. That boundary is
+   * `enterpriseId`, and every query below still carries it.
+   *
+   * DELIBERATELY THINNER, too. No avatar refresh, no mention-media refresh,
+   * no reconstruction of a mention's authors, no moderation state: those are
+   * things a screen needs, and every one of them is a Graph call that a draft
+   * would pay for and never use.
+   */
+  async readThreadForAssistant(
+    enterpriseId: number,
+    conversationRefId: string,
+    limit: number,
+  ): Promise<{
+    conversation: ConversationRow;
+    messages: MessageRow[];
+    attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
+    analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
+  }> {
+    const conversation = await this.conversations.findByRefId(enterpriseId, conversationRefId);
+    if (!conversation) throw new AppException(ErrorCode.ConversationNotFound);
+
+    const messages = await this.messages.listThread(
+      enterpriseId,
+      conversation.id,
+      clampLimit(limit),
+      null,
+    );
+
+    /* The same two batched reads the screen does, and for the same reason. */
+    const withMedia = messages.filter((message) => message.hasAttachments).map((m) => m.id);
+    const attachmentRows = await this.attachments.listForMessages(enterpriseId, withMedia);
+    const analyses = await this.mediaAnalysis.resultsFor(enterpriseId, [
+      ...new Set(attachmentRows.map((row) => row.mediaKey).filter((key): key is string => !!key)),
+    ]);
+
+    const attachmentsByMessageId = new Map<number, AttachmentRow[]>();
+    for (const row of attachmentRows) {
+      const existing = attachmentsByMessageId.get(row.messageId);
+      if (existing) existing.push(row);
+      else attachmentsByMessageId.set(row.messageId, [row]);
+    }
+
+    return {
+      conversation,
+      messages,
+      attachmentsByMessageId,
+      analysisByKey: new Map(analyses.map((row) => [row.mediaKey, row])),
+    };
+  }
+
   async readThread(
     enterpriseId: number,
     conversationRefId: string,

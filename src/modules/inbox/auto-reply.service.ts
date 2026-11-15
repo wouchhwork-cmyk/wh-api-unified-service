@@ -78,6 +78,24 @@ export class AutoReplyService {
         { err: error, enterpriseId, messageId },
         'automatic reply failed unexpectedly',
       );
+      /*
+       * AND IT LEAVES A ROW. The first automatic reply ever attempted died
+       * here — a worker has no actor, so the thread read refused with
+       * "conversation not found" — and the only trace was a log line in a
+       * process nobody was watching. A customer was left unanswered by a
+       * feature that had been switched on, and the audit trail said nothing
+       * at all. An unexpected failure is exactly the kind somebody needs to
+       * find afterwards.
+       *
+       * The message is recorded, never the conversation: a stack can quote
+       * the input back, and the input here is somebody's message.
+       */
+      await this.record(enterpriseId, messageId, AuditStatus.Error, {
+        failed: error instanceof Error ? error.message : 'automatic reply failed',
+      }).catch(() => {
+        /* An audit write that fails must not become the thing that throws
+         * into ingest. The log above already carries it. */
+      });
     }
   }
 
@@ -159,7 +177,11 @@ export class AutoReplyService {
       });
     }
 
-    const draft = await this.chatbot.draftReply(enterpriseId, context.conversationRefId);
+    /* The actorless read: a worker has no employee whose permissions to check. */
+    const draft = await this.chatbot.draftReplyForAutomation(
+      enterpriseId,
+      context.conversationRefId,
+    );
 
     /*
      * WHAT WROTE IT, carried into both the message row and the audit row the

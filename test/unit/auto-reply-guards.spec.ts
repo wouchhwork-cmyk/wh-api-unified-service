@@ -55,7 +55,7 @@ function serviceWith(over: {
     ),
   } as unknown as MessageRepository;
 
-  const draftReply = vi.fn().mockResolvedValue({
+  const draftReplyForAutomation = vi.fn().mockResolvedValue({
     text: 'we open at nine',
     usage: { inputTokens: 10, outputTokens: 4 },
     truncated: false,
@@ -71,14 +71,14 @@ function serviceWith(over: {
 
   const service = new AutoReplyService(
     chat,
-    { draftReply } as unknown as ChatbotService,
+    { draftReplyForAutomation } as unknown as ChatbotService,
     { replyAsAssistant } as unknown as InboxService,
     enterprises,
     messages,
     { record } as unknown as AuditService,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
   );
-  return { service, draftReply, replyAsAssistant, record };
+  return { service, draftReply: draftReplyForAutomation, replyAsAssistant, record };
 }
 
 describe('automatic reply: when it stays quiet', () => {
@@ -128,13 +128,20 @@ describe('automatic reply: when it stays quiet', () => {
     expect(JSON.stringify(record.mock.calls[0])).toContain('loop_guard');
   });
 
-  it('never throws into ingest, whatever goes wrong', async () => {
-    const { service } = serviceWith({});
+  it('never throws into ingest, and still leaves a trail when it breaks', async () => {
+    const { service, record } = serviceWith({});
     const chat = Reflect.get(service, 'chat') as { currentSettings: () => Promise<unknown> };
     chat.currentSettings = () => Promise.reject(new Error('settings exploded'));
     // The customer's message is already stored; losing it to a failed draft
     // would be trading the thing that matters for the thing that does not.
     await expect(service.considerReplying(1, 100)).resolves.toBeUndefined();
+    /*
+     * The first automatic reply ever attempted died in this catch and left
+     * only a log line, so a customer went unanswered by a feature that was
+     * switched on and nothing durable recorded it.
+     */
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: AuditStatus.Error }));
+    expect(JSON.stringify(record.mock.calls[0])).toContain('settings exploded');
   });
 });
 
