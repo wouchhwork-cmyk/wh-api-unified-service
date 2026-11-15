@@ -43,6 +43,7 @@ describe('chat settings', () => {
       model: 'gemini-3.5-flash',
       prompt: 'Be extremely brief.',
       fallbackMessage: 'Stepping away, back shortly.',
+      mediaHoldMessage: 'Let me take a look at that…',
     });
     await expect(service.currentSettings()).resolves.toEqual({
       provider: 'gemini',
@@ -51,6 +52,7 @@ describe('chat settings', () => {
       version: 3,
       autoReply: false,
       fallbackMessage: 'Stepping away, back shortly.',
+      mediaHoldMessage: 'Let me take a look at that…',
     });
   });
 

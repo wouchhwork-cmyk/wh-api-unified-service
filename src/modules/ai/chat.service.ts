@@ -19,6 +19,8 @@ export interface ChatSettings {
   readonly autoReply: boolean;
   /** Sent to the customer when a reply cannot be produced. Empty = say nothing. */
   readonly fallbackMessage: string;
+  /** Sent while media is still being described. Empty = wait silently. */
+  readonly mediaHoldMessage: string;
   readonly model: string;
   readonly prompt: string;
   readonly version: number;
@@ -47,6 +49,9 @@ export interface ChatAnswer extends ChatReply {
  */
 const FALLBACK_APOLOGY =
   "Sorry, I have to step away for something urgent — I'll get back to you shortly.";
+
+/** Said while a photo is still being looked at, when the row cannot be read. */
+const MEDIA_HOLD = 'Let me take a look at that…';
 
 const FALLBACK_PROMPT = [
   'You are a helpful assistant replying inside a business tool.',
@@ -120,6 +125,10 @@ export class ChatService {
         typeof stored?.value.fallbackMessage === 'string'
           ? stored.value.fallbackMessage.trim()
           : FALLBACK_APOLOGY,
+      mediaHoldMessage:
+        typeof stored?.value.mediaHoldMessage === 'string'
+          ? stored.value.mediaHoldMessage.trim()
+          : MEDIA_HOLD,
       /*
        * The model falls back PER PROVIDER, because a model id means nothing
        * outside the provider that serves it — "gpt-6-luna" is not a thing

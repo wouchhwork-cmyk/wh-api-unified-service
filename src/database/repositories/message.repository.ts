@@ -685,6 +685,24 @@ export class MessageRepository extends BaseRepository {
    * own consideration.
    *
    */
+  /**
+   * The messages carrying a piece of media, for resuming a reply that was
+   * waiting on its description.
+   *
+   * By `media_key` rather than by attachment, because that is the identity
+   * that survives a refreshed CDN link — and because two messages can carry
+   * the same asset, both of which were waiting.
+   */
+  async messagesCarrying(enterpriseId: number, mediaKey: string): Promise<number[]> {
+    const rows = await this.query<{ messageId: number }>(
+      `SELECT DISTINCT a.message_id AS "messageId"
+         FROM message_attachments a
+        WHERE a.enterprise_id = $1 AND a.media_key = $2 AND a.is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), mediaKey],
+    );
+    return rows.map((row) => row.messageId);
+  }
+
   async assistantContextFor(
     enterpriseId: number,
     messageId: number,
@@ -693,12 +711,14 @@ export class MessageRepository extends BaseRepository {
     conversationRefId: string;
     status: ConversationStatus;
     messagesSince: number;
+    pendingMedia: number;
   } | null> {
     const rows = await this.query<{
       conversationId: number;
       conversationRefId: string;
       status: ConversationStatus;
       messagesSince: string;
+      pendingMedia: string;
     }>(
       `SELECT c.id       AS "conversationId",
               c.ref_id   AS "conversationRefId",
@@ -707,7 +727,23 @@ export class MessageRepository extends BaseRepository {
                 WHERE later.enterprise_id = m.enterprise_id
                   AND later.conversation_id = m.conversation_id
                   AND later.id > m.id
-                  AND later.is_deleted = false) AS "messagesSince"
+                  AND later.is_deleted = false
+                  -- Our own interim "let me look at that" does not count as
+                  -- the conversation moving on. A customer's message or a
+                  -- colleague's reply does, and both still land here.
+                  AND NOT (later.metadata ? 'assistant')) AS "messagesSince",
+              (SELECT count(*)
+                 FROM message_attachments a
+                 JOIN media_analyses ma
+                   ON ma.media_key = a.media_key
+                  AND ma.enterprise_id = a.enterprise_id
+                WHERE a.message_id = m.id
+                  AND a.enterprise_id = m.enterprise_id
+                  AND a.is_deleted = false
+                  -- Only media that is QUEUED and unfinished. Media with no
+                  -- ledger row at all is not coming, and waiting for it would
+                  -- be waiting forever.
+                  AND ma.status IN ('pending', 'in_flight', 'failed')) AS "pendingMedia"
          FROM messages m
          JOIN conversations c
            ON c.id = m.conversation_id
@@ -724,6 +760,7 @@ export class MessageRepository extends BaseRepository {
       status: row.status,
       /* Postgres counts come back as strings through the driver. */
       messagesSince: Number(row.messagesSince),
+      pendingMedia: Number(row.pendingMedia),
     };
   }
 

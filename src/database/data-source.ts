@@ -33,6 +33,7 @@ import { MediaAnalysis1759700000000 } from './migrations/1759700000000-MediaAnal
 import { ChatSettings1759800000000 } from './migrations/1759800000000-ChatSettings';
 import { AutoReply1759900000000 } from './migrations/1759900000000-AutoReply';
 import { AssistantFallback1760000000000 } from './migrations/1760000000000-AssistantFallback';
+import { AssistantMediaHold1760100000000 } from './migrations/1760100000000-AssistantMediaHold';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -111,6 +112,7 @@ export function buildDataSourceOptions(
       ChatSettings1759800000000,
       AutoReply1759900000000,
       AssistantFallback1760000000000,
+      AssistantMediaHold1760100000000,
     ],
     migrationsTableName: 'schema_migrations',
 

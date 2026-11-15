@@ -40,6 +40,15 @@ export const UpdateChatSettingsSchema = z.strictObject({
    */
   fallbackMessage: z.string().trim().max(500),
   /**
+   * What the customer hears while their photo is still being looked at.
+   *
+   * Media is described by a worker seconds after it arrives, so a message
+   * carrying only a photo reaches the assistant before there is anything to
+   * answer about. This holds the moment; the real answer follows when the
+   * description lands. Empty means wait silently and answer once.
+   */
+  mediaHoldMessage: z.string().trim().max(500),
+  /**
    * The model id, UNCONSTRAINED BY AN ENUM on purpose.
    *
    * OpenAI retires these on their own schedule — `gpt-5-nano` shuts down on

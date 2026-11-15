@@ -18,6 +18,8 @@ const Skip = {
   Overtaken: 'conversation_moved_on',
   /** The draft could not be produced, so the customer got the fallback. */
   Failed: 'could_not_answer',
+  /** Its media is still being described; the real answer follows. */
+  WaitingForMedia: 'waiting_for_media',
 } as const;
 
 type SkipReason = (typeof Skip)[keyof typeof Skip];
@@ -155,6 +157,21 @@ export class AutoReplyService {
       });
     }
 
+    /*
+     * ITS PHOTO HAS NOT BEEN LOOKED AT YET.
+     *
+     * Media is described by a worker seconds after the message lands, so a
+     * photo sent with no text reaches this before there is anything to
+     * answer about — the first real one failed with "the model returned no
+     * text" and apologised, for a message that was about to be perfectly
+     * answerable. Hold the moment instead, and the analysis worker brings us
+     * back when the description exists.
+     */
+    if (context.pendingMedia > 0) {
+      await this.sendHold(enterpriseId, messageId, context.conversationRefId, settings);
+      return;
+    }
+
     /* The actorless read: a worker has no employee whose permissions to check. */
     let draft;
     try {
@@ -215,6 +232,78 @@ export class AutoReplyService {
       },
       'assistant replied automatically',
     );
+  }
+
+  /**
+   * A piece of media has just been described: anything that was waiting on it
+   * can be answered now.
+   *
+   * Called from the analysis worker rather than from the analyser itself,
+   * for the reason the projector's call is at the worker too — the service
+   * that describes media lives in a module the inbox depends on, and the
+   * worker is where the two can meet without a cycle.
+   *
+   * EVERY GUARD RUNS AGAIN. By the time a description lands, a colleague may
+   * have answered, the customer may have said something else, or the thread
+   * may have been closed. This is a second consideration, not a deferred
+   * decision taken earlier.
+   */
+  async onMediaDescribed(enterpriseId: number, mediaKey: string): Promise<void> {
+    try {
+      const waiting = await this.messages.messagesCarrying(enterpriseId, mediaKey);
+      for (const messageId of waiting) {
+        await this.considerReplying(enterpriseId, messageId);
+      }
+    } catch (error) {
+      this.logger.error(
+        { err: error, enterpriseId, mediaKey },
+        'could not resume automatic replies after describing media',
+      );
+    }
+  }
+
+  /**
+   * "Let me take a look at that."
+   *
+   * ITS OWN IDEMPOTENCY KEY, so the hold is said once however many times
+   * this message is considered — a second piece of media finishing, a
+   * redelivered webhook, a retried projection. The real answer uses the
+   * reply key, which this never touches.
+   *
+   * SILENT WHEN THE TEXT IS EMPTY: a business may prefer to say nothing and
+   * answer once, properly, a few seconds later.
+   */
+  private async sendHold(
+    enterpriseId: number,
+    messageId: number,
+    conversationRefId: string,
+    settings: { mediaHoldMessage: string },
+  ): Promise<void> {
+    const text = settings.mediaHoldMessage.trim();
+    if (text.length > 0) {
+      try {
+        await this.inbox.replyAsAssistant(enterpriseId, {
+          conversationRefId,
+          body: text,
+          idempotencyKey: `assistant-hold:${messageId}`,
+          internalNote: false,
+          assistant: { hold: true, inReplyToMessageId: messageId },
+        });
+      } catch (error) {
+        /* The real answer is still coming; a failed holding line is not worth
+         * losing it over. */
+        this.logger.warn(
+          { err: error, enterpriseId, conversationRefId },
+          'could not send the holding message while media is described',
+        );
+      }
+    }
+
+    await this.record(enterpriseId, messageId, AuditStatus.Failure, {
+      skipped: Skip.WaitingForMedia,
+      holdSent: text.length > 0,
+      conversationRefId,
+    });
   }
 
   /**

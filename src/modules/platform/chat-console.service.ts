@@ -10,6 +10,8 @@ export interface ChatSettingsOverview {
   readonly autoReply: boolean;
   /** What a customer hears when the assistant cannot answer. */
   readonly fallbackMessage: string;
+  /** What they hear while their photo is still being looked at. */
+  readonly mediaHoldMessage: string;
   /** False when this environment has no key for the chosen provider. */
   readonly enabled: boolean;
   /**
@@ -44,6 +46,7 @@ export class ChatConsoleService {
       provider: current.provider,
       autoReply: current.autoReply,
       fallbackMessage: current.fallbackMessage,
+      mediaHoldMessage: current.mediaHoldMessage,
       enabled: this.chat.enabledFor(current.provider),
       availableProviders: this.chat.availableProviders(),
       model: current.model,
@@ -76,6 +79,7 @@ export class ChatConsoleService {
         provider: input.provider,
         autoReply: input.autoReply,
         fallbackMessage: input.fallbackMessage,
+        mediaHoldMessage: input.mediaHoldMessage,
         model: input.model,
         prompt: input.prompt,
       },

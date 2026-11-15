@@ -12,6 +12,7 @@ const VALID = {
   provider: 'openai',
   autoReply: false,
   fallbackMessage: 'Stepping away, back shortly.',
+  mediaHoldMessage: 'Let me take a look at that…',
   model: 'gpt-6-luna',
   prompt: 'You are a helpful assistant replying inside a business tool. Be brief.',
 };
@@ -37,6 +38,7 @@ describe('chat settings contract', () => {
       provider: 'openai',
       autoReply: false,
       fallbackMessage: '  Stepping away.  ',
+      mediaHoldMessage: 'Let me look.',
       model: '  gpt-6-luna  ',
       prompt: `  ${VALID.prompt}  `,
     });

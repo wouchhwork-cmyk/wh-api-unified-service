@@ -3,6 +3,7 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.repository';
 import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
+import { AutoReplyService } from '@/modules/inbox/auto-reply.service';
 import { GeminiClient } from '@/modules/ai/gemini.client';
 import { MEDIA_ANALYSIS_BATCH_SIZE, MEDIA_ANALYSIS_LEASE_SECONDS } from '@/shared/constants';
 import { BasePoller } from './base-poller';
@@ -28,6 +29,7 @@ export class MediaAnalysisWorker extends BasePoller {
     private readonly analyses: MediaAnalysisRepository,
     private readonly media: MediaAnalysisService,
     private readonly gemini: GeminiClient,
+    private readonly assistant: AutoReplyService,
     protected readonly config: AppConfigService,
     @InjectPinoLogger(MediaAnalysisWorker.name) protected readonly logger: PinoLogger,
   ) {
@@ -58,6 +60,16 @@ export class MediaAnalysisWorker extends BasePoller {
        * bad piece of media cannot stop the batch or leave a row leased.
        */
       await this.media.analyse(item, this.leaseOwner);
+
+      /*
+       * AND ANYTHING THAT WAS WAITING ON IT CAN NOW BE ANSWERED. A photo sent
+       * with no text reaches the automatic reply before this worker has
+       * described it, so that reply holds with a line and comes back here.
+       * `analyse` settles every path including failure, so a piece of media
+       * that could not be described releases the wait rather than extending
+       * it — every guard is re-checked there before anything is sent.
+       */
+      await this.assistant.onMediaDescribed(item.enterpriseId, item.mediaKey);
     }
     return claimed.length;
   }

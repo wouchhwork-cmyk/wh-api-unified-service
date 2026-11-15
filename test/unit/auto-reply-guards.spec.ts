@@ -24,6 +24,7 @@ function serviceWith(over: {
   providerEnabled?: boolean;
   context?: Record<string, unknown> | null;
   fallbackMessage?: string;
+  mediaHoldMessage?: string;
   draftFails?: boolean;
 }) {
   const chat = {
@@ -34,6 +35,7 @@ function serviceWith(over: {
       version: 1,
       autoReply: over.platformAutoReply ?? true,
       fallbackMessage: over.fallbackMessage ?? 'Stepping away, back shortly.',
+      mediaHoldMessage: over.mediaHoldMessage ?? 'Let me take a look at that…',
     }),
     enabledFor: vi.fn().mockReturnValue(over.providerEnabled ?? true),
   } as unknown as ChatService;
@@ -42,7 +44,9 @@ function serviceWith(over: {
     findById: vi.fn().mockResolvedValue({ autoReplyEnabled: over.businessOptedIn ?? true }),
   } as unknown as EnterpriseRepository;
 
+  const messagesCarrying = vi.fn().mockResolvedValue([100]);
   const messages = {
+    messagesCarrying,
     assistantContextFor: vi.fn().mockResolvedValue(
       over.context === null
         ? null
@@ -51,6 +55,7 @@ function serviceWith(over: {
             conversationRefId: 'conv-ref',
             status: ConversationStatus.Open,
             messagesSince: 0,
+            pendingMedia: 0,
             ...over.context,
           },
     ),
@@ -136,6 +141,63 @@ describe('automatic reply: when it stays quiet', () => {
      */
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: AuditStatus.Error }));
     expect(JSON.stringify(record.mock.calls[0])).toContain('settings exploded');
+  });
+});
+
+describe('automatic reply: while the photo is still being looked at', () => {
+  /*
+   * Media is described by a worker seconds AFTER the message lands. The reply
+   * fired first, found a photo and no text, and apologised — for a message
+   * that was about to be perfectly answerable.
+   */
+  it('holds the moment instead of answering with nothing', async () => {
+    const { service, draftReply, replyAsAssistant } = serviceWith({
+      context: { pendingMedia: 1 },
+    });
+    await service.considerReplying(1, 100);
+
+    expect(draftReply).not.toHaveBeenCalled();
+    expect(replyAsAssistant).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        body: 'Let me take a look at that…',
+        // Its own key, so the hold is said once however many times this
+        // message is considered — and the real answer's key stays free.
+        idempotencyKey: 'assistant-hold:100',
+      }),
+    );
+  });
+
+  it('waits silently when the business left the line empty', async () => {
+    const { service, replyAsAssistant, record } = serviceWith({
+      context: { pendingMedia: 1 },
+      mediaHoldMessage: '',
+    });
+    await service.considerReplying(1, 100);
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+    expect(JSON.stringify(record.mock.calls)).toContain('waiting_for_media');
+  });
+
+  it('answers for real once the description lands', async () => {
+    const { service, replyAsAssistant } = serviceWith({});
+    await service.onMediaDescribed(1, 'asset:9');
+
+    // The guards all ran again, and this time nothing was pending.
+    expect(replyAsAssistant).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ idempotencyKey: 'assistant:100' }),
+    );
+  });
+
+  it('does not answer twice when a second photo finishes', async () => {
+    const { service, replyAsAssistant } = serviceWith({ context: { pendingMedia: 1 } });
+    await service.onMediaDescribed(1, 'asset:9');
+    // Still waiting on the other one: the hold key repeats, which the
+    // idempotency index turns into nothing being sent.
+    expect(replyAsAssistant).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ idempotencyKey: 'assistant-hold:100' }),
+    );
   });
 });
 
