@@ -2,6 +2,13 @@ import { CHATBOT_DM_REPLY_CHARS, CHATBOT_PUBLIC_REPLY_CHARS } from '@/shared/con
 import { ConversationKind } from '@/shared/enums';
 
 /**
+ * The same marker the turns are built with, matched anywhere rather than
+ * only at the start: a model that repeats one mid-sentence is still handing
+ * a customer machinery.
+ */
+const TURN_ID_ANYWHERE = /\[id:[^\]]{1,200}\]\s*/g;
+
+/**
  * The reply as it will actually arrive, rather than as a model composed it.
  *
  * MARKDOWN IS NOT A FORMAT HERE, IT IS NOISE. Instagram and Facebook render
@@ -38,7 +45,7 @@ function stripMarkup(text: string): string {
        * "[id:4f2c8b1a] yes, we have those" is reading machinery. This is the
        * half that does not depend on the model having listened.
        */
-      .replace(/\[id:[^\]\s]{1,64}\]\s*/g, '')
+      .replace(TURN_ID_ANYWHERE, '')
       /* `[Menu](https://…)` → `Menu (https://…)`, because the URL is the useful half. */
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1 ($2)')
       /* Headings: a DM has no sections. */

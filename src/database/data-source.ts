@@ -39,6 +39,7 @@ import { MediaLanguage1760300000000 } from './migrations/1760300000000-MediaLang
 import { AssistantReplies1760400000000 } from './migrations/1760400000000-AssistantReplies';
 import { ModelCalls1760500000000 } from './migrations/1760500000000-ModelCalls';
 import { ModelCallInFlight1760600000000 } from './migrations/1760600000000-ModelCallInFlight';
+import { ModelCallPromptRecipe1760700000000 } from './migrations/1760700000000-ModelCallPromptRecipe';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -123,6 +124,7 @@ export function buildDataSourceOptions(
       AssistantReplies1760400000000,
       ModelCalls1760500000000,
       ModelCallInFlight1760600000000,
+      ModelCallPromptRecipe1760700000000,
     ],
     migrationsTableName: 'schema_migrations',
 

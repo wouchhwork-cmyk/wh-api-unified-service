@@ -828,6 +828,8 @@ export async function applyPostTableObjects(
         EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_in_flight_idx
                    ON model_calls (created_at)
                    WHERE status = ''in_flight''';
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS model_calls_ref_uniq
+                   ON model_calls (ref_id)';
       END IF;
     END
     $do$;

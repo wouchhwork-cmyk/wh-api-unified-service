@@ -20,6 +20,8 @@ import { InboxController } from './inbox.controller';
 import { InboxEventsService } from './inbox-events.service';
 import { AutoReplyService } from './auto-reply.service';
 import { ChatbotService } from './chatbot.service';
+import { PromptReplayService } from './prompt-replay.service';
+import { AiCallsController } from './ai-calls.controller';
 import { ConversationBriefService } from './conversation-brief.service';
 import { InboxService } from './inbox.service';
 import { PostProjectorService } from './post-projector.service';
@@ -28,6 +30,7 @@ const PROVIDERS = [
   InboxService,
   ChatbotService,
   ConversationBriefService,
+  PromptReplayService,
   AutoReplyService,
   EnterpriseRepository,
   SendReconciliationService,
@@ -74,7 +77,7 @@ const PROVIDERS = [
  */
 @Module({
   imports: [AuditModule, AiModule],
-  controllers: [InboxController],
+  controllers: [InboxController, AiCallsController],
   providers: PROVIDERS,
   exports: [
     InboxService,

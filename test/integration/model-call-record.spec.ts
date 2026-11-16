@@ -39,7 +39,7 @@ describe('the model call record', () => {
     intent: Partial<Parameters<ModelCallRepository['begin']>[0]> = {},
     outcome: Partial<Parameters<ModelCallRepository['settle']>[1]> = {},
   ) => {
-    const id = await calls.begin({
+    const { id } = await calls.begin({
       enterpriseId,
       provider: 'openai',
       model: 'gpt-6-luna',
@@ -136,7 +136,7 @@ describe('the model call record', () => {
      * the customer's reply with it would be the worse bug by a wide margin,
      * and the row is not lost — it stays in flight for the sweep.
      */
-    const id = await calls.begin({
+    const { id } = await calls.begin({
       enterpriseId,
       provider: 'openai',
       model: 'gpt-6-luna',
@@ -215,4 +215,71 @@ describe('the model call record', () => {
     );
     return Number(rows[0]?.n ?? 0);
   }
+
+  /**
+   * The recipe for rebuilding a prompt, without having kept one.
+   *
+   * A prompt holds the customer's own words, their name and the transcript of
+   * anything they recorded. Storing it makes a second copy of every
+   * conversation; storing what it takes to rebuild it does not.
+   */
+  describe('what it takes to replay a call', () => {
+    it('keeps the fingerprint and the messages, never the prompt', async () => {
+      const { refId } = await calls.begin({
+        enterpriseId,
+        provider: 'gemini',
+        model: 'gemini-3.1-flash-lite',
+        purpose: ModelCallPurpose.AutoReply,
+        promptHash: 'a'.repeat(64),
+        turnRefs: ['ref-one', 'ref-two'],
+      });
+
+      const row = await calls.findByRef(enterpriseId, refId);
+      expect(row).toMatchObject({ promptHash: 'a'.repeat(64), turnRefs: ['ref-one', 'ref-two'] });
+
+      /* The columns that would hold a conversation simply are not there. */
+      const columns = await db.query<{ column_name: string }[]>(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'model_calls'`,
+      );
+      const names = columns.map((column) => column.column_name);
+      expect(names).not.toContain('prompt');
+      expect(names).not.toContain('response');
+    });
+
+    it('gives every call a public name, so none is addressed by its row id', async () => {
+      const { refId } = await calls.begin({
+        enterpriseId,
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        purpose: ModelCallPurpose.Draft,
+      });
+
+      expect(refId).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    it('will not hand one business another business\u2019s call', async () => {
+      const { refId } = await calls.begin({
+        enterpriseId,
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        purpose: ModelCallPurpose.AutoReply,
+      });
+
+      await expect(calls.findByRef(otherEnterpriseId, refId)).resolves.toBeNull();
+    });
+
+    it('lists the recent ones newest first', async () => {
+      await call({ purpose: ModelCallPurpose.Draft });
+      await call({ purpose: ModelCallPurpose.MediaDescription });
+
+      const rows = await calls.listRecent(enterpriseId, 10);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]?.purpose).toBe(ModelCallPurpose.MediaDescription);
+    });
+
+    it('bounds what a caller can ask for in one go', async () => {
+      await call();
+      await expect(calls.listRecent(enterpriseId, 10_000)).resolves.toHaveLength(1);
+    });
+  });
 });

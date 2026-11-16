@@ -60,6 +60,8 @@ export interface InsertOutboundMessageInput {
 
 export interface MessageRow {
   readonly id: number;
+  /** Which thread it belongs to. Selected only where a caller needs it. */
+  readonly conversationId?: number;
   /** The assistant wrote this one and sent it without a person reading it. */
   readonly isAutomated?: boolean;
   /** Which model wrote it, for a reader who wants to know. */
@@ -1118,6 +1120,57 @@ export class MessageRepository extends BaseRepository {
         ORDER BY m.id DESC
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), conversationId],
+    );
+    return rows[0]?.summary ?? null;
+  }
+  /**
+   * Messages by their public ids, for rebuilding a window that has since
+   * moved on.
+   *
+   * Order is NOT promised: the caller holds the sequence the ids were
+   * recorded in, which is the real order, and a query that re-sorted them
+   * would quietly disagree with it.
+   */
+  async findByRefIds(enterpriseId: number, refIds: readonly string[]): Promise<MessageRow[]> {
+    if (refIds.length === 0) return [];
+    return this.query<MessageRow>(
+      `SELECT m.id, m.ref_id AS "refId", m.conversation_id AS "conversationId",
+              m.direction, m.body, m.message_kind AS "messageKind", m.status,
+              m.is_internal_note AS "isInternalNote",
+              m.has_attachments AS "hasAttachments",
+              m.created_at AS "createdAt"
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.ref_id = ANY($2::uuid[])
+          AND m.is_deleted = false`,
+      [this.requireEnterprise(enterpriseId), [...refIds]],
+    );
+  }
+
+  /**
+   * The notes as they stood just before a given message.
+   *
+   * A replay of message four must not be shown the notes written at message
+   * forty. Every reply since has rewritten them, so "the latest" is exactly
+   * the wrong answer when looking backwards.
+   */
+  async summaryBeforeRef(
+    enterpriseId: number,
+    conversationId: number,
+    beforeRefId: string,
+  ): Promise<string | null> {
+    const rows = await this.query<{ summary: string | null }>(
+      `SELECT m.metadata->'assistant'->>'summary' AS summary
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.metadata->'assistant'->>'summary' IS NOT NULL
+          AND m.id < (SELECT id FROM messages
+                       WHERE enterprise_id = $1 AND ref_id = $3 AND is_deleted = false)
+        ORDER BY m.id DESC
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, beforeRefId],
     );
     return rows[0]?.summary ?? null;
   }

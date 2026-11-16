@@ -58,6 +58,15 @@ export interface SystemPromptLayers {
   readonly rules: readonly string[];
   /** The console's prompt, verbatim. Empty when nobody has written one. */
   readonly businessPrompt: string;
+  /**
+   * How to read the conversation that follows. Ours, and structural.
+   *
+   * A SECTION RATHER THAN A RULE, for the same reason the output contract
+   * is one: it is a format this service writes and the model has to parse,
+   * and a format explained in a single sentence buried among behavioural
+   * rules is a format half-read.
+   */
+  readonly messageFormat?: string;
   /** The facts assembled for this one call, already tagged. Empty when none. */
   readonly context?: string;
   /** The rendered output contract. Ours, and always last. */
@@ -139,6 +148,14 @@ export function composeSystemPrompt(layers: SystemPromptLayers): string {
       [BUSINESS_OPEN, BUSINESS_NOTE, '', business, '</business_instructions>'].join('\n'),
     );
   }
+
+  /*
+   * BEFORE THE CONTEXT, because it explains how to read everything that
+   * follows — the facts, and then the conversation itself, which arrives
+   * after this whole instruction.
+   */
+  const messageFormat = layers.messageFormat?.trim() ?? '';
+  if (messageFormat.length > 0) sections.push(messageFormat);
 
   if (context.length > 0) sections.push(`<context>\n${context}\n</context>`);
 

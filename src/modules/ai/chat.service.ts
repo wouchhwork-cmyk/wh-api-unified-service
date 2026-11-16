@@ -10,7 +10,13 @@ import {
   type ChatTurn,
 } from './ai.provider';
 import { ModelRouter } from './model-router.service';
-import { buildChatReplyPrompt, readChatReply } from './prompts';
+import {
+  buildChatReplyPrompt,
+  canonicalPrompt,
+  fingerprint,
+  readChatReply,
+  turnIdsOf,
+} from './prompts';
 import { TokenCipherService } from '@/shared/crypto';
 import { ModelCallRepository } from '@/database/repositories/model-call.repository';
 import { ModelCallPurpose, ModelCallStatus } from '@/shared/enums';
@@ -62,6 +68,8 @@ export interface ChatAnswer extends ChatReply {
   readonly silent: boolean;
   /** Its notes on the conversation, for the next reply to start from. */
   readonly summary: string | null;
+  /** The record of this call, so a reply can be traced back to its prompt. */
+  readonly callRef: string;
   /** Whether it answered in the shape it was asked for. */
   readonly structured: boolean;
 }
@@ -281,13 +289,29 @@ export class ChatService {
      * model is thinking, the row survives saying one went out — which is the
      * fact worth having, and the one that recording afterwards loses.
      */
-    const callId = await this.calls.begin({
+    /*
+     * BUILT BEFORE THE ROW IS OPENED, because the row records what the
+     * prompt WAS. The prompt itself is never stored — it carries the
+     * customer's own words — but its fingerprint is, which is what lets
+     * somebody rebuild it later and know whether what they rebuilt is what
+     * actually ran.
+     */
+    const instructions = buildChatReplyPrompt({
+      businessPrompt: settings.prompt,
+      context: options.context ?? '',
+    });
+
+    const call = await this.calls.begin({
       enterpriseId: options.enterpriseId,
       provider: settings.provider,
       model: settings.model,
       purpose: options.purpose,
       messageId: options.messageId ?? null,
       promptVersion: settings.version,
+      promptHash: fingerprint(canonicalPrompt({ instructions, turns })),
+      /* Which messages it was shown, so the same window can be rebuilt
+       * rather than guessed at from whatever the thread holds today. */
+      turnRefs: turnIdsOf(turns),
     });
 
     let reply;
@@ -297,10 +321,7 @@ export class ChatService {
         /* Only when the console holds one; otherwise the client uses its own
          * environment key, which is the ordinary case. */
         ...(apiKey ? { apiKey } : {}),
-        instructions: buildChatReplyPrompt({
-          businessPrompt: settings.prompt,
-          context: options.context ?? '',
-        }),
+        instructions,
         model: settings.model,
       });
     } catch (error) {
@@ -310,7 +331,7 @@ export class ChatService {
        * when they ask why a customer got an apology. Recorded before the
        * error is re-thrown, so the caller's own handling is unchanged.
        */
-      await this.calls.settle(callId, {
+      await this.calls.settle(call.id, {
         status: ModelCallStatus.Failed,
         durationMs: Date.now() - startedAt,
         failureCode: error instanceof ChatError ? error.failureCode : 'CHAT_CALL_FAILED',
@@ -332,7 +353,7 @@ export class ChatService {
     const fields = readChatReply(reply.text);
 
     await this.calls.settle(
-      callId,
+      call.id,
       {
         status: ModelCallStatus.Ok,
         inputTokens: reply.usage.inputTokens,
@@ -356,6 +377,7 @@ export class ChatService {
       silent: fields.silent,
       summary: fields.summary,
       structured: fields.structured,
+      callRef: call.refId,
       promptVersion: settings.version,
     };
   }

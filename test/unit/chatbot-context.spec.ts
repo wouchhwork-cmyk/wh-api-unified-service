@@ -78,6 +78,8 @@ function message(id: number, over: Record<string, unknown> = {}) {
   return {
     id,
     refId: `ref-${id}`,
+    messageKind: 'text',
+    parentRefId: null,
     direction: MessageDirection.Inbound,
     body: `message ${id}`,
     isInternalNote: false,
@@ -289,6 +291,18 @@ describe('how the messages are named', () => {
     const turns = reply.mock.calls[0]?.[0] as { text: string }[];
     expect(turns[0]?.text).toBe('[id:ref-1] message 1');
     expect(turns[1]?.text).toBe('[id:ref-2] message 2');
+  });
+
+  it('says how a message arrived and what it answers', async () => {
+    const { service, reply } = serviceWith({
+      messages: [
+        message(2, { messageKind: 'story_reply', parentRefId: 'ref-1', body: 'love this' }),
+      ],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { text: string }[];
+    expect(turns[0]?.text).toBe('[id:ref-2 kind:story_reply re:ref-1] love this');
   });
 
   it('names our own messages too, so the notes can cite what we said', async () => {

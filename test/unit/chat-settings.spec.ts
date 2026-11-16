@@ -47,7 +47,7 @@ function serviceWith(stored: Record<string, unknown> | null, version = 3) {
    * after it — which is the only shape that survives a process dying while
    * a model is thinking.
    */
-  const begin = vi.fn().mockResolvedValue(77);
+  const begin = vi.fn().mockResolvedValue({ id: 77, refId: 'call-ref-77' });
   const settle = vi.fn().mockResolvedValue(undefined);
   const calls = { begin, settle } as unknown as ModelCallRepository;
   return {

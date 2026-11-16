@@ -1,7 +1,7 @@
 import { Column, Entity } from 'typeorm';
 import { ModelCallPurpose, ModelCallStatus } from '@/shared/enums';
 import { bigintTransformer } from '../bigint.transformer';
-import { BaseEntity } from './base.entity';
+import { PublicEntity } from './base.entity';
 
 /**
  * One call this service made to a model.
@@ -17,7 +17,7 @@ import { BaseEntity } from './base.entity';
  * not have, which is exactly what the schema-parity test exists to catch.
  */
 @Entity('model_calls')
-export class ModelCall extends BaseEntity {
+export class ModelCall extends PublicEntity {
   @Column({ type: 'bigint', transformer: bigintTransformer })
   enterpriseId!: number;
 
@@ -72,6 +72,19 @@ export class ModelCall extends BaseEntity {
 
   @Column({ type: 'boolean', default: false })
   truncated!: boolean;
+
+  /**
+   * The exact prompt that went out, as a fingerprint rather than as text.
+   *
+   * Rebuilding gives the prompt as it would be built NOW; this is what says
+   * whether that is still what ran.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  promptHash!: string | null;
+
+  /** The messages it was shown, in order, by public ref id. */
+  @Column({ type: 'jsonb', nullable: true })
+  turnRefs!: string[] | null;
 
   @Column({ type: 'varchar', length: 60, nullable: true })
   failureCode!: string | null;

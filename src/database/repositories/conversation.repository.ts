@@ -551,4 +551,33 @@ export class ConversationRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), conversationId, JSON.stringify(patch)],
     );
   }
+  /**
+   * A conversation by its row id, for callers that already hold one.
+   *
+   * The same projection `findByRefId` returns, because anything reading a
+   * conversation expects the same shape however it got there.
+   */
+  async findById(enterpriseId: number, id: number): Promise<ConversationRow | null> {
+    const rows = await this.query<ConversationRow>(
+      `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
+              cv.customer_id AS "customerId", cv.platform,
+              cv.conversation_kind AS "conversationKind",
+              cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
+              cv.post_id AS "postId",
+              cv.context_metadata AS "contextMetadata",
+              cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
+              cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
+              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
+              cu.avatar_url AS "customerAvatarUrl",
+              cu.metadata AS "customerProfile",
+              cv.assigned_to_employee_id AS "assignedToEmployeeId"
+         FROM conversations cv
+         LEFT JOIN customers cu ON cu.id = cv.customer_id
+                               AND cu.enterprise_id = cv.enterprise_id
+        WHERE cv.enterprise_id = $1 AND cv.id = $2 AND cv.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), id],
+    );
+    return rows[0] ?? null;
+  }
 }

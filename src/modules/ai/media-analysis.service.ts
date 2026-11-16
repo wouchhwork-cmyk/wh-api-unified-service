@@ -18,7 +18,7 @@ import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { MediaDownloader } from './media-downloader';
 import { ModelCallRepository } from '@/database/repositories/model-call.repository';
 import { ModelCallPurpose, ModelCallStatus } from '@/shared/enums';
-import { buildMediaAnalysisPrompt } from './prompts';
+import { buildMediaAnalysisPrompt, fingerprint } from './prompts';
 
 /** The platform setting that holds what we tell the model. */
 export const MEDIA_ANALYSIS_SETTING_KEY = 'media_analysis';
@@ -98,7 +98,7 @@ export class MediaAnalysisService {
      * than opening a second one. Null once settled, and null throughout for
      * every failure that never reached a model.
      */
-    let callId: number | null = null;
+    let call: { id: number; refId: string } | null = null;
     try {
       if (!this.gemini.enabled) {
         throw new MediaAnalysisError(
@@ -136,17 +136,24 @@ export class MediaAnalysisService {
       const startedAt = Date.now();
 
       /*
+       * BUILT ONCE, so the fingerprint is of the bytes that actually went
+       * out rather than of a second rendering that might differ.
+       */
+      const mediaPrompt = buildMediaAnalysisPrompt(instruction.prompt);
+
+      /*
        * OPENED BEFORE THE CALL, so a worker that dies mid-describe still
        * leaves a row saying one went out. Settled below on success, and by
        * `settleFailure` on the way down.
        */
-      callId = await this.calls.begin({
+      call = await this.calls.begin({
         enterpriseId: claimed.enterpriseId,
         provider: 'gemini',
         model: instruction.model,
         purpose: ModelCallPurpose.MediaDescription,
         mediaKey: claimed.mediaKey,
         promptVersion: instruction.version,
+        promptHash: fingerprint(mediaPrompt),
       });
 
       const outcome = await this.gemini.describeMedia({
@@ -160,7 +167,7 @@ export class MediaAnalysisService {
          * they cannot be edited out of the box that also has to be readable
          * by a person who has never heard of JSON.
          */
-        prompt: buildMediaAnalysisPrompt(instruction.prompt),
+        prompt: mediaPrompt,
         model: instruction.model,
       });
 
@@ -173,7 +180,7 @@ export class MediaAnalysisService {
        * first attempt spent would simply disappear from the record.
        */
       await this.calls.settle(
-        callId,
+        call.id,
         {
           status: ModelCallStatus.Ok,
           inputTokens: outcome.usage.inputTokens,
@@ -183,7 +190,7 @@ export class MediaAnalysisService {
         },
         outcome.model,
       );
-      callId = null;
+      call = null;
 
       await this.analyses.markDone(claimed.id, leaseOwner, {
         /*
@@ -214,7 +221,7 @@ export class MediaAnalysisService {
         'described a piece of media',
       );
     } catch (error) {
-      await this.settleFailure(claimed, leaseOwner, error, callId);
+      await this.settleFailure(claimed, leaseOwner, error, call?.id ?? null);
     }
   }
 

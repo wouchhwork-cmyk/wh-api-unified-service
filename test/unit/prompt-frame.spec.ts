@@ -252,3 +252,49 @@ describe('what the assistant writes down, and what it trusts', () => {
     expect(prompt()).toContain('drop what no longer matters');
   });
 });
+
+/**
+ * How the model is told to read a conversation it did not have.
+ *
+ * The markers are a format this service writes and the model has to parse —
+ * the same kind of thing as the output contract, and given its own section
+ * for the same reason. One sentence among behavioural rules is a format
+ * half-read.
+ */
+describe('explaining the markers on each message', () => {
+  const prompt = () => buildChatReplyPrompt({ businessPrompt: 'Be warm.', context: '<business/>' });
+
+  it('is a section of its own, before the conversation it explains', () => {
+    const text = prompt();
+
+    expect(text).toContain('<message_format>');
+    expect(text.indexOf('<message_format>')).toBeLessThan(text.indexOf('<output'));
+  });
+
+  it('shows the three shapes that actually occur', () => {
+    const text = prompt();
+
+    expect(text).toContain('<example>[id:4f2c8b1a] is this available?</example>');
+    expect(text).toContain('[id:9ab3c1d2 kind:story_reply re:4f2c8b1a] love this!');
+    expect(text).toContain('[id:77aa kind:image] [media: a cracked mug]');
+  });
+
+  it('says what each part means, absence included', () => {
+    const text = prompt();
+
+    expect(text).toContain('Absent means they simply typed.');
+    expect(text).toContain('Absent means it answers nothing in particular.');
+  });
+
+  it('tells it to follow a reply back before answering', () => {
+    expect(prompt()).toContain('Follow "re" back before answering');
+  });
+
+  it('asks for a tag to be thanked before anything else', () => {
+    expect(prompt()).toContain('thank them for it before answering anything else');
+  });
+
+  it('forbids repeating the machinery to the customer', () => {
+    expect(prompt()).toContain('NEVER repeat any part of a marker');
+  });
+});

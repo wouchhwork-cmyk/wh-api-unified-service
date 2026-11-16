@@ -12,6 +12,7 @@ import {
   CHAT_MAX_TURNS,
 } from '@/shared/constants';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
+import { tagTurn } from '@/modules/ai/prompts';
 import { ConversationBriefService } from './conversation-brief.service';
 import { replyCapFor, shapeReply } from './reply-format';
 import { InboxService } from './inbox.service';
@@ -176,7 +177,15 @@ export class ChatbotService {
          * is the one this service is allowed to show: the notes are stored
          * and surfaced, and an internal bigint has no business in either.
          */
-        text: `[id:${message.refId}] ${text}`,
+        /*
+         * HOW IT ARRIVED, AND WHAT IT ANSWERS. On a threaded platform "yes"
+         * means agreement or it means an answer to a question four messages
+         * back, and nothing in the words tells the two apart.
+         */
+        text: tagTurn(message.refId, text, {
+          kind: message.messageKind,
+          replyTo: message.parentRefId,
+        }),
       });
     }
 

@@ -11,6 +11,10 @@ export interface ModelCallIntent {
   readonly messageId?: number | null;
   readonly mediaKey?: string | null;
   readonly promptVersion?: number | null;
+  /** The exact prompt, as a fingerprint. Never the prompt itself. */
+  readonly promptHash?: string | null;
+  /** The messages it was shown, in order, by public ref id. */
+  readonly turnRefs?: readonly string[] | null;
 }
 
 /** What is known once it comes back, or fails to. */
@@ -26,6 +30,24 @@ export interface ModelCallOutcome {
   readonly failureCode?: string | null;
   /** Already redacted by the caller. Never a prompt, never a response. */
   readonly failureReason?: string | null;
+}
+
+/** One recorded call, as a reader of the trail needs it. */
+export interface ModelCallRow {
+  readonly refId: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly purpose: ModelCallPurpose;
+  readonly status: ModelCallStatus;
+  readonly promptVersion: number | null;
+  readonly promptHash: string | null;
+  readonly turnRefs: string[] | null;
+  readonly messageId: number | null;
+  readonly mediaKey: string | null;
+  readonly totalTokens: number | null;
+  readonly durationMs: number | null;
+  readonly failureCode: string | null;
+  readonly createdAt: Date;
 }
 
 export interface ModelSpendRow {
@@ -66,13 +88,13 @@ export class ModelCallRepository extends BaseRepository {
    * a second later anyway; proceeding spends money with nothing to show for
    * it. Cheaper to stop.
    */
-  async begin(input: ModelCallIntent): Promise<number> {
-    const { rows } = await this.mutate<{ id: string }>(
+  async begin(input: ModelCallIntent): Promise<{ id: number; refId: string }> {
+    const { rows } = await this.mutate<{ id: string; ref_id: string }>(
       `INSERT INTO model_calls
          (enterprise_id, provider, model, purpose, status, message_id, media_key,
-          prompt_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       RETURNING id`,
+          prompt_version, prompt_hash, turn_refs)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id, ref_id`,
       [
         this.requireEnterprise(input.enterpriseId),
         input.provider,
@@ -82,9 +104,11 @@ export class ModelCallRepository extends BaseRepository {
         input.messageId ?? null,
         input.mediaKey ?? null,
         input.promptVersion ?? null,
+        input.promptHash ?? null,
+        input.turnRefs ? JSON.stringify(input.turnRefs) : null,
       ],
     );
-    return Number(rows[0]?.id);
+    return { id: Number(rows[0]?.id), refId: rows[0]?.ref_id ?? '' };
   }
 
   /**
@@ -197,5 +221,44 @@ export class ModelCallRepository extends BaseRepository {
       inputTokens: Number(row.input_tokens ?? 0),
       outputTokens: Number(row.output_tokens ?? 0),
     }));
+  }
+  /** One call by its public id, scoped to the business that made it. */
+  async findByRef(enterpriseId: number, refId: string): Promise<ModelCallRow | null> {
+    const rows = await this.query<ModelCallRow>(
+      `SELECT ref_id AS "refId", provider, model, purpose, status,
+              prompt_version AS "promptVersion", prompt_hash AS "promptHash",
+              turn_refs AS "turnRefs", message_id AS "messageId",
+              media_key AS "mediaKey", total_tokens AS "totalTokens",
+              duration_ms AS "durationMs", failure_code AS "failureCode",
+              created_at AS "createdAt"
+         FROM model_calls
+        WHERE enterprise_id = $1 AND ref_id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), refId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The recent calls, newest first.
+   *
+   * Served by `model_calls_enterprise_idx`, whose ordering this matches
+   * exactly — id included, so two calls in the same millisecond keep a
+   * stable order instead of swapping between pages.
+   */
+  async listRecent(enterpriseId: number, limit: number): Promise<ModelCallRow[]> {
+    return this.query<ModelCallRow>(
+      `SELECT ref_id AS "refId", provider, model, purpose, status,
+              prompt_version AS "promptVersion", prompt_hash AS "promptHash",
+              turn_refs AS "turnRefs", message_id AS "messageId",
+              media_key AS "mediaKey", total_tokens AS "totalTokens",
+              duration_ms AS "durationMs", failure_code AS "failureCode",
+              created_at AS "createdAt"
+         FROM model_calls
+        WHERE enterprise_id = $1 AND is_deleted = false
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2`,
+      [this.requireEnterprise(enterpriseId), Math.min(Math.max(1, limit), 100)],
+    );
   }
 }
