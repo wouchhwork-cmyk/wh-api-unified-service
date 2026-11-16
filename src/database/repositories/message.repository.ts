@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationStatus, MessageDirection, MessageKind, MessageStatus } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { platformIdentityJoin } from './customer-identity.sql';
 
 export interface InsertInboundMessageInput {
   readonly enterpriseId: number;
@@ -650,9 +651,11 @@ export class MessageRepository extends BaseRepository {
     }>(
       `SELECT m.platform_message_id AS "platformMessageId",
               m.direction,
-              CASE WHEN m.direction = 'outbound' THEN NULL ELSE cu.display_name END AS "authorName"
+              CASE WHEN m.direction = 'outbound' THEN NULL
+                   ELSE COALESCE(cu.display_name, cpp.display_name) END AS "authorName"
          FROM messages m
          LEFT JOIN customers cu ON cu.id = m.customer_id
+         ${platformIdentityJoin({ customer: 'cu', as: 'cpp' })}
         WHERE m.enterprise_id = $1
           AND m.platform_message_id = ANY($2::text[])
           AND m.is_deleted = false`,
@@ -745,16 +748,24 @@ export class MessageRepository extends BaseRepository {
                   AND NOT (later.metadata ? 'assistant')) AS "messagesSince",
               (SELECT count(*)
                  FROM message_attachments a
-                 JOIN media_analyses ma
+                 LEFT JOIN media_analyses ma
                    ON ma.media_key = a.media_key
                   AND ma.enterprise_id = a.enterprise_id
                 WHERE a.message_id = m.id
                   AND a.enterprise_id = m.enterprise_id
                   AND a.is_deleted = false
-                  -- Only media that is QUEUED and unfinished. Media with no
-                  -- ledger row at all is not coming, and waiting for it would
-                  -- be waiting forever.
-                  AND ma.status IN ('pending', 'in_flight', 'failed')) AS "pendingMedia"
+                  AND a.media_key IS NOT NULL
+                  -- Unfinished, OR never queued at all.
+                  --
+                  -- It used to be an INNER JOIN, on the reasoning that media
+                  -- with no ledger row was never coming and waiting for it
+                  -- would be waiting forever. True at the time, and it meant
+                  -- a photo nobody had queued was answered straight past as
+                  -- though the message carried none. The caller now queues
+                  -- what is missing before reading this, so missing means
+                  -- "about to be described" rather than "never".
+                  AND (ma.media_key IS NULL
+                       OR ma.status IN ('pending', 'in_flight', 'failed'))) AS "pendingMedia"
          FROM messages m
          JOIN conversations c
            ON c.id = m.conversation_id
@@ -963,7 +974,7 @@ export class MessageRepository extends BaseRepository {
                * thread named nobody, so two customers' comments were both drawn
                * as "inbound" and could not be told apart.
                */
-              mcu.display_name AS "authorName",
+              COALESCE(mcu.display_name, mcpp.display_name) AS "authorName",
               /*
                * And the parent's author, which is what actually decides whether
                * a reply answers the SAME person. Deriving that from direction
@@ -976,6 +987,7 @@ export class MessageRepository extends BaseRepository {
          LEFT JOIN customers mcu ON mcu.id = m.customer_id
                                 AND mcu.enterprise_id = m.enterprise_id
                                 AND mcu.is_deleted = false
+         ${platformIdentityJoin({ customer: 'mcu', as: 'mcpp' })}
          LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
                                           AND se.enterprise_id = m.enterprise_id
                                           AND se.is_deleted = false

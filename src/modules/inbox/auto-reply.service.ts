@@ -8,6 +8,7 @@ import {
   type ClaimedReply,
 } from '@/database/repositories/assistant-reply.repository';
 import { ChatService } from '@/modules/ai/chat.service';
+import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import { ChatError } from '@/modules/ai/chat.errors';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
 import {
@@ -76,6 +77,7 @@ export class AutoReplyService {
     private readonly inbox: InboxService,
     private readonly enterprises: EnterpriseRepository,
     private readonly messages: MessageRepository,
+    private readonly media: MediaAnalysisService,
     private readonly replies: AssistantReplyRepository,
     private readonly audit: AuditService,
     @InjectPinoLogger(AutoReplyService.name) private readonly logger: PinoLogger,
@@ -172,6 +174,19 @@ export class AutoReplyService {
     if (!enterprise?.autoReplyEnabled) {
       return this.skipQuietly(claimed, leaseOwner, Skip.BusinessOff);
     }
+
+    /*
+     * ANYTHING ON THIS MESSAGE THAT WAS NEVER QUEUED IS QUEUED NOW, BEFORE
+     * the context is read.
+     *
+     * The hold below counts media that is queued and unfinished. Media with
+     * no ledger row at all used to be invisible to it, so a photo nobody had
+     * queued — anything stored before descriptions existed, or by a path
+     * that forgot — was answered straight past as though the message carried
+     * none. Closing the gap here means "missing" can safely mean "about to
+     * arrive" rather than "never".
+     */
+    await this.media.queueMissingFor(enterpriseId, messageId);
 
     const context = await this.messages.assistantContextFor(enterpriseId, messageId);
     if (!context) return this.skipQuietly(claimed, leaseOwner, Skip.Gone);

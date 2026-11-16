@@ -223,7 +223,13 @@ export class ConversationBriefService {
     conversation: ConversationRow,
     mediaLanguages: readonly string[],
   ): Promise<string | null> {
-    const profile = await this.customers.assistantProfile(enterpriseId, conversation.customerId);
+    const profile = await this.customers.assistantProfile(
+      enterpriseId,
+      conversation.customerId,
+      /* The account they are writing from: somebody reachable on two has a
+       * name on each, and the one to use is the one that sent the message. */
+      conversation.customerIdentifierId,
+    );
     const lines: string[] = [];
 
     const name = (

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConversationKind, ConversationStatus, Platform, THREAD_KEY_PREFIX } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { platformIdentityJoin } from './customer-identity.sql';
 import { NOTIFY_INBOX_CHANNEL } from '@/shared/constants';
 
 export interface UpsertConversationInput {
@@ -41,6 +42,13 @@ export interface ConversationRow {
   readonly postId: number | null;
   readonly channelId: number;
   readonly customerId: number;
+  /**
+   * WHICH ACCOUNT this thread is with, when it was recorded.
+   *
+   * Carried because a person reachable on two accounts has a name and a
+   * picture on each, and the one to show is the one they are writing from.
+   */
+  readonly customerIdentifierId: number | null;
   readonly platform: Platform;
   readonly conversationKind: ConversationKind;
   readonly platformThreadId: string;
@@ -219,15 +227,18 @@ export class ConversationRepository extends BaseRepository {
   async findByRefId(enterpriseId: number, refId: string): Promise<ConversationRow | null> {
     const rows = await this.query<ConversationRow>(
       `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
-              cv.customer_id AS "customerId", cv.platform,
+              cv.customer_id AS "customerId",
+              cv.customer_identifier_id AS "customerIdentifierId",
+              cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
               cv.post_id AS "postId",
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
-              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
-              cu.avatar_url AS "customerAvatarUrl",
+              cu.ref_id AS "customerRefId",
+              COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
+              COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               cu.metadata AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
@@ -241,6 +252,7 @@ export class ConversationRepository extends BaseRepository {
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
+         ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
          LEFT JOIN enterprise_employees ae ON ae.id = cv.assigned_to_employee_id
                                         AND ae.enterprise_id = cv.enterprise_id
                                         AND ae.is_deleted = false
@@ -354,15 +366,18 @@ export class ConversationRepository extends BaseRepository {
 
     return this.query<ConversationRow>(
       `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
-              cv.customer_id AS "customerId", cv.platform,
+              cv.customer_id AS "customerId",
+              cv.customer_identifier_id AS "customerIdentifierId",
+              cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
               cv.post_id AS "postId",
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
-              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
-              cu.avatar_url AS "customerAvatarUrl",
+              cu.ref_id AS "customerRefId",
+              COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
+              COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               cu.metadata AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
@@ -376,6 +391,7 @@ export class ConversationRepository extends BaseRepository {
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
+         ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
          LEFT JOIN enterprise_employees ae ON ae.id = cv.assigned_to_employee_id
                                         AND ae.enterprise_id = cv.enterprise_id
                                         AND ae.is_deleted = false
@@ -560,20 +576,24 @@ export class ConversationRepository extends BaseRepository {
   async findById(enterpriseId: number, id: number): Promise<ConversationRow | null> {
     const rows = await this.query<ConversationRow>(
       `SELECT cv.id, cv.ref_id AS "refId", cv.channel_id AS "channelId",
-              cv.customer_id AS "customerId", cv.platform,
+              cv.customer_id AS "customerId",
+              cv.customer_identifier_id AS "customerIdentifierId",
+              cv.platform,
               cv.conversation_kind AS "conversationKind",
               cv.platform_thread_id AS "platformThreadId", cv.status, cv.subject,
               cv.post_id AS "postId",
               cv.context_metadata AS "contextMetadata",
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
-              cu.ref_id AS "customerRefId", cu.display_name AS "customerDisplayName",
-              cu.avatar_url AS "customerAvatarUrl",
+              cu.ref_id AS "customerRefId",
+              COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
+              COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               cu.metadata AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId"
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
+         ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
         WHERE cv.enterprise_id = $1 AND cv.id = $2 AND cv.is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), id],

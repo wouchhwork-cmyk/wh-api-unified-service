@@ -715,6 +715,12 @@ export class InboxService {
       await this.customers.applyPlatformProfile({
         enterpriseId,
         customerId: conversation.customerId,
+        /* Whose view of them this is. The same person on Facebook has a
+         * different name and a different picture, and both are theirs. */
+        platform: conversation.platform,
+        /* This thread knows exactly which account it is with, so the profile
+         * does not have to be guessed at from the customer. */
+        customerIdentifierId: conversation.customerIdentifierId,
         displayName: null,
         firstName: null,
         lastName: null,

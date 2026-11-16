@@ -3,7 +3,12 @@ import type { DataSource } from 'typeorm';
 import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.repository';
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import { MediaAnalysisStatus, MediaKind } from '@/shared/enums';
-import { createTestDataSource, seedEnterprise, truncateTenantData } from './db.harness';
+import {
+  createTestDataSource,
+  returningRows,
+  seedEnterprise,
+  truncateTenantData,
+} from './db.harness';
 
 /**
  * The media-analysis ledger, against real Postgres.
@@ -299,5 +304,130 @@ describe('the media analysis ledger', () => {
       await settings.put('never_written', { a: 1 }, null);
       expect((await settings.find('never_written'))?.value).toEqual({ a: 1 });
     });
+  });
+});
+
+/**
+ * Media that nobody ever queued.
+ *
+ * Analysis is queued as a message is stored, which covers everything
+ * arriving now — but anything that entered before the feature existed has no
+ * ledger row at all. And media with no row is media the assistant cannot see
+ * is missing, so it answers straight past the photo as though the message
+ * carried none.
+ */
+describe('adopting media that was never queued', () => {
+  let db: DataSource;
+  let analyses: MediaAnalysisRepository;
+  let enterpriseId: number;
+
+  beforeAll(async () => {
+    db = await createTestDataSource();
+    analyses = new MediaAnalysisRepository(db);
+  });
+
+  afterAll(async () => {
+    await db.destroy();
+  });
+
+  beforeEach(async () => {
+    await truncateTenantData(db);
+    await db.query(`DELETE FROM media_analyses`);
+    enterpriseId = await seedEnterprise(db, 'Backlog Co', 'backlog-co');
+    conversationId = await seedConversation();
+  });
+
+  let conversationId: number;
+
+  /** A thread for the orphans to hang off, since messages require one. */
+  async function seedConversation(): Promise<number> {
+    const connection = returningRows<{ id: string }>(
+      await db.query(
+        `INSERT INTO provider_connections
+           (enterprise_id, provider, provider_category, provider_user_id, access_token)
+         VALUES ($1,'meta','social',$2,'envelope') RETURNING id`,
+        [enterpriseId, `u-${Date.now()}-${Math.random()}`],
+      ),
+    )[0];
+    const channel = returningRows<{ id: string }>(
+      await db.query(
+        `INSERT INTO channels
+           (provider_connection_id, enterprise_id, platform, channel_kind, platform_channel_id)
+         VALUES ($1,$2,'instagram','instagram_business',$3) RETURNING id`,
+        [connection?.id, enterpriseId, `c-${Date.now()}-${Math.random()}`],
+      ),
+    )[0];
+    const customer = returningRows<{ id: string }>(
+      await db.query(
+        `INSERT INTO customers (enterprise_id, display_name, first_source)
+         VALUES ($1,'Someone','instagram_dm') RETURNING id`,
+        [enterpriseId],
+      ),
+    )[0];
+    const conversation = returningRows<{ id: string }>(
+      await db.query(
+        `INSERT INTO conversations
+           (enterprise_id, channel_id, customer_id, platform, conversation_kind, platform_thread_id)
+         VALUES ($1,$2,$3,'instagram','direct_message',$4) RETURNING id`,
+        [enterpriseId, channel?.id, customer?.id, `dm:${Date.now()}:${Math.random()}`],
+      ),
+    )[0];
+    return Number(conversation?.id);
+  }
+
+  /** An attachment with no analysis row, as the old world left them. */
+  async function orphan(mediaKey: string, at = 'now()'): Promise<number> {
+    const message = returningRows<{ id: string }>(
+      await db.query(
+        `INSERT INTO messages (enterprise_id, conversation_id, direction, message_kind, has_attachments)
+         VALUES ($1, $2, 'inbound', 'image', true) RETURNING id`,
+        [enterpriseId, conversationId],
+      ),
+    )[0];
+    await db.query(
+      `INSERT INTO message_attachments
+         (enterprise_id, message_id, media_kind, media_key, metadata, created_at)
+       VALUES ($1,$2,'image',$3,'{"mimeType":"image/jpeg"}'::jsonb, ${at})`,
+      [enterpriseId, message?.id, mediaKey],
+    );
+    return Number(message?.id);
+  }
+
+  it('finds what is missing on one message', async () => {
+    const messageId = await orphan('asset:lonely');
+
+    const missing = await analyses.unanalysedFor(enterpriseId, messageId);
+    expect(missing).toEqual([
+      { mediaKey: 'asset:lonely', mediaKind: 'image', mimeType: 'image/jpeg' },
+    ]);
+  });
+
+  it('finds nothing once it has been queued', async () => {
+    const messageId = await orphan('asset:lonely');
+    await analyses.enqueueMany(enterpriseId, [
+      { mediaKey: 'asset:lonely', mediaKind: MediaKind.Image, mimeType: 'image/jpeg' },
+    ]);
+
+    await expect(analyses.unanalysedFor(enterpriseId, messageId)).resolves.toEqual([]);
+  });
+
+  it('adopts the backlog oldest first', async () => {
+    await orphan('asset:newer', `now() - interval '1 day'`);
+    await orphan('asset:older', `now() - interval '30 days'`);
+
+    await expect(analyses.enqueueNeverQueued(1)).resolves.toBe(1);
+    const rows = await db.query<{ media_key: string }[]>(`SELECT media_key FROM media_analyses`);
+    expect(rows.map((row) => row.media_key)).toEqual(['asset:older']);
+  });
+
+  it('adopts one row per piece of media however many attachments carry it', async () => {
+    await orphan('asset:shared');
+    await orphan('asset:shared');
+
+    await expect(analyses.enqueueNeverQueued(50)).resolves.toBe(1);
+  });
+
+  it('adopts nothing when there is nothing left behind', async () => {
+    await expect(analyses.enqueueNeverQueued(50)).resolves.toBe(0);
   });
 });

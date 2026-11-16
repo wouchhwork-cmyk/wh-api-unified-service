@@ -631,6 +631,17 @@ export const MEDIA_DOWNLOAD_TIMEOUT_MS = 15_000;
 export const MEDIA_ANALYSIS_BATCH_SIZE = 5;
 
 /**
+ * How much of the never-queued backlog is adopted per idle tick.
+ *
+ * SMALL ON PURPOSE. The backlog is years of media whose links have mostly
+ * expired, and adopting it faster buys nothing: each row fails once,
+ * permanently, and settles. What a large batch would buy is a burst of
+ * pointless downloads competing with the replies somebody is waiting for.
+ * Only ever run when the live queue is empty.
+ */
+export const MEDIA_ANALYSIS_BACKLOG_BATCH = 20;
+
+/**
  * The lease an analyser holds. Comfortably longer than a download plus a model
  * call, so a slow one is not reclaimed underneath itself.
  */

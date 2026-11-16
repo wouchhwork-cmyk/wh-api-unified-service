@@ -5,7 +5,11 @@ import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.
 import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import { AutoReplyService } from '@/modules/inbox/auto-reply.service';
 import { GeminiClient } from '@/modules/ai/gemini.client';
-import { MEDIA_ANALYSIS_BATCH_SIZE, MEDIA_ANALYSIS_LEASE_SECONDS } from '@/shared/constants';
+import {
+  MEDIA_ANALYSIS_BACKLOG_BATCH,
+  MEDIA_ANALYSIS_BATCH_SIZE,
+  MEDIA_ANALYSIS_LEASE_SECONDS,
+} from '@/shared/constants';
 import { BasePoller } from './base-poller';
 
 /**
@@ -52,7 +56,28 @@ export class MediaAnalysisWorker extends BasePoller {
       MEDIA_ANALYSIS_BATCH_SIZE,
       MEDIA_ANALYSIS_LEASE_SECONDS,
     );
-    if (claimed.length === 0) return 0;
+
+    /*
+     * NOTHING TO DO MEANS TIME TO ADOPT THE BACKLOG.
+     *
+     * Media stored before descriptions existed has no ledger row at all, and
+     * media the assistant cannot see is media it does not wait for — so a
+     * photo from last September is answered straight past. Adopting it here
+     * rather than on a timer of its own means it can never compete with the
+     * reply somebody is waiting for: this runs only on a tick that found no
+     * live work, and the rows it adds are picked up by the next one.
+     *
+     * Returning 0 regardless keeps the poller on its idle interval. A sweep
+     * that reported work would hold the loop at the fast interval for as
+     * long as the backlog lasted, which is the opposite of the intent.
+     */
+    if (claimed.length === 0) {
+      const adopted = await this.analyses.enqueueNeverQueued(MEDIA_ANALYSIS_BACKLOG_BATCH);
+      if (adopted > 0) {
+        this.logger.info({ adopted }, 'adopted media that had never been queued');
+      }
+      return 0;
+    }
 
     for (const item of claimed) {
       /*

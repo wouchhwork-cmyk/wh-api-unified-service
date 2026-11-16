@@ -3,6 +3,7 @@ import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { PostRepository } from '@/database/repositories/post.repository';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
+import { AuditModule } from '@/modules/audit';
 import { CatalogueController } from './catalogue.controller';
 import { CatalogueService } from './catalogue.service';
 
@@ -11,6 +12,7 @@ import { CatalogueService } from './catalogue.service';
  * methods with nothing to call them.
  */
 @Module({
+  imports: [AuditModule],
   controllers: [CatalogueController],
   providers: [
     CatalogueService,

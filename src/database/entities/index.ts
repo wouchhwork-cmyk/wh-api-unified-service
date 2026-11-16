@@ -25,6 +25,7 @@ import { EmployeeRole } from './employee-role.entity';
 import { ProviderApiUsage } from './provider-api-usage.entity';
 import { MediaAnalysis } from './media-analysis.entity';
 import { AssistantReply } from './assistant-reply.entity';
+import { CustomerPlatformProfile } from './customer-platform-profile.entity';
 import { ModelCall } from './model-call.entity';
 import { MessageAttachment } from './message-attachment.entity';
 import { PlatformSetting } from './platform-setting.entity';
@@ -114,6 +115,7 @@ export const ENTITIES = [
   ProviderApiUsage,
   MediaAnalysis,
   AssistantReply,
+  CustomerPlatformProfile,
   ModelCall,
   MessageAttachment,
   Message,

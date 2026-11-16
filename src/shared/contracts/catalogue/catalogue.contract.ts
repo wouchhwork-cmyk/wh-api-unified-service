@@ -66,5 +66,49 @@ export const CustomerSummarySchema = z.object({
   isBlocked: z.boolean(),
 });
 
+/**
+ * The name THIS BUSINESS gives somebody, which outranks the platform's.
+ *
+ * EVERY FIELD IS NULLABLE AND MEANS SOMETHING WHEN NULL. Clearing a name is
+ * not the same as leaving it alone: it hands the customer back to whatever
+ * Instagram calls them, which is exactly what somebody who typed a name by
+ * mistake wants. So null is "use the platform's" and absent is "do not
+ * touch", and the two are kept apart rather than collapsed.
+ *
+ * Trimmed, and an empty string is read as null: a name of spaces would
+ * otherwise outrank the platform's and show as a blank row forever.
+ */
+export const CustomerIdentityUpdateSchema = z
+  .object({
+    displayName: z
+      .string()
+      .trim()
+      .max(255)
+      .transform((value) => (value.length === 0 ? null : value))
+      .nullable()
+      .optional(),
+    firstName: z
+      .string()
+      .trim()
+      .max(100)
+      .transform((value) => (value.length === 0 ? null : value))
+      .nullable()
+      .optional(),
+    lastName: z
+      .string()
+      .trim()
+      .max(100)
+      .transform((value) => (value.length === 0 ? null : value))
+      .nullable()
+      .optional(),
+  })
+  .strict()
+  /* A request that changes nothing is a mistake worth naming rather than a
+   * no-op worth auditing. */
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'nothing to change',
+  });
+
+export type CustomerIdentityUpdate = z.infer<typeof CustomerIdentityUpdateSchema>;
 export type PostFeedQuery = z.infer<typeof PostFeedQuerySchema>;
 export type CustomerDirectoryQuery = z.infer<typeof CustomerDirectoryQuerySchema>;

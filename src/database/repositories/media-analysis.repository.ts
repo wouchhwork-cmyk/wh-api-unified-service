@@ -261,4 +261,87 @@ export class MediaAnalysisRepository extends QueueLedgerRepository {
       totalTokens: Number(rows[0]?.tokens ?? 0),
     };
   }
+  /**
+   * Media on one message that has never been queued for description.
+   *
+   * THE HOLE THIS CLOSES. Analysis is queued by the projector as a message
+   * is stored, which covers everything arriving now — but anything that
+   * entered this database before the feature existed, or through any path
+   * that stores an attachment without queueing it, has no ledger row at all.
+   * And no ledger row means `assistantContextFor` cannot see it: the hold
+   * that makes the assistant wait for a photo counts only rows that are
+   * queued and unfinished, so media nobody queued is answered straight past
+   * as though the message carried none.
+   *
+   * Scoped to ONE MESSAGE rather than sweeping the table. The assistant
+   * closes the gap for the conversation it is about to answer, which is
+   * bounded, timely and spends nothing on media nobody is asking about.
+   */
+  async unanalysedFor(enterpriseId: number, messageId: number): Promise<AnalysisSeed[]> {
+    return this.query<AnalysisSeed>(
+      `SELECT DISTINCT a.media_key AS "mediaKey",
+              a.media_kind AS "mediaKind",
+              a.metadata->>'mimeType' AS "mimeType"
+         FROM message_attachments a
+        WHERE a.enterprise_id = $1
+          AND a.message_id = $2
+          AND a.media_key IS NOT NULL
+          AND a.is_deleted = false
+          AND NOT EXISTS (
+            SELECT 1 FROM media_analyses ma
+             WHERE ma.enterprise_id = a.enterprise_id
+               AND ma.media_key = a.media_key
+          )`,
+      [this.requireEnterprise(enterpriseId), messageId],
+    );
+  }
+  /**
+   * Queues media that has never been queued, anywhere on the platform.
+   *
+   * THE BACKLOG, as opposed to the gap on one message. Everything arriving
+   * now is queued by the projector, but anything stored before descriptions
+   * existed has no ledger row and never will — a photo somebody sent in
+   * September that the assistant will answer straight past, because media it
+   * cannot see is media it does not wait for.
+   *
+   * ONE STATEMENT, NOT A READ THEN A WRITE. The set to insert is computed
+   * inside the INSERT, so two workers running this at once cannot both
+   * decide the same media is missing; the unique index settles it and the
+   * loser inserts nothing.
+   *
+   * BOUNDED, AND RUN ONLY WHEN THE QUEUE IS EMPTY. A sweep that competed
+   * with live work would delay the reply somebody is waiting for in order to
+   * describe a photo from last year. Oldest first, so the backlog drains in
+   * the order it accumulated rather than by whatever the planner fancies.
+   *
+   * Expired links are expected and fine: they fail once, permanently, and
+   * settle as unavailable — which is the honest record of a photo nobody can
+   * recover, and stops the assistant waiting for it ever again.
+   */
+  async enqueueNeverQueued(limit: number): Promise<number> {
+    const { rows } = await this.mutate<{ id: string }>(
+      `INSERT INTO media_analyses (enterprise_id, media_key, media_kind, mime_type)
+       SELECT a.enterprise_id, a.media_key, a.media_kind, a.metadata->>'mimeType'
+         FROM (
+           SELECT DISTINCT ON (att.enterprise_id, att.media_key)
+                  att.enterprise_id, att.media_key, att.media_kind, att.metadata,
+                  att.created_at
+             FROM message_attachments att
+            WHERE att.media_key IS NOT NULL
+              AND att.is_deleted = false
+              AND NOT EXISTS (
+                SELECT 1 FROM media_analyses ma
+                 WHERE ma.enterprise_id = att.enterprise_id
+                   AND ma.media_key = att.media_key
+              )
+            ORDER BY att.enterprise_id, att.media_key, att.created_at
+         ) a
+        ORDER BY a.created_at
+        LIMIT $1
+       ON CONFLICT (enterprise_id, media_key) DO NOTHING
+       RETURNING id`,
+      [Math.max(1, Math.trunc(limit))],
+    );
+    return rows.length;
+  }
 }

@@ -1,3 +1,4 @@
+import { Platform } from './connection.enum';
 /** schema.md §17 — every way a customer can be recognised or reached. */
 export enum IdentifierKind {
   Email = 'email',
@@ -21,6 +22,24 @@ export enum IdentifierKind {
 export const HANDLE_IDENTIFIER_KINDS: readonly IdentifierKind[] = [
   IdentifierKind.InstagramUsername,
 ] as const;
+
+/**
+ * Which identifier IS an account on each platform, best first.
+ *
+ * THE STABLE ONE LEADS. An Instagram account is two rows here — the scoped
+ * user id and the handle — and only the id survives somebody renaming
+ * themselves. A profile filed under an old handle is a profile nobody finds
+ * again, so the handle is the fallback and never the preference. It is here
+ * at all because a customer first seen through a comment may have no user id
+ * recorded.
+ */
+export const ACCOUNT_IDENTIFIER_KINDS_BY_PLATFORM: Partial<
+  Record<Platform, readonly IdentifierKind[]>
+> = {
+  [Platform.Instagram]: [IdentifierKind.InstagramUserId, IdentifierKind.InstagramUsername],
+  [Platform.Facebook]: [IdentifierKind.FacebookUserId],
+  [Platform.WhatsApp]: [IdentifierKind.WhatsAppNumber],
+};
 
 /** The kinds stored as a decomposed phone number (schema.md phone storage). */
 export const PHONE_IDENTIFIER_KINDS: readonly IdentifierKind[] = [

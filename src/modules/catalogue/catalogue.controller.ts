@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
@@ -6,6 +6,7 @@ import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import type { ScopedActorContext } from '@/shared/context';
 import {
   CustomerDirectoryQuerySchema,
+  CustomerIdentityUpdateSchema,
   PostFeedQuerySchema,
 } from '@/shared/contracts/catalogue/catalogue.contract';
 import type { CustomerDirectoryRow } from '@/database/repositories/customer.repository';
@@ -13,6 +14,7 @@ import type { PostFeedRow } from '@/database/repositories/post.repository';
 import { isExpiredMediaUrl, mediaUrlExpiresAt } from '@/modules/inbox/attachment-normalizer';
 import { CatalogueService } from './catalogue.service';
 import { DEFAULT_PAGE_SIZE } from '@/shared/constants';
+import { RefIdParamSchema } from '@/shared/contracts/params.contract';
 
 /**
  * Reads over what a connected account produced.
@@ -80,6 +82,27 @@ export class CatalogueController {
       nextCursor: result.nextCursor,
       hasMore: result.hasMore,
     });
+  }
+  @Patch('customers/:refId')
+  @RequirePermission(Permission.CustomersManage)
+  @ApiOperation({
+    summary: 'Set the name this business gives a customer',
+    description:
+      'What is stored here OUTRANKS the name the platform supplies, permanently: a profile ' +
+      'refresh can never overwrite it. Sending null for a field hands that field back to the ' +
+      'platform, which is what somebody who typed a name by mistake wants; leaving a field out ' +
+      'leaves it alone. The two are deliberately different.',
+  })
+  async updateCustomer(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.catalogue.setCustomerIdentity(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      CustomerIdentityUpdateSchema.parse(body),
+    );
   }
 }
 

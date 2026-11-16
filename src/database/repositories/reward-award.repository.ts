@@ -7,6 +7,7 @@ import {
   type RewardWalletKind,
 } from '@/shared/enums';
 import { BaseRepository } from './base.repository';
+import { platformIdentityJoin } from './customer-identity.sql';
 
 export interface RewardAwardRow {
   readonly id: number;
@@ -177,7 +178,7 @@ export class RewardAwardRepository extends BaseRepository {
     return this.query<RewardBeneficiaryRow>(
       `SELECT a.customer_id                                                  AS "customerId",
               c.ref_id                                                       AS "customerRefId",
-              c.display_name                                                 AS "displayName",
+              COALESCE(c.display_name, ccp.display_name)                     AS "displayName",
               MAX(a.occurred_at_utc)                                         AS "lastAwardedAt",
               count(*) FILTER (WHERE a.status = $5)::int AS "granted",
               count(*) FILTER (WHERE a.status = $6)::int AS "held",
@@ -186,11 +187,12 @@ export class RewardAwardRepository extends BaseRepository {
          JOIN customers c
            ON c.id = a.customer_id
           AND c.enterprise_id = a.enterprise_id
+         ${platformIdentityJoin({ customer: 'c', as: 'ccp' })}
         WHERE a.enterprise_id = $1
           AND a.program_id = $2
           AND a.is_deleted = false
           AND a.status = ANY($4::varchar[])
-        GROUP BY a.customer_id, c.ref_id, c.display_name
+        GROUP BY a.customer_id, c.ref_id, c.display_name, ccp.display_name
         ${having}
         ORDER BY MAX(a.occurred_at_utc) DESC, a.customer_id DESC
         LIMIT $3`,

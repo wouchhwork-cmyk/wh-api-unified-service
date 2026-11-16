@@ -245,6 +245,46 @@ export class MediaAnalysisService {
     };
   }
 
+  /**
+   * Queues anything on this message that has never been queued.
+   *
+   * SELF-HEALING, AND DELIBERATELY NARROW. The projector queues media as a
+   * message is stored, which covers everything arriving now — but media that
+   * entered before the feature existed, or through any path that stored an
+   * attachment without queueing it, has no ledger row. The assistant cannot
+   * see that media is missing a description, so it answers straight past the
+   * photo as though the message carried none.
+   *
+   * Called by the reply path for the one conversation it is about to answer:
+   * bounded, timely, and spending nothing on media nobody is asking about. A
+   * sweep of the whole table would describe years of expired links at a cost
+   * nobody chose.
+   *
+   * NEVER THROWS, like `queue` itself. A description is worth having and
+   * never worth losing the reply over.
+   */
+  async queueMissingFor(enterpriseId: number, messageId: number): Promise<number> {
+    try {
+      const missing = await this.analyses.unanalysedFor(enterpriseId, messageId);
+      if (missing.length === 0) return 0;
+
+      const queued = await this.queue(enterpriseId, missing);
+      if (queued > 0) {
+        this.logger.info(
+          { enterpriseId, messageId, queued },
+          'queued media that had never been described',
+        );
+      }
+      return queued;
+    } catch (error) {
+      this.logger.warn(
+        { err: error, enterpriseId, messageId },
+        'could not queue media that had never been described',
+      );
+      return 0;
+    }
+  }
+
   /** The descriptions for a set of media, for rendering a thread. */
   async resultsFor(enterpriseId: number, keys: readonly string[]): Promise<AnalysisResultRow[]> {
     return this.analyses.findByKeys(enterpriseId, keys);

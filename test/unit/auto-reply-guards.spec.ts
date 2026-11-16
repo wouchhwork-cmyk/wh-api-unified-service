@@ -6,6 +6,7 @@ import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import type { MessageRepository } from '@/database/repositories/message.repository';
 import type { AuditService } from '@/modules/audit/audit.service';
+import type { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import type { AssistantReplyRepository } from '@/database/repositories/assistant-reply.repository';
 import type { PinoLogger } from 'nestjs-pino';
 import { AuditStatus, ConversationStatus } from '@/shared/enums';
@@ -98,12 +99,15 @@ function serviceWith(over: {
     wake: vi.fn().mockResolvedValue(1),
   };
 
+  const queueMissingFor = vi.fn().mockResolvedValue(0);
+
   const service = new AutoReplyService(
     chat,
     { draftReplyForAutomation } as unknown as ChatbotService,
     { replyAsAssistant } as unknown as InboxService,
     enterprises,
     messages,
+    { queueMissingFor } as unknown as MediaAnalysisService,
     ledger as unknown as AssistantReplyRepository,
     { record } as unknown as AuditService,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
@@ -114,6 +118,7 @@ function serviceWith(over: {
     replyAsAssistant,
     record,
     assistantContextFor,
+    queueMissingFor,
     ledger,
     /** One claimed obligation, as the worker hands it over. */
     claim: {
@@ -524,5 +529,57 @@ describe('automatic reply: what it writes down for next time', () => {
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
     expect(sent.assistant).not.toHaveProperty('summary');
+  });
+});
+
+/**
+ * A photo nobody queued used to be answered straight past.
+ *
+ * The hold counts media that is queued and unfinished; media with no ledger
+ * row at all was invisible to it. So anything stored before descriptions
+ * existed — or by any path that forgot to queue — looked like a message
+ * carrying no media, and the assistant replied as though it had seen
+ * nothing.
+ */
+describe('automatic reply: media nobody ever queued', () => {
+  it('queues what is missing before deciding whether to wait', async () => {
+    const { service, queueMissingFor, claim } = serviceWith({});
+    await service.attempt(claim, 'worker-a');
+
+    expect(queueMissingFor).toHaveBeenCalledWith(1, 100);
+  });
+
+  it('queues it before reading the context, not after', async () => {
+    /* The order is the whole point: reading first would see no pending
+     * media and answer past the photo. */
+    const calls: string[] = [];
+    const { service, queueMissingFor, assistantContextFor, claim } = serviceWith({});
+    queueMissingFor.mockImplementation(() => {
+      calls.push('queue');
+      return Promise.resolve(1);
+    });
+    assistantContextFor.mockImplementation(() => {
+      calls.push('context');
+      return Promise.resolve({
+        conversationId: 7,
+        conversationRefId: 'conv-ref',
+        status: ConversationStatus.Open,
+        messagesSince: 0,
+        pendingMedia: 0,
+      });
+    });
+
+    await service.attempt(claim, 'worker-a');
+    expect(calls[0]).toBe('queue');
+    expect(calls[1]).toBe('context');
+  });
+
+  it('answers anyway when the queue attempt fails', async () => {
+    /* A description is worth having and never worth losing the reply over. */
+    const { service, replyAsAssistant, queueMissingFor, claim } = serviceWith({});
+    queueMissingFor.mockResolvedValueOnce(0);
+
+    await service.attempt(claim, 'worker-a');
+    expect(replyAsAssistant).toHaveBeenCalled();
   });
 });

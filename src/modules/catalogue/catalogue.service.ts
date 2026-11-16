@@ -1,3 +1,5 @@
+import { AuditService } from '@/modules/audit/audit.service';
+import { AuditAction, AuditEntityType, AuditStatus } from '@/shared/enums';
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
@@ -6,6 +8,7 @@ import { SyncJobKind, SyncTriggerKind } from '@/shared/enums';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import {
   CustomerRepository,
+  type OwnIdentity,
   type CustomerDirectoryRow,
 } from '@/database/repositories/customer.repository';
 import { PostRepository, type PostFeedRow } from '@/database/repositories/post.repository';
@@ -33,6 +36,7 @@ export class CatalogueService {
   constructor(
     private readonly posts: PostRepository,
     private readonly customers: CustomerRepository,
+    private readonly audit: AuditService,
     private readonly channels: ChannelRepository,
     private readonly syncJobs: SyncJobRepository,
     @InjectPinoLogger(CatalogueService.name) private readonly logger: PinoLogger,
@@ -143,6 +147,51 @@ export class CatalogueService {
     });
 
     return page(rows, limit, (row) => encodeKeysetCursor(row.lastSeenAt, row.id));
+  }
+  /**
+   * Sets the name this business gives somebody.
+   *
+   * THE HALF THAT WINS. A customer's name resolves ours-then-the-platform's,
+   * and this is the only thing that writes ours — without it the fallback
+   * was the whole of the answer and "a name typed here outranks Instagram"
+   * described nothing.
+   *
+   * AUDITED WITH WHAT ACTUALLY CHANGED, from the row rather than from the
+   * request: a request asking for the name it already holds changes nothing,
+   * and a trail that recorded the ask would claim an edit that never
+   * happened. Clearing a name is recorded as what it is — handing the
+   * customer back to whatever the platform calls them — because somebody
+   * reading this later needs to know the blank was chosen.
+   */
+  async setCustomerIdentity(
+    enterpriseId: number,
+    refId: string,
+    input: {
+      displayName?: string | null | undefined;
+      firstName?: string | null | undefined;
+      lastName?: string | null | undefined;
+    },
+  ): Promise<OwnIdentity> {
+    const changed = await this.customers.setOwnIdentity(enterpriseId, refId, input);
+    if (!changed) throw new AppException(ErrorCode.CustomerNotFound);
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Customer,
+      entityId: changed.id,
+      enterpriseId,
+      status: AuditStatus.Success,
+      metadata: {
+        /* The name is the point of the change, so it is the one thing worth
+         * recording — and it is a name somebody at this business chose, not
+         * a contact detail. */
+        before: changed.before,
+        after: changed.after,
+        clearedToPlatform: changed.after.displayName === null,
+      },
+    });
+
+    return changed.after;
   }
 }
 

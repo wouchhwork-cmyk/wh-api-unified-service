@@ -663,6 +663,11 @@ export class BackfillWorker extends BasePoller {
       const applied = await this.customers.applyPlatformProfile({
         enterpriseId: job.enterpriseId,
         customerId,
+        /* This walk reads Instagram, so this is Instagram's view of them. */
+        platform: Platform.Instagram,
+        /* A walk knows a scoped id, not a row — the repository resolves the
+         * account from the customer and the platform. */
+        customerIdentifierId: null,
         displayName: profile.name ?? profile.username ?? null,
         firstName: null,
         lastName: null,

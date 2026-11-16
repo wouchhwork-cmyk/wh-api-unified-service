@@ -814,6 +814,23 @@ export async function applyPostTableObjects(
                    ON assistant_replies (enterprise_id, conversation_id, id DESC)';
       END IF;
 
+      IF to_regclass('public.customer_platform_profiles') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS customer_platform_profiles_customer_idx
+                   ON customer_platform_profiles (enterprise_id, customer_id, fetched_at DESC)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS customer_platform_profiles_name_trgm_idx
+                   ON customer_platform_profiles USING gin (display_name gin_trgm_ops)';
+        EXECUTE 'ALTER TABLE customer_platform_profiles
+                   DROP CONSTRAINT IF EXISTS customer_platform_profiles_identifier_fk';
+        EXECUTE 'ALTER TABLE customer_platform_profiles
+                   ADD CONSTRAINT customer_platform_profiles_identifier_fk
+                   FOREIGN KEY (customer_identifier_id) REFERENCES customer_identifiers (id)';
+        EXECUTE 'ALTER TABLE customer_platform_profiles
+                   DROP CONSTRAINT IF EXISTS customer_platform_profiles_enterprise_fk';
+        EXECUTE 'ALTER TABLE customer_platform_profiles
+                   ADD CONSTRAINT customer_platform_profiles_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+      END IF;
+
       IF to_regclass('public.model_calls') IS NOT NULL THEN
         EXECUTE 'ALTER TABLE model_calls
                    DROP CONSTRAINT IF EXISTS model_calls_enterprise_fk';
