@@ -32,8 +32,15 @@ function clientWith(
 ): { client: OpenAiClient; create: ReturnType<typeof vi.fn> } {
   const config = { openai: { ...OPENAI, ...overrides } } as unknown as AppConfigService;
   const client = new OpenAiClient(config);
-  // Seeded so the lazy `??=` never builds a real SDK: no network, no key check.
+  /*
+   * Seeded so no real SDK is ever built: no network, no key check. BOTH
+   * fields, because the client rebuilds when the key it cached differs from
+   * the key it is asked to use — a console can replace a key between two
+   * calls, and an SDK built around the old one would keep authenticating as
+   * a key somebody deliberately revoked.
+   */
   Reflect.set(client, 'client', { responses: { create } });
+  Reflect.set(client, 'clientKey', { ...OPENAI, ...overrides }.apiKey);
   return { client, create };
 }
 

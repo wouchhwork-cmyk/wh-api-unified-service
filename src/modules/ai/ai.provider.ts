@@ -61,6 +61,14 @@ export interface ChatRequest {
   readonly model?: string;
   /** Overrides the provider's configured ceiling for this one call. */
   readonly maxOutputTokens?: number;
+  /**
+   * The key to answer with, when it comes from somewhere other than the
+   * environment — a console, today.
+   *
+   * SECRET. It is never logged, never echoed into an error, and never put in
+   * a ledger row. The client uses it to build an SDK and nothing else.
+   */
+  readonly apiKey?: string;
 }
 
 /**

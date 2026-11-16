@@ -126,7 +126,7 @@ export class AutoReplyService {
     const context = await this.messages.assistantContextFor(enterpriseId, messageId);
     if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
 
-    if (!this.chat.enabledFor(settings.provider)) {
+    if (!(await this.chat.enabledFor(settings.provider))) {
       /*
        * A fault rather than a preference: somebody turned this on and expects
        * it to work. The customer still hears something, because from where

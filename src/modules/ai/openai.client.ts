@@ -37,6 +37,14 @@ export class OpenAiClient implements ChatProvider {
   readonly id: AiProviderId = AiProvider.OpenAi;
 
   private client: OpenAI | null = null;
+  /**
+   * Which key built the cached client.
+   *
+   * A console can change the key between two calls, and an SDK built around
+   * the old one would keep working until a restart — authenticating as a key
+   * somebody has deliberately replaced, possibly a revoked one.
+   */
+  private clientKey: string | null = null;
 
   constructor(private readonly config: AppConfigService) {}
 
@@ -57,16 +65,16 @@ export class OpenAiClient implements ChatProvider {
    * are worth repeating (429s, 5xx, connection errors) and honours
    * `retry-after`, which is better behaviour than a loop of ours would have.
    */
-  private sdk(): OpenAI {
-    if (!this.enabled) {
-      throw new ChatError(
-        ChatFailure.Disabled,
-        'openai is not configured in this environment',
-        false,
-      );
+  private sdk(override?: string): OpenAI {
+    const apiKey = override?.trim() || this.config.openai.apiKey;
+    if (apiKey.length === 0 || (!override && !this.enabled)) {
+      throw new ChatError(ChatFailure.Disabled, 'openai has no key to answer with', false);
     }
-    const { apiKey, timeoutMs, maxRetries } = this.config.openai;
-    this.client ??= new OpenAI({ apiKey, timeout: timeoutMs, maxRetries });
+    const { timeoutMs, maxRetries } = this.config.openai;
+    if (this.client === null || this.clientKey !== apiKey) {
+      this.client = new OpenAI({ apiKey, timeout: timeoutMs, maxRetries });
+      this.clientKey = apiKey;
+    }
     return this.client;
   }
 
@@ -78,7 +86,7 @@ export class OpenAiClient implements ChatProvider {
    * below are the hard stop, not the budget.
    */
   async chat(request: ChatRequest): Promise<ChatReply> {
-    const client = this.sdk();
+    const client = this.sdk(request.apiKey);
     const { model, maxOutputTokens, reasoningEffort, storeResponses } = this.config.openai;
     const turns = this.checked(request.turns);
     const chosenModel = request.model?.trim() || model;

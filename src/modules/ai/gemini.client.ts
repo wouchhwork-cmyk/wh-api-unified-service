@@ -52,6 +52,8 @@ export class GeminiClient implements ChatProvider {
   readonly id: AiProviderId = AiProvider.Gemini;
 
   private client: GoogleGenAI | null = null;
+  /** Which key built it — a console can replace the key between two calls. */
+  private clientKey: string | null = null;
 
   constructor(private readonly config: AppConfigService) {}
 
@@ -83,10 +85,20 @@ export class GeminiClient implements ChatProvider {
      * media IS this client's only job, so the version it needs is not an
      * optional extra.
      */
-    this.client ??= new GoogleGenAI({
-      apiKey: this.config.gemini.apiKey,
-      apiVersion: this.config.gemini.apiVersion,
-    });
+    return this.sdkWith(this.config.gemini.apiKey);
+  }
+
+  /**
+   * The SDK for a given key, rebuilt when the key changes.
+   *
+   * The media path passes the environment's; chat passes whatever the
+   * console holds, which may be an entirely different account.
+   */
+  private sdkWith(apiKey: string): GoogleGenAI {
+    if (this.client === null || this.clientKey !== apiKey) {
+      this.client = new GoogleGenAI({ apiKey, apiVersion: this.config.gemini.apiVersion });
+      this.clientKey = apiKey;
+    }
     return this.client;
   }
 
@@ -190,14 +202,11 @@ export class GeminiClient implements ChatProvider {
    * turn regardless, because nothing is stored on their side.
    */
   async chat(request: ChatRequest): Promise<ChatReply> {
-    if (!this.enabled) {
-      throw new ChatError(
-        ChatFailure.Disabled,
-        'gemini is not configured in this environment',
-        false,
-      );
+    const apiKey = request.apiKey?.trim() || this.config.gemini.apiKey;
+    if (apiKey.length === 0) {
+      throw new ChatError(ChatFailure.Disabled, 'gemini has no key to answer with', false);
     }
-    const ai = this.sdk();
+    const ai = this.sdkWith(apiKey);
     const { timeoutMs, storeInteractions, model } = this.config.gemini;
     const chosenModel = request.model?.trim() || model;
 

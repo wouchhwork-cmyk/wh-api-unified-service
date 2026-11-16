@@ -13,7 +13,7 @@ const VALID = {
   autoReply: false,
   fallbackMessage: 'Stepping away, back shortly.',
   mediaHoldMessage: 'Let me take a look at that…',
-  model: 'gpt-6-luna',
+  models: { openai: 'gpt-6-luna', gemini: 'gemini-3.5-flash-lite' },
   prompt: 'You are a helpful assistant replying inside a business tool. Be brief.',
 };
 
@@ -39,22 +39,28 @@ describe('chat settings contract', () => {
       autoReply: false,
       fallbackMessage: '  Stepping away.  ',
       mediaHoldMessage: 'Let me look.',
-      model: '  gpt-6-luna  ',
+      models: { openai: '  gpt-6-luna  ', gemini: 'gemini-3.5-flash-lite' },
       prompt: `  ${VALID.prompt}  `,
     });
-    expect(parsed.model).toBe('gpt-6-luna');
+    expect(parsed.models.openai).toBe('gpt-6-luna');
     expect(parsed.prompt).toBe(VALID.prompt);
   });
 
   it('takes any model id that looks like one, because the list is not ours to keep', () => {
     for (const model of ['gpt-6-luna', 'gpt-5.4-mini', 'gpt-6.1-terra', 'o4-mini']) {
-      expect(issuesFor({ model }), model).toEqual([]);
+      expect(
+        issuesFor({ models: { openai: model, gemini: 'gemini-3.5-flash-lite' } }),
+        model,
+      ).toEqual([]);
     }
   });
 
   it('refuses something that is not a model id at all', () => {
     for (const model of ['', '  ', 'a model', '../../etc/passwd', 'https://evil/x', '-leading']) {
-      expect(issuesFor({ model }), JSON.stringify(model)).toContain('model');
+      expect(
+        issuesFor({ models: { openai: model, gemini: 'gemini-3.5-flash-lite' } }),
+        JSON.stringify(model),
+      ).toContain('models.openai');
     }
   });
 
@@ -81,10 +87,10 @@ describe('chat settings contract', () => {
   });
 
   it('refuses a half-filled save, because the save is a full restatement', () => {
-    expect(UpdateChatSettingsSchema.safeParse({ model: 'gpt-6-luna' }).success).toBe(false);
+    expect(UpdateChatSettingsSchema.safeParse({ models: VALID.models }).success).toBe(false);
     expect(UpdateChatSettingsSchema.safeParse({ prompt: VALID.prompt }).success).toBe(false);
     expect(
-      UpdateChatSettingsSchema.safeParse({ provider: 'openai', model: 'gpt-6-luna' }).success,
+      UpdateChatSettingsSchema.safeParse({ provider: 'openai', models: VALID.models }).success,
     ).toBe(false);
     // The switch that sends real messages is never inferred from silence.
     const { autoReply: _omitted, ...withoutSwitch } = VALID;

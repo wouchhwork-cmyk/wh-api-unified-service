@@ -60,7 +60,9 @@ export class ModelRouter {
    */
   async chat(provider: AiProviderId, request: ChatRequest): Promise<ChatReply> {
     const client = this.clientFor(provider);
-    if (!client.enabled) {
+    /* A key on the request is a key: the console holds one the environment
+     * may never have had. */
+    if (!request.apiKey && !client.enabled) {
       throw new ChatError(
         ChatFailure.Disabled,
         `${provider} has no key in this environment`,

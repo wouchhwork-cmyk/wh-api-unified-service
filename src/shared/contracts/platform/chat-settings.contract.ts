@@ -9,6 +9,13 @@ import { AiProvider } from '@/modules/ai/ai.provider';
  * COSTS. Both behind a console rather than a release, because an instruction
  * is only ever right in the presence of real conversations.
  */
+const ModelId = z
+  .string()
+  .trim()
+  .min(1, 'a model is required')
+  .max(80)
+  .regex(/^[a-z0-9][a-z0-9.\-_]*$/i, 'that is not a model id');
+
 export const UpdateChatSettingsSchema = z.strictObject({
   /**
    * Which provider answers.
@@ -49,7 +56,7 @@ export const UpdateChatSettingsSchema = z.strictObject({
    */
   mediaHoldMessage: z.string().trim().max(500),
   /**
-   * The model id, UNCONSTRAINED BY AN ENUM on purpose.
+   * A model id, UNCONSTRAINED BY AN ENUM on purpose.
    *
    * OpenAI retires these on their own schedule — `gpt-5-nano` shuts down on
    * 11 December 2026 — so a fixed list here would be a second place to edit
@@ -57,12 +64,28 @@ export const UpdateChatSettingsSchema = z.strictObject({
    * by the only authority that counts: the next call either resolves it or
    * fails.
    */
-  model: z
-    .string()
-    .trim()
-    .min(1, 'a model is required')
-    .max(80)
-    .regex(/^[a-z0-9][a-z0-9.\-_]*$/i, 'that is not a model id'),
+  models: z.object({
+    openai: ModelId,
+    gemini: ModelId,
+  }),
+  /**
+   * A key per provider, OPTIONAL PER PROVIDER AND NEVER RETURNED.
+   *
+   * Three states, and they must stay distinct. ABSENT means "I am not
+   * talking about this key" — which is what a console sends on every save
+   * where nobody typed one, because the form cannot show the current value
+   * to put back. `null` means "remove it", falling back to the environment.
+   * A string sets a new one.
+   *
+   * Conflating absent with empty would wipe a working key on every unrelated
+   * save of the prompt.
+   */
+  apiKeys: z
+    .object({
+      openai: z.string().trim().min(1).max(200).nullable().optional(),
+      gemini: z.string().trim().min(1).max(200).nullable().optional(),
+    })
+    .optional(),
   /**
    * The standing instruction sent with every conversation.
    *

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { CryptoModule } from '@/shared/crypto';
 import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.repository';
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import { GeminiClient } from './gemini.client';
@@ -21,7 +22,8 @@ import { MediaAnalysisService } from './media-analysis.service';
  * separate switches, keys and bills, and neither is a fallback for the other.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([])],
+  /* CryptoModule: a console-held API key is stored encrypted, like a Meta token. */
+  imports: [TypeOrmModule.forFeature([]), CryptoModule],
   providers: [
     GeminiClient,
     OpenAiClient,

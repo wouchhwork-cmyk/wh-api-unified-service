@@ -3,6 +3,7 @@ import { ChatService } from '@/modules/ai/chat.service';
 import type { ModelRouter } from '@/modules/ai/model-router.service';
 import type { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import type { AppConfigService } from '@/config';
+import { TokenCipherService } from '@/shared/crypto';
 
 /**
  * What the assistant is told, and who is told it.
@@ -33,14 +34,19 @@ function serviceWith(stored: Record<string, unknown> | null, version = 3) {
     openai: { model: 'gpt-6-luna' },
     gemini: { model: 'gemini-3.5-flash-lite' },
   } as unknown as AppConfigService;
-  return { service: new ChatService(settings, router, config), chat };
+  /* The cipher is real: a test that fakes it proves nothing about a key
+   * being stored unreadable, which is the whole point of storing one here. */
+  const cipher = new TokenCipherService({
+    crypto: { activeKeyId: 'k1', keys: new Map([['k1', Buffer.alloc(32, 7)]]) },
+  } as unknown as AppConfigService);
+  return { service: new ChatService(settings, router, config, cipher), chat, cipher };
 }
 
 describe('chat settings', () => {
   it('takes the saved row over the environment', async () => {
     const { service } = serviceWith({
       provider: 'gemini',
-      model: 'gemini-3.5-flash',
+      models: { gemini: 'gemini-3.5-flash' },
       prompt: 'Be extremely brief.',
       fallbackMessage: 'Stepping away, back shortly.',
       mediaHoldMessage: 'Let me take a look at that…',
@@ -66,7 +72,7 @@ describe('chat settings', () => {
   });
 
   it('ignores a provider name nobody implements rather than routing to it', async () => {
-    const { service } = serviceWith({ provider: 'anthropic', model: 'claude' });
+    const { service } = serviceWith({ provider: 'anthropic', models: { openai: 'claude' } });
     await expect(service.currentSettings()).resolves.toMatchObject({ provider: 'openai' });
   });
 

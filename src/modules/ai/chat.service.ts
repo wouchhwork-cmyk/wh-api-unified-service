@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '@/config';
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import {
+  AI_PROVIDER_IDS,
   AiProvider,
   isAiProviderId,
   type AiProviderId,
@@ -9,12 +10,14 @@ import {
   type ChatTurn,
 } from './ai.provider';
 import { ModelRouter } from './model-router.service';
+import { TokenCipherService } from '@/shared/crypto';
 
 /** The platform setting that holds what we tell the model, and which model. */
 export const CHAT_SETTING_KEY = 'chat';
 
 export interface ChatSettings {
   readonly provider: AiProviderId;
+  /** The model for the chosen provider. A model id belongs to one vendor. */
   /** The platform's kill switch for automatic replies. Off unless stored true. */
   readonly autoReply: boolean;
   /** Sent to the customer when a reply cannot be produced. Empty = say nothing. */
@@ -81,15 +84,86 @@ export class ChatService {
     private readonly settings: PlatformSettingRepository,
     private readonly router: ModelRouter,
     private readonly config: AppConfigService,
+    private readonly cipher: TokenCipherService,
   ) {}
 
-  /** The providers this environment has a key for. An empty list is why a bot is silent. */
-  availableProviders(): readonly AiProviderId[] {
-    return this.router.available();
+  /**
+   * Which providers can actually answer — from the console's keys as well as
+   * the environment's.
+   *
+   * ASYNC NOW, because a stored key is a row rather than a constant. The
+   * caller that reports "no provider is configured" has to read the same
+   * places a call would, or it reports on the wrong one.
+   */
+  async availableProviders(): Promise<readonly AiProviderId[]> {
+    const keys = await this.storedKeys();
+    return AI_PROVIDER_IDS.filter((provider) => this.hasKey(provider, keys));
   }
 
-  enabledFor(provider: AiProviderId): boolean {
-    return this.router.clientFor(provider).enabled;
+  async enabledFor(provider: AiProviderId): Promise<boolean> {
+    return this.hasKey(provider, await this.storedKeys());
+  }
+
+  /**
+   * Where each provider's key comes from, for a console to report WITHOUT
+   * ever holding the key itself.
+   *
+   * The last four characters of a console-held key are included, and nothing
+   * more: enough to tell two keys apart when somebody is wondering which one
+   * is in there, useless to anybody who obtains it.
+   */
+  async keyStatus(): Promise<
+    Record<AiProviderId, { source: 'console' | 'environment' | 'none'; hint: string | null }>
+  > {
+    const keys = await this.storedKeys();
+    const status = {} as Record<
+      AiProviderId,
+      { source: 'console' | 'environment' | 'none'; hint: string | null }
+    >;
+    for (const provider of AI_PROVIDER_IDS) {
+      const stored = keys[provider];
+      if (stored) {
+        status[provider] = { source: 'console', hint: stored.slice(-4) };
+      } else if (this.environmentKey(provider).length > 0) {
+        status[provider] = { source: 'environment', hint: null };
+      } else {
+        status[provider] = { source: 'none', hint: null };
+      }
+    }
+    return status;
+  }
+
+  /**
+   * The stored keys, decrypted.
+   *
+   * A KEY THAT WILL NOT DECRYPT IS TREATED AS ABSENT rather than raised on.
+   * It means a lost or rotated master key, and the useful behaviour then is
+   * to fall back to the environment and let the console show that nothing is
+   * stored — not to take the assistant down for every business at once.
+   */
+  private async storedKeys(): Promise<Partial<Record<AiProviderId, string>>> {
+    const stored = await this.settings.find(CHAT_SETTING_KEY);
+    const envelopes = (stored?.value.apiKeys ?? {}) as Record<string, unknown>;
+    const keys: Partial<Record<AiProviderId, string>> = {};
+    for (const provider of AI_PROVIDER_IDS) {
+      const envelope = envelopes[provider];
+      if (typeof envelope !== 'string' || envelope.length === 0) continue;
+      try {
+        const plain = this.cipher.decrypt(envelope).trim();
+        if (plain.length > 0) keys[provider] = plain;
+      } catch {
+        /* Unreadable: the environment answers instead. */
+      }
+    }
+    return keys;
+  }
+
+  private hasKey(provider: AiProviderId, keys: Partial<Record<AiProviderId, string>>): boolean {
+    return (keys[provider] ?? '').length > 0 || this.environmentKey(provider).length > 0;
+  }
+
+  private environmentKey(provider: AiProviderId): string {
+    return provider === AiProvider.Gemini ? this.config.gemini.apiKey : this.config.openai.apiKey;
   }
 
   /**
@@ -102,7 +176,7 @@ export class ChatService {
    */
   async currentSettings(): Promise<ChatSettings> {
     const stored = await this.settings.find(CHAT_SETTING_KEY);
-    const model = typeof stored?.value.model === 'string' ? stored.value.model.trim() : '';
+    const models = (stored?.value.models ?? {}) as Record<string, unknown>;
     const prompt = typeof stored?.value.prompt === 'string' ? stored.value.prompt.trim() : '';
     const provider = stored?.value.provider;
 
@@ -134,7 +208,7 @@ export class ChatService {
        * outside the provider that serves it — "gpt-6-luna" is not a thing
        * Google will answer to.
        */
-      model: model.length > 0 ? model : this.defaultModelFor(chosen),
+      model: this.modelFrom(chosen, models),
       prompt: prompt.length > 0 ? prompt : FALLBACK_PROMPT,
       version: stored?.version ?? 0,
     };
@@ -150,8 +224,12 @@ export class ChatService {
    */
   async reply(turns: readonly ChatTurn[], instructions?: string): Promise<ChatAnswer> {
     const settings = await this.currentSettings();
+    const apiKey = (await this.storedKeys())[settings.provider];
     const reply = await this.router.chat(settings.provider, {
       turns,
+      /* Only when the console holds one; otherwise the client uses its own
+       * environment key, which is the ordinary case. */
+      ...(apiKey ? { apiKey } : {}),
       /*
        * A caller may add to the standing instruction but never replace it:
        * the saved prompt carries the rules about not inventing facts and not
@@ -164,7 +242,22 @@ export class ChatService {
     return { ...reply, promptVersion: settings.version };
   }
 
-  private defaultModelFor(provider: AiProviderId): string {
+  /**
+   * The model for a provider, from its own slot.
+   *
+   * PER PROVIDER, because an id belongs to a vendor: switching to Gemini
+   * with `gpt-6-luna` still in the box used to produce a save that looked
+   * fine and failed on the next reply.
+   */
+  private modelFrom(provider: AiProviderId, models: Record<string, unknown>): string {
+    const stored = models[provider];
+    if (typeof stored === 'string' && stored.trim().length > 0) return stored.trim();
     return provider === AiProvider.Gemini ? this.config.gemini.model : this.config.openai.model;
+  }
+
+  /** The saved model for any provider, not only the selected one. */
+  async modelFor(provider: AiProviderId): Promise<string> {
+    const stored = await this.settings.find(CHAT_SETTING_KEY);
+    return this.modelFrom(provider, (stored?.value.models ?? {}) as Record<string, unknown>);
   }
 }
