@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
 import { AssistantReplyRepository } from '@/database/repositories/assistant-reply.repository';
+import { TransactionManager } from '@/database/transaction';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
@@ -77,6 +78,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
     private readonly replies: AssistantReplyRepository,
+    private readonly tx: TransactionManager,
     private readonly rewards: RuleEvaluatorService,
     private readonly rewardGrants: RewardGrantService,
     protected readonly config: AppConfigService,
@@ -157,60 +159,75 @@ export class InboundProjectorWorker extends BasePoller {
       }
 
       try {
-        const outcome = await projector(
-          {
-            enterpriseId: context.enterpriseId,
-            channelId: context.channelId,
-            platform: context.platform,
-            inboundEventId: event.id,
-            // Both, filtered: an Instagram channel has a parent Page, a Page
-            // does not.
-            ownPlatformIds: [context.platformChannelId, context.parentPlatformChannelId].filter(
-              (id): id is string => id !== null,
-            ),
-            // Already incremented by the claim, so the first pass reads 1.
-            attemptCount: event.attemptCount,
-          },
-          event.payload,
-        );
+        /*
+         * ONE TRANSACTION: project it, record the reply it is owed, settle the
+         * event. A TRANSACTIONAL OUTBOX, which is the only shape that is
+         * actually safe here.
+         *
+         * These were three transactions until a crash between the first and
+         * the second was traced through: the message is stored, the process
+         * dies, the lease lapses, the event is re-projected — and the second
+         * projection answers "the message was already projected", which is
+         * `projected: false` with no trigger. The obligation would never be
+         * created, and the customer would never be answered. Exactly the hole
+         * the ledger exists to close, reopened one step further along.
+         *
+         * The projector opens its own transaction and JOINS this one rather
+         * than nesting, so the cost is that `markProcessed` now commits with
+         * the projection instead of after it. Nothing external happens inside:
+         * the model call and the send are the assistant worker's, which is the
+         * whole reason they were moved off this path.
+         */
+        const outcome = await this.tx.runInTransaction(async () => {
+          const projected = await projector(
+            {
+              enterpriseId: context.enterpriseId,
+              channelId: context.channelId,
+              platform: context.platform,
+              inboundEventId: event.id,
+              // Both, filtered: an Instagram channel has a parent Page, a Page
+              // does not.
+              ownPlatformIds: [context.platformChannelId, context.parentPlatformChannelId].filter(
+                (id): id is string => id !== null,
+              ),
+              // Already incremented by the claim, so the first pass reads 1.
+              attemptCount: event.attemptCount,
+            },
+            event.payload,
+          );
+
+          if (projected.projected) {
+            /*
+             * Direct messages only. A comment is public and a mention is
+             * somebody else's post — both are answerable, and neither is a
+             * thing to answer automatically without deciding that separately.
+             */
+            if (
+              event.eventType === InboundEventType.DirectMessage &&
+              projected.trigger?.sourceRefKind === 'message'
+            ) {
+              await this.replies.enqueue({
+                enterpriseId: projected.trigger.enterpriseId,
+                messageId: projected.trigger.sourceRefId,
+                /* People type in bursts: answering the first of three messages
+                 * means answering a third of a question. Stored rather than
+                 * slept, so a restart keeps the pause. */
+                delayMs: AUTO_REPLY_SETTLE_MS,
+              });
+            }
+
+            await this.inbound.markProcessed(event.id, this.leaseOwner);
+          }
+
+          return projected;
+        });
 
         if (outcome.projected) {
           /*
-           * THE OBLIGATION IS RECORDED BEFORE THE EVENT IS SETTLED.
-           *
-           * This used to call the assistant directly, which meant the duty to
-           * answer existed only on this worker's stack: a deploy or an OOM
-           * between accepting a customer's message and answering it left them
-           * permanently unanswered, with nothing anywhere saying an answer
-           * had been owed.
-           *
-           * The order is the crash safety. If this write succeeds and the
-           * process dies before `markProcessed`, the event is reclaimed and
-           * re-projected — which is idempotent, and so is this, on the unique
-           * index over (enterprise_id, message_id). If the write fails, the
-           * event is never settled and the whole thing is retried. The one
-           * outcome ruled out is a message accepted with no record that it is
-           * owed a reply.
-           *
-           * Direct messages only. A comment is public and a mention is
-           * somebody else's post — both are answerable, and neither is a
-           * thing to answer automatically without deciding that separately.
+           * OUTSIDE THE TRANSACTION, deliberately. Rewards are a reaction to
+           * the projection rather than part of it, and they must not be able
+           * to roll back a customer's message.
            */
-          if (
-            event.eventType === InboundEventType.DirectMessage &&
-            outcome.trigger?.sourceRefKind === 'message'
-          ) {
-            await this.replies.enqueue({
-              enterpriseId: outcome.trigger.enterpriseId,
-              messageId: outcome.trigger.sourceRefId,
-              /* People type in bursts: answering the first of three messages
-               * means answering a third of a question. Stored rather than
-               * slept, so a restart keeps the pause. */
-              delayMs: AUTO_REPLY_SETTLE_MS,
-            });
-          }
-
-          await this.inbound.markProcessed(event.id, this.leaseOwner);
           await this.offerToRewards(outcome.trigger);
           await this.reverseRewards(outcome.reversal);
         } else {
