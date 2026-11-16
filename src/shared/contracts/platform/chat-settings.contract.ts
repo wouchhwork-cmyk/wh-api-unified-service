@@ -9,12 +9,26 @@ import { AiProvider } from '@/modules/ai/ai.provider';
  * COSTS. Both behind a console rather than a release, because an instruction
  * is only ever right in the presence of real conversations.
  */
+/**
+ * A model id, or nothing at all.
+ *
+ * EMPTY MEANS "USE THE DEFAULT", and that is the whole reason it is allowed.
+ * Each provider already has a working model in configuration, so demanding
+ * that somebody retype it to save an unrelated field is friction with no
+ * safety behind it — and a required field whose correct value is printed in
+ * grey beside it is a form asking to be copied into wrongly.
+ *
+ * A NON-EMPTY value is still checked for shape, because the failure it
+ * prevents is expensive: a typo'd id is only ever discovered by spending a
+ * call to be refused.
+ */
 const ModelId = z
   .string()
   .trim()
-  .min(1, 'a model is required')
   .max(80)
-  .regex(/^[a-z0-9][a-z0-9.\-_]*$/i, 'that is not a model id');
+  .refine((value) => value.length === 0 || /^[a-z0-9][a-z0-9.\-_]*$/i.test(value), {
+    message: 'that is not a model id',
+  });
 
 export const UpdateChatSettingsSchema = z.strictObject({
   /**
@@ -68,6 +82,8 @@ export const UpdateChatSettingsSchema = z.strictObject({
     openai: ModelId,
     gemini: ModelId,
   }),
+  // Both keys are required; their VALUES may be empty. The console always
+  // states both, so a missing one is a client that has drifted.
   /**
    * A key per provider, OPTIONAL PER PROVIDER AND NEVER RETURNED.
    *

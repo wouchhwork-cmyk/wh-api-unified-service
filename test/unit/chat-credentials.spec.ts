@@ -128,6 +128,18 @@ describe('a key typed into the console', () => {
     });
   });
 
+  it("does not freeze today's default into the row when the box is blank", async () => {
+    const { service, row } = consoleWith();
+    await service.update({ ...SAVE, models: { openai: '', gemini: '' } }, 1);
+
+    // Nothing stored: the environment's default answers, and keeps answering
+    // if it changes.
+    expect(row.value.models).toEqual({});
+    const overview = await service.overview();
+    expect(overview.models.openai).toBe('gpt-6-luna');
+    expect(overview.models.gemini).toBe('gemini-3.5-flash-lite');
+  });
+
   it('keeps a model with the provider that serves it', async () => {
     const { service } = consoleWith();
     const overview = await service.update(

@@ -104,7 +104,12 @@ export class ChatConsoleService {
       {
         provider: input.provider,
         autoReply: input.autoReply,
-        models: { ...input.models },
+        /*
+         * ONLY WHAT WAS CHOSEN. An empty box means "use the default", and
+         * writing '' for it would freeze today's default into the row — so
+         * tomorrow's change to configuration would silently not apply.
+         */
+        models: this.chosenModels(input.models),
         apiKeys: envelopes,
         prompt: input.prompt,
         fallbackMessage: input.fallbackMessage,
@@ -113,6 +118,23 @@ export class ChatConsoleService {
       employeeId,
     );
     return this.overview();
+  }
+
+  /**
+   * The models worth storing.
+   *
+   * ONLY WHAT WAS CHOSEN. An empty box means "use the default", and writing
+   * '' for it would freeze today's default into the row — so a later change
+   * to configuration would silently not apply to a business that had simply
+   * never typed a model.
+   */
+  private chosenModels(models: Record<AiProviderId, string>): Record<string, string> {
+    const chosen: Record<string, string> = {};
+    for (const provider of AI_PROVIDER_IDS) {
+      const model = models[provider].trim();
+      if (model.length > 0) chosen[provider] = model;
+    }
+    return chosen;
   }
 
   /** The saved model per provider, falling back to each one's environment default. */

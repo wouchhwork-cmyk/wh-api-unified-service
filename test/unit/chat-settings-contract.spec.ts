@@ -55,8 +55,18 @@ describe('chat settings contract', () => {
     }
   });
 
+  it('accepts a blank model, which means "use the default"', () => {
+    /*
+     * The defaults are printed in the form as placeholders. Demanding that
+     * somebody retype one to save an unrelated field is friction with no
+     * safety behind it — and invites copying the grey text in wrongly.
+     */
+    expect(issuesFor({ models: { openai: '', gemini: '' } })).toEqual([]);
+    expect(issuesFor({ models: { openai: '', gemini: 'gemini-3.5-flash-lite' } })).toEqual([]);
+  });
+
   it('refuses something that is not a model id at all', () => {
-    for (const model of ['', '  ', 'a model', '../../etc/passwd', 'https://evil/x', '-leading']) {
+    for (const model of ['a model', '../../etc/passwd', 'https://evil/x', '-leading']) {
       expect(
         issuesFor({ models: { openai: model, gemini: 'gemini-3.5-flash-lite' } }),
         JSON.stringify(model),
