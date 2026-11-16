@@ -678,8 +678,14 @@ export const CHAT_MAX_TURN_CHARS = 8_000;
  * the providers that think before answering it is charged for thinking nobody
  * ever sees — so a ceiling is the only instruction that is arithmetic rather
  * than a request.
+ *
+ * RAISED FOR THE ENVELOPE. The reply now comes back inside a JSON object
+ * carrying the language, the intent and whether a person is needed, and
+ * those keys are output tokens like any other. A cap that did not account
+ * for them would be spent on the envelope and run out mid-sentence — which
+ * is recoverable, but recovering is not the same as not needing to.
  */
-export const CHAT_MAX_OUTPUT_TOKENS = 600;
+export const CHAT_MAX_OUTPUT_TOKENS = 700;
 
 /**
  * How much of a thread the assistant is shown.
@@ -699,6 +705,30 @@ export const CHATBOT_MEDIA_CHARS = 400;
 
 /** How many links and contacts of a business profile go into the context. */
 export const CHATBOT_PROFILE_ENTRIES = 8;
+
+/**
+ * How much of a post's caption goes in when answering a comment on it.
+ *
+ * The caption is what the comment is ABOUT, so leaving it out means
+ * answering a sentence with no subject — but a caption is also where a
+ * business puts forty hashtags, and those are tokens bought on every reply
+ * to every comment on that post.
+ */
+export const CHATBOT_POST_CAPTION_CHARS = 600;
+
+/**
+ * How long a reply may be, by where it is going.
+ *
+ * NOT THE SAME NUMBER, because the two are not the same act. A direct
+ * message is a conversation and may run to a short paragraph; a public
+ * comment under a photograph is read by strangers scrolling past, and one
+ * that runs long reads as a brochure nobody asked for. The model is told to
+ * be brief and these are the arithmetic behind it — advice a model may
+ * ignore, where a cap it cannot.
+ */
+export const CHATBOT_DM_REPLY_CHARS = 900;
+
+export const CHATBOT_PUBLIC_REPLY_CHARS = 400;
 
 /**
  * How long an automatic reply waits before it starts thinking.

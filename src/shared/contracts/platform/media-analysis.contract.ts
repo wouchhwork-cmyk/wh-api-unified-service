@@ -27,13 +27,19 @@ export const UpdateMediaAnalysisSettingsSchema = z.strictObject({
     .max(80)
     .regex(/^[a-z0-9][a-z0-9.\-_]*$/i, 'that is not a model id'),
   /**
-   * The instruction sent with every piece of media.
+   * What this business wants noticed, sent with every piece of media.
    *
-   * Bounded because it is prepended to every request and therefore billed on
-   * every one — a prompt that grows without anybody noticing is a bill that
-   * grows without anybody noticing.
+   * NO FLOOR ANY MORE. It used to be the whole instruction, so twenty
+   * characters of it was a reasonable thing to insist on; it is now one
+   * section inside a frame that carries the output shape and the rules on
+   * its own, and "nothing in particular" is a legitimate answer to what else
+   * to look for. Blank means the default.
+   *
+   * Still bounded above, because it is sent with every request and therefore
+   * billed on every one — a prompt that grows without anybody noticing is a
+   * bill that grows without anybody noticing.
    */
-  prompt: z.string().trim().min(20, 'the instruction is too short to be useful').max(8000),
+  prompt: z.string().trim().max(8000),
 });
 
 export type UpdateMediaAnalysisSettingsInput = z.infer<typeof UpdateMediaAnalysisSettingsSchema>;

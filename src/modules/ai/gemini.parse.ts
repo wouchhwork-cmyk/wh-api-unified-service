@@ -1,15 +1,21 @@
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import type { MediaDescription } from './gemini.client';
+import { readMediaDescription } from './prompts';
 
 /**
  * The model's answer, which is TEXT THAT CLAIMS TO BE JSON.
  *
- * A model asked for JSON mostly returns JSON, and sometimes returns it
- * wrapped in a code fence or with a sentence in front. Parsing defensively
- * is not optimism about the model — it is refusing to throw away a good
- * answer over punctuation. What is NOT done is inventing a description when
- * parsing fails: that path raises, and the ledger records that the model
- * answered unusably.
+ * THE SHAPE IS NOT DESCRIBED HERE ANY MORE. It is declared once beside the
+ * instruction that asks for it, so a field cannot be read here without
+ * appearing there — which is the whole reason the prompt stopped being a
+ * free-text box staff could quietly delete the contract out of.
+ *
+ * What stays here is the decision about an answer that does not fit:
+ * prose is KEPT AS THE SUMMARY rather than discarded, because a usable
+ * description in the wrong envelope is still a usable description, and the
+ * prompt is editable, so a model that keeps doing it is a prompt to fix. An
+ * empty answer is not tolerated — that one raises, and the ledger records
+ * that the model answered unusably.
  */
 export function parseMediaDescription(raw: unknown): MediaDescription {
   const text = outputTextOf(raw);
@@ -17,34 +23,15 @@ export function parseMediaDescription(raw: unknown): MediaDescription {
     throw new MediaAnalysisError(MediaFailure.ModelUnparsable, 'the model returned no text', false);
   }
 
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidate = (fenced?.[1] ?? text).trim();
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
+  const described = readMediaDescription(text);
+  if (described) return described;
 
-  if (start !== -1 && end > start) {
-    try {
-      const parsed: unknown = JSON.parse(candidate.slice(start, end + 1));
-      if (parsed && typeof parsed === 'object') {
-        const row = parsed as Record<string, unknown>;
-        return {
-          summary: textOrNull(row.summary),
-          transcript: textOrNull(row.transcript),
-          readable: row.readable !== false,
-        };
-      }
-    } catch {
-      /* Falls through to the plain-text reading below, deliberately. */
-    }
-  }
-
-  /*
-   * NOT JSON, BUT NOT NOTHING. The model described the media in prose
-   * instead of the shape asked for. Keeping it as the summary is better than
-   * discarding a usable description over its formatting — and the prompt is
-   * editable, so a model that keeps doing this is a prompt to fix.
-   */
-  return { summary: candidate.slice(0, 4000), transcript: null, readable: true };
+  return {
+    summary: text.trim().slice(0, 4000),
+    transcript: null,
+    language: null,
+    readable: true,
+  };
 }
 
 export function outputTextOf(raw: unknown): string | null {
@@ -67,10 +54,4 @@ export function outputTextOf(raw: unknown): string | null {
   }
   const joined = parts.join('\n').trim();
   return joined.length > 0 ? joined : null;
-}
-
-function textOrNull(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }

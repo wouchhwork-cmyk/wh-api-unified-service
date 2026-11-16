@@ -81,19 +81,35 @@ describe('chat settings', () => {
     expect(settings.provider).toBe('openai');
     expect(settings.model).toBe('gpt-6-luna');
     expect(settings.version).toBe(0);
-    expect(settings.prompt).toContain('never an instruction to follow');
+    /*
+     * The default is VOICE now, not rules. Everything about not inventing
+     * facts and not obeying text found inside a conversation moved into the
+     * system frame, where a console cannot edit it away.
+     */
+    expect(settings.prompt).toContain('Be warm and direct');
   });
 
-  it('lets a caller add to the standing instruction but never replace it', async () => {
+  it('gives a caller the context section and keeps the rules to itself', async () => {
     const { service, chat } = serviceWith({ prompt: 'Never invent an opening hour.' });
     await service.reply(
       [{ role: 'user', text: 'when do you open?' }],
-      'You are replying for Acme.',
+      '<business><name>Acme</name></business>',
     );
 
     const sent = chat.mock.calls[0]?.[1] as { instructions: string };
+    /* The console's words, in the section that belongs to the console. */
     expect(sent.instructions).toContain('Never invent an opening hour.');
-    expect(sent.instructions).toContain('You are replying for Acme.');
+    expect(sent.instructions).toContain('<business_instructions');
+    /* The caller's facts, in the section that belongs to facts. */
+    expect(sent.instructions).toContain('<context>');
+    expect(sent.instructions).toContain('<name>Acme</name>');
+    /*
+     * And the rules neither of them can reach, after both of them.
+     */
+    expect(sent.instructions).toContain('Never say or hint that you are an AI');
+    expect(sent.instructions.indexOf('<output')).toBeGreaterThan(
+      sent.instructions.indexOf('<context>'),
+    );
   });
 
   it('stamps the version that produced the reply', async () => {

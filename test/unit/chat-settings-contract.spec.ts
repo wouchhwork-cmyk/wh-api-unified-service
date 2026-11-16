@@ -74,8 +74,17 @@ describe('chat settings contract', () => {
     }
   });
 
-  it('refuses an instruction too short to be one, or long enough to be a bill', () => {
-    expect(issuesFor({ prompt: 'be nice' })).toContain('prompt');
+  it('takes a short instruction now, and still refuses one long enough to be a bill', () => {
+    /*
+     * THE FLOOR IS GONE. The prompt used to be the whole instruction, so
+     * twenty characters of it was a reasonable thing to insist on. It is now
+     * one section inside a frame that carries the identity rules, the safety
+     * rules and the output shape on its own — and a business with nothing
+     * particular to say about its voice should not have to invent twenty
+     * characters of it.
+     */
+    expect(issuesFor({ prompt: 'be nice' })).toEqual([]);
+    expect(issuesFor({ prompt: '' })).toEqual([]);
     expect(issuesFor({ prompt: 'x'.repeat(8_001) })).toContain('prompt');
     expect(issuesFor({ prompt: 'x'.repeat(8_000) })).toEqual([]);
   });

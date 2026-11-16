@@ -103,13 +103,20 @@ export const UpdateChatSettingsSchema = z.strictObject({
     })
     .optional(),
   /**
-   * The standing instruction sent with every conversation.
+   * How this business sounds, sent with every conversation.
    *
-   * Bounded because it is prepended to every request and therefore billed on
-   * every one — an instruction that grows without anybody noticing is a bill
-   * that grows without anybody noticing.
+   * NO FLOOR ANY MORE. It used to be the whole instruction, so twenty
+   * characters of it was a reasonable thing to insist on; it is now one
+   * section inside a frame that carries the identity rules, the safety
+   * rules and the output shape on its own. A business with nothing
+   * particular to say about its voice should not have to invent twenty
+   * characters of it. Blank means the default.
+   *
+   * Still bounded above, because it is sent with every request and therefore
+   * billed on every one — an instruction that grows without anybody noticing
+   * is a bill that grows without anybody noticing.
    */
-  prompt: z.string().trim().min(20, 'the instruction is too short to be useful').max(8000),
+  prompt: z.string().trim().max(8000),
 });
 
 export type UpdateChatSettingsInput = z.infer<typeof UpdateChatSettingsSchema>;

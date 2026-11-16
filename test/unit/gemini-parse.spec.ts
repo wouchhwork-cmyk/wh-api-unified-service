@@ -17,7 +17,12 @@ describe('reading the model’s description', () => {
     const result = parseMediaDescription(
       said('{"summary":"A plate of fries.","transcript":null,"readable":true}'),
     );
-    expect(result).toEqual({ summary: 'A plate of fries.', transcript: null, readable: true });
+    expect(result).toEqual({
+      summary: 'A plate of fries.',
+      transcript: null,
+      language: null,
+      readable: true,
+    });
   });
 
   it('reads it out of a code fence', () => {

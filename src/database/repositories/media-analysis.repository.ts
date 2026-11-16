@@ -23,6 +23,8 @@ export interface AnalysisResultRow {
   readonly status: MediaAnalysisStatus;
   readonly summary: string | null;
   readonly transcript: string | null;
+  /** The language the media was spoken or written in, when it had one. */
+  readonly language: string | null;
   readonly model: string | null;
   readonly analyzedAt: Date | null;
   readonly failureCode: string | null;
@@ -174,6 +176,7 @@ export class MediaAnalysisRepository extends BaseRepository {
     result: {
       summary: string | null;
       transcript: string | null;
+      language: string | null;
       model: string;
       promptVersion: number;
       inputTokens: number | null;
@@ -183,9 +186,9 @@ export class MediaAnalysisRepository extends BaseRepository {
   ): Promise<boolean> {
     const { rows } = await this.mutate<{ id: number }>(
       `UPDATE media_analyses
-          SET status = $3, summary = $4, transcript = $5, model = $6,
-              prompt_version = $7, input_tokens = $8, output_tokens = $9,
-              total_tokens = $10, analyzed_at = now(),
+          SET status = $3, summary = $4, transcript = $5, language = $6,
+              model = $7, prompt_version = $8, input_tokens = $9,
+              output_tokens = $10, total_tokens = $11, analyzed_at = now(),
               failure_code = NULL, failure_reason = NULL,
               lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL
         WHERE id = $1 AND lease_owner = $2
@@ -196,6 +199,7 @@ export class MediaAnalysisRepository extends BaseRepository {
         MediaAnalysisStatus.Done,
         result.summary,
         result.transcript,
+        result.language,
         result.model,
         result.promptVersion,
         result.inputTokens,
@@ -276,7 +280,7 @@ export class MediaAnalysisRepository extends BaseRepository {
   async findByKeys(enterpriseId: number, keys: readonly string[]): Promise<AnalysisResultRow[]> {
     if (keys.length === 0) return [];
     return this.query<AnalysisResultRow>(
-      `SELECT media_key AS "mediaKey", status, summary, transcript, model,
+      `SELECT media_key AS "mediaKey", status, summary, transcript, language, model,
               analyzed_at AS "analyzedAt", failure_code AS "failureCode"
          FROM media_analyses
         WHERE enterprise_id = $1 AND media_key = ANY($2::varchar[]) AND is_deleted = false`,

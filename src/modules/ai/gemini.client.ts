@@ -18,6 +18,8 @@ import {
 export interface MediaDescription {
   readonly summary: string | null;
   readonly transcript: string | null;
+  /** What language was spoken or written in it, when any was. */
+  readonly language: string | null;
   readonly readable: boolean;
 }
 

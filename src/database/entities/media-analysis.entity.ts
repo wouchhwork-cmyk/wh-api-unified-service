@@ -48,6 +48,15 @@ export class MediaAnalysis extends BaseEntity {
   transcript!: string | null;
 
   /**
+   * The language of that speech or writing, as an English name.
+   *
+   * Kept because the assistant answers in the language it was addressed in,
+   * and media is the one way somebody addresses a business without typing.
+   */
+  @Column({ type: 'varchar', length: 40, nullable: true })
+  language!: string | null;
+
+  /**
    * WHAT PRODUCED THIS ANSWER. Both are editable from the platform console, so
    * a description that reads oddly has to be traceable to the instruction
    * behind it — which will have moved on by the time anybody asks.
