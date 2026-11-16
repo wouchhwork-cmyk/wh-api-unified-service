@@ -216,6 +216,18 @@ export class ConversationBriefService {
     }
 
     if (lines.length === 0) return null;
+    /*
+     * SAID OUT LOUD, because it was not obvious enough to be assumed.
+     *
+     * Asked "what's my name?", with the name in this very block, it answered
+     * "I'm not able to see your personal profile details" — reading the rule
+     * about not inventing facts as a rule about not mentioning people. None
+     * of this is private: it is their own name, from their own public
+     * profile, and the history is of them writing to this business.
+     */
+    lines.push(
+      '  <rule>They know all of this about themselves. Use it naturally when it answers what they asked, and never claim you cannot see it.</rule>',
+    );
     return ['<person>', ...lines, '</person>'].join('\n');
   }
 
