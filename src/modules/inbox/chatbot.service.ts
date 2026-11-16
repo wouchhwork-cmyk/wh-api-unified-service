@@ -1,48 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
 import type { MessageRow } from '@/database/repositories/message.repository';
+import type { ConversationRow } from '@/database/repositories/conversation.repository';
 import { ChatService, type ChatAnswer } from '@/modules/ai/chat.service';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
 import {
   CHATBOT_CONTEXT_MESSAGES,
   CHATBOT_MEDIA_CHARS,
   CHATBOT_MESSAGE_CHARS,
-  CHATBOT_PROFILE_ENTRIES,
   CHAT_MAX_TURNS,
 } from '@/shared/constants';
 import { MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
+import { ConversationBriefService } from './conversation-brief.service';
+import { replyCapFor, shapeReply } from './reply-format';
 import { InboxService } from './inbox.service';
-
-/**
- * How to read the `[media: ...]` lines, told to the model only when there are
- * any.
- *
- * WITHOUT THIS IT DISCLAIMS. Asked about a video, it answered "I can read the
- * description you shared, but I can't watch the video itself" — truthful
- * about the plumbing and useless to the customer, who had just sent a video
- * to a business and been told it had not been watched. The description IS our
- * record of having watched it: a model looked at the real bytes while the
- * link still worked and wrote down what was there.
- *
- * So the model is told whose observation that line is. It is not a hint about
- * what to claim — it is the fact that the line is this system's own account
- * of the media rather than something the customer typed.
- */
-const MEDIA_NOTE = [
-  'Some messages carry a line like [media: ...].',
-  'That is your own record of a photo, video, voice note or audio clip that was sent:',
-  'what was in it, and anything said or written in it, written down when it arrived.',
-  '',
-  'Treat it as having seen and heard that media yourself. Answer questions about it directly,',
-  'refer to what was in it naturally, and do not say you are unable to see, watch, open or',
-  'hear media. Do not mention descriptions, records, transcripts or analysis — to the person',
-  'you are replying to, you simply saw what they sent.',
-  '',
-  'If the line does not contain what you are being asked about, say what you did notice and',
-  'ask them about the rest, rather than claiming you cannot view media at all.',
-].join('\n');
 
 export interface DraftedReply extends ChatAnswer {
   /**
@@ -50,23 +22,34 @@ export interface DraftedReply extends ChatAnswer {
    *
    * Returned because a draft that reads oddly is nearly always a context
    * problem rather than a model one — "it answered as though it had not seen
-   * the photo" is answerable from here without turning on logging that would
-   * record a customer's message.
+   * the photo", "it answered as though it did not know which post that was"
+   * — and both are answerable from here without turning on logging that
+   * would record a customer's message.
    */
   readonly context: {
     readonly messages: number;
     readonly mediaDescriptions: number;
     readonly hasBusinessProfile: boolean;
+    readonly hasPerson: boolean;
+    readonly hasPost: boolean;
   };
 }
+
+type ThreadRead = {
+  conversation: ConversationRow;
+  messages: MessageRow[];
+  attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
+  analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
+};
 
 /**
  * A reply, drafted from everything we already hold about a conversation.
  *
  * THE CONTEXT IS THE FEATURE. The model's own cleverness is the commodity
  * part; what makes a useful answer is that this service hands it the thread,
- * the descriptions of media whose links have since died, and what the
- * business says about itself — none of which the model could ever ask for.
+ * the descriptions of media whose links have since died, who this person is,
+ * where the conversation is happening and what the business says about
+ * itself — none of which the model could ever ask for.
  *
  * IT DRAFTS, IT DOES NOT SEND. The reply comes back for a person to read,
  * change and send through the ordinary reply path, which is the one that
@@ -79,7 +62,7 @@ export interface DraftedReply extends ChatAnswer {
 export class ChatbotService {
   constructor(
     private readonly inbox: InboxService,
-    private readonly enterprises: EnterpriseRepository,
+    private readonly brief: ConversationBriefService,
     private readonly chat: ChatService,
   ) {}
 
@@ -133,20 +116,14 @@ export class ChatbotService {
   }
 
   /** Everything after the read, which is identical whoever asked. */
-  private async draftFrom(
-    enterpriseId: number,
-    thread: {
-      messages: MessageRow[];
-      attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
-      analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
-    },
-  ): Promise<DraftedReply> {
+  private async draftFrom(enterpriseId: number, thread: ThreadRead): Promise<DraftedReply> {
     /*
      * Newest first out of the repository, because that is what a reader
      * pages through. A model reads a conversation the way it happened.
      */
     const ordered = [...thread.messages].reverse();
     const turns: ChatTurn[] = [];
+    const mediaLanguages: string[] = [];
     let mediaDescriptions = 0;
 
     for (const message of ordered) {
@@ -160,6 +137,18 @@ export class ChatbotService {
       const described = this.describedAttachments(message, thread);
       mediaDescriptions += described.length;
 
+      /*
+       * ONLY WHAT THEY SENT. The language of our own outbound media says
+       * nothing about how to answer them, and a business posting an English
+       * clip into a Hindi conversation would quietly flip the reply.
+       */
+      if (message.direction === MessageDirection.Inbound) {
+        for (const analysis of described) {
+          const language = analysis.language?.trim();
+          if (language) mediaLanguages.unshift(language);
+        }
+      }
+
       const text = this.textOf(message, described);
       if (text.length === 0) continue;
 
@@ -169,38 +158,36 @@ export class ChatbotService {
       });
     }
 
-    if (turns.length === 0) {
-      /*
-       * Nothing to answer. Reported through the ordinary chat failure shape
-       * rather than invented around, because "there is no question here" and
-       * "the model had nothing to say" are different facts.
-       */
-      return this.chat
-        .reply(turns)
-        .then((answer) => ({ ...answer, context: this.counts(0, 0, false) }));
-    }
+    const shown = turns.slice(-CHAT_MAX_TURNS);
+    const brief = await this.brief.build({
+      enterpriseId,
+      conversation: thread.conversation,
+      shownMessages: shown.length,
+      mediaLanguages,
+      hasMedia: mediaDescriptions > 0,
+    });
 
-    const profile = await this.businessContext(enterpriseId);
-    const instructions = [mediaDescriptions > 0 ? MEDIA_NOTE : null, profile]
-      .filter((part): part is string => part !== null)
-      .join('\n\n');
-    const answer = await this.chat.reply(
-      turns.slice(-CHAT_MAX_TURNS),
-      instructions.length > 0 ? instructions : undefined,
-    );
+    const answer = await this.chat.reply(shown, brief.xml);
 
     return {
       ...answer,
-      context: this.counts(turns.length, mediaDescriptions, profile !== null),
+      /*
+       * SHAPED AFTER THE MODEL, NEVER INSTEAD OF IT. The prompt asks for a
+       * short plain message and this is what happens when it is not given
+       * one — markdown removed, length brought down to what the channel
+       * actually suits. A reply the model meant to send silently, or one it
+       * left empty, stays empty: there is nothing to shape.
+       */
+      text:
+        answer.text.length > 0
+          ? shapeReply(answer.text, replyCapFor(thread.conversation.conversationKind))
+          : '',
+      context: {
+        messages: shown.length,
+        mediaDescriptions,
+        ...brief.counts,
+      },
     };
-  }
-
-  private counts(
-    messages: number,
-    mediaDescriptions: number,
-    hasBusinessProfile: boolean,
-  ): DraftedReply['context'] {
-    return { messages, mediaDescriptions, hasBusinessProfile };
   }
 
   /**
@@ -227,12 +214,7 @@ export class ChatbotService {
     return parts.join('\n').trim();
   }
 
-  private describedAttachments(
-    message: MessageRow,
-    thread: { attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]> } & {
-      analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
-    },
-  ): AnalysisResultRow[] {
+  private describedAttachments(message: MessageRow, thread: ThreadRead): AnalysisResultRow[] {
     const attachments = thread.attachmentsByMessageId.get(message.id) ?? [];
     const found: AnalysisResultRow[] = [];
     for (const attachment of attachments) {
@@ -242,58 +224,5 @@ export class ChatbotService {
       if (analysis?.status === MediaAnalysisStatus.Done) found.push(analysis);
     }
     return found;
-  }
-
-  /**
-   * What the business says about itself, as the model should know it.
-   *
-   * FROM THE PROFILE STAFF ALREADY MAINTAIN, which is the point: the name
-   * customers see, the description, the links and the contact details are
-   * already kept current for the people who read them, so an assistant that
-   * reads the same row cannot drift from what the business publishes.
-   *
-   * Null when there is nothing worth saying, so the prompt does not carry an
-   * empty heading pretending to be context.
-   */
-  private async businessContext(enterpriseId: number): Promise<string | null> {
-    const enterprise = await this.enterprises.findById(enterpriseId);
-    if (!enterprise) return null;
-
-    const lines: string[] = [];
-    const name = enterprise.displayName?.trim() || enterprise.name.trim();
-    if (name.length > 0) lines.push(`You are replying on behalf of ${name}.`);
-
-    const about = enterprise.about?.trim() ?? '';
-    if (about.length > 0) lines.push('', 'About the business:', about);
-
-    const links = (enterprise.links ?? []).slice(0, CHATBOT_PROFILE_ENTRIES);
-    if (links.length > 0) {
-      lines.push('', 'Links you may share:');
-      for (const link of links) lines.push(`- ${link.label}: ${link.url}`);
-    }
-
-    const contacts = (enterprise.contacts ?? []).slice(0, CHATBOT_PROFILE_ENTRIES);
-    if (contacts.length > 0) {
-      lines.push('', 'Contact details you may share:');
-      for (const contact of contacts) {
-        const detail = [contact.phone, contact.email]
-          .map((value) => value?.trim() ?? '')
-          .filter((value) => value.length > 0)
-          .join(', ');
-        if (detail.length > 0) lines.push(`- ${contact.label?.trim() || 'Contact'}: ${detail}`);
-      }
-    }
-
-    if (lines.length === 0) return null;
-    /*
-     * The closing rule matters as much as the facts: a model given a profile
-     * will otherwise fill the gaps in it, and an invented opening hour or
-     * phone number is worse than an admission that we do not know.
-     */
-    lines.push(
-      '',
-      'Use only these details when answering about the business. If something is not here, say you will check rather than inventing it.',
-    );
-    return lines.join('\n');
   }
 }

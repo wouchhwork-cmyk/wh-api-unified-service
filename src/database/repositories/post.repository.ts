@@ -51,6 +51,14 @@ export interface UpsertPostInput {
   readonly media: { url?: string; thumbnailUrl?: string; type?: string } | null;
 }
 
+/** Our post, as the assistant needs to know it to answer a comment on it. */
+export interface AssistantPostRow {
+  readonly caption: string | null;
+  readonly permalinkUrl: string | null;
+  readonly postKind: string;
+  readonly publishedAt: Date | null;
+}
+
 @Injectable()
 export class PostRepository extends BaseRepository {
   /**
@@ -216,5 +224,31 @@ export class PostRepository extends BaseRepository {
         LIMIT $2`,
       params,
     );
+  }
+
+  /**
+   * The post a comment thread hangs off.
+   *
+   * WITHOUT THIS THE ASSISTANT IS ANSWERING A SENTENCE WITH NO SUBJECT. "Is
+   * this available?" under a photograph of one product is a perfectly clear
+   * question to everybody except the one party that cannot see the post —
+   * and answering it anyway, from the thread alone, is how an assistant ends
+   * up confidently describing the wrong thing.
+   *
+   * Null for a mention on somebody else's post, which we do not hold.
+   */
+  async assistantContextFor(
+    enterpriseId: number,
+    postId: number,
+  ): Promise<AssistantPostRow | null> {
+    const rows = await this.query<AssistantPostRow>(
+      `SELECT caption, permalink_url AS "permalinkUrl", post_kind AS "postKind",
+              published_at AS "publishedAt"
+         FROM posts
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), postId],
+    );
+    return rows[0] ?? null;
   }
 }

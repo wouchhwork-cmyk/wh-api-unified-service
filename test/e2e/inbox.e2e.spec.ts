@@ -507,6 +507,13 @@ describe('the shared inbox', () => {
       'deletedOnPlatform',
       'deletedOnPlatformAt',
       'direction',
+      /*
+       * Why the assistant asked for a person, when it did. Surfaced because
+       * it is the one thing about an automatic reply somebody has to ACT on:
+       * the message beside it has just promised a customer that a colleague
+       * will follow up.
+       */
+      'handoff',
       // Hidden by US on the platform — Instagram never announces it, so this
       // flag is ours to keep.
       'hiddenOnPlatform',

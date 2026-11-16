@@ -744,6 +744,8 @@ function toMessage(
      */
     automated: row.isAutomated === true,
     assistantModel: row.isAutomated === true ? (row.assistantModel ?? null) : null,
+    /* Null unless the assistant said it needs a colleague on this one. */
+    handoff: row.isAutomated === true ? (row.assistantHandoff ?? null) : null,
     /*
      * WHO WROTE IT, when a customer did. A comment thread carries several
      * different people, and without this the client drew every one of them as

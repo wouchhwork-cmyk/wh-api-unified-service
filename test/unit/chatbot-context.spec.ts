@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ChatbotService } from '@/modules/inbox/chatbot.service';
 import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { ChatService } from '@/modules/ai/chat.service';
-import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
-import { MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
+import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
+import { ConversationKind, MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
 
 /**
  * What the model is shown, which is the whole of this feature.
@@ -15,33 +15,37 @@ import { MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
  * is not a smaller answer, it is an assistant that cannot see the photo the
  * entire conversation is about.
  */
-const ENTERPRISE = {
-  name: 'Acme Legal Name Ltd',
-  displayName: 'Acme',
-  about: 'We sell handmade candles.',
-  links: [{ label: 'Shop', url: 'https://acme.test/shop' }],
-  contacts: [{ label: 'Support', phone: '+91 90000 00000', email: 'help@acme.test' }],
+const CONVERSATION = {
+  customerId: 7,
+  conversationKind: ConversationKind.DirectMessage,
+  messageCount: 3,
 };
 
 function serviceWith(
   thread: Partial<{
+    conversation: unknown;
     messages: unknown[];
     attachmentsByMessageId: Map<number, unknown[]>;
     analysisByKey: Map<string, unknown>;
   }>,
-  enterprise: unknown = ENTERPRISE,
+  answer: Record<string, unknown> = {},
 ) {
   const inbox = {
     readThread: vi.fn().mockResolvedValue({
+      conversation: CONVERSATION,
       messages: [],
       attachmentsByMessageId: new Map(),
       analysisByKey: new Map(),
       ...thread,
     }),
   } as unknown as InboxService;
-  const enterprises = {
-    findById: vi.fn().mockResolvedValue(enterprise),
-  } as unknown as EnterpriseRepository;
+
+  const build = vi.fn().mockResolvedValue({
+    xml: '<business><name>Acme</name></business>',
+    counts: { hasBusinessProfile: true, hasPerson: true, hasPost: false },
+  });
+  const brief = { build } as unknown as ConversationBriefService;
+
   const reply = vi.fn().mockResolvedValue({
     text: 'drafted',
     usage: {},
@@ -49,9 +53,15 @@ function serviceWith(
     model: 'gpt-6-luna',
     provider: 'openai',
     promptVersion: 1,
+    language: 'English',
+    intent: null,
+    handoff: null,
+    silent: false,
+    structured: true,
+    ...answer,
   });
   const chat = { reply } as unknown as ChatService;
-  return { service: new ChatbotService(inbox, enterprises, chat), reply };
+  return { service: new ChatbotService(inbox, brief, chat), reply, build };
 }
 
 function message(id: number, over: Record<string, unknown> = {}) {
@@ -141,61 +151,70 @@ describe('chatbot context', () => {
     expect(draft.context.mediaDescriptions).toBe(0);
   });
 
-  it('tells the model the media line is its own seeing, not a quote', async () => {
-    /*
-     * Asked "did you watch it?", it answered "I can read the description you
-     * shared, but I can't watch the video itself" — true about the plumbing,
-     * and useless to a customer who had just sent a video to a business.
-     */
-    const { service, reply } = serviceWith({
-      messages: [message(1, { body: 'did you watch it?' })],
+  it('tells the brief a voice note was in Hindi, so the reply can be', async () => {
+    const { service, build } = serviceWith({
+      messages: [message(1, { body: '' })],
       attachmentsByMessageId: new Map([[1, [{ mediaKey: 'asset:9' }]]]),
       analysisByKey: new Map([
         [
           'asset:9',
-          { status: MediaAnalysisStatus.Done, summary: 'A dog on a skateboard', transcript: null },
+          {
+            status: MediaAnalysisStatus.Done,
+            summary: 'Asking whether the shop is open on Sunday',
+            transcript: 'Kya Sunday ko khula rahega?',
+            language: 'Hindi',
+          },
         ],
       ]),
     });
     await service.draftReply(1, 'conv-ref');
 
-    const instructions = reply.mock.calls[0]?.[1] as string;
-    expect(instructions).toContain('your own record');
-    expect(instructions).toContain('do not say you are unable to see');
+    expect(build.mock.calls[0]?.[0]).toMatchObject({ mediaLanguages: ['Hindi'], hasMedia: true });
   });
 
-  it('does not explain the media convention when there is no media', async () => {
-    const { service, reply } = serviceWith({ messages: [message(1)] });
+  it('ignores the language of media WE sent', async () => {
+    /*
+     * A business posting an English clip into a Hindi conversation would
+     * otherwise quietly flip the language of every reply after it.
+     */
+    const { service, build } = serviceWith({
+      messages: [message(1, { direction: MessageDirection.Outbound, body: 'here you go' })],
+      attachmentsByMessageId: new Map([[1, [{ mediaKey: 'asset:9' }]]]),
+      analysisByKey: new Map([
+        [
+          'asset:9',
+          { status: MediaAnalysisStatus.Done, summary: 'A product clip', language: 'English' },
+        ],
+      ]),
+    });
     await service.draftReply(1, 'conv-ref');
-    expect(reply.mock.calls[0]?.[1] as string).not.toContain('[media:');
+
+    expect(build.mock.calls[0]?.[0]).toMatchObject({ mediaLanguages: [] });
   });
 
-  it('tells the model who it is replying for, from the business profile', async () => {
+  it('strips the markdown a model reaches for, because a DM shows it raw', async () => {
+    const { service } = serviceWith(
+      { messages: [message(1)] },
+      { text: 'We have **three** left:\n- blue\n- red' },
+    );
+    const draft = await service.draftReply(1, 'conv-ref');
+
+    expect(draft.text).toBe('We have three left:\nblue\nred');
+  });
+
+  it('keeps an empty reply empty rather than shaping nothing into something', async () => {
+    const { service } = serviceWith({ messages: [message(1)] }, { text: '', silent: true });
+    const draft = await service.draftReply(1, 'conv-ref');
+
+    expect(draft.text).toBe('');
+    expect(draft.silent).toBe(true);
+  });
+
+  it('passes the brief on as context, not as another instruction', async () => {
     const { service, reply } = serviceWith({ messages: [message(1)] });
     const draft = await service.draftReply(1, 'conv-ref');
 
-    const instructions = reply.mock.calls[0]?.[1] as string;
-    expect(instructions).toContain('Acme');
-    expect(instructions).toContain('handmade candles');
-    expect(instructions).toContain('https://acme.test/shop');
-    expect(instructions).toContain('help@acme.test');
-    // The guard against filling the gaps in a profile it was handed.
-    expect(instructions).toContain('rather than inventing it');
+    expect(reply.mock.calls[0]?.[1]).toContain('<business>');
     expect(draft.context.hasBusinessProfile).toBe(true);
-  });
-
-  it('prefers the name customers see over the registered one', async () => {
-    const { service, reply } = serviceWith({ messages: [message(1)] });
-    await service.draftReply(1, 'conv-ref');
-    const instructions = reply.mock.calls[0]?.[1] as string;
-    expect(instructions).toContain('on behalf of Acme.');
-    expect(instructions).not.toContain('Legal Name');
-  });
-
-  it('carries no business heading when the profile is empty', async () => {
-    const { service, reply } = serviceWith({ messages: [message(1)] }, null);
-    const draft = await service.draftReply(1, 'conv-ref');
-    expect(reply.mock.calls[0]?.[1]).toBeUndefined();
-    expect(draft.context.hasBusinessProfile).toBe(false);
   });
 });

@@ -64,6 +64,15 @@ export interface MessageRow {
   readonly isAutomated?: boolean;
   /** Which model wrote it, for a reader who wants to know. */
   readonly assistantModel?: string | null;
+  /**
+   * Why the assistant asked for a person, when it did.
+   *
+   * SURFACED RATHER THAN BURIED IN THE LEDGER, because it is the one thing
+   * about an automatic reply that somebody has to ACT on. A reply that ends
+   * "a colleague will get back to you" is a promise this business has now
+   * made, and it is kept by a human who has to know it was made.
+   */
+  readonly assistantHandoff?: string | null;
   readonly refId: string;
   readonly direction: MessageDirection;
   readonly body: string | null;
@@ -919,6 +928,7 @@ export class MessageRepository extends BaseRepository {
               -- when the answer is "nothing human did".
               (m.metadata ? 'assistant') AS "isAutomated",
               m.metadata->'assistant'->>'model' AS "assistantModel",
+              m.metadata->'assistant'->>'handoff' AS "assistantHandoff",
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
               (m.platform_message_id IS NOT NULL

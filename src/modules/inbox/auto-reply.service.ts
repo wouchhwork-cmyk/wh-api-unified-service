@@ -21,6 +21,8 @@ const Skip = {
   Failed: 'could_not_answer',
   /** Its media is still being described; the real answer follows. */
   WaitingForMedia: 'waiting_for_media',
+  /** The model read it and decided nothing needed saying. */
+  NothingToSay: 'nothing_to_say',
 } as const;
 
 type SkipReason = (typeof Skip)[keyof typeof Skip];
@@ -198,6 +200,48 @@ export class AutoReplyService {
     }
 
     /*
+     * IT READ THE MESSAGE AND DECIDED NOT TO ANSWER IT.
+     *
+     * "ok", "thanks", a thumbs-up — a person reading an inbox does not reply
+     * to those, and an assistant that does is the most recognisable tell
+     * there is that nobody is home. The decision is the model's rather than
+     * a rule here, because "nothing needs saying" depends entirely on what
+     * was being said: the same "ok" ends one exchange and agrees to a
+     * delivery slot in another.
+     *
+     * Recorded, not silent. "Why did it not answer this one" is asked about
+     * deliberate silence as often as about failure.
+     */
+    if (draft.silent) {
+      return this.record(enterpriseId, messageId, AuditStatus.Success, {
+        skipped: Skip.NothingToSay,
+        conversationRefId: context.conversationRefId,
+        ...(draft.intent ? { intent: draft.intent } : {}),
+        usage: draft.usage,
+      });
+    }
+
+    /*
+     * NOTHING TO SEND, WHICH IS NOT THE SAME AS CHOOSING NOT TO.
+     *
+     * A model that answered with an envelope and no message in it, or whose
+     * reply was cut off before a single word of it was written, has failed
+     * — and failing quietly here would look exactly like the deliberate
+     * silence above. The customer gets the apology instead, which is what
+     * every other failure on this path does.
+     */
+    if (draft.text.trim().length === 0) {
+      await this.sendFallback(
+        enterpriseId,
+        messageId,
+        context.conversationRefId,
+        settings,
+        new Error('the model produced no message to send'),
+      );
+      return;
+    }
+
+    /*
      * ASK AGAIN BEFORE SENDING IT.
      *
      * The draft took seconds, and a customer can say three more things in
@@ -242,6 +286,18 @@ export class AutoReplyService {
       usage: draft.usage,
       context: draft.context,
       truncated: draft.truncated,
+      /*
+       * WHAT IT UNDERSTOOD AND WHAT IT COULD NOT DO. The handoff is the
+       * load-bearing one: the reply that goes with it has just told a
+       * customer somebody will come back to them, and a promise nobody can
+       * see is a promise nobody keeps.
+       */
+      ...(draft.handoff ? { handoff: draft.handoff } : {}),
+      ...(draft.intent ? { intent: draft.intent } : {}),
+      ...(draft.language ? { language: draft.language } : {}),
+      /* A model that stopped answering in the shape it was asked for is a
+       * prompt or a model to change, and that shows up here first. */
+      ...(draft.structured ? {} : { unstructured: true }),
     };
 
     const sent = await this.inbox.replyAsAssistant(enterpriseId, {
@@ -266,9 +322,27 @@ export class AutoReplyService {
         messageRefId: sent.messageRefId,
         provider: draft.provider,
         model: draft.model,
+        handoff: draft.handoff,
       },
       'assistant replied automatically',
     );
+
+    if (draft.handoff) {
+      /*
+       * WARN, because this one has a person waiting at the end of it. The
+       * assistant has answered and said a colleague will follow up; from
+       * here until somebody does, the business owes this customer something.
+       */
+      this.logger.warn(
+        {
+          enterpriseId,
+          conversationRefId: context.conversationRefId,
+          messageRefId: sent.messageRefId,
+          reason: draft.handoff,
+        },
+        'assistant asked for a person to take this conversation over',
+      );
+    }
   }
 
   /**

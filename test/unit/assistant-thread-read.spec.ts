@@ -4,7 +4,7 @@ import { ChatbotService } from '@/modules/inbox/chatbot.service';
 import { RequestContext } from '@/shared/context';
 import { ErrorCode } from '@/shared/errors';
 import type { ChatService } from '@/modules/ai/chat.service';
-import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
 
 /**
  * The regression that stopped the first automatic reply ever sent.
@@ -160,16 +160,20 @@ describe('which door the chatbot uses', () => {
         promptVersion: 1,
       }),
     } as unknown as ChatService;
-    const enterprises = {
-      findById: vi.fn().mockResolvedValue(null),
-    } as unknown as EnterpriseRepository;
+    const brief = {
+      build: vi.fn().mockResolvedValue({
+        xml: '',
+        counts: { hasBusinessProfile: false, hasPerson: false, hasPost: false },
+      }),
+    } as unknown as ConversationBriefService;
     return {
-      chatbot: new ChatbotService(inbox as never, enterprises, chat),
+      chatbot: new ChatbotService(inbox as never, brief, chat),
       inbox,
     };
   }
   function empty() {
     return {
+      conversation: { customerId: 7, conversationKind: 'direct_message', messageCount: 1 },
       messages: [{ id: 1, direction: 'inbound', body: 'hi', hasAttachments: false }],
       attachmentsByMessageId: new Map(),
       analysisByKey: new Map(),

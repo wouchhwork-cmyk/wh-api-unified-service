@@ -26,6 +26,7 @@ function serviceWith(over: {
   fallbackMessage?: string;
   mediaHoldMessage?: string;
   draftFails?: boolean;
+  draft?: Record<string, unknown>;
 }) {
   const chat = {
     currentSettings: vi.fn().mockResolvedValue({
@@ -69,6 +70,12 @@ function serviceWith(over: {
         provider: 'openai',
         promptVersion: 1,
         context: { messages: 3, mediaDescriptions: 1, hasBusinessProfile: true },
+        language: 'English',
+        intent: 'asking opening hours',
+        handoff: null,
+        silent: false,
+        structured: true,
+        ...over.draft,
       });
   const replyAsAssistant = vi
     .fn()
@@ -347,5 +354,58 @@ describe('automatic reply: when it speaks', () => {
     await service.considerReplying(1, 100);
     expect(draftReply).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls[0])).toContain('provider_has_no_key');
+  });
+});
+
+describe('automatic reply: what the model decided', () => {
+  it('does not answer "thanks", because a person reading an inbox would not', async () => {
+    const { service, replyAsAssistant, record } = serviceWith({
+      draft: { silent: true, text: '', intent: 'acknowledging' },
+    });
+    await service.considerReplying(1, 100);
+
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+    expect(JSON.stringify(record.mock.calls[0])).toContain('nothing_to_say');
+  });
+
+  it('apologises when the model produced no message, rather than going quiet', async () => {
+    /*
+     * Deliberate silence and a failed answer must not look the same: one of
+     * them owes this customer an apology.
+     */
+    const { service, replyAsAssistant, record } = serviceWith({
+      draft: { silent: false, text: '   ' },
+    });
+    await service.considerReplying(1, 100);
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { body: string };
+    expect(sent.body).toBe('Stepping away, back shortly.');
+    expect(JSON.stringify(record.mock.calls[0])).toContain('could_not_answer');
+  });
+
+  it('carries a handoff onto the message, where a colleague can see it', async () => {
+    const { service, replyAsAssistant } = serviceWith({
+      draft: {
+        text: 'Let me get a colleague onto this for you.',
+        handoff: 'wants a refund',
+        intent: 'refund request',
+      },
+    });
+    await service.considerReplying(1, 100);
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
+    expect(sent.assistant).toMatchObject({
+      handoff: 'wants a refund',
+      intent: 'refund request',
+      language: 'English',
+    });
+  });
+
+  it('marks a reply the model did not shape properly, so somebody notices', async () => {
+    const { service, replyAsAssistant } = serviceWith({ draft: { structured: false } });
+    await service.considerReplying(1, 100);
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
+    expect(sent.assistant.unstructured).toBe(true);
   });
 });

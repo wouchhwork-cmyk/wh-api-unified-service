@@ -19,12 +19,14 @@ import { InboxController } from './inbox.controller';
 import { InboxEventsService } from './inbox-events.service';
 import { AutoReplyService } from './auto-reply.service';
 import { ChatbotService } from './chatbot.service';
+import { ConversationBriefService } from './conversation-brief.service';
 import { InboxService } from './inbox.service';
 import { PostProjectorService } from './post-projector.service';
 
 const PROVIDERS = [
   InboxService,
   ChatbotService,
+  ConversationBriefService,
   AutoReplyService,
   EnterpriseRepository,
   SendReconciliationService,

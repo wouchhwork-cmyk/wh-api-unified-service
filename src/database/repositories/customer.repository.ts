@@ -54,6 +54,29 @@ export interface CustomerDirectoryRow {
   readonly isBlocked: boolean;
 }
 
+/**
+ * What the assistant is told about the person it is answering.
+ *
+ * DELIBERATELY NOT EVERYTHING ON THE ROW. `notes` and `tags` are colleagues
+ * writing to each other about a customer, and this codebase already decided
+ * once what happens when a model is handed those — internal notes are
+ * skipped when a thread is read, because "a model given them will quote them
+ * back to that customer". A tag reading `chargeback risk` is the same
+ * hazard in fewer words.
+ *
+ * What is here is what the person already knows about themselves: their
+ * name, the language they use, and the fact that they have written before.
+ */
+export interface AssistantCustomerRow {
+  readonly displayName: string | null;
+  readonly firstName: string | null;
+  readonly preferredLanguage: string | null;
+  readonly locale: string | null;
+  readonly timezone: string | null;
+  readonly conversationCount: number;
+  readonly firstSeenAt: Date | null;
+}
+
 @Injectable()
 export class CustomerRepository extends BaseRepository {
   /**
@@ -627,6 +650,31 @@ export class CustomerRepository extends BaseRepository {
         WHERE cu.enterprise_id = $1 AND cu.id = $2 AND cu.is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), customerId, IdentifierKind.InstagramUserId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The person behind a conversation, for the assistant answering them.
+   *
+   * One primary-key probe inside the tenant. It runs once per drafted reply,
+   * on a path that is already making a model call measured in seconds, so
+   * the round trip costs nothing worth saving by folding it into the thread
+   * read and making that query serve two masters.
+   */
+  async assistantProfile(
+    enterpriseId: number,
+    customerId: number,
+  ): Promise<AssistantCustomerRow | null> {
+    const rows = await this.query<AssistantCustomerRow>(
+      `SELECT display_name AS "displayName", first_name AS "firstName",
+              preferred_language AS "preferredLanguage", locale, timezone,
+              conversation_count AS "conversationCount",
+              first_seen_at AS "firstSeenAt"
+         FROM customers
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), customerId],
     );
     return rows[0] ?? null;
   }
