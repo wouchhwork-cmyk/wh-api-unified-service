@@ -258,6 +258,20 @@ export class ConversationBriefService {
       lines.push('  <history>This is the first time they have written.</history>');
     }
 
+    /*
+     * WHAT THE PLATFORM SAYS ABOUT THEM, which changes how a reply should
+     * read without changing what it may offer.
+     *
+     * Somebody who already follows the business does not need it introduced.
+     * Somebody with a large following writing in public is a reply that will
+     * be read by more people than the one who asked. Both are facts about
+     * reach and familiarity, which is why the rule beneath them draws the
+     * line explicitly: tone and care, never different terms. A model handed
+     * a follower count and no instruction will invent a reason to treat one
+     * person better than another, and that reason will be the number.
+     */
+    lines.push(...this.platformSignals(conversation.customerProfile));
+
     if (lines.length === 0) return null;
     /*
      * SAID OUT LOUD, because it was not obvious enough to be assumed.
@@ -272,6 +286,46 @@ export class ConversationBriefService {
       '  <rule>They know all of this about themselves. Use it naturally when it answers what they asked, and never claim you cannot see it.</rule>',
     );
     return ['<person>', ...lines, '</person>'].join('\n');
+  }
+
+  /**
+   * The platform's own read on this person.
+   *
+   * Read defensively: it is a jsonb bag written by whatever last learned
+   * something, and a missing key means "we have not been told" rather than
+   * "no". Only what is actually there is stated — an absent follower count
+   * says nothing, where a zero would say something false.
+   *
+   * ONLY `followsUs` STATES ITS NEGATIVE, and that is deliberate rather than
+   * an oversight. "They do not follow this business" is worth a line,
+   * because it is the difference between introducing it and assuming it is
+   * known. Nobody needs telling that a given person is not verified or that
+   * the business does not follow them back: those are the ordinary case, and
+   * a line spent on each is a line paid for on every reply.
+   */
+  private platformSignals(profile: Record<string, unknown> | null | undefined): string[] {
+    if (!profile) return [];
+    const lines: string[] = [];
+
+    if (profile.followsUs === true) {
+      lines.push('  <follows_us>yes</follows_us>');
+    } else if (profile.followsUs === false) {
+      lines.push('  <follows_us>no</follows_us>');
+    }
+
+    if (profile.weFollowThem === true) lines.push('  <we_follow_them>yes</we_follow_them>');
+    if (profile.isVerified === true) lines.push('  <verified>yes</verified>');
+
+    const followers = profile.followerCount;
+    if (typeof followers === 'number' && Number.isFinite(followers) && followers >= 0) {
+      lines.push(`  <followers>${Math.trunc(followers)}</followers>`);
+    }
+
+    if (lines.length === 0) return [];
+    lines.push(
+      '  <rule>These describe reach and familiarity, nothing more. Let them affect how carefully you write — somebody who already follows the business needs no introduction to it, and a reply to somebody with a large following in public will be read by more people than asked. They must NEVER affect what you offer: the same prices, the same terms and the same answers for everybody.</rule>',
+    );
+    return lines;
   }
 
   /** Our post, when the thread hangs off one. */

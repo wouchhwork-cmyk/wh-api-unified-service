@@ -30,6 +30,7 @@ function briefWith(
     hasMedia?: boolean;
     shownMessages?: number;
     summary?: string | null;
+    customerProfile?: Record<string, unknown>;
   } = {},
 ) {
   const enterprises = {
@@ -48,6 +49,7 @@ function briefWith(
     conversation: {
       customerId: 7,
       customerDisplayName: null,
+      customerProfile: over.customerProfile ?? {},
       conversationKind: ConversationKind.DirectMessage,
       platform: Platform.Instagram,
       postId: null,
@@ -202,5 +204,49 @@ describe('the notes it wrote last time', () => {
   it('refuses to carry a note longer than it is worth', async () => {
     const { xml } = await briefWith({ summary: 'x'.repeat(5_000) });
     expect(xml.length).toBeLessThan(3_000);
+  });
+});
+
+/**
+ * What the platform says about the person, which changes how a reply reads
+ * without changing what it may offer.
+ *
+ * A model handed a follower count and no instruction will invent a reason to
+ * treat one person better than another, and the reason will be the number.
+ */
+describe('the platform signals', () => {
+  it('says whether they already follow the business', async () => {
+    const { xml } = await briefWith({ customerProfile: { followsUs: true } });
+    expect(xml).toContain('<follows_us>yes</follows_us>');
+  });
+
+  it('carries reach when the platform reported it', async () => {
+    const { xml } = await briefWith({
+      customerProfile: { followerCount: 1145, isVerified: true, weFollowThem: true },
+    });
+
+    expect(xml).toContain('<followers>1145</followers>');
+    expect(xml).toContain('<verified>yes</verified>');
+    expect(xml).toContain('<we_follow_them>yes</we_follow_them>');
+  });
+
+  it('draws the line between tone and terms', async () => {
+    const { xml } = await briefWith({ customerProfile: { followerCount: 90_000 } });
+    expect(xml).toContain('NEVER affect what you offer');
+    expect(xml).toContain('the same prices, the same terms and the same answers for everybody');
+  });
+
+  it('says nothing at all when the platform told us nothing', async () => {
+    /* A missing count means "we have not been told", not zero — and a zero
+     * stated as fact is a lie about somebody's account. */
+    const { xml } = await briefWith({ customerProfile: {} });
+
+    expect(xml).not.toContain('<followers>');
+    expect(xml).not.toContain('<follows_us>');
+  });
+
+  it('ignores a follower count that is not a number', async () => {
+    const { xml } = await briefWith({ customerProfile: { followerCount: 'lots' } });
+    expect(xml).not.toContain('<followers>');
   });
 });
