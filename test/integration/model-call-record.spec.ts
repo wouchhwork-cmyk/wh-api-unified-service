@@ -34,19 +34,28 @@ describe('the model call record', () => {
     otherEnterpriseId = await seedEnterprise(db, 'Rival Co', 'rival-co');
   });
 
-  const call = (over: Partial<Parameters<ModelCallRepository['record']>[0]> = {}) =>
-    calls.record({
+  /** One whole call: opened before it goes out, settled when it comes back. */
+  const call = async (
+    intent: Partial<Parameters<ModelCallRepository['begin']>[0]> = {},
+    outcome: Partial<Parameters<ModelCallRepository['settle']>[1]> = {},
+  ) => {
+    const id = await calls.begin({
       enterpriseId,
       provider: 'openai',
       model: 'gpt-6-luna',
       purpose: ModelCallPurpose.AutoReply,
+      ...intent,
+    });
+    await calls.settle(id, {
       status: ModelCallStatus.Ok,
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
       durationMs: 850,
-      ...over,
+      ...outcome,
     });
+    return id;
+  };
 
   const since = () => new Date(Date.now() - 60_000);
 
@@ -70,8 +79,13 @@ describe('the model call record', () => {
    * first two spent are simply gone.
    */
   it('keeps every attempt, not just the one that worked', async () => {
-    await call({ status: ModelCallStatus.Failed, failureCode: 'CHAT_TIMEOUT', outputTokens: 0 });
-    await call({ status: ModelCallStatus.Failed, failureCode: 'CHAT_TIMEOUT', outputTokens: 0 });
+    const failed = {
+      status: ModelCallStatus.Failed as const,
+      failureCode: 'CHAT_TIMEOUT',
+      outputTokens: 0,
+    };
+    await call({}, failed);
+    await call({}, failed);
     await call();
 
     const [row] = await calls.spendFor(enterpriseId, since());
@@ -116,18 +130,89 @@ describe('the model call record', () => {
    * failed. A bookkeeping write that took the customer's reply down with it
    * would be the worse bug by a wide margin.
    */
-  it('swallows its own failure rather than failing the call it is recording', async () => {
+  it('swallows a failure to SETTLE rather than failing the call it describes', async () => {
+    /*
+     * By then the call has already happened. A bookkeeping failure that took
+     * the customer's reply with it would be the worse bug by a wide margin,
+     * and the row is not lost — it stays in flight for the sweep.
+     */
+    const id = await calls.begin({
+      enterpriseId,
+      provider: 'openai',
+      model: 'gpt-6-luna',
+      purpose: ModelCallPurpose.AutoReply,
+    });
+
     await expect(
-      calls.record({
-        enterpriseId,
-        provider: 'openai',
-        /* Longer than the column, so the insert is refused by Postgres. */
-        model: 'm'.repeat(200),
-        purpose: ModelCallPurpose.AutoReply,
-        status: ModelCallStatus.Ok,
-      }),
+      /* Longer than the column, so the update is refused by Postgres. */
+      calls.settle(id, { status: ModelCallStatus.Ok }, 'm'.repeat(200)),
     ).resolves.toBeUndefined();
 
-    expect(await calls.spendFor(enterpriseId, since())).toEqual([]);
+    expect(await inFlight()).toBe(1);
   });
+
+  /**
+   * THE WHOLE POINT OF WRITING IT FIRST. A process that dies between the
+   * model answering and the settle landing used to leave nothing at all:
+   * a call made, very likely billed, with no trace.
+   */
+  describe('a call whose process never came back', () => {
+    it('leaves a row saying one went out', async () => {
+      await calls.begin({
+        enterpriseId,
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        purpose: ModelCallPurpose.AutoReply,
+      });
+
+      expect(await inFlight()).toBe(1);
+    });
+
+    it('is settled as unknown rather than failed', async () => {
+      /* "It failed" is a claim about the provider. What happened is that we
+       * stopped listening, and it may well have succeeded and been billed. */
+      await calls.begin({
+        enterpriseId,
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        purpose: ModelCallPurpose.AutoReply,
+      });
+      await db.query(`UPDATE model_calls SET created_at = now() - interval '1 hour'`);
+
+      await expect(calls.settleAbandoned(60_000)).resolves.toBe(1);
+
+      /* The row was backdated, so the window has to reach back past it. */
+      const [row] = await calls.spendFor(enterpriseId, new Date(Date.now() - 2 * 60 * 60_000));
+      expect(row).toMatchObject({ unknown: 1, failed: 0 });
+    });
+
+    it('leaves a call that is merely slow alone', async () => {
+      await calls.begin({
+        enterpriseId,
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        purpose: ModelCallPurpose.AutoReply,
+      });
+
+      await expect(calls.settleAbandoned(60_000)).resolves.toBe(0);
+      expect(await inFlight()).toBe(1);
+    });
+
+    it('never reopens one that was already settled', async () => {
+      const id = await call();
+      await db.query(`UPDATE model_calls SET created_at = now() - interval '1 hour'`);
+
+      await expect(calls.settleAbandoned(60_000)).resolves.toBe(0);
+      const [row] = await calls.spendFor(enterpriseId, new Date(Date.now() - 2 * 60 * 60_000));
+      expect(row?.unknown).toBe(0);
+      expect(id).toBeGreaterThan(0);
+    });
+  });
+
+  async function inFlight(): Promise<number> {
+    const rows = await db.query<{ n: string }[]>(
+      `SELECT COUNT(*) AS n FROM model_calls WHERE status = 'in_flight'`,
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
 });

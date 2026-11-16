@@ -273,6 +273,21 @@ export class ChatService {
      * the outcome alone until a customer complains.
      */
     const startedAt = Date.now();
+
+    /*
+     * THE RECORD IS OPENED BEFORE THE CALL. If this process dies while the
+     * model is thinking, the row survives saying one went out — which is the
+     * fact worth having, and the one that recording afterwards loses.
+     */
+    const callId = await this.calls.begin({
+      enterpriseId: options.enterpriseId,
+      provider: settings.provider,
+      model: settings.model,
+      purpose: options.purpose,
+      messageId: options.messageId ?? null,
+      promptVersion: settings.version,
+    });
+
     let reply;
     try {
       reply = await this.router.chat(settings.provider, {
@@ -293,14 +308,8 @@ export class ChatService {
        * when they ask why a customer got an apology. Recorded before the
        * error is re-thrown, so the caller's own handling is unchanged.
        */
-      await this.calls.record({
-        enterpriseId: options.enterpriseId,
-        provider: settings.provider,
-        model: settings.model,
-        purpose: options.purpose,
+      await this.calls.settle(callId, {
         status: ModelCallStatus.Failed,
-        messageId: options.messageId ?? null,
-        promptVersion: settings.version,
         durationMs: Date.now() - startedAt,
         failureCode: error instanceof ChatError ? error.failureCode : 'CHAT_CALL_FAILED',
         /* The message, never the request: a model error can quote the prompt
@@ -320,22 +329,21 @@ export class ChatService {
      */
     const fields = readChatReply(reply.text);
 
-    await this.calls.record({
-      enterpriseId: options.enterpriseId,
-      provider: reply.provider,
-      model: reply.model,
-      purpose: options.purpose,
-      status: ModelCallStatus.Ok,
-      messageId: options.messageId ?? null,
-      promptVersion: settings.version,
-      inputTokens: reply.usage.inputTokens,
-      outputTokens: reply.usage.outputTokens,
-      totalTokens: reply.usage.totalTokens,
-      cachedInputTokens: reply.usage.cachedInputTokens,
-      reasoningTokens: reply.usage.reasoningTokens,
-      durationMs,
-      truncated: reply.truncated,
-    });
+    await this.calls.settle(
+      callId,
+      {
+        status: ModelCallStatus.Ok,
+        inputTokens: reply.usage.inputTokens,
+        outputTokens: reply.usage.outputTokens,
+        totalTokens: reply.usage.totalTokens,
+        cachedInputTokens: reply.usage.cachedInputTokens,
+        reasoningTokens: reply.usage.reasoningTokens,
+        durationMs,
+        truncated: reply.truncated,
+      },
+      /* What actually answered, which a router is free to differ on. */
+      reply.model,
+    );
 
     return {
       ...reply,

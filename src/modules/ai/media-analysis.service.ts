@@ -93,6 +93,12 @@ export class MediaAnalysisService {
    * something to rely on.
    */
   async analyse(claimed: ClaimedAnalysis, leaseOwner: string): Promise<void> {
+    /*
+     * Held across the try so the failure path can close the SAME row rather
+     * than opening a second one. Null once settled, and null throughout for
+     * every failure that never reached a model.
+     */
+    let callId: number | null = null;
     try {
       if (!this.gemini.enabled) {
         throw new MediaAnalysisError(
@@ -128,6 +134,21 @@ export class MediaAnalysisService {
       const instruction = await this.currentSettings();
       /* Ours rather than the provider's: neither reports how long it took. */
       const startedAt = Date.now();
+
+      /*
+       * OPENED BEFORE THE CALL, so a worker that dies mid-describe still
+       * leaves a row saying one went out. Settled below on success, and by
+       * `settleFailure` on the way down.
+       */
+      callId = await this.calls.begin({
+        enterpriseId: claimed.enterpriseId,
+        provider: 'gemini',
+        model: instruction.model,
+        purpose: ModelCallPurpose.MediaDescription,
+        mediaKey: claimed.mediaKey,
+        promptVersion: instruction.version,
+      });
+
       const outcome = await this.gemini.describeMedia({
         bytes: media.bytes,
         mimeType: media.mimeType,
@@ -151,19 +172,18 @@ export class MediaAnalysisService {
        * updated in place on a retry — so without this, the tokens a failed
        * first attempt spent would simply disappear from the record.
        */
-      await this.calls.record({
-        enterpriseId: claimed.enterpriseId,
-        provider: 'gemini',
-        model: outcome.model,
-        purpose: ModelCallPurpose.MediaDescription,
-        status: ModelCallStatus.Ok,
-        mediaKey: claimed.mediaKey,
-        promptVersion: instruction.version,
-        inputTokens: outcome.usage.inputTokens,
-        outputTokens: outcome.usage.outputTokens,
-        totalTokens: outcome.usage.totalTokens,
-        durationMs: Date.now() - startedAt,
-      });
+      await this.calls.settle(
+        callId,
+        {
+          status: ModelCallStatus.Ok,
+          inputTokens: outcome.usage.inputTokens,
+          outputTokens: outcome.usage.outputTokens,
+          totalTokens: outcome.usage.totalTokens,
+          durationMs: Date.now() - startedAt,
+        },
+        outcome.model,
+      );
+      callId = null;
 
       await this.analyses.markDone(claimed.id, leaseOwner, {
         /*
@@ -194,7 +214,7 @@ export class MediaAnalysisService {
         'described a piece of media',
       );
     } catch (error) {
-      await this.settleFailure(claimed, leaseOwner, error);
+      await this.settleFailure(claimed, leaseOwner, error, callId);
     }
   }
 
@@ -251,6 +271,7 @@ export class MediaAnalysisService {
     claimed: ClaimedAnalysis,
     leaseOwner: string,
     error: unknown,
+    callId: number | null,
   ): Promise<void> {
     const known = error instanceof MediaAnalysisError;
     const failureCode = known ? error.failureCode : MediaFailure.ModelFailed;
@@ -263,19 +284,15 @@ export class MediaAnalysisService {
      * ONLY WHEN THE CALL ACTUALLY WENT OUT.
      *
      * Most failures here never reach a model: a dead CDN link, a file too
-     * large to send, a kind nothing reads, the feature switched off. Filing
-     * those as model calls would put failures in the record against a
-     * provider that was never asked anything, and the first person reading
-     * it would conclude the model was broken.
+     * large to send, a kind nothing reads, the feature switched off. Those
+     * never opened a record, so `callId` is null and there is nothing to
+     * close — which is better than the old shape, where the decision was a
+     * list of failure codes somebody had to keep in step with the control
+     * flow. The row's own existence is now the answer.
      */
-    if (failureCode === MediaFailure.ModelFailed || failureCode === MediaFailure.ModelUnparsable) {
-      await this.calls.record({
-        enterpriseId: claimed.enterpriseId,
-        provider: 'gemini',
-        model: (await this.currentSettings()).model,
-        purpose: ModelCallPurpose.MediaDescription,
+    if (callId !== null) {
+      await this.calls.settle(callId, {
         status: ModelCallStatus.Failed,
-        mediaKey: claimed.mediaKey,
         failureCode,
         /* Redacted at the throw site: a model error can quote the prompt
          * back, and the prompt is wrapped around a customer's photo. */

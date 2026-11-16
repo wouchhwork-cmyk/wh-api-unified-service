@@ -48,6 +48,24 @@ export enum ModelCallPurpose {
 }
 
 export enum ModelCallStatus {
+  /**
+   * Written BEFORE the call goes out.
+   *
+   * A row in this state is the only thing that can survive a process dying
+   * mid-call. Recording afterwards looks equivalent and is not: the window
+   * between a model answering and the insert landing is exactly where a
+   * deploy costs you a call you were billed for and have no trace of.
+   */
+  InFlight = 'in_flight',
   Ok = 'ok',
   Failed = 'failed',
+  /**
+   * It went out and we never learned what came back.
+   *
+   * The process died between the call and its settle. It may have succeeded,
+   * it may have been billed, and nothing here can say which — which is worth
+   * recording honestly rather than leaving as a row that claims to be still
+   * running weeks later.
+   */
+  Unknown = 'unknown',
 }

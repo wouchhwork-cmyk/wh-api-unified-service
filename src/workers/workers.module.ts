@@ -25,6 +25,7 @@ import { buildLoggerConfig } from '@/shared/logging/logger.config';
 import { BackfillWorker } from './backfill.worker';
 import { InboundProjectorWorker } from './inbound-projector.worker';
 import { AiModule } from '@/modules/ai';
+import { ModelCallRepository } from '@/database/repositories/model-call.repository';
 import { LeaseReaperWorker } from './lease-reaper.worker';
 import { MediaAnalysisWorker } from './media-analysis.worker';
 import { AssistantReplyWorker } from './assistant-reply.worker';
@@ -93,6 +94,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     OutboundRelayWorker,
     BackfillWorker,
     LeaseReaperWorker,
+    ModelCallRepository,
     MediaAnalysisWorker,
     AssistantReplyWorker,
     QueueGaugeWorker,

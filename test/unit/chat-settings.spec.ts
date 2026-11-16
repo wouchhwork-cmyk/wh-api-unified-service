@@ -42,13 +42,20 @@ function serviceWith(stored: Record<string, unknown> | null, version = 3) {
   const cipher = new TokenCipherService({
     crypto: { activeKeyId: 'k1', keys: new Map([['k1', Buffer.alloc(32, 7)]]) },
   } as unknown as AppConfigService);
-  const record = vi.fn().mockResolvedValue(undefined);
-  const calls = { record } as unknown as ModelCallRepository;
+  /*
+   * Two phases, because the record is opened BEFORE the call and closed
+   * after it — which is the only shape that survives a process dying while
+   * a model is thinking.
+   */
+  const begin = vi.fn().mockResolvedValue(77);
+  const settle = vi.fn().mockResolvedValue(undefined);
+  const calls = { begin, settle } as unknown as ModelCallRepository;
   return {
     service: new ChatService(settings, router, config, cipher, calls),
     chat,
     cipher,
-    record,
+    begin,
+    settle,
   };
 }
 
@@ -147,28 +154,33 @@ describe('chat settings', () => {
  */
 describe('the record of a call that left the service', () => {
   it('records a successful one, with what it cost and how long it took', async () => {
-    const { service, record } = serviceWith({ prompt: 'Be brief.' }, 4);
+    const { service, begin, settle } = serviceWith({ prompt: 'Be brief.' }, 4);
     await service.reply([{ role: 'user', text: 'hi' }], {
       enterpriseId: 9,
       purpose: ModelCallPurpose.AutoReply,
       messageId: 100,
     });
 
-    expect(record).toHaveBeenCalledWith(
+    /* Opened first, with everything known before the call went out. */
+    expect(begin).toHaveBeenCalledWith(
       expect.objectContaining({
         enterpriseId: 9,
         purpose: ModelCallPurpose.AutoReply,
-        status: 'ok',
         messageId: 100,
         promptVersion: 4,
       }),
     );
-    const [[written]] = record.mock.calls as [[{ durationMs: number }]];
-    expect(written.durationMs).toBeGreaterThanOrEqual(0);
+    expect(settle).toHaveBeenCalledWith(
+      77,
+      expect.objectContaining({ status: 'ok' }),
+      expect.any(String),
+    );
+    const [[, outcome]] = settle.mock.calls as [[number, { durationMs: number }]];
+    expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it('records one that failed, and still lets the error through', async () => {
-    const { service, chat, record } = serviceWith({ prompt: 'Be brief.' });
+    const { service, chat, begin, settle } = serviceWith({ prompt: 'Be brief.' });
     chat.mockRejectedValueOnce(new ChatError('CHAT_TIMEOUT', 'the model did not answer', true));
 
     await expect(
@@ -178,25 +190,29 @@ describe('the record of a call that left the service', () => {
       }),
     ).rejects.toThrow('the model did not answer');
 
-    expect(record).toHaveBeenCalledWith(
+    /* The row was already open before the failure, so there is something to
+     * close rather than a call nobody can see. */
+    expect(begin).toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledWith(
+      77,
       expect.objectContaining({ status: 'failed', failureCode: 'CHAT_TIMEOUT' }),
     );
   });
 
   it('tells a draft apart from a reply the platform sent on its own', async () => {
-    const { service, record } = serviceWith({ prompt: 'Be brief.' });
+    const { service, begin } = serviceWith({ prompt: 'Be brief.' });
     await service.reply([{ role: 'user', text: 'hi' }], {
       enterpriseId: 9,
       purpose: ModelCallPurpose.Draft,
     });
 
-    expect(record).toHaveBeenCalledWith(
+    expect(begin).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: ModelCallPurpose.Draft }),
     );
   });
 
   it('never puts the conversation in the record, only why it failed', async () => {
-    const { service, chat, record } = serviceWith({ prompt: 'Be brief.' });
+    const { service, chat, begin, settle } = serviceWith({ prompt: 'Be brief.' });
     chat.mockRejectedValueOnce(new ChatError('CHAT_CALL_FAILED', 'rate limit reached', false));
 
     await expect(
@@ -206,6 +222,7 @@ describe('the record of a call that left the service', () => {
       }),
     ).rejects.toThrow();
 
-    expect(JSON.stringify(record.mock.calls)).not.toContain('12345');
+    expect(JSON.stringify(begin.mock.calls)).not.toContain('12345');
+    expect(JSON.stringify(settle.mock.calls)).not.toContain('12345');
   });
 });

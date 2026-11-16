@@ -825,6 +825,9 @@ export async function applyPostTableObjects(
         EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_failure_idx
                    ON model_calls (provider, created_at DESC)
                    WHERE status = ''failed''';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_in_flight_idx
+                   ON model_calls (created_at)
+                   WHERE status = ''in_flight''';
       END IF;
     END
     $do$;

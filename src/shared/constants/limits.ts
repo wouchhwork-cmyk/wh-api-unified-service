@@ -784,3 +784,17 @@ export const ASSISTANT_REPLY_RETRY_BASE_MS = 30_000;
  * enough not to spin, short enough that a customer is not left holding.
  */
 export const ASSISTANT_REPLY_MEDIA_WAIT_MS = 45_000;
+
+/**
+ * How long a model call may sit unsettled before it is called unknown.
+ *
+ * COMFORTABLY LONGER THAN THE SLOWEST CALL, because the cost of being wrong
+ * is asymmetric. Too long and a dead process's row says "in flight" for a
+ * while, which misleads nobody for long. Too short and a call that was
+ * simply slow is recorded as an outcome nobody ever learned — a lie about a
+ * call that answered perfectly well.
+ *
+ * The chat client's own budget is its timeout times its retries; this is
+ * several times that, which is what makes it safe rather than tuned.
+ */
+export const MODEL_CALL_ABANDONED_MS = 10 * 60_000;
