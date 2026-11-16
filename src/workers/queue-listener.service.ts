@@ -7,11 +7,13 @@ import {
   NOTIFY_INBOUND_CHANNEL,
   NOTIFY_OUTBOUND_CHANNEL,
   NOTIFY_SYNC_CHANNEL,
+  NOTIFY_ASSISTANT_CHANNEL,
   RETRY_MAX_DELAY_MS,
   LISTEN_KEEPALIVE_DELAY_MS,
 } from '@/shared/constants';
 import { nextAttemptDelayMs } from '@/modules/ledger/backoff.util';
 import { BackfillWorker } from './backfill.worker';
+import { AssistantReplyWorker } from './assistant-reply.worker';
 import type { BasePoller } from './base-poller';
 import { InboundProjectorWorker } from './inbound-projector.worker';
 import { OutboundRelayWorker } from './outbound-relay.worker';
@@ -43,6 +45,7 @@ export class QueueListenerService implements OnModuleInit, OnApplicationShutdown
     inboundProjector: InboundProjectorWorker,
     outboundRelay: OutboundRelayWorker,
     backfill: BackfillWorker,
+    assistantReply: AssistantReplyWorker,
     private readonly config: AppConfigService,
     @InjectPinoLogger(QueueListenerService.name) private readonly logger: PinoLogger,
   ) {
@@ -50,6 +53,7 @@ export class QueueListenerService implements OnModuleInit, OnApplicationShutdown
       [NOTIFY_INBOUND_CHANNEL, inboundProjector],
       [NOTIFY_OUTBOUND_CHANNEL, outboundRelay],
       [NOTIFY_SYNC_CHANNEL, backfill],
+      [NOTIFY_ASSISTANT_CHANNEL, assistantReply],
     ]);
   }
 

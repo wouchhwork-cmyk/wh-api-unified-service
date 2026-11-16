@@ -61,6 +61,7 @@ describe('LISTEN connections ask for TCP keepalive', () => {
       poller,
       poller,
       poller,
+      poller,
       { database: databaseConfig } as never,
       silentLogger,
     );

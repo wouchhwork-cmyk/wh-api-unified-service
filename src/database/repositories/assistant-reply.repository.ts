@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AssistantReplyStatus } from '@/shared/enums';
+import { NOTIFY_ASSISTANT_CHANNEL } from '@/shared/constants';
 import { QueueLedgerRepository, type QueueTable } from './queue-ledger.repository';
 
 export interface ClaimedReply {
@@ -246,6 +247,9 @@ export class AssistantReplyRepository extends QueueLedgerRepository {
       RETURNING id`,
       [this.requireEnterprise(enterpriseId), [...messageIds], AssistantReplyStatus.Pending],
     );
+
+    /* The whole point of waking a row is that somebody is waiting on it. */
+    if (rows.length > 0) await this.notifyQueue(NOTIFY_ASSISTANT_CHANNEL);
     return rows.length;
   }
 }

@@ -243,6 +243,15 @@ export const DEAD_LETTER_ALERT_WINDOW_MS = 60 * 60 * 1000;
 export const NOTIFY_INBOUND_CHANNEL = 'wouchh_inbound_ready';
 export const NOTIFY_OUTBOUND_CHANNEL = 'wouchh_outbound_ready';
 export const NOTIFY_SYNC_CHANNEL = 'wouchh_sync_ready';
+/**
+ * A customer is waiting on this one.
+ *
+ * The same optimisation as the others and the same guarantee — the poll
+ * timer is what delivers — but the latency it saves is felt by a person
+ * rather than by a dashboard. Without it an owed reply sits until the idle
+ * tick, which is ten seconds of somebody watching a chat window.
+ */
+export const NOTIFY_ASSISTANT_CHANNEL = 'wouchh_assistant_ready';
 
 /** Coalesce a burst of notifications into one wake-up. */
 export const NOTIFY_DEBOUNCE_MS = 50;
