@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
-import type { MessageRow } from '@/database/repositories/message.repository';
+import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
 import type { ConversationRow } from '@/database/repositories/conversation.repository';
 import { ChatService, type ChatAnswer } from '@/modules/ai/chat.service';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
@@ -32,6 +32,7 @@ export interface DraftedReply extends ChatAnswer {
     readonly hasBusinessProfile: boolean;
     readonly hasPerson: boolean;
     readonly hasPost: boolean;
+    readonly hasSummary: boolean;
   };
 }
 
@@ -63,6 +64,7 @@ export class ChatbotService {
   constructor(
     private readonly inbox: InboxService,
     private readonly brief: ConversationBriefService,
+    private readonly messages: MessageRepository,
     private readonly chat: ChatService,
   ) {}
 
@@ -164,17 +166,41 @@ export class ChatbotService {
 
       turns.push({
         role: message.direction === MessageDirection.Inbound ? 'user' : 'assistant',
-        text,
+        /*
+         * EVERY TURN CARRIES ITS OWN ID, so the notes can point at a message
+         * rather than describe it. "id abc123 — they complained about a
+         * damaged parcel" survives the message scrolling out of the window
+         * and can still be opened by a person.
+         *
+         * The PUBLIC ref id, not the row id. It costs more characters and it
+         * is the one this service is allowed to show: the notes are stored
+         * and surfaced, and an internal bigint has no business in either.
+         */
+        text: `[id:${message.refId}] ${text}`,
       });
     }
 
     const shown = turns.slice(-CHAT_MAX_TURNS);
+
+    /*
+     * ITS OWN QUERY, not something picked out of the thread above. The notes
+     * exist so the window can be short, which means the reply that wrote
+     * them is routinely outside it — ten messages in a row from one customer
+     * pushes the last answer out entirely, and that is exactly when the
+     * notes matter most.
+     */
+    const summary = await this.messages.latestAssistantSummary(
+      enterpriseId,
+      thread.conversation.id,
+    );
+
     const brief = await this.brief.build({
       enterpriseId,
       conversation: thread.conversation,
       shownMessages: shown.length,
       mediaLanguages,
       hasMedia: mediaDescriptions > 0,
+      summary,
     });
 
     const answer = await this.chat.reply(shown, {

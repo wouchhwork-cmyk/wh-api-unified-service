@@ -699,12 +699,27 @@ export const CHAT_MAX_OUTPUT_TOKENS = 700;
 /**
  * How much of a thread the assistant is shown.
  *
- * Enough for the conversation to make sense, bounded because every turn is
- * billed again on every reply — and because the useful context of a support
- * conversation is the recent part of it. Older history is not free to send
- * and rarely changes the answer.
+ * HALVED ONCE THE ASSISTANT STARTED KEEPING NOTES. The window used to be the
+ * whole of its memory, so it had to be long enough that a conversation did
+ * not restart halfway through — and every one of those turns was billed
+ * again on every single reply, for the entire life of the thread.
+ *
+ * Now each reply rewrites a short summary of everything up to itself, and
+ * that summary is carried forward. The window only has to cover what has
+ * happened since the last reply, which is a handful of messages. What came
+ * before arrives as a paragraph instead of forty turns.
  */
-export const CHATBOT_CONTEXT_MESSAGES = 20;
+export const CHATBOT_CONTEXT_MESSAGES = 10;
+
+/**
+ * How long the assistant's running notes may be.
+ *
+ * REWRITTEN, NEVER APPENDED, and this is the arithmetic that makes that
+ * true. A note that only grows ends up costing more than the messages it
+ * replaced — and the whole point of keeping it is that it costs less. The
+ * prompt asks for brevity; this is what happens when it is not given.
+ */
+export const CHATBOT_SUMMARY_CHARS = 600;
 
 /** How much of one message the assistant is shown, so a pasted essay cannot dominate. */
 export const CHATBOT_MESSAGE_CHARS = 1_500;

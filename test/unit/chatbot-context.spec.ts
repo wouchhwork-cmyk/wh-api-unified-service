@@ -3,6 +3,7 @@ import { ChatbotService } from '@/modules/inbox/chatbot.service';
 import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { ChatService } from '@/modules/ai/chat.service';
 import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
+import type { MessageRepository } from '@/database/repositories/message.repository';
 import { ConversationKind, MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
 
 /**
@@ -16,6 +17,7 @@ import { ConversationKind, MediaAnalysisStatus, MessageDirection } from '@/share
  * entire conversation is about.
  */
 const CONVERSATION = {
+  id: 42,
   customerId: 7,
   conversationKind: ConversationKind.DirectMessage,
   messageCount: 3,
@@ -42,9 +44,12 @@ function serviceWith(
 
   const build = vi.fn().mockResolvedValue({
     xml: '<business><name>Acme</name></business>',
-    counts: { hasBusinessProfile: true, hasPerson: true, hasPost: false },
+    counts: { hasBusinessProfile: true, hasPerson: true, hasPost: false, hasSummary: false },
   });
   const brief = { build } as unknown as ConversationBriefService;
+
+  const latestAssistantSummary = vi.fn().mockResolvedValue(null);
+  const messages = { latestAssistantSummary } as unknown as MessageRepository;
 
   const reply = vi.fn().mockResolvedValue({
     text: 'drafted',
@@ -61,18 +66,27 @@ function serviceWith(
     ...answer,
   });
   const chat = { reply } as unknown as ChatService;
-  return { service: new ChatbotService(inbox, brief, chat), reply, build };
+  return {
+    service: new ChatbotService(inbox, brief, messages, chat),
+    reply,
+    build,
+    latestAssistantSummary,
+  };
 }
 
 function message(id: number, over: Record<string, unknown> = {}) {
   return {
     id,
+    refId: `ref-${id}`,
     direction: MessageDirection.Inbound,
     body: `message ${id}`,
     isInternalNote: false,
     ...over,
   };
 }
+
+/** The turn text with its id marker taken off, for the assertions that predate it. */
+const said = (turn: { text: string }) => turn.text.replace(/^\[id:[^\]]+\]\s*/, '');
 
 describe('chatbot context', () => {
   it('reads the conversation in the order it happened, not newest first', async () => {
@@ -83,7 +97,7 @@ describe('chatbot context', () => {
     await service.draftReply(1, 'conv-ref');
 
     const turns = reply.mock.calls[0]?.[0] as { text: string }[];
-    expect(turns.map((turn) => turn.text)).toEqual(['message 1', 'message 2', 'message 3']);
+    expect(turns.map(said)).toEqual(['message 1', 'message 2', 'message 3']);
   });
 
   it('maps who said what, so the model knows which half is its own', async () => {
@@ -95,7 +109,8 @@ describe('chatbot context', () => {
     });
     await service.draftReply(1, 'conv-ref');
 
-    expect(reply.mock.calls[0]?.[0]).toEqual([
+    const turns = reply.mock.calls[0]?.[0] as { role: string; text: string }[];
+    expect(turns.map((turn) => ({ role: turn.role, text: said(turn) }))).toEqual([
       { role: 'user', text: 'they said this' },
       { role: 'assistant', text: 'we said this' },
     ]);
@@ -147,7 +162,7 @@ describe('chatbot context', () => {
       ]),
     });
     const draft = await service.draftReply(1, 'conv-ref');
-    expect((reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text).toBe('look');
+    expect(said((reply.mock.calls[0]?.[0] as { text: string }[])[0]!)).toBe('look');
     expect(draft.context.mediaDescriptions).toBe(0);
   });
 
@@ -219,5 +234,81 @@ describe('chatbot context', () => {
     /* And it says whose spend it is: a colleague pressed the button. */
     expect(options.purpose).toBe('draft');
     expect(draft.context.hasBusinessProfile).toBe(true);
+  });
+});
+
+/**
+ * The notes are what let the window be short.
+ *
+ * Without them, remembering message four on message forty means paying for
+ * all forty on every reply, for as long as the thread lives.
+ */
+describe('what it remembers from before the window', () => {
+  it('reads the notes by their own query, not out of the messages it was shown', async () => {
+    /*
+     * The reply that wrote them is routinely OUTSIDE the window — ten
+     * messages in a row from one customer push the last answer out of it
+     * entirely, which is exactly when the notes matter most.
+     */
+    const { service, latestAssistantSummary } = serviceWith({ messages: [message(1)] });
+    await service.draftReply(1, 'conv-ref');
+
+    expect(latestAssistantSummary).toHaveBeenCalledWith(1, 42);
+  });
+
+  it('hands them to the brief to carry forward', async () => {
+    const { service, build, latestAssistantSummary } = serviceWith({ messages: [message(1)] });
+    latestAssistantSummary.mockResolvedValueOnce('They are chasing order 4471.');
+    await service.draftReply(1, 'conv-ref');
+
+    expect(build.mock.calls[0]?.[0]).toMatchObject({
+      summary: 'They are chasing order 4471.',
+    });
+  });
+
+  it('carries nothing forward on a conversation it has never answered', async () => {
+    const { service, build } = serviceWith({ messages: [message(1)] });
+    await service.draftReply(1, 'conv-ref');
+
+    expect(build.mock.calls[0]?.[0]).toMatchObject({ summary: null });
+  });
+});
+
+/**
+ * The model cannot point at a message it has no name for.
+ *
+ * Without ids the notes can only describe ("they complained about a
+ * parcel"), which nobody can open and nothing can verify. With them the
+ * notes become an index into the thread that outlives the window.
+ */
+describe('how the messages are named', () => {
+  it('tags every turn with the message it came from', async () => {
+    const { service, reply } = serviceWith({ messages: [message(2), message(1)] });
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { text: string }[];
+    expect(turns[0]?.text).toBe('[id:ref-1] message 1');
+    expect(turns[1]?.text).toBe('[id:ref-2] message 2');
+  });
+
+  it('names our own messages too, so the notes can cite what we said', async () => {
+    const { service, reply } = serviceWith({
+      messages: [message(5, { direction: MessageDirection.Outbound, body: 'we said this' })],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { role: string; text: string }[];
+    expect(turns[0]).toMatchObject({ role: 'assistant', text: '[id:ref-5] we said this' });
+  });
+
+  it('never lets an id reach the customer, whatever the model does', async () => {
+    /* The rules tell it not to repeat them. A rule is advice; this is not. */
+    const { service } = serviceWith(
+      { messages: [message(1)] },
+      { text: '[id:ref-1] Yes, we have those in stock.' },
+    );
+    const draft = await service.draftReply(1, 'conv-ref');
+
+    expect(draft.text).toBe('Yes, we have those in stock.');
   });
 });

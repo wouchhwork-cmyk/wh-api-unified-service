@@ -10,7 +10,11 @@ import {
 import { ChatService } from '@/modules/ai/chat.service';
 import { ChatError } from '@/modules/ai/chat.errors';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
-import { ASSISTANT_REPLY_MEDIA_WAIT_MS, ASSISTANT_REPLY_RETRY_BASE_MS } from '@/shared/constants';
+import {
+  ASSISTANT_REPLY_MEDIA_WAIT_MS,
+  ASSISTANT_REPLY_RETRY_BASE_MS,
+  CHATBOT_SUMMARY_CHARS,
+} from '@/shared/constants';
 import { ChatbotService, type DraftedReply } from './chatbot.service';
 import { InboxService } from './inbox.service';
 
@@ -340,6 +344,13 @@ export class AutoReplyService {
       ...(draft.handoff ? { handoff: draft.handoff } : {}),
       ...(draft.intent ? { intent: draft.intent } : {}),
       ...(draft.language ? { language: draft.language } : {}),
+      /*
+       * THE NOTES RIDE ON THE MESSAGE THEY WERE WRITTEN WITH, which is what
+       * makes every message carry the context up to itself. The next reply
+       * reads the most recent set and starts from there rather than from
+       * however much of the thread happens to fit in the window.
+       */
+      ...(draft.summary ? { summary: draft.summary.slice(0, CHATBOT_SUMMARY_CHARS) } : {}),
       /* A model that stopped answering in the shape it was asked for is a
        * prompt or a model to change, and that shows up here first. */
       ...(draft.structured ? {} : { unstructured: true }),

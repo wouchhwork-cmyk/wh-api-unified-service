@@ -76,6 +76,7 @@ function serviceWith(over: {
         intent: 'asking opening hours',
         handoff: null,
         silent: false,
+        summary: 'They asked about opening hours; told them 9 to 9.',
         structured: true,
         ...over.draft,
       });
@@ -490,5 +491,38 @@ describe('automatic reply: what the model decided', () => {
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
     expect(sent.assistant.unstructured).toBe(true);
+  });
+});
+
+describe('automatic reply: what it writes down for next time', () => {
+  it('pins the notes to the message they were written with', async () => {
+    /*
+     * This is what makes every message carry the context up to itself: the
+     * next reply reads the most recent set of notes rather than however
+     * much of the thread happens to fit in the window.
+     */
+    const { service, replyAsAssistant, claim } = serviceWith({});
+    await service.attempt(claim, 'worker-a');
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
+    expect(sent.assistant.summary).toBe('They asked about opening hours; told them 9 to 9.');
+  });
+
+  it('refuses to carry notes longer than they are worth', async () => {
+    const { service, replyAsAssistant, claim } = serviceWith({
+      draft: { summary: 'x'.repeat(5_000) },
+    });
+    await service.attempt(claim, 'worker-a');
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: { summary: string } };
+    expect(sent.assistant.summary.length).toBe(600);
+  });
+
+  it('writes nothing down when the model offered nothing', async () => {
+    const { service, replyAsAssistant, claim } = serviceWith({ draft: { summary: null } });
+    await service.attempt(claim, 'worker-a');
+
+    const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
+    expect(sent.assistant).not.toHaveProperty('summary');
   });
 });

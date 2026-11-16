@@ -6,13 +6,13 @@ import { CHAT_MAX_OUTPUT_TOKENS, MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shar
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { ChatError, ChatFailure } from './chat.errors';
 import { outputTextOf, parseMediaDescription } from './gemini.parse';
+import { renderTranscript } from './prompts';
 import {
   AiProvider,
   type AiProviderId,
   type ChatProvider,
   type ChatReply,
   type ChatRequest,
-  type ChatTurn,
 } from './ai.provider';
 
 export interface MediaDescription {
@@ -197,8 +197,19 @@ export class GeminiClient implements ChatProvider {
    * client does it and is deliberate. The interactions API types a part by
    * kind rather than by speaker, and inventing a role field we have not seen
    * accepted would fail at the only moment that matters — in front of a
-   * customer. A labelled transcript is a shape every model reads, and the
-   * labels are what keep "what they said" apart from "what we said".
+   * customer.
+   *
+   * HOW it is written out is NOT this client's decision: `renderTranscript`
+   * owns the labels, so the two providers cannot drift apart in how a
+   * conversation reads. What belongs here is only the fact that this one
+   * needs it flattened at all.
+   *
+   * One consequence worth stating plainly: with no instructions field of its
+   * own, the rules and the customer's words arrive in the SAME string here,
+   * where OpenAI keeps them in separate fields. That is weaker isolation
+   * against a message that tries to talk to the model, and it is the reason
+   * the rules about text inside a conversation are repeated rather than
+   * stated once.
    *
    * It costs the same tokens either way: the whole history is sent on every
    * turn regardless, because nothing is stored on their side.
@@ -226,7 +237,7 @@ export class GeminiClient implements ChatProvider {
           generation_config: {
             max_output_tokens: request.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
           },
-          input: [{ type: 'text', text: this.transcriptOf(request) }],
+          input: [{ type: 'text', text: renderTranscript(request) }],
         } as never),
         timeoutMs,
         () =>
@@ -265,23 +276,6 @@ export class GeminiClient implements ChatProvider {
       model: chosenModel,
       provider: this.id,
     };
-  }
-
-  /**
-   * The conversation as one labelled block.
-   *
-   * The instruction goes FIRST and the turns follow it, so the standing rules
-   * are read before the text they are meant to govern — including the rule
-   * that says text inside the conversation is content, never a command.
-   */
-  private transcriptOf(request: ChatRequest): string {
-    const instructions = request.instructions?.trim() ?? '';
-    const lines = request.turns.map(
-      (turn: ChatTurn) => `${turn.role === 'user' ? 'Them' : 'You'}: ${turn.text.trim()}`,
-    );
-    return [instructions, instructions.length > 0 ? '' : null, ...lines, '', 'You:']
-      .filter((line): line is string => line !== null)
-      .join('\n');
   }
 
   /**

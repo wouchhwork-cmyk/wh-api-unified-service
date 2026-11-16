@@ -60,6 +60,8 @@ export interface ChatAnswer extends ChatReply {
   readonly handoff: string | null;
   /** The model's own decision that nothing needs saying. */
   readonly silent: boolean;
+  /** Its notes on the conversation, for the next reply to start from. */
+  readonly summary: string | null;
   /** Whether it answered in the shape it was asked for. */
   readonly structured: boolean;
 }
@@ -352,6 +354,7 @@ export class ChatService {
       intent: fields.intent,
       handoff: fields.handoff,
       silent: fields.silent,
+      summary: fields.summary,
       structured: fields.structured,
       promptVersion: settings.version,
     };

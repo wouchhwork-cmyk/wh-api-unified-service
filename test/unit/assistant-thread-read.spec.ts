@@ -5,6 +5,7 @@ import { RequestContext } from '@/shared/context';
 import { ErrorCode } from '@/shared/errors';
 import type { ChatService } from '@/modules/ai/chat.service';
 import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
+import type { MessageRepository } from '@/database/repositories/message.repository';
 
 /**
  * The regression that stopped the first automatic reply ever sent.
@@ -163,18 +164,23 @@ describe('which door the chatbot uses', () => {
     const brief = {
       build: vi.fn().mockResolvedValue({
         xml: '',
-        counts: { hasBusinessProfile: false, hasPerson: false, hasPost: false },
+        counts: { hasBusinessProfile: false, hasPerson: false, hasPost: false, hasSummary: false },
       }),
     } as unknown as ConversationBriefService;
+    const messages = {
+      latestAssistantSummary: vi.fn().mockResolvedValue(null),
+    } as unknown as MessageRepository;
     return {
-      chatbot: new ChatbotService(inbox as never, brief, chat),
+      chatbot: new ChatbotService(inbox as never, brief, messages, chat),
       inbox,
     };
   }
   function empty() {
     return {
-      conversation: { customerId: 7, conversationKind: 'direct_message', messageCount: 1 },
-      messages: [{ id: 1, direction: 'inbound', body: 'hi', hasAttachments: false }],
+      conversation: { id: 42, customerId: 7, conversationKind: 'direct_message', messageCount: 1 },
+      messages: [
+        { id: 1, refId: 'ref-1', direction: 'inbound', body: 'hi', hasAttachments: false },
+      ],
       attachmentsByMessageId: new Map(),
       analysisByKey: new Map(),
     };

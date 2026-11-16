@@ -1090,4 +1090,35 @@ export class MessageRepository extends BaseRepository {
     );
     return rows[0]?.id ?? null;
   }
+  /**
+   * The assistant's own notes on this conversation, as of its last reply.
+   *
+   * WHY THIS IS A QUERY AND NOT A FIELD ON THE THREAD READ. The notes exist
+   * precisely so the window can be small, which means the reply that wrote
+   * them is frequently NOT in the window — a customer who sends ten messages
+   * in a row pushes the last assistant reply out of it entirely, and reading
+   * the summary from what we happen to be showing would lose it at exactly
+   * the moment it was most useful.
+   *
+   * Newest first, and the first one wins: a reply that chose to say nothing
+   * still wrote notes, and those notes are more current than the ones before
+   * them.
+   */
+  async latestAssistantSummary(
+    enterpriseId: number,
+    conversationId: number,
+  ): Promise<string | null> {
+    const rows = await this.query<{ summary: string | null }>(
+      `SELECT m.metadata->'assistant'->>'summary' AS summary
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.metadata->'assistant'->>'summary' IS NOT NULL
+        ORDER BY m.id DESC
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId],
+    );
+    return rows[0]?.summary ?? null;
+  }
 }

@@ -30,6 +30,15 @@ export function replyCapFor(kind: ConversationKind): number {
 function stripMarkup(text: string): string {
   return (
     text
+      /*
+       * THE ID MARKERS WE ADDED, taken back out.
+       *
+       * Every turn the model is shown begins with one, and the rules tell it
+       * not to repeat them — but a rule is advice and a customer reading
+       * "[id:4f2c8b1a] yes, we have those" is reading machinery. This is the
+       * half that does not depend on the model having listened.
+       */
+      .replace(/\[id:[^\]\s]{1,64}\]\s*/g, '')
       /* `[Menu](https://…)` → `Menu (https://…)`, because the URL is the useful half. */
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1 ($2)')
       /* Headings: a DM has no sections. */
