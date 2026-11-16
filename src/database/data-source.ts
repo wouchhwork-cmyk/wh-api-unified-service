@@ -36,6 +36,7 @@ import { AssistantFallback1760000000000 } from './migrations/1760000000000-Assis
 import { AssistantMediaHold1760100000000 } from './migrations/1760100000000-AssistantMediaHold';
 import { ChatProviderCredentials1760200000000 } from './migrations/1760200000000-ChatProviderCredentials';
 import { MediaLanguage1760300000000 } from './migrations/1760300000000-MediaLanguage';
+import { AssistantReplies1760400000000 } from './migrations/1760400000000-AssistantReplies';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -117,6 +118,7 @@ export function buildDataSourceOptions(
       AssistantMediaHold1760100000000,
       ChatProviderCredentials1760200000000,
       MediaLanguage1760300000000,
+      AssistantReplies1760400000000,
     ],
     migrationsTableName: 'schema_migrations',
 

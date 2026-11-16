@@ -27,6 +27,7 @@ import { InboundProjectorWorker } from './inbound-projector.worker';
 import { AiModule } from '@/modules/ai';
 import { LeaseReaperWorker } from './lease-reaper.worker';
 import { MediaAnalysisWorker } from './media-analysis.worker';
+import { AssistantReplyWorker } from './assistant-reply.worker';
 import { OutboundRelayWorker } from './outbound-relay.worker';
 import { QueueGaugeWorker } from './queue-gauge.worker';
 import { QueueListenerService } from './queue-listener.service';
@@ -93,6 +94,7 @@ import { SendReconcilerWorker } from './send-reconciler.worker';
     BackfillWorker,
     LeaseReaperWorker,
     MediaAnalysisWorker,
+    AssistantReplyWorker,
     QueueGaugeWorker,
     QueueListenerService,
     RefreshSchedulerWorker,

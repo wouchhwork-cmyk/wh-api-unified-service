@@ -3,10 +3,15 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { AuditService } from '@/modules/audit/audit.service';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
+import {
+  AssistantReplyRepository,
+  type ClaimedReply,
+} from '@/database/repositories/assistant-reply.repository';
 import { ChatService } from '@/modules/ai/chat.service';
+import { ChatError } from '@/modules/ai/chat.errors';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
-import { AUTO_REPLY_SETTLE_MS } from '@/shared/constants';
-import { ChatbotService } from './chatbot.service';
+import { ASSISTANT_REPLY_MEDIA_WAIT_MS, ASSISTANT_REPLY_RETRY_BASE_MS } from '@/shared/constants';
+import { ChatbotService, type DraftedReply } from './chatbot.service';
 import { InboxService } from './inbox.service';
 
 /** Why an automatic reply did not happen. Recorded; never thrown. */
@@ -40,11 +45,19 @@ type SkipReason = (typeof Skip)[keyof typeof Skip];
  *   3. the provider has a key here
  *   4. the conversation is still open
  *   5. nothing has been said since          (a human may have answered first)
- *   6. the loop guard has room              (two bots is the ordinary failure)
  *
- * IT NEVER THROWS INTO INGEST. A webhook that failed because an optional
- * reply could not be drafted would lose the customer's message itself, which
- * is the thing that actually matters.
+ * IT IS DRIVEN BY A LEDGER ROW RATHER THAN A FUNCTION CALL. It used to be
+ * invoked by the projector the moment a message landed, which meant the
+ * obligation to answer existed only on that worker's stack: a deploy, an OOM
+ * or a `kill` between accepting the message and answering it left a customer
+ * permanently unanswered, with no row anywhere saying an answer was owed and
+ * not even an audit entry, because the crash landed before the line that
+ * would have written one. Now the projector records the obligation and this
+ * settles it — claimed, leased, retried and given up on like every other
+ * piece of slow work in this service.
+ *
+ * IT SETTLES ITS OWN ROW ON EVERY PATH, including failure, so one bad reply
+ * cannot stop a batch or leave a row leased to nobody.
  *
  * EVERY ATTEMPT IS AUDITED — the sends and the refusals both. "Why did the
  * assistant say that to my customer" and "why did it not answer this one" are
@@ -59,28 +72,25 @@ export class AutoReplyService {
     private readonly inbox: InboxService,
     private readonly enterprises: EnterpriseRepository,
     private readonly messages: MessageRepository,
+    private readonly replies: AssistantReplyRepository,
     private readonly audit: AuditService,
     @InjectPinoLogger(AutoReplyService.name) private readonly logger: PinoLogger,
   ) {}
 
   /**
-   * Considers answering one inbound message, and usually does not.
+   * One claimed obligation, attempted and settled.
    *
-   * Called AFTER the projection transaction commits, never inside it: the
-   * draft is a model call and a send is an HTTP call, and neither belongs
-   * inside a transaction holding row locks on a customer's conversation.
+   * NEVER THROWS. The worker's batch must survive a bad row, and a row left
+   * leased by an escaping error is a reply nobody sends until the lease
+   * reaper notices. Everything inside is already defensive; the catch exists
+   * so that a bug in it still settles.
    */
-  async considerReplying(enterpriseId: number, messageId: number): Promise<void> {
+  async attempt(claimed: ClaimedReply, leaseOwner: string): Promise<void> {
     try {
-      await this.run(enterpriseId, messageId);
+      await this.run(claimed, leaseOwner);
     } catch (error) {
-      /*
-       * The last line of defence. Everything inside `run` is already
-       * defensive; this exists so that a bug in it can never cost us the
-       * customer's message, which is already safely stored by now.
-       */
       this.logger.error(
-        { err: error, enterpriseId, messageId },
+        { err: error, enterpriseId: claimed.enterpriseId, messageId: claimed.messageId },
         'automatic reply failed unexpectedly',
       );
       /*
@@ -89,57 +99,98 @@ export class AutoReplyService {
        * "conversation not found" — and the only trace was a log line in a
        * process nobody was watching. A customer was left unanswered by a
        * feature that had been switched on, and the audit trail said nothing
-       * at all. An unexpected failure is exactly the kind somebody needs to
-       * find afterwards.
+       * at all. The ledger settle below is not a substitute: that is the
+       * queue's own bookkeeping, and this is the record somebody reads when
+       * they ask what happened to their customer.
        *
        * The message is recorded, never the conversation: a stack can quote
        * the input back, and the input here is somebody's message.
        */
-      await this.record(enterpriseId, messageId, AuditStatus.Error, {
+      await this.record(claimed.enterpriseId, claimed.messageId, AuditStatus.Error, {
         failed: error instanceof Error ? error.message : 'automatic reply failed',
       }).catch(() => {
-        /* An audit write that fails must not become the thing that throws
-         * into ingest. The log above already carries it. */
+        /* An audit write that fails must not stop the row being settled. */
+      });
+
+      await this.fail(claimed, leaseOwner, {
+        failureCode: 'UNEXPECTED',
+        reason: error instanceof Error ? error.message : 'automatic reply failed',
+        permanent: false,
+      }).catch(() => {
+        /* An audit or a settle that fails must not escape into the batch.
+         * The log above already carries it, and the lease reaper is the
+         * backstop for the row. */
       });
     }
   }
 
-  private async run(enterpriseId: number, messageId: number): Promise<void> {
+  /**
+   * A piece of media has just been described: anything waiting on it is due.
+   *
+   * A NUDGE, NOT THE MECHANISM. The row already carries its own next attempt,
+   * so a description that never lands still gets looked at again — this only
+   * brings it forward to the second the description exists, which is the
+   * difference between answering a photo now and answering it at the next
+   * tick. A crash here costs latency rather than the reply.
+   */
+  async onMediaDescribed(enterpriseId: number, mediaKey: string): Promise<void> {
+    try {
+      const waiting = await this.messages.messagesCarrying(enterpriseId, mediaKey);
+      const woken = await this.replies.wake(enterpriseId, waiting);
+      if (woken > 0) {
+        this.logger.debug(
+          { enterpriseId, mediaKey, woken },
+          'brought owed replies forward after describing media',
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        { err: error, enterpriseId, mediaKey },
+        'could not bring owed replies forward after describing media',
+      );
+    }
+  }
+
+  private async run(claimed: ClaimedReply, leaseOwner: string): Promise<void> {
+    const { enterpriseId, messageId } = claimed;
+
     /*
      * THE TWO SWITCHES FIRST, because they are the cheap reads and they are
      * off for almost everybody. Nothing else is worth doing until both say
      * yes — least of all a paid model call.
      */
     const settings = await this.chat.currentSettings();
-    if (!settings.autoReply) return this.skipQuietly(enterpriseId, messageId, Skip.PlatformOff);
+    if (!settings.autoReply) {
+      return this.skipQuietly(claimed, leaseOwner, Skip.PlatformOff);
+    }
 
     const enterprise = await this.enterprises.findById(enterpriseId);
     if (!enterprise?.autoReplyEnabled) {
-      return this.skipQuietly(enterpriseId, messageId, Skip.BusinessOff);
+      return this.skipQuietly(claimed, leaseOwner, Skip.BusinessOff);
     }
-    /*
-     * A MOMENT BEFORE READING ANYTHING. People type in bursts, and answering
-     * the first of three messages means answering a third of a question. The
-     * pause is after the switches, so it costs nothing at all for the
-     * businesses that have this turned off — which is almost all of them.
-     */
-    await this.settle();
 
     const context = await this.messages.assistantContextFor(enterpriseId, messageId);
-    if (!context) return this.skipQuietly(enterpriseId, messageId, Skip.Gone);
+    if (!context) return this.skipQuietly(claimed, leaseOwner, Skip.Gone);
 
     if (!(await this.chat.enabledFor(settings.provider))) {
       /*
        * A fault rather than a preference: somebody turned this on and expects
        * it to work. The customer still hears something, because from where
        * they are sitting a missing API key and a broken model are the same
-       * silence.
+       * silence. Terminal: a key added an hour from now should not produce an
+       * answer to an hour-old message on top of the apology already sent.
        */
       await this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.NoProvider,
         provider: settings.provider,
       });
       await this.sendFallback(enterpriseId, messageId, context.conversationRefId, settings, null);
+      await this.replies.markFailed(claimed.id, leaseOwner, {
+        failureCode: Skip.NoProvider,
+        failureReason: `no key for ${settings.provider}`,
+        permanent: true,
+        backoffMs: 0,
+      });
       return;
     }
 
@@ -147,25 +198,29 @@ export class AutoReplyService {
       context.status === ConversationStatus.Closed ||
       context.status === ConversationStatus.Archived
     ) {
-      return this.record(enterpriseId, messageId, AuditStatus.Failure, {
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.Closed,
         conversationRefId: context.conversationRefId,
       });
+      await this.replies.markSkipped(claimed.id, leaseOwner, Skip.Closed);
+      return;
     }
 
     /*
-     * SOMEBODY ELSE GOT THERE FIRST. An agent may have answered while the
-     * model was thinking, or the customer may have sent three more messages.
-     * Either way this message is no longer the end of the conversation, and
+     * SOMEBODY ELSE GOT THERE FIRST. An agent may have answered while this
+     * was queued, or the customer may have sent three more messages. Either
+     * way this message is no longer the end of the conversation, and
      * answering it now would be answering a question that has moved on. The
-     * newest message gets its own consideration.
+     * newest message has an obligation of its own.
      */
     if (context.messagesSince > 0) {
-      return this.record(enterpriseId, messageId, AuditStatus.Failure, {
+      await this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.Overtaken,
         messagesSince: context.messagesSince,
         conversationRefId: context.conversationRefId,
       });
+      await this.replies.markSkipped(claimed.id, leaseOwner, Skip.Overtaken);
+      return;
     }
 
     /*
@@ -173,29 +228,22 @@ export class AutoReplyService {
      *
      * Media is described by a worker seconds after the message lands, so a
      * photo sent with no text reaches this before there is anything to
-     * answer about — the first real one failed with "the model returned no
-     * text" and apologised, for a message that was about to be perfectly
-     * answerable. Hold the moment instead, and the analysis worker brings us
-     * back when the description exists.
+     * answer about. Hold the moment with a line, put the row back WITHOUT
+     * spending an attempt, and let the analysis worker bring it forward the
+     * moment the description exists.
      */
     if (context.pendingMedia > 0) {
       await this.sendHold(enterpriseId, messageId, context.conversationRefId, settings);
+      await this.replies.defer(claimed.id, leaseOwner, ASSISTANT_REPLY_MEDIA_WAIT_MS);
       return;
     }
 
     /* The actorless read: a worker has no employee whose permissions to check. */
-    let draft;
+    let draft: DraftedReply;
     try {
       draft = await this.chatbot.draftReplyForAutomation(enterpriseId, context.conversationRefId);
     } catch (error) {
-      /*
-       * THE CUSTOMER IS NOT LEFT IN SILENCE. Every fast answer before this
-       * one has told them somebody is there, so a model failure that says
-       * nothing reads as being ignored — which is worse than never having
-       * answered quickly at all. They get a short human line instead, and
-       * the real reason goes to the trail rather than to them.
-       */
-      await this.sendFallback(enterpriseId, messageId, context.conversationRefId, settings, error);
+      await this.failedToDraft(claimed, leaseOwner, context.conversationRefId, settings, error);
       return;
     }
 
@@ -208,35 +256,30 @@ export class AutoReplyService {
      * a rule here, because "nothing needs saying" depends entirely on what
      * was being said: the same "ok" ends one exchange and agrees to a
      * delivery slot in another.
-     *
-     * Recorded, not silent. "Why did it not answer this one" is asked about
-     * deliberate silence as often as about failure.
      */
     if (draft.silent) {
-      return this.record(enterpriseId, messageId, AuditStatus.Success, {
+      await this.record(enterpriseId, messageId, AuditStatus.Success, {
         skipped: Skip.NothingToSay,
         conversationRefId: context.conversationRefId,
         ...(draft.intent ? { intent: draft.intent } : {}),
         usage: draft.usage,
       });
+      await this.replies.markSkipped(claimed.id, leaseOwner, Skip.NothingToSay);
+      return;
     }
 
     /*
-     * NOTHING TO SEND, WHICH IS NOT THE SAME AS CHOOSING NOT TO.
-     *
-     * A model that answered with an envelope and no message in it, or whose
-     * reply was cut off before a single word of it was written, has failed
-     * — and failing quietly here would look exactly like the deliberate
-     * silence above. The customer gets the apology instead, which is what
-     * every other failure on this path does.
+     * NOTHING TO SEND, WHICH IS NOT THE SAME AS CHOOSING NOT TO. A model that
+     * answered with an envelope and no message in it has failed, and failing
+     * quietly here would look exactly like the deliberate silence above.
      */
     if (draft.text.trim().length === 0) {
-      await this.sendFallback(
-        enterpriseId,
-        messageId,
+      await this.failedToDraft(
+        claimed,
+        leaseOwner,
         context.conversationRefId,
         settings,
-        new Error('the model produced no message to send'),
+        new ChatError('CHAT_NO_REPLY', 'the model produced no message to send', true),
       );
       return;
     }
@@ -247,12 +290,9 @@ export class AutoReplyService {
      * The draft took seconds, and a customer can say three more things in
      * that time. The check before drafting proves the question was current
      * when we started; only this one proves the ANSWER is still current when
-     * it goes. Without it the assistant interrupts somebody mid-thought with
-     * a reply to a sentence they have already moved past.
-     *
-     * The draft is thrown away rather than sent. It is already paid for, and
-     * sending it would compound a wasted call with a confusing message —
-     * the newer message is about to be considered on its own merits anyway.
+     * it goes. The draft is thrown away rather than sent: it is already paid
+     * for, and sending it would compound a wasted call with a confusing
+     * message.
      */
     const current = await this.messages.assistantContextFor(enterpriseId, messageId);
     if (!current || current.messagesSince > 0) {
@@ -262,6 +302,7 @@ export class AutoReplyService {
         draftDiscarded: true,
         conversationRefId: context.conversationRefId,
       });
+      await this.replies.markSkipped(claimed.id, leaseOwner, Skip.Overtaken);
       this.logger.info(
         { enterpriseId, conversationRefId: context.conversationRefId },
         'discarded a draft: the conversation moved on while it was being written',
@@ -305,14 +346,26 @@ export class AutoReplyService {
       body: draft.text,
       /*
        * KEYED TO THE MESSAGE IT ANSWERS. A redelivered webhook, a retried
-       * projection or a worker that restarts mid-send all arrive here again
-       * with the same id — and the unique index on (enterprise_id,
+       * claim or a worker that restarts mid-send all arrive here again with
+       * the same id — and the unique index on (enterprise_id,
        * idempotency_key) is what makes the second one return the first
        * reply instead of sending a customer the same message twice.
        */
       idempotencyKey: `assistant:${messageId}`,
       internalNote: false,
       assistant,
+    });
+
+    await this.replies.markSent(claimed.id, leaseOwner, {
+      replyMessageId: null,
+      provider: draft.provider,
+      model: draft.model,
+      promptVersion: draft.promptVersion,
+      intent: draft.intent?.slice(0, 120) ?? null,
+      handoffReason: draft.handoff?.slice(0, 255) ?? null,
+      inputTokens: draft.usage.inputTokens,
+      outputTokens: draft.usage.outputTokens,
+      totalTokens: draft.usage.totalTokens,
     });
 
     this.logger.info(
@@ -346,31 +399,65 @@ export class AutoReplyService {
   }
 
   /**
-   * A piece of media has just been described: anything that was waiting on it
-   * can be answered now.
+   * The draft failed. Try again, or apologise and stop.
    *
-   * Called from the analysis worker rather than from the analyser itself,
-   * for the reason the projector's call is at the worker too — the service
-   * that describes media lives in a module the inbox depends on, and the
-   * worker is where the two can meet without a cycle.
-   *
-   * EVERY GUARD RUNS AGAIN. By the time a description lands, a colleague may
-   * have answered, the customer may have said something else, or the thread
-   * may have been closed. This is a second consideration, not a deferred
-   * decision taken earlier.
+   * THE LEDGER BOUGHT THIS. A timeout or a rate limit used to mean one
+   * apology and nothing more, because there was nothing to come back to. Now
+   * a retryable failure with attempts left is simply retried — a model that
+   * timed out and answered thirty seconds later is far better for the
+   * customer than an apology that arrived instantly. The apology is kept for
+   * the last attempt and for failures that will not change, which is where it
+   * was always the right answer.
    */
-  async onMediaDescribed(enterpriseId: number, mediaKey: string): Promise<void> {
-    try {
-      const waiting = await this.messages.messagesCarrying(enterpriseId, mediaKey);
-      for (const messageId of waiting) {
-        await this.considerReplying(enterpriseId, messageId);
-      }
-    } catch (error) {
-      this.logger.error(
-        { err: error, enterpriseId, mediaKey },
-        'could not resume automatic replies after describing media',
+  private async failedToDraft(
+    claimed: ClaimedReply,
+    leaseOwner: string,
+    conversationRefId: string,
+    settings: { fallbackMessage: string },
+    error: unknown,
+  ): Promise<void> {
+    const retryable = error instanceof ChatError ? error.retryable : false;
+    const lastAttempt = claimed.attemptCount >= claimed.maxAttempts;
+    const giveUp = !retryable || lastAttempt;
+
+    if (giveUp) {
+      await this.sendFallback(
+        claimed.enterpriseId,
+        claimed.messageId,
+        conversationRefId,
+        settings,
+        error,
+      );
+    } else {
+      this.logger.warn(
+        {
+          enterpriseId: claimed.enterpriseId,
+          conversationRefId,
+          attempt: claimed.attemptCount,
+          reason: error instanceof Error ? error.message : null,
+        },
+        'could not draft a reply; will try again before apologising',
       );
     }
+
+    await this.fail(claimed, leaseOwner, {
+      failureCode: error instanceof ChatError ? error.failureCode : 'CHAT_CALL_FAILED',
+      reason: error instanceof Error ? error.message.slice(0, 500) : 'the draft failed',
+      permanent: giveUp,
+    });
+  }
+
+  private async fail(
+    claimed: ClaimedReply,
+    leaseOwner: string,
+    input: { failureCode: string; reason: string; permanent: boolean },
+  ): Promise<void> {
+    await this.replies.markFailed(claimed.id, leaseOwner, {
+      failureCode: input.failureCode,
+      failureReason: input.reason,
+      permanent: input.permanent,
+      backoffMs: ASSISTANT_REPLY_RETRY_BASE_MS * Math.max(1, claimed.attemptCount),
+    });
   }
 
   /**
@@ -378,8 +465,8 @@ export class AutoReplyService {
    *
    * ITS OWN IDEMPOTENCY KEY, so the hold is said once however many times
    * this message is considered — a second piece of media finishing, a
-   * redelivered webhook, a retried projection. The real answer uses the
-   * reply key, which this never touches.
+   * redelivered webhook, a deferred row coming back round. The real answer
+   * uses the reply key, which this never touches.
    *
    * SILENT WHEN THE TEXT IS EMPTY: a business may prefer to say nothing and
    * answer once, properly, a few seconds later.
@@ -418,38 +505,25 @@ export class AutoReplyService {
   }
 
   /**
-   * The pause before thinking.
-   *
-   * Its own method so the reason has somewhere to live, and so a test can
-   * see it. Deliberately not configurable: it is short enough that nobody
-   * will want it shorter, and a setting for it would be a setting somebody
-   * has to understand.
-   */
-  private async settle(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, AUTO_REPLY_SETTLE_MS));
-  }
-
-  /**
-   * A skip nobody needs a permanent record of.
+   * A skip nobody needs an audit row for.
    *
    * The switches are off for almost every message on the platform, and an
-   * audit row for each would bury the handful that describe something that
-   * actually happened. Debug-level, where it can be turned on while somebody
-   * is asking why their assistant is silent.
+   * audit entry for each would bury the handful that describe something that
+   * actually happened. The LEDGER row is still settled — that one is the
+   * record that this message was considered and deliberately left alone.
    */
-  private skipQuietly(enterpriseId: number, messageId: number, reason: SkipReason): void {
-    this.logger.debug({ enterpriseId, messageId, reason }, 'automatic reply not attempted');
+  private async skipQuietly(
+    claimed: ClaimedReply,
+    leaseOwner: string,
+    reason: SkipReason,
+  ): Promise<void> {
+    this.logger.debug(
+      { enterpriseId: claimed.enterpriseId, messageId: claimed.messageId, reason },
+      'automatic reply not attempted',
+    );
+    await this.replies.markSkipped(claimed.id, leaseOwner, reason);
   }
 
-  /**
-   * The trail.
-   *
-   * Against the MESSAGE THAT WAS ANSWERED rather than the reply, because that
-   * is the row somebody has in their hand when they ask the question — and
-   * because a refusal has no reply to point at. The actor resolves to
-   * `system`: there is no request context in a worker, which is the honest
-   * answer about who sent this.
-   */
   /**
    * The apology, when there is no answer to send.
    *
@@ -517,6 +591,15 @@ export class AutoReplyService {
     }
   }
 
+  /**
+   * The trail.
+   *
+   * Against the MESSAGE THAT WAS ANSWERED rather than the reply, because that
+   * is the row somebody has in their hand when they ask the question — and
+   * because a refusal has no reply to point at. The actor resolves to
+   * `system`: there is no request context in a worker, which is the honest
+   * answer about who sent this.
+   */
   private async record(
     enterpriseId: number,
     messageId: number,

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import { AssistantReplyRepository } from '@/database/repositories/assistant-reply.repository';
 import { ConversationRepository } from '@/database/repositories/conversation.repository';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
 import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
@@ -35,6 +36,7 @@ const PROVIDERS = [
   DirectMessageProjectorService,
   PostProjectorService,
   ConversationRepository,
+  AssistantReplyRepository,
   MessageRepository,
   MessageAttachmentRepository,
   CustomerRepository,
@@ -83,6 +85,7 @@ const PROVIDERS = [
     DirectMessageProjectorService,
     PostProjectorService,
     ConversationRepository,
+    AssistantReplyRepository,
     MessageRepository,
     MessageAttachmentRepository,
     CustomerRepository,

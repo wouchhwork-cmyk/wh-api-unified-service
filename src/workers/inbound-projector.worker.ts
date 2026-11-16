@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '@/config';
-import { AutoReplyService } from '@/modules/inbox/auto-reply.service';
+import { AssistantReplyRepository } from '@/database/repositories/assistant-reply.repository';
 import { ChannelRepository } from '@/database/repositories/channel.repository';
 import { InboundEventRepository } from '@/database/repositories/inbound-event.repository';
 import { CommentProjectorService } from '@/modules/inbox/comment-projector.service';
 import { DirectMessageProjectorService } from '@/modules/inbox/direct-message-projector.service';
 import { PostProjectorService } from '@/modules/inbox/post-projector.service';
-import { MAX_PROJECTION_ATTEMPTS } from '@/shared/constants';
+import { AUTO_REPLY_SETTLE_MS, MAX_PROJECTION_ATTEMPTS } from '@/shared/constants';
 import { InboundEventType, Platform } from '@/shared/enums';
 import { scheduleRetry } from '@/modules/ledger/backoff.util';
 import { BasePoller } from './base-poller';
@@ -76,7 +76,7 @@ export class InboundProjectorWorker extends BasePoller {
     private readonly comments: CommentProjectorService,
     private readonly directMessages: DirectMessageProjectorService,
     private readonly posts: PostProjectorService,
-    private readonly assistant: AutoReplyService,
+    private readonly replies: AssistantReplyRepository,
     private readonly rewards: RuleEvaluatorService,
     private readonly rewardGrants: RewardGrantService,
     protected readonly config: AppConfigService,
@@ -175,23 +175,42 @@ export class InboundProjectorWorker extends BasePoller {
         );
 
         if (outcome.projected) {
-          await this.inbound.markProcessed(event.id, this.leaseOwner);
           /*
-           * AFTER THE PROJECTION COMMITS, never inside it. Drafting is a model
-           * call and sending is an HTTP call; either inside the projector's
-           * transaction would hold row locks on a customer's conversation for
-           * seconds at a time.
+           * THE OBLIGATION IS RECORDED BEFORE THE EVENT IS SETTLED.
+           *
+           * This used to call the assistant directly, which meant the duty to
+           * answer existed only on this worker's stack: a deploy or an OOM
+           * between accepting a customer's message and answering it left them
+           * permanently unanswered, with nothing anywhere saying an answer
+           * had been owed.
+           *
+           * The order is the crash safety. If this write succeeds and the
+           * process dies before `markProcessed`, the event is reclaimed and
+           * re-projected — which is idempotent, and so is this, on the unique
+           * index over (enterprise_id, message_id). If the write fails, the
+           * event is never settled and the whole thing is retried. The one
+           * outcome ruled out is a message accepted with no record that it is
+           * owed a reply.
            *
            * Direct messages only. A comment is public and a mention is
            * somebody else's post — both are answerable, and neither is a
            * thing to answer automatically without deciding that separately.
            */
-          if (event.eventType === InboundEventType.DirectMessage && outcome.trigger) {
-            await this.assistant.considerReplying(
-              outcome.trigger.enterpriseId,
-              outcome.trigger.sourceRefId,
-            );
+          if (
+            event.eventType === InboundEventType.DirectMessage &&
+            outcome.trigger?.sourceRefKind === 'message'
+          ) {
+            await this.replies.enqueue({
+              enterpriseId: outcome.trigger.enterpriseId,
+              messageId: outcome.trigger.sourceRefId,
+              /* People type in bursts: answering the first of three messages
+               * means answering a third of a question. Stored rather than
+               * slept, so a restart keeps the pause. */
+              delayMs: AUTO_REPLY_SETTLE_MS,
+            });
           }
+
+          await this.inbound.markProcessed(event.id, this.leaseOwner);
           await this.offerToRewards(outcome.trigger);
           await this.reverseRewards(outcome.reversal);
         } else {

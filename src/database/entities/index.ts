@@ -24,6 +24,7 @@ import { InboundEvent } from './inbound-event.entity';
 import { EmployeeRole } from './employee-role.entity';
 import { ProviderApiUsage } from './provider-api-usage.entity';
 import { MediaAnalysis } from './media-analysis.entity';
+import { AssistantReply } from './assistant-reply.entity';
 import { MessageAttachment } from './message-attachment.entity';
 import { PlatformSetting } from './platform-setting.entity';
 import { Message } from './message.entity';
@@ -111,6 +112,7 @@ export const ENTITIES = [
   EmployeeRole,
   ProviderApiUsage,
   MediaAnalysis,
+  AssistantReply,
   MessageAttachment,
   Message,
   PlatformSetting,

@@ -62,12 +62,19 @@ export class MediaAnalysisWorker extends BasePoller {
       await this.media.analyse(item, this.leaseOwner);
 
       /*
-       * AND ANYTHING THAT WAS WAITING ON IT CAN NOW BE ANSWERED. A photo sent
-       * with no text reaches the automatic reply before this worker has
-       * described it, so that reply holds with a line and comes back here.
-       * `analyse` settles every path including failure, so a piece of media
-       * that could not be described releases the wait rather than extending
-       * it — every guard is re-checked there before anything is sent.
+       * AND ANYTHING THAT WAS WAITING ON IT BECOMES DUE. A photo sent with no
+       * text reaches the assistant's queue before this worker has described
+       * it, so that reply holds with a line and puts its row back.
+       *
+       * A NUDGE, NOT A HANDOFF. This used to answer the customer from inside
+       * this loop; now it only brings the owed reply forward, and the
+       * assistant's own worker does the answering with every guard re-checked
+       * there. If this call fails, or this process dies the instant after it,
+       * the row still carries its own next attempt — the reply is late rather
+       * than lost.
+       *
+       * `analyse` settles every path including failure, so media that could
+       * not be described releases the wait rather than extending it.
        */
       await this.assistant.onMediaDescribed(item.enterpriseId, item.mediaKey);
     }

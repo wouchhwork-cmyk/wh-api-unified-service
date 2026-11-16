@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MediaAnalysisStatus, type MediaKind } from '@/shared/enums';
-import { BaseRepository } from './base.repository';
+import { QueueLedgerRepository, type QueueTable } from './queue-ledger.repository';
 
 export interface AnalysisSeed {
   readonly mediaKey: string;
@@ -41,7 +41,9 @@ export interface AnalysisStatRow {
  * that gets it described.
  */
 @Injectable()
-export class MediaAnalysisRepository extends BaseRepository {
+export class MediaAnalysisRepository extends QueueLedgerRepository {
+  protected readonly table: QueueTable = 'media_analyses';
+
   /**
    * Queues media that has not been seen before.
    *
@@ -74,19 +76,15 @@ export class MediaAnalysisRepository extends BaseRepository {
   }
 
   /**
-   * Claims due work, exactly as the transport ledgers do.
-   *
-   * FOR UPDATE SKIP LOCKED is the whole concurrency story: two workers can
-   * never take the same row and neither waits for the other. The ORDER BY
-   * mirrors `media_analyses_due_idx`, COALESCE included, so a brand-new row
-   * does not sort behind every retrying one.
+   * Claims due work. The mechanics are the base class's; the columns are
+   * this queue's own.
    */
   async claimDueBatch(
     leaseOwner: string,
     limit: number,
     leaseSeconds: number,
   ): Promise<ClaimedAnalysis[]> {
-    const { rows } = await this.mutate<{
+    const rows = await this.claimRows<{
       id: number;
       enterprise_id: number;
       media_key: string;
@@ -94,32 +92,12 @@ export class MediaAnalysisRepository extends BaseRepository {
       mime_type: string | null;
       attempt_count: number;
       max_attempts: number;
-    }>(
-      `UPDATE media_analyses
-          SET status = $1,
-              lease_owner = $2,
-              lease_expires_at = now() + ($3::int * interval '1 second'),
-              attempt_count = attempt_count + 1
-        WHERE id IN (
-          SELECT id FROM media_analyses
-           WHERE status IN ($4, $5)
-             AND is_deleted = false
-             AND COALESCE(next_attempt_at, created_at) <= now()
-           ORDER BY COALESCE(next_attempt_at, created_at), id
-           LIMIT $6
-           FOR UPDATE SKIP LOCKED
-        )
-      RETURNING id, enterprise_id, media_key, media_kind, mime_type,
-                attempt_count, max_attempts`,
-      [
-        MediaAnalysisStatus.InFlight,
-        leaseOwner,
-        leaseSeconds,
-        MediaAnalysisStatus.Pending,
-        MediaAnalysisStatus.Failed,
-        limit,
-      ],
-    );
+    }>({
+      leaseOwner,
+      limit,
+      leaseSeconds,
+      returning: 'id, enterprise_id, media_key, media_kind, mime_type, attempt_count, max_attempts',
+    });
 
     return rows.map((row) => ({
       id: Number(row.id),
@@ -228,52 +206,7 @@ export class MediaAnalysisRepository extends BaseRepository {
       backoffMs: number;
     },
   ): Promise<boolean> {
-    const { rows } = await this.mutate<{ id: number }>(
-      `UPDATE media_analyses
-          SET status = CASE
-                WHEN $5 OR attempt_count >= max_attempts THEN $6
-                ELSE $7
-              END,
-              failure_code = $3,
-              failure_reason = $4,
-              next_attempt_at = CASE
-                WHEN $5 OR attempt_count >= max_attempts THEN NULL
-                ELSE now() + ($8::int * interval '1 millisecond')
-              END,
-              lease_owner = NULL,
-              lease_expires_at = NULL
-        WHERE id = $1 AND lease_owner = $2
-      RETURNING id`,
-      [
-        id,
-        leaseOwner,
-        input.failureCode,
-        input.failureReason,
-        input.permanent,
-        MediaAnalysisStatus.Unavailable,
-        MediaAnalysisStatus.Failed,
-        Math.max(0, Math.trunc(input.backoffMs)),
-      ],
-    );
-    return rows.length > 0;
-  }
-
-  /**
-   * Returns rows whose lease has lapsed to the queue.
-   *
-   * A worker killed mid-call leaves a row `in_flight` with nobody working it.
-   * Without this it would sit there for ever — the claim only looks at
-   * `pending` and `failed`.
-   */
-  async reclaimExpiredLeases(): Promise<number> {
-    const { rows } = await this.mutate<{ id: number }>(
-      `UPDATE media_analyses
-          SET status = $1, lease_owner = NULL, lease_expires_at = NULL
-        WHERE status = $2 AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
-      RETURNING id`,
-      [MediaAnalysisStatus.Failed, MediaAnalysisStatus.InFlight],
-    );
-    return rows.length;
+    return this.failRow(id, leaseOwner, input);
   }
 
   /** The analyses for a set of media, for rendering a thread. */

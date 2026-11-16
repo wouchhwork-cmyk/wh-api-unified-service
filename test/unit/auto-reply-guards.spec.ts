@@ -6,6 +6,7 @@ import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import type { MessageRepository } from '@/database/repositories/message.repository';
 import type { AuditService } from '@/modules/audit/audit.service';
+import type { AssistantReplyRepository } from '@/database/repositories/assistant-reply.repository';
 import type { PinoLogger } from 'nestjs-pino';
 import { AuditStatus, ConversationStatus } from '@/shared/enums';
 
@@ -27,6 +28,7 @@ function serviceWith(over: {
   mediaHoldMessage?: string;
   draftFails?: boolean;
   draft?: Record<string, unknown>;
+  attemptCount?: number;
 }) {
   const chat = {
     currentSettings: vi.fn().mockResolvedValue({
@@ -82,12 +84,26 @@ function serviceWith(over: {
     .mockResolvedValue({ messageRefId: 'msg-ref', status: 'pending' });
   const record = vi.fn().mockResolvedValue(undefined);
 
+  /*
+   * The ledger row this attempt is settling. Every path through the service
+   * must settle it exactly once — a row left leased is a reply nobody sends
+   * until the reaper notices.
+   */
+  const ledger = {
+    markSent: vi.fn().mockResolvedValue(true),
+    markSkipped: vi.fn().mockResolvedValue(true),
+    markFailed: vi.fn().mockResolvedValue(true),
+    defer: vi.fn().mockResolvedValue(true),
+    wake: vi.fn().mockResolvedValue(1),
+  };
+
   const service = new AutoReplyService(
     chat,
     { draftReplyForAutomation } as unknown as ChatbotService,
     { replyAsAssistant } as unknown as InboxService,
     enterprises,
     messages,
+    ledger as unknown as AssistantReplyRepository,
     { record } as unknown as AuditService,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
   );
@@ -97,54 +113,68 @@ function serviceWith(over: {
     replyAsAssistant,
     record,
     assistantContextFor,
+    ledger,
+    /** One claimed obligation, as the worker hands it over. */
+    claim: {
+      id: 55,
+      enterpriseId: 1,
+      conversationId: 7,
+      messageId: 100,
+      attemptCount: over.attemptCount ?? 1,
+      maxAttempts: 3,
+    },
   };
 }
 
 describe('automatic reply: when it stays quiet', () => {
   it('says nothing while the platform switch is off', async () => {
-    const { service, draftReply, replyAsAssistant } = serviceWith({ platformAutoReply: false });
-    await service.considerReplying(1, 100);
+    const { service, draftReply, replyAsAssistant, claim } = serviceWith({
+      platformAutoReply: false,
+    });
+    await service.attempt(claim, 'worker-a');
     expect(draftReply).not.toHaveBeenCalled();
     expect(replyAsAssistant).not.toHaveBeenCalled();
   });
 
   it('says nothing until the business has opted in', async () => {
-    const { service, draftReply } = serviceWith({ businessOptedIn: false });
-    await service.considerReplying(1, 100);
+    const { service, draftReply, claim } = serviceWith({ businessOptedIn: false });
+    await service.attempt(claim, 'worker-a');
     expect(draftReply).not.toHaveBeenCalled();
   });
 
   it('costs nothing when it is going to stay quiet', async () => {
     // The order of the checks is the point: the switches are read before any
     // paid call, not after one.
-    const { service, draftReply } = serviceWith({ platformAutoReply: false });
-    await service.considerReplying(1, 100);
+    const { service, draftReply, claim } = serviceWith({ platformAutoReply: false });
+    await service.attempt(claim, 'worker-a');
     expect(draftReply).not.toHaveBeenCalled();
   });
 
   it('will not answer into a closed conversation', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({
+    const { service, replyAsAssistant, record, claim } = serviceWith({
       context: { status: ConversationStatus.Closed },
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: AuditStatus.Failure }));
   });
 
   it('stands down when somebody has already answered', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({ context: { messagesSince: 1 } });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, record, claim } = serviceWith({
+      context: { messagesSince: 1 },
+    });
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls[0])).toContain('conversation_moved_on');
   });
 
   it('never throws into ingest, and still leaves a trail when it breaks', async () => {
-    const { service, record } = serviceWith({});
+    const { service, record, claim } = serviceWith({});
     const chat = Reflect.get(service, 'chat') as { currentSettings: () => Promise<unknown> };
     chat.currentSettings = () => Promise.reject(new Error('settings exploded'));
     // The customer's message is already stored; losing it to a failed draft
     // would be trading the thing that matters for the thing that does not.
-    await expect(service.considerReplying(1, 100)).resolves.toBeUndefined();
+    await expect(service.attempt(claim, 'worker-a')).resolves.toBeUndefined();
     /*
      * The first automatic reply ever attempted died in this catch and left
      * only a log line, so a customer went unanswered by a feature that was
@@ -162,7 +192,7 @@ describe('automatic reply: when the customer keeps typing', () => {
    * check proves the ANSWER is still current when it goes.
    */
   it('throws the draft away when a newer message arrived while it was written', async () => {
-    const { service, replyAsAssistant, record, assistantContextFor } = serviceWith({});
+    const { service, replyAsAssistant, record, assistantContextFor, claim } = serviceWith({});
     assistantContextFor
       .mockResolvedValueOnce({
         conversationId: 7,
@@ -180,15 +210,15 @@ describe('automatic reply: when the customer keeps typing', () => {
         pendingMedia: 0,
       });
 
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
 
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls)).toContain('draftDiscarded');
   });
 
   it('checks again after drafting, not only before', async () => {
-    const { service, assistantContextFor } = serviceWith({});
-    await service.considerReplying(1, 100);
+    const { service, assistantContextFor, claim } = serviceWith({});
+    await service.attempt(claim, 'worker-a');
     // Twice: once to decide whether to answer, once to decide whether to send.
     expect(assistantContextFor).toHaveBeenCalledTimes(2);
   });
@@ -201,10 +231,10 @@ describe('automatic reply: while the photo is still being looked at', () => {
    * that was about to be perfectly answerable.
    */
   it('holds the moment instead of answering with nothing', async () => {
-    const { service, draftReply, replyAsAssistant } = serviceWith({
+    const { service, draftReply, replyAsAssistant, claim } = serviceWith({
       context: { pendingMedia: 1 },
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
 
     expect(draftReply).not.toHaveBeenCalled();
     expect(replyAsAssistant).toHaveBeenCalledWith(
@@ -219,35 +249,49 @@ describe('automatic reply: while the photo is still being looked at', () => {
   });
 
   it('waits silently when the business left the line empty', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({
+    const { service, replyAsAssistant, record, claim } = serviceWith({
       context: { pendingMedia: 1 },
       mediaHoldMessage: '',
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls)).toContain('waiting_for_media');
   });
 
-  it('answers for real once the description lands', async () => {
-    const { service, replyAsAssistant } = serviceWith({});
-    await service.onMediaDescribed(1, 'asset:9');
+  it('puts the row back without spending an attempt', async () => {
+    /*
+     * A slow download is not a failed attempt. Charging it against
+     * max_attempts would write off a perfectly answerable message because
+     * somebody's photo took a while to fetch.
+     */
+    const { service, ledger, claim } = serviceWith({ context: { pendingMedia: 1 } });
+    await service.attempt(claim, 'worker-a');
 
-    // The guards all ran again, and this time nothing was pending.
-    expect(replyAsAssistant).toHaveBeenCalledWith(
-      1,
-      expect.objectContaining({ idempotencyKey: 'assistant:100' }),
-    );
+    expect(ledger.defer).toHaveBeenCalledWith(55, 'worker-a', expect.any(Number));
+    expect(ledger.markFailed).not.toHaveBeenCalled();
+    expect(ledger.markSkipped).not.toHaveBeenCalled();
   });
 
-  it('does not answer twice when a second photo finishes', async () => {
-    const { service, replyAsAssistant } = serviceWith({ context: { pendingMedia: 1 } });
+  it('brings the owed reply forward the moment the description lands', async () => {
+    /*
+     * A NUDGE RATHER THAN A SECOND ENTRY POINT. The row already carries its
+     * own next attempt, so a description that never arrives still gets
+     * looked at again; this is the difference between answering the photo
+     * now and answering it at the next tick.
+     */
+    const { service, ledger } = serviceWith({});
     await service.onMediaDescribed(1, 'asset:9');
-    // Still waiting on the other one: the hold key repeats, which the
-    // idempotency index turns into nothing being sent.
-    expect(replyAsAssistant).toHaveBeenCalledWith(
-      1,
-      expect.objectContaining({ idempotencyKey: 'assistant-hold:100' }),
-    );
+
+    expect(ledger.wake).toHaveBeenCalledWith(1, [100]);
+  });
+
+  it('does not let a failed wake escape into the analysis worker', async () => {
+    const { service, ledger } = serviceWith({});
+    ledger.wake.mockRejectedValueOnce(new Error('database gone'));
+
+    // The description itself is already stored; losing the batch over a
+    // nudge would trade the thing that matters for the thing that does not.
+    await expect(service.onMediaDescribed(1, 'asset:9')).resolves.toBeUndefined();
   });
 });
 
@@ -259,8 +303,8 @@ describe('automatic reply: when it cannot answer', () => {
    * ignored by someone who was plainly around a moment ago.
    */
   it('tells the customer something rather than going quiet', async () => {
-    const { service, replyAsAssistant } = serviceWith({ draftFails: true });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({ draftFails: true });
+    await service.attempt(claim, 'worker-a');
 
     expect(replyAsAssistant).toHaveBeenCalledWith(
       1,
@@ -274,23 +318,23 @@ describe('automatic reply: when it cannot answer', () => {
   });
 
   it('never tells the customer why', async () => {
-    const { service, replyAsAssistant } = serviceWith({ draftFails: true });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({ draftFails: true });
+    await service.attempt(claim, 'worker-a');
     const sent = JSON.stringify(replyAsAssistant.mock.calls[0]);
     expect(sent).not.toContain('the model call failed');
   });
 
   it('puts the real reason in the trail instead', async () => {
-    const { service, record } = serviceWith({ draftFails: true });
-    await service.considerReplying(1, 100);
+    const { service, record, claim } = serviceWith({ draftFails: true });
+    await service.attempt(claim, 'worker-a');
     const recorded = JSON.stringify(record.mock.calls);
     expect(recorded).toContain('the model call failed');
     expect(recorded).toContain('could_not_answer');
   });
 
   it('apologises for a missing key too, which the customer cannot tell apart', async () => {
-    const { service, replyAsAssistant } = serviceWith({ providerEnabled: false });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({ providerEnabled: false });
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ idempotencyKey: 'assistant-fallback:100' }),
@@ -298,11 +342,11 @@ describe('automatic reply: when it cannot answer', () => {
   });
 
   it('says nothing when the business chose to say nothing', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({
+    const { service, replyAsAssistant, record, claim } = serviceWith({
       draftFails: true,
       fallbackMessage: '',
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls)).toContain('"fallbackSent":false');
   });
@@ -310,16 +354,16 @@ describe('automatic reply: when it cannot answer', () => {
   it('does not apologise when a colleague has already answered', async () => {
     // Overtaken is not a failure: somebody got there first, and an apology
     // on top of their reply would be noise in front of the customer.
-    const { service, replyAsAssistant } = serviceWith({ context: { messagesSince: 1 } });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({ context: { messagesSince: 1 } });
+    await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).not.toHaveBeenCalled();
   });
 });
 
 describe('automatic reply: when it speaks', () => {
   it('sends the draft, keyed to the message it answers', async () => {
-    const { service, replyAsAssistant } = serviceWith({});
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({});
+    await service.attempt(claim, 'worker-a');
 
     expect(replyAsAssistant).toHaveBeenCalledWith(
       1,
@@ -334,8 +378,8 @@ describe('automatic reply: when it speaks', () => {
   });
 
   it('stamps what wrote it, so no reply can pass as a colleague’s', async () => {
-    const { service, replyAsAssistant } = serviceWith({});
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({});
+    await service.attempt(claim, 'worker-a');
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
     expect(sent.assistant).toMatchObject({
@@ -350,8 +394,8 @@ describe('automatic reply: when it speaks', () => {
   });
 
   it('records a provider with no key as a fault, not a preference', async () => {
-    const { service, record, draftReply } = serviceWith({ providerEnabled: false });
-    await service.considerReplying(1, 100);
+    const { service, record, draftReply, claim } = serviceWith({ providerEnabled: false });
+    await service.attempt(claim, 'worker-a');
     expect(draftReply).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls[0])).toContain('provider_has_no_key');
   });
@@ -359,39 +403,78 @@ describe('automatic reply: when it speaks', () => {
 
 describe('automatic reply: what the model decided', () => {
   it('does not answer "thanks", because a person reading an inbox would not', async () => {
-    const { service, replyAsAssistant, record } = serviceWith({
+    const { service, replyAsAssistant, record, claim } = serviceWith({
       draft: { silent: true, text: '', intent: 'acknowledging' },
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
 
     expect(replyAsAssistant).not.toHaveBeenCalled();
     expect(JSON.stringify(record.mock.calls[0])).toContain('nothing_to_say');
   });
 
-  it('apologises when the model produced no message, rather than going quiet', async () => {
+  it('tries again before apologising for a model that produced nothing', async () => {
     /*
-     * Deliberate silence and a failed answer must not look the same: one of
-     * them owes this customer an apology.
+     * THE LEDGER BOUGHT THIS. An empty answer used to mean one apology and
+     * nothing more, because there was nothing to come back to. A retry
+     * thirty seconds later that actually answers is far better for the
+     * customer than an apology that arrived instantly.
      */
-    const { service, replyAsAssistant, record } = serviceWith({
+    const { service, replyAsAssistant, ledger, claim } = serviceWith({
       draft: { silent: false, text: '   ' },
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
+
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+    expect(ledger.markFailed).toHaveBeenCalledWith(
+      55,
+      'worker-a',
+      expect.objectContaining({ permanent: false }),
+    );
+  });
+
+  it('apologises on the last attempt, where there is nothing left to come back for', async () => {
+    const { service, replyAsAssistant, record, ledger, claim } = serviceWith({
+      draft: { silent: false, text: '   ' },
+      attemptCount: 3,
+    });
+    await service.attempt(claim, 'worker-a');
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { body: string };
     expect(sent.body).toBe('Stepping away, back shortly.');
     expect(JSON.stringify(record.mock.calls[0])).toContain('could_not_answer');
+    expect(ledger.markFailed).toHaveBeenCalledWith(
+      55,
+      'worker-a',
+      expect.objectContaining({ permanent: true }),
+    );
+  });
+
+  it('settles the row as sent when a reply goes out', async () => {
+    const { service, ledger, claim } = serviceWith({
+      draft: { intent: 'asking opening hours', handoff: 'wants a refund' },
+    });
+    await service.attempt(claim, 'worker-a');
+
+    expect(ledger.markSent).toHaveBeenCalledWith(
+      55,
+      'worker-a',
+      expect.objectContaining({
+        model: 'gpt-6-luna',
+        intent: 'asking opening hours',
+        handoffReason: 'wants a refund',
+      }),
+    );
   });
 
   it('carries a handoff onto the message, where a colleague can see it', async () => {
-    const { service, replyAsAssistant } = serviceWith({
+    const { service, replyAsAssistant, claim } = serviceWith({
       draft: {
         text: 'Let me get a colleague onto this for you.',
         handoff: 'wants a refund',
         intent: 'refund request',
       },
     });
-    await service.considerReplying(1, 100);
+    await service.attempt(claim, 'worker-a');
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
     expect(sent.assistant).toMatchObject({
@@ -402,8 +485,8 @@ describe('automatic reply: what the model decided', () => {
   });
 
   it('marks a reply the model did not shape properly, so somebody notices', async () => {
-    const { service, replyAsAssistant } = serviceWith({ draft: { structured: false } });
-    await service.considerReplying(1, 100);
+    const { service, replyAsAssistant, claim } = serviceWith({ draft: { structured: false } });
+    await service.attempt(claim, 'worker-a');
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: Record<string, unknown> };
     expect(sent.assistant.unstructured).toBe(true);

@@ -1,4 +1,5 @@
 export * from './actor.enum';
+export * from './assistant.enum';
 export * from './attachment.enum';
 export * from './audit.enum';
 export * from './auth.enum';

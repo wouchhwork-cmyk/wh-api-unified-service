@@ -743,3 +743,35 @@ export const CHATBOT_PUBLIC_REPLY_CHARS = 400;
  * snapshot taken a second too early.
  */
 export const AUTO_REPLY_SETTLE_MS = 1_000;
+
+/**
+ * How many owed replies one worker takes at a time.
+ *
+ * Each is a model call and a send, run serially within the batch: five at
+ * once against a per-key rate limit buys little and makes a 429 far more
+ * likely. The batch size is the throughput control; concurrency inside it is
+ * not.
+ */
+export const ASSISTANT_REPLY_BATCH_SIZE = 5;
+
+/**
+ * How long a claimed reply stays claimed.
+ *
+ * Comfortably longer than a draft and a send, because the cost of a lease
+ * that lapses while the work is still running is TWO replies to one customer
+ * — and generous is free, while a second reply is not.
+ */
+export const ASSISTANT_REPLY_LEASE_SECONDS = 120;
+
+/** Linear backoff between attempts at an answer. */
+export const ASSISTANT_REPLY_RETRY_BASE_MS = 30_000;
+
+/**
+ * How long an answer waits for a photo to be described before looking again.
+ *
+ * A BACKSTOP, NOT THE MECHANISM. The analysis worker brings the row forward
+ * the moment a description lands, so this is only what happens if that never
+ * happens — a download that failed, a worker that died mid-describe. Long
+ * enough not to spin, short enough that a customer is not left holding.
+ */
+export const ASSISTANT_REPLY_MEDIA_WAIT_MS = 45_000;
