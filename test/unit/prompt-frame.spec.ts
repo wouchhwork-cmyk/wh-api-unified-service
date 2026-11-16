@@ -271,12 +271,29 @@ describe('explaining the markers on each message', () => {
     expect(text.indexOf('<message_format>')).toBeLessThan(text.indexOf('<output'));
   });
 
-  it('shows the three shapes that actually occur', () => {
+  it('shows the three shapes that actually occur, with ids written out whole', () => {
+    /* A shortened id in an example is a shortened id in the notes, and a
+     * shortened id matches no message. */
     const text = prompt();
 
-    expect(text).toContain('<example>[id:4f2c8b1a] is this available?</example>');
-    expect(text).toContain('[id:9ab3c1d2 kind:story_reply re:4f2c8b1a] love this!');
-    expect(text).toContain('[id:77aa kind:image] [media: a cracked mug]');
+    expect(text).toContain('[id:4f2c8b1a-60a8-4c73-b33a-37ad1c2c800a] is this available?');
+    expect(text).toContain('kind:story_reply re:4f2c8b1a-60a8-4c73-b33a-37ad1c2c800a');
+    expect(text).toContain('kind:image] [media: a cracked mug]');
+  });
+
+  it('forbids shortening an id anywhere', () => {
+    const text = prompt();
+
+    expect(text).toContain('NEVER shorten, abbreviate or truncate an id');
+    expect(text).toContain('use it whole, never shortened');
+  });
+
+  it('names the other things a message can carry', () => {
+    const text = prompt();
+
+    expect(text).toContain('[media: ...]');
+    expect(text).toContain('[reaction: ...]');
+    expect(text).toContain('[notes: ...]');
   });
 
   it('says what each part means, absence included', () => {

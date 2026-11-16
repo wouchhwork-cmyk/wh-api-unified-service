@@ -49,7 +49,11 @@ export function platformIdentityJoin(options: IdentityJoinOptions): string {
     : '';
 
   return `LEFT JOIN LATERAL (
-            SELECT pp.display_name, pp.first_name, pp.last_name, pp.avatar_url
+            SELECT pp.display_name, pp.first_name, pp.last_name, pp.avatar_url,
+                   /* The platform's own read on them — follow flags,
+                    * verification, reach — which belongs to the account and
+                    * not to the person. */
+                   pp.metadata
               FROM customer_platform_profiles pp
              WHERE pp.enterprise_id = ${customer}.enterprise_id
                AND pp.customer_id = ${customer}.id

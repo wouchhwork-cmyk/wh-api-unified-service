@@ -534,11 +534,12 @@ export class CustomerRepository extends BaseRepository {
    * was populated knows neither. One rule, in one place: the account id
    * where one exists, the handle where it does not.
    *
-   * The metadata is ALSO merged onto the customer, which is deliberate
-   * duplication rather than an oversight: follower counts belong to a
-   * platform, but the customer's own bag is merged from several sources and
-   * read in places that know nothing about platforms. Splitting that is a
-   * separate job from splitting the name.
+   * THE METADATA GOES HERE AND NOWHERE ELSE. It used to be merged onto the
+   * customer as well, so the follow flags and follower count of whichever
+   * platform answered last overwrote the others — the same collapse the
+   * names suffered, in a jsonb bag where nobody would see it happening. A
+   * person who follows a business on Instagram and not on Facebook has two
+   * true answers, and only a row per account can hold both.
    */
   async applyPlatformProfile(input: {
     enterpriseId: number;
@@ -592,13 +593,6 @@ export class CustomerRepository extends BaseRepository {
         input.avatarUrl,
         JSON.stringify(input.profile),
       ],
-    );
-
-    await this.mutate(
-      `UPDATE customers
-          SET metadata = metadata || $3::jsonb, updated_at = now()
-        WHERE id = $1 AND enterprise_id = $2 AND is_deleted = false`,
-      [input.customerId, enterpriseId, JSON.stringify(input.profile)],
     );
 
     return rows.length > 0;
@@ -780,21 +774,35 @@ export class CustomerRepository extends BaseRepository {
   async findAvatarRefreshTarget(
     enterpriseId: number,
     customerId: number,
-  ): Promise<{ scopedId: string; avatarUrl: string | null; fetchedAt: string | null } | null> {
+  ): Promise<{ scopedId: string; avatarUrl: string | null; fetchedAt: Date | null } | null> {
     const rows = await this.query<{
       scopedId: string;
       avatarUrl: string | null;
-      fetchedAt: string | null;
+      /* A real timestamp column now, where it used to be a string dug out of
+       * a jsonb bag. The caller compares it rather than parsing it. */
+      fetchedAt: Date | null;
     }>(
-      `SELECT ci.identifier_value           AS "scopedId",
-              cu.avatar_url                 AS "avatarUrl",
-              cu.metadata->>'profileFetchedAt' AS "fetchedAt"
+      /*
+       * FROM THE PROFILE, NOT THE CUSTOMER. Both columns this used to read
+       * moved: the avatar to the account it belongs to, and the fetch time
+       * to a real timestamp column beside it. Left pointing at the customer
+       * it would have found null for everybody and concluded that nobody has
+       * an avatar worth refreshing — a decision to do nothing, taken
+       * silently, on every customer.
+       */
+      `SELECT ci.identifier_value AS "scopedId",
+              pp.avatar_url       AS "avatarUrl",
+              pp.fetched_at       AS "fetchedAt"
          FROM customers cu
          JOIN customer_identifiers ci
            ON ci.customer_id = cu.id
           AND ci.enterprise_id = cu.enterprise_id
           AND ci.identifier_kind = $3
           AND ci.is_deleted = false
+         LEFT JOIN customer_platform_profiles pp
+           ON pp.enterprise_id = ci.enterprise_id
+          AND pp.customer_identifier_id = ci.id
+          AND pp.is_deleted = false
         WHERE cu.enterprise_id = $1 AND cu.id = $2 AND cu.is_deleted = false
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), customerId, IdentifierKind.InstagramUserId],

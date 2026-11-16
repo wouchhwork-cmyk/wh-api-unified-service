@@ -76,6 +76,13 @@ export interface MessageRow {
    * made, and it is kept by a human who has to know it was made.
    */
   readonly assistantHandoff?: string | null;
+  /**
+   * The model call that produced it.
+   *
+   * The prompt is never stored — it carries the customer's own words — so
+   * this is the id of the record that can rebuild it on demand.
+   */
+  readonly assistantCallRef?: string | null;
   readonly refId: string;
   readonly direction: MessageDirection;
   readonly body: string | null;
@@ -942,6 +949,19 @@ export class MessageRepository extends BaseRepository {
               (m.metadata ? 'assistant') AS "isAutomated",
               m.metadata->'assistant'->>'model' AS "assistantModel",
               m.metadata->'assistant'->>'handoff' AS "assistantHandoff",
+              /*
+               * THE CALL THAT WROTE IT, from the message where it was
+               * recorded and from the ledger where it was not.
+               *
+               * The stored ref is only on replies sent after calls started
+               * being recorded on the message. Everything before still has a
+               * model call — it names the INBOUND message it answered, which
+               * the assistant metadata also records — so the two can be
+               * joined up rather than leaving the button dead on every reply
+               * written before today.
+               */
+              COALESCE(m.metadata->'assistant'->>'callRef', mcall.ref_id::text)
+                AS "assistantCallRef",
               m.is_read AS "isRead", m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
               (m.platform_message_id IS NOT NULL
@@ -987,6 +1007,20 @@ export class MessageRepository extends BaseRepository {
          LEFT JOIN customers mcu ON mcu.id = m.customer_id
                                 AND mcu.enterprise_id = m.enterprise_id
                                 AND mcu.is_deleted = false
+         /*
+          * Only for messages the assistant wrote, and only when the id it
+          * recorded is actually a number — the cast would raise on anything
+          * else, and this runs on every thread read.
+          */
+         LEFT JOIN LATERAL (
+           SELECT mc.ref_id
+             FROM model_calls mc
+            WHERE mc.enterprise_id = m.enterprise_id
+              AND mc.message_id = (m.metadata->'assistant'->>'inReplyToMessageId')::bigint
+              AND mc.is_deleted = false
+            ORDER BY mc.created_at DESC, mc.id DESC
+            LIMIT 1
+         ) mcall ON m.metadata->'assistant'->>'inReplyToMessageId' ~ '^[0-9]+$'
          ${platformIdentityJoin({ customer: 'mcu', as: 'mcpp' })}
          LEFT JOIN enterprise_employees se ON se.id = m.sent_by_employee_id
                                           AND se.enterprise_id = m.enterprise_id

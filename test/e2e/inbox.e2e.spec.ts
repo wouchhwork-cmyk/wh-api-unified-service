@@ -543,6 +543,12 @@ describe('the shared inbox', () => {
       // `media.media_product_type` and we kept none of it: FEED, REELS or
       // STORY. Null on a direct message.
       'postProductType',
+      /*
+       * Which model call wrote it. The prompt is never stored — it carries
+       * the customer's own words — so this names the record that can
+       * rebuild it on demand.
+       */
+      'promptRef',
       'reaction',
       'refId',
       // Added when story replies started being surfaced: null unless the

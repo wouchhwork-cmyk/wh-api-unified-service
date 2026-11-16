@@ -71,11 +71,88 @@ describe('queue gauges', () => {
     );
   }
 
-  it('reports all three queues, always', async () => {
+  it('reports every queue, always', async () => {
     // The health endpoint renders whatever comes back; a missing queue would
     // read as a queue at zero rather than as a queue not measured.
     const all = await queueMetrics.gauges();
-    expect(all.map((row) => row.queue)).toEqual(['inbound', 'outbound', 'sync']);
+    expect(all.map((row) => row.queue)).toEqual([
+      'assistant',
+      'inbound',
+      'media',
+      'outbound',
+      'sync',
+    ]);
+  });
+
+  /**
+   * THE TWO THAT WERE INVISIBLE.
+   *
+   * Both AI queues were missing from this entirely, so a stopped assistant
+   * worker grew a backlog of replies owed to real people with nothing
+   * anywhere reporting it — the one failure a gauge exists to catch.
+   */
+  describe('the AI queues', () => {
+    beforeEach(async () => {
+      await db.query(`DELETE FROM assistant_replies`);
+      await db.query(`DELETE FROM media_analyses`);
+    });
+
+    const owedReply = (status: string, over = '') =>
+      db.query(
+        `INSERT INTO assistant_replies
+           (enterprise_id, conversation_id, message_id, status${over ? ', ' + over.split('=')[0] : ''})
+         VALUES ($1, 1, floor(random() * 1e9)::bigint, $2${over ? ', ' + over.split('=')[1] : ''})`,
+        [enterpriseId, status],
+      );
+
+    it('counts a reply somebody is owed', async () => {
+      await owedReply('pending');
+      await expect(gaugeFor('assistant')).resolves.toMatchObject({ depth: 1, due: 1 });
+    });
+
+    it('counts one a worker is holding separately from one waiting', async () => {
+      await owedReply('pending');
+      await owedReply('in_flight');
+
+      const gauge = await gaugeFor('assistant');
+      expect(gauge).toMatchObject({ depth: 1, leased: 1 });
+    });
+
+    it('counts a reply given up on, which is somebody who never got one', async () => {
+      await owedReply('unavailable', `settled_at=now()`);
+
+      const gauge = await gaugeFor('assistant');
+      expect(gauge).toMatchObject({ deadLettered: 1, recentDeadLettered: 1 });
+    });
+
+    it('does not report an old failure as a recent one', async () => {
+      /* An alarm pinned on by last month's poison message is one nobody
+       * reads. */
+      await owedReply('unavailable', `settled_at=now() - interval '30 days'`);
+
+      const gauge = await gaugeFor('assistant');
+      expect(gauge).toMatchObject({ deadLettered: 1, recentDeadLettered: 0 });
+    });
+
+    it('counts media waiting to be described', async () => {
+      await db.query(
+        `INSERT INTO media_analyses (enterprise_id, media_key, media_kind, status)
+         VALUES ($1,'asset:waiting','image','pending')`,
+        [enterpriseId],
+      );
+
+      await expect(gaugeFor('media')).resolves.toMatchObject({ depth: 1, due: 1 });
+    });
+
+    it('counts media given up on, so expired links are visible rather than silent', async () => {
+      await db.query(
+        `INSERT INTO media_analyses (enterprise_id, media_key, media_kind, status)
+         VALUES ($1,'asset:gone','image','unavailable')`,
+        [enterpriseId],
+      );
+
+      await expect(gaugeFor('media')).resolves.toMatchObject({ deadLettered: 1 });
+    });
   });
 
   it('counts an empty ledger as zero rather than omitting it', async () => {

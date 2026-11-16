@@ -366,6 +366,12 @@ export class AutoReplyService {
        * however much of the thread happens to fit in the window.
        */
       ...(draft.summary ? { summary: draft.summary.slice(0, CHATBOT_SUMMARY_CHARS) } : {}),
+      /*
+       * WHICH CALL PRODUCED IT, so "why did it say that" is a link from the
+       * message rather than a hunt through a list. The prompt itself is
+       * never stored; this is the id of the record that can rebuild it.
+       */
+      ...(draft.callRef ? { callRef: draft.callRef } : {}),
       /* A model that stopped answering in the shape it was asked for is a
        * prompt or a model to change, and that shows up here first. */
       ...(draft.structured ? {} : { unstructured: true }),

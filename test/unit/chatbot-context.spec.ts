@@ -326,3 +326,79 @@ describe('how the messages are named', () => {
     expect(draft.text).toBe('Yes, we have those in stock.');
   });
 });
+
+/**
+ * What a message carries besides its words.
+ *
+ * A reaction is a reply without words and was being thrown away entirely —
+ * a thread that drops it reads as though somebody went quiet. The notes are
+ * what each reply understood as it was sent, which is how the model sees its
+ * own understanding change rather than only where it ended up.
+ */
+describe('everything a turn carries', () => {
+  it('shows a reaction, because answering it is still answering', async () => {
+    const { service, reply } = serviceWith({
+      messages: [
+        message(1, {
+          direction: MessageDirection.Outbound,
+          body: 'on its way',
+          metadata: { reaction: { emoji: '❤', name: 'other' } },
+        }),
+      ],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { text: string }[];
+    expect(turns[0]?.text).toContain('[reaction: ❤]');
+  });
+
+  it('names a reaction that has a name as well as a mark', async () => {
+    const { service, reply } = serviceWith({
+      messages: [message(1, { metadata: { reaction: { emoji: '👍', name: 'like' } } })],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    expect((reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text).toContain(
+      '[reaction: 👍 like]',
+    );
+  });
+
+  it('says nothing when nobody reacted', async () => {
+    const { service, reply } = serviceWith({ messages: [message(1, { metadata: {} })] });
+    await service.draftReply(1, 'conv-ref');
+
+    expect((reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text).not.toContain('[reaction:');
+  });
+
+  it('carries the notes a reply was sent with, on that reply', async () => {
+    const { service, reply } = serviceWith({
+      messages: [
+        message(1, {
+          direction: MessageDirection.Outbound,
+          body: 'we open at nine',
+          metadata: { assistant: { summary: 'They asked about opening hours.' } },
+        }),
+      ],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    expect((reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text).toContain(
+      '[notes: They asked about opening hours.]',
+    );
+  });
+
+  it('refuses notes longer than they are worth', async () => {
+    const { service, reply } = serviceWith({
+      messages: [
+        message(1, {
+          direction: MessageDirection.Outbound,
+          metadata: { assistant: { summary: 'x'.repeat(5_000) } },
+        }),
+      ],
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    const text = (reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text ?? '';
+    expect(text.length).toBeLessThan(1_200);
+  });
+});

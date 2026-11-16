@@ -747,6 +747,11 @@ function toMessage(
     /* Null unless the assistant said it needs a colleague on this one. */
     handoff: row.isAutomated === true ? (row.assistantHandoff ?? null) : null,
     /*
+     * The call that wrote it, so a reader can ask what it was shown. The
+     * prompt is not stored anywhere; this names the record that rebuilds it.
+     */
+    promptRef: row.isAutomated === true ? (row.assistantCallRef ?? null) : null,
+    /*
      * WHO WROTE IT, when a customer did. A comment thread carries several
      * different people, and without this the client drew every one of them as
      * an unnamed "inbound" — so an agent could not tell who said what, or that

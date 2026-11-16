@@ -74,9 +74,14 @@ export interface ConversationRow {
   readonly customerDisplayName: string | null;
   readonly customerAvatarUrl: string | null;
   /**
-   * What the platform said about this person: whether they follow the business,
-   * whether they are verified, how many followers. Triage signals, kept on the
-   * customer and useless while nothing serves them.
+   * What the platform said about this person: whether they follow the
+   * business, whether they are verified, how many followers.
+   *
+   * FROM THE ACCOUNT THEY ARE WRITING FROM, not from the customer. These
+   * used to be merged onto the customer row, so the answers of whichever
+   * platform refreshed last overwrote the others — and somebody who follows
+   * a business on Instagram but not on Facebook has two true answers, only
+   * one of which survived.
    */
   readonly customerProfile: Record<string, unknown>;
   /**
@@ -239,7 +244,7 @@ export class ConversationRepository extends BaseRepository {
               cu.ref_id AS "customerRefId",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
-              cu.metadata AS "customerProfile",
+              COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
               /*
@@ -378,7 +383,7 @@ export class ConversationRepository extends BaseRepository {
               cu.ref_id AS "customerRefId",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
-              cu.metadata AS "customerProfile",
+              COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId",
               ae.ref_id AS "assignedToRefId",
               /*
@@ -588,7 +593,7 @@ export class ConversationRepository extends BaseRepository {
               cu.ref_id AS "customerRefId",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
-              cu.metadata AS "customerProfile",
+              COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId"
          FROM conversations cv
          LEFT JOIN customers cu ON cu.id = cv.customer_id

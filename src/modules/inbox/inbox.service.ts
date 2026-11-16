@@ -668,7 +668,7 @@ export class InboxService {
     );
     if (!target) return conversation;
 
-    const fetchedAt = target.fetchedAt === null ? Number.NaN : Date.parse(target.fetchedAt);
+    const fetchedAt = target.fetchedAt === null ? Number.NaN : target.fetchedAt.getTime();
     // NaN fails this, which is what makes a customer who never had a picture due.
     if (Date.now() - fetchedAt < CUSTOMER_AVATAR_TTL_MS) return conversation;
 

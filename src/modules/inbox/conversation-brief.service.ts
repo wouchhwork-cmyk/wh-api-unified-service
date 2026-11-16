@@ -388,16 +388,29 @@ export class ConversationBriefService {
     }
 
     /*
-     * A WINDOW, AND SAYING SO. The model sees the end of a long thread, and
-     * without being told that it is the end of one it answers as though the
-     * conversation began where its view does — re-introducing the business
-     * to somebody forty messages in.
+     * A WINDOW, AND SAYING SO EVERY TIME.
+     *
+     * It used to say this only when something had scrolled out, which left
+     * the model to infer from silence that what it could see was the whole
+     * conversation — and a model that believes it has the whole thing
+     * answers as though the exchange began where its view does.
+     *
+     * Stated unconditionally now, with the count: how many messages it is
+     * looking at, that they run oldest to newest, and whether anything came
+     * before them.
      */
+    lines.push(
+      `  <messages_shown>${input.shownMessages}</messages_shown>`,
+      '  <message_order>oldest first, newest last. The last one is what you are answering.</message_order>',
+    );
+
     const earlier = conversation.messageCount - input.shownMessages;
     if (earlier > 0) {
       lines.push(
-        `  <earlier>${earlier} earlier messages in this conversation are not shown. It did not start here.</earlier>`,
+        `  <earlier>${earlier} earlier messages in this conversation are not shown. It did not start here — what happened before them is in &lt;conversation_so_far&gt;, not in front of you.</earlier>`,
       );
+    } else {
+      lines.push('  <earlier>none — you can see this conversation from its beginning.</earlier>');
     }
 
     lines.push('</situation>');

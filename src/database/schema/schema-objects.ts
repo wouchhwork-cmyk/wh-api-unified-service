@@ -784,6 +784,8 @@ export async function applyPostTableObjects(
                    WHERE status IN (''pending'',''failed'')';
         EXECUTE 'CREATE INDEX IF NOT EXISTS media_analyses_stats_idx
                    ON media_analyses (status, media_kind)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS media_analyses_in_flight_idx
+                   ON media_analyses (lease_expires_at) WHERE status = ''in_flight''';
       END IF;
 
       IF EXISTS (
@@ -812,6 +814,10 @@ export async function applyPostTableObjects(
                    WHERE status IN (''pending'',''failed'')';
         EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_conversation_idx
                    ON assistant_replies (enterprise_id, conversation_id, id DESC)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_in_flight_idx
+                   ON assistant_replies (lease_expires_at) WHERE status = ''in_flight''';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_unavailable_idx
+                   ON assistant_replies (settled_at DESC) WHERE status = ''unavailable''';
       END IF;
 
       IF to_regclass('public.customer_platform_profiles') IS NOT NULL THEN
@@ -845,6 +851,9 @@ export async function applyPostTableObjects(
         EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_in_flight_idx
                    ON model_calls (created_at)
                    WHERE status = ''in_flight''';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_message_idx
+                   ON model_calls (enterprise_id, message_id, created_at DESC)
+                   WHERE message_id IS NOT NULL';
         EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS model_calls_ref_uniq
                    ON model_calls (ref_id)';
       END IF;

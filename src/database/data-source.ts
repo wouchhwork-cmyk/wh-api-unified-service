@@ -41,6 +41,9 @@ import { ModelCalls1760500000000 } from './migrations/1760500000000-ModelCalls';
 import { ModelCallInFlight1760600000000 } from './migrations/1760600000000-ModelCallInFlight';
 import { ModelCallPromptRecipe1760700000000 } from './migrations/1760700000000-ModelCallPromptRecipe';
 import { CustomerPlatformProfiles1760800000000 } from './migrations/1760800000000-CustomerPlatformProfiles';
+import { CustomerMetadataSplit1760900000000 } from './migrations/1760900000000-CustomerMetadataSplit';
+import { AiQueueGaugeIndexes1761000000000 } from './migrations/1761000000000-AiQueueGaugeIndexes';
+import { ModelCallByMessage1761100000000 } from './migrations/1761100000000-ModelCallByMessage';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -127,6 +130,9 @@ export function buildDataSourceOptions(
       ModelCallInFlight1760600000000,
       ModelCallPromptRecipe1760700000000,
       CustomerPlatformProfiles1760800000000,
+      CustomerMetadataSplit1760900000000,
+      AiQueueGaugeIndexes1761000000000,
+      ModelCallByMessage1761100000000,
     ],
     migrationsTableName: 'schema_migrations',
 

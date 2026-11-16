@@ -3,7 +3,7 @@ import { DEAD_LETTER_ALERT_WINDOW_MS } from '@/shared/constants';
 import { BaseRepository } from './base.repository';
 
 export interface QueueGauge {
-  readonly queue: 'inbound' | 'outbound' | 'sync';
+  readonly queue: 'inbound' | 'outbound' | 'sync' | 'assistant' | 'media';
   /** Claimable rows, whether or not they are due yet. */
   readonly depth: number;
   /** Claimable AND due now — work a worker could take this instant. */
@@ -69,6 +69,13 @@ export class QueueMetricsRepository extends BaseRepository {
     const inboundClaimable = `status IN ('pending','failed')`;
     const outboundClaimable = `status IN ('pending','scheduled','failed')`;
     const syncClaimable = `is_deleted = false AND status IN ('pending','failed','rate_limited')`;
+    /*
+     * The two AI queues. Both match a partial due-index exactly, COALESCE
+     * included — and both were invisible here until now, which meant a
+     * stopped assistant worker grew a backlog of replies owed to real people
+     * with nothing anywhere reporting it.
+     */
+    const aiClaimable = `is_deleted = false AND status IN ('pending','failed')`;
 
     const queue = (
       name: string,
@@ -77,6 +84,13 @@ export class QueueMetricsRepository extends BaseRepository {
       dueAt: string,
       leased: string,
       deadLetter: string,
+      /*
+       * WHEN a row became terminal. The transport ledgers have a column of
+       * that name; the AI ledgers settle into one of their own, and the
+       * recent-failures window has to read whichever this queue keeps or it
+       * reports every old failure as new.
+       */
+      deadLetteredAt = 'dead_lettered_at',
     ): string => `
       SELECT '${name}' AS queue,
              (SELECT count(*) FROM ${table} WHERE ${claimable}) AS depth,
@@ -87,7 +101,7 @@ export class QueueMetricsRepository extends BaseRepository {
              (SELECT count(*) FROM ${table} WHERE ${leased}) AS leased,
              (SELECT count(*) FROM ${table} WHERE ${deadLetter}) AS dead_lettered,
              (SELECT count(*) FROM ${table}
-               WHERE ${deadLetter} AND dead_lettered_at > now() - $1::interval)
+               WHERE ${deadLetter} AND ${deadLetteredAt} > now() - $1::interval)
                AS recent_dead_lettered`;
 
     return this.query<QueueGauge>(
@@ -117,6 +131,30 @@ export class QueueMetricsRepository extends BaseRepository {
            'COALESCE(next_attempt_at, rate_limited_until, created_at)',
            `is_deleted = false AND status = 'running'`,
            `is_deleted = false AND status = 'dead_letter'`,
+         )}
+         UNION ALL
+         ${queue(
+           'assistant',
+           'assistant_replies',
+           aiClaimable,
+           'COALESCE(next_attempt_at, created_at)',
+           `is_deleted = false AND status = 'in_flight'`,
+           /* Given up on, rather than dead-lettered: the word differs, the
+            * meaning does not — a reply somebody is owed and will not get. */
+           `is_deleted = false AND status = 'unavailable'`,
+           'settled_at',
+         )}
+         UNION ALL
+         ${queue(
+           'media',
+           'media_analyses',
+           aiClaimable,
+           'COALESCE(next_attempt_at, created_at)',
+           `is_deleted = false AND status = 'in_flight'`,
+           `is_deleted = false AND status = 'unavailable'`,
+           /* No settled column of its own; the row is only written when it
+            * changes state, so this is when it was given up on. */
+           'updated_at',
          )}
        )
        SELECT queue,
