@@ -11,7 +11,7 @@ import {
   CHATBOT_MESSAGE_CHARS,
   CHAT_MAX_TURNS,
 } from '@/shared/constants';
-import { MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
+import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { ConversationBriefService } from './conversation-brief.service';
 import { replyCapFor, shapeReply } from './reply-format';
 import { InboxService } from './inbox.service';
@@ -83,6 +83,9 @@ export class ChatbotService {
         null,
         null,
       ),
+      /* A person pressed the button. The spend is theirs, not the
+       * platform's, and the record has to be able to say so. */
+      { purpose: ModelCallPurpose.Draft, messageId: null },
     );
   }
 
@@ -104,6 +107,7 @@ export class ChatbotService {
   async draftReplyForAutomation(
     enterpriseId: number,
     conversationRefId: string,
+    messageId: number,
   ): Promise<DraftedReply> {
     return this.draftFrom(
       enterpriseId,
@@ -112,11 +116,17 @@ export class ChatbotService {
         conversationRefId,
         CHATBOT_CONTEXT_MESSAGES,
       ),
+      /* The message it is answering, so a cost can be traced to its cause. */
+      { purpose: ModelCallPurpose.AutoReply, messageId },
     );
   }
 
   /** Everything after the read, which is identical whoever asked. */
-  private async draftFrom(enterpriseId: number, thread: ThreadRead): Promise<DraftedReply> {
+  private async draftFrom(
+    enterpriseId: number,
+    thread: ThreadRead,
+    accounting: { purpose: ModelCallPurpose; messageId: number | null },
+  ): Promise<DraftedReply> {
     /*
      * Newest first out of the repository, because that is what a reader
      * pages through. A model reads a conversation the way it happened.
@@ -167,7 +177,12 @@ export class ChatbotService {
       hasMedia: mediaDescriptions > 0,
     });
 
-    const answer = await this.chat.reply(shown, brief.xml);
+    const answer = await this.chat.reply(shown, {
+      enterpriseId,
+      purpose: accounting.purpose,
+      messageId: accounting.messageId,
+      context: brief.xml,
+    });
 
     return {
       ...answer,

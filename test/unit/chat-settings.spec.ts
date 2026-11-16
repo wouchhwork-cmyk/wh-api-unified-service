@@ -4,6 +4,9 @@ import type { ModelRouter } from '@/modules/ai/model-router.service';
 import type { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import type { AppConfigService } from '@/config';
 import { TokenCipherService } from '@/shared/crypto';
+import type { ModelCallRepository } from '@/database/repositories/model-call.repository';
+import { ModelCallPurpose } from '@/shared/enums';
+import { ChatError } from '@/modules/ai/chat.errors';
 
 /**
  * What the assistant is told, and who is told it.
@@ -39,7 +42,14 @@ function serviceWith(stored: Record<string, unknown> | null, version = 3) {
   const cipher = new TokenCipherService({
     crypto: { activeKeyId: 'k1', keys: new Map([['k1', Buffer.alloc(32, 7)]]) },
   } as unknown as AppConfigService);
-  return { service: new ChatService(settings, router, config, cipher), chat, cipher };
+  const record = vi.fn().mockResolvedValue(undefined);
+  const calls = { record } as unknown as ModelCallRepository;
+  return {
+    service: new ChatService(settings, router, config, cipher, calls),
+    chat,
+    cipher,
+    record,
+  };
 }
 
 describe('chat settings', () => {
@@ -91,10 +101,11 @@ describe('chat settings', () => {
 
   it('gives a caller the context section and keeps the rules to itself', async () => {
     const { service, chat } = serviceWith({ prompt: 'Never invent an opening hour.' });
-    await service.reply(
-      [{ role: 'user', text: 'when do you open?' }],
-      '<business><name>Acme</name></business>',
-    );
+    await service.reply([{ role: 'user', text: 'when do you open?' }], {
+      enterpriseId: 1,
+      purpose: ModelCallPurpose.AutoReply,
+      context: '<business><name>Acme</name></business>',
+    });
 
     const sent = chat.mock.calls[0]?.[1] as { instructions: string };
     /* The console's words, in the section that belongs to the console. */
@@ -114,8 +125,87 @@ describe('chat settings', () => {
 
   it('stamps the version that produced the reply', async () => {
     const { service } = serviceWith({ prompt: 'Be brief.' }, 7);
-    await expect(service.reply([{ role: 'user', text: 'hi' }])).resolves.toMatchObject({
+    await expect(
+      service.reply([{ role: 'user', text: 'hi' }], {
+        enterpriseId: 1,
+        purpose: ModelCallPurpose.AutoReply,
+      }),
+    ).resolves.toMatchObject({
       promptVersion: 7,
     });
+  });
+});
+
+/**
+ * WHATEVER LEAVES THIS SERVICE HAS A RECORD.
+ *
+ * A model call is billed, takes time, and is the thing somebody is looking
+ * for when they ask why a customer got an apology. The outcome written onto
+ * whatever asked for it is not a substitute: that row is updated in place on
+ * a retry, so a failed first attempt's spend vanishes from the record, and a
+ * draft a colleague asked for has no row at all.
+ */
+describe('the record of a call that left the service', () => {
+  it('records a successful one, with what it cost and how long it took', async () => {
+    const { service, record } = serviceWith({ prompt: 'Be brief.' }, 4);
+    await service.reply([{ role: 'user', text: 'hi' }], {
+      enterpriseId: 9,
+      purpose: ModelCallPurpose.AutoReply,
+      messageId: 100,
+    });
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enterpriseId: 9,
+        purpose: ModelCallPurpose.AutoReply,
+        status: 'ok',
+        messageId: 100,
+        promptVersion: 4,
+      }),
+    );
+    const [[written]] = record.mock.calls as [[{ durationMs: number }]];
+    expect(written.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('records one that failed, and still lets the error through', async () => {
+    const { service, chat, record } = serviceWith({ prompt: 'Be brief.' });
+    chat.mockRejectedValueOnce(new ChatError('CHAT_TIMEOUT', 'the model did not answer', true));
+
+    await expect(
+      service.reply([{ role: 'user', text: 'hi' }], {
+        enterpriseId: 9,
+        purpose: ModelCallPurpose.AutoReply,
+      }),
+    ).rejects.toThrow('the model did not answer');
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', failureCode: 'CHAT_TIMEOUT' }),
+    );
+  });
+
+  it('tells a draft apart from a reply the platform sent on its own', async () => {
+    const { service, record } = serviceWith({ prompt: 'Be brief.' });
+    await service.reply([{ role: 'user', text: 'hi' }], {
+      enterpriseId: 9,
+      purpose: ModelCallPurpose.Draft,
+    });
+
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: ModelCallPurpose.Draft }),
+    );
+  });
+
+  it('never puts the conversation in the record, only why it failed', async () => {
+    const { service, chat, record } = serviceWith({ prompt: 'Be brief.' });
+    chat.mockRejectedValueOnce(new ChatError('CHAT_CALL_FAILED', 'rate limit reached', false));
+
+    await expect(
+      service.reply([{ role: 'user', text: 'my order number is 12345' }], {
+        enterpriseId: 9,
+        purpose: ModelCallPurpose.AutoReply,
+      }),
+    ).rejects.toThrow();
+
+    expect(JSON.stringify(record.mock.calls)).not.toContain('12345');
   });
 });

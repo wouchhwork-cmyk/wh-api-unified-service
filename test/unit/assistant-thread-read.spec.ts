@@ -189,7 +189,7 @@ describe('which door the chatbot uses', () => {
 
   it('asks without one, when nobody did', async () => {
     const { chatbot, inbox } = chatbotWith();
-    await chatbot.draftReplyForAutomation(2, 'conv-ref');
+    await chatbot.draftReplyForAutomation(2, 'conv-ref', 100);
     expect(inbox.readThreadForAssistant).toHaveBeenCalledWith(2, 'conv-ref', expect.any(Number));
     expect(inbox.readThread).not.toHaveBeenCalled();
   });

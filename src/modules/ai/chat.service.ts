@@ -12,6 +12,9 @@ import {
 import { ModelRouter } from './model-router.service';
 import { buildChatReplyPrompt, readChatReply } from './prompts';
 import { TokenCipherService } from '@/shared/crypto';
+import { ModelCallRepository } from '@/database/repositories/model-call.repository';
+import { ModelCallPurpose, ModelCallStatus } from '@/shared/enums';
+import { ChatError } from './chat.errors';
 
 /** The platform setting that holds what we tell the model, and which model. */
 export const CHAT_SETTING_KEY = 'chat';
@@ -28,6 +31,22 @@ export interface ChatSettings {
   readonly model: string;
   readonly prompt: string;
   readonly version: number;
+}
+
+/**
+ * What a caller has to say about a reply it is asking for.
+ *
+ * THE TENANT AND THE REASON ARE NOT OPTIONAL. A record of a paid call that
+ * cannot say which business it was for, or whether a person asked for it,
+ * answers none of the questions a bill raises.
+ */
+export interface ChatReplyOptions {
+  readonly enterpriseId: number;
+  readonly purpose: ModelCallPurpose;
+  /** The assembled facts for this conversation, already tagged. */
+  readonly context?: string;
+  /** The inbound message being answered, when there is one. */
+  readonly messageId?: number | null;
 }
 
 export interface ChatAnswer extends ChatReply {
@@ -98,6 +117,7 @@ export class ChatService {
     private readonly router: ModelRouter,
     private readonly config: AppConfigService,
     private readonly cipher: TokenCipherService,
+    private readonly calls: ModelCallRepository,
   ) {}
 
   /**
@@ -242,20 +262,55 @@ export class ChatService {
    * `<context>` section and nothing else: the role, the rules and the output
    * contract are assembled here, around both it and the console's prompt.
    */
-  async reply(turns: readonly ChatTurn[], context?: string): Promise<ChatAnswer> {
+  async reply(turns: readonly ChatTurn[], options: ChatReplyOptions): Promise<ChatAnswer> {
     const settings = await this.currentSettings();
     const apiKey = (await this.storedKeys())[settings.provider];
-    const reply = await this.router.chat(settings.provider, {
-      turns,
-      /* Only when the console holds one; otherwise the client uses its own
-       * environment key, which is the ordinary case. */
-      ...(apiKey ? { apiKey } : {}),
-      instructions: buildChatReplyPrompt({
-        businessPrompt: settings.prompt,
-        context: context ?? '',
-      }),
-      model: settings.model,
-    });
+
+    /*
+     * MEASURED HERE, because nothing else can. Neither provider reports how
+     * long it took, and "the assistant has got slow" is a different problem
+     * from "the assistant is failing" — a distinction nobody can make from
+     * the outcome alone until a customer complains.
+     */
+    const startedAt = Date.now();
+    let reply;
+    try {
+      reply = await this.router.chat(settings.provider, {
+        turns,
+        /* Only when the console holds one; otherwise the client uses its own
+         * environment key, which is the ordinary case. */
+        ...(apiKey ? { apiKey } : {}),
+        instructions: buildChatReplyPrompt({
+          businessPrompt: settings.prompt,
+          context: options.context ?? '',
+        }),
+        model: settings.model,
+      });
+    } catch (error) {
+      /*
+       * A CALL THAT FAILED STILL LEFT THIS SERVICE. It may have been billed,
+       * it certainly took time, and it is the one somebody is looking for
+       * when they ask why a customer got an apology. Recorded before the
+       * error is re-thrown, so the caller's own handling is unchanged.
+       */
+      await this.calls.record({
+        enterpriseId: options.enterpriseId,
+        provider: settings.provider,
+        model: settings.model,
+        purpose: options.purpose,
+        status: ModelCallStatus.Failed,
+        messageId: options.messageId ?? null,
+        promptVersion: settings.version,
+        durationMs: Date.now() - startedAt,
+        failureCode: error instanceof ChatError ? error.failureCode : 'CHAT_CALL_FAILED',
+        /* The message, never the request: a model error can quote the prompt
+         * back, and the prompt is wrapped around somebody's conversation. */
+        failureReason: error instanceof Error ? error.message : null,
+      });
+      throw error;
+    }
+
+    const durationMs = Date.now() - startedAt;
 
     /*
      * The envelope is opened HERE rather than in a client, because it is a
@@ -264,6 +319,24 @@ export class ChatService {
      * way. A client that parsed it would have to be taught the shape twice.
      */
     const fields = readChatReply(reply.text);
+
+    await this.calls.record({
+      enterpriseId: options.enterpriseId,
+      provider: reply.provider,
+      model: reply.model,
+      purpose: options.purpose,
+      status: ModelCallStatus.Ok,
+      messageId: options.messageId ?? null,
+      promptVersion: settings.version,
+      inputTokens: reply.usage.inputTokens,
+      outputTokens: reply.usage.outputTokens,
+      totalTokens: reply.usage.totalTokens,
+      cachedInputTokens: reply.usage.cachedInputTokens,
+      reasoningTokens: reply.usage.reasoningTokens,
+      durationMs,
+      truncated: reply.truncated,
+    });
+
     return {
       ...reply,
       text: fields.text,

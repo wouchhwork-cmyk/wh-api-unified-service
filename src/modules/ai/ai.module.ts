@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CryptoModule } from '@/shared/crypto';
 import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.repository';
+import { ModelCallRepository } from '@/database/repositories/model-call.repository';
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import { GeminiClient } from './gemini.client';
 import { OpenAiClient } from './openai.client';
@@ -32,6 +33,7 @@ import { MediaAnalysisService } from './media-analysis.service';
     MediaDownloader,
     MediaAnalysisService,
     MediaAnalysisRepository,
+    ModelCallRepository,
     PlatformSettingRepository,
   ],
   exports: [
@@ -41,6 +43,7 @@ import { MediaAnalysisService } from './media-analysis.service';
     ModelRouter,
     ChatService,
     MediaAnalysisRepository,
+    ModelCallRepository,
     PlatformSettingRepository,
   ],
 })

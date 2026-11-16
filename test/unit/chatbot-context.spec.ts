@@ -214,7 +214,10 @@ describe('chatbot context', () => {
     const { service, reply } = serviceWith({ messages: [message(1)] });
     const draft = await service.draftReply(1, 'conv-ref');
 
-    expect(reply.mock.calls[0]?.[1]).toContain('<business>');
+    const options = reply.mock.calls[0]?.[1] as { context: string; purpose: string };
+    expect(options.context).toContain('<business>');
+    /* And it says whose spend it is: a colleague pressed the button. */
+    expect(options.purpose).toBe('draft');
     expect(draft.context.hasBusinessProfile).toBe(true);
   });
 });

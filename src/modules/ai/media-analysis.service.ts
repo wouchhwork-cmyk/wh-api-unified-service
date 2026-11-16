@@ -16,6 +16,8 @@ import { MediaKind } from '@/shared/enums';
 import { GeminiClient } from './gemini.client';
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { MediaDownloader } from './media-downloader';
+import { ModelCallRepository } from '@/database/repositories/model-call.repository';
+import { ModelCallPurpose, ModelCallStatus } from '@/shared/enums';
 import { buildMediaAnalysisPrompt } from './prompts';
 
 /** The platform setting that holds what we tell the model. */
@@ -43,6 +45,7 @@ export class MediaAnalysisService {
     private readonly settings: PlatformSettingRepository,
     private readonly gemini: GeminiClient,
     private readonly downloader: MediaDownloader,
+    private readonly calls: ModelCallRepository,
     private readonly config: AppConfigService,
     @InjectPinoLogger(MediaAnalysisService.name) private readonly logger: PinoLogger,
   ) {}
@@ -123,6 +126,8 @@ export class MediaAnalysisService {
       }
 
       const instruction = await this.currentSettings();
+      /* Ours rather than the provider's: neither reports how long it took. */
+      const startedAt = Date.now();
       const outcome = await this.gemini.describeMedia({
         bytes: media.bytes,
         mimeType: media.mimeType,
@@ -136,6 +141,28 @@ export class MediaAnalysisService {
          */
         prompt: buildMediaAnalysisPrompt(instruction.prompt),
         model: instruction.model,
+      });
+
+      /*
+       * THE CALL LEFT THIS SERVICE, so it has a record of its own.
+       *
+       * The ledger row below says what the media turned out to be; this says
+       * what asking cost. They are not the same fact, and the ledger row is
+       * updated in place on a retry — so without this, the tokens a failed
+       * first attempt spent would simply disappear from the record.
+       */
+      await this.calls.record({
+        enterpriseId: claimed.enterpriseId,
+        provider: 'gemini',
+        model: outcome.model,
+        purpose: ModelCallPurpose.MediaDescription,
+        status: ModelCallStatus.Ok,
+        mediaKey: claimed.mediaKey,
+        promptVersion: instruction.version,
+        inputTokens: outcome.usage.inputTokens,
+        outputTokens: outcome.usage.outputTokens,
+        totalTokens: outcome.usage.totalTokens,
+        durationMs: Date.now() - startedAt,
       });
 
       await this.analyses.markDone(claimed.id, leaseOwner, {
@@ -231,6 +258,30 @@ export class MediaAnalysisService {
     const reason = error instanceof Error ? error.message.slice(0, 500) : 'unknown failure';
 
     const backoffMs = MEDIA_ANALYSIS_RETRY_BASE_MS * Math.max(1, claimed.attemptCount);
+
+    /*
+     * ONLY WHEN THE CALL ACTUALLY WENT OUT.
+     *
+     * Most failures here never reach a model: a dead CDN link, a file too
+     * large to send, a kind nothing reads, the feature switched off. Filing
+     * those as model calls would put failures in the record against a
+     * provider that was never asked anything, and the first person reading
+     * it would conclude the model was broken.
+     */
+    if (failureCode === MediaFailure.ModelFailed || failureCode === MediaFailure.ModelUnparsable) {
+      await this.calls.record({
+        enterpriseId: claimed.enterpriseId,
+        provider: 'gemini',
+        model: (await this.currentSettings()).model,
+        purpose: ModelCallPurpose.MediaDescription,
+        status: ModelCallStatus.Failed,
+        mediaKey: claimed.mediaKey,
+        failureCode,
+        /* Redacted at the throw site: a model error can quote the prompt
+         * back, and the prompt is wrapped around a customer's photo. */
+        failureReason: reason,
+      });
+    }
 
     await this.analyses.markFailed(claimed.id, leaseOwner, {
       failureCode,

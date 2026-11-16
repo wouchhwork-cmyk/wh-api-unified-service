@@ -241,7 +241,11 @@ export class AutoReplyService {
     /* The actorless read: a worker has no employee whose permissions to check. */
     let draft: DraftedReply;
     try {
-      draft = await this.chatbot.draftReplyForAutomation(enterpriseId, context.conversationRefId);
+      draft = await this.chatbot.draftReplyForAutomation(
+        enterpriseId,
+        context.conversationRefId,
+        messageId,
+      );
     } catch (error) {
       await this.failedToDraft(claimed, leaseOwner, context.conversationRefId, settings, error);
       return;

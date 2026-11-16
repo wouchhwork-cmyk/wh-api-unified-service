@@ -794,6 +794,38 @@ export async function applyPostTableObjects(
                    ON message_attachments (enterprise_id, media_key)
                    WHERE media_key IS NOT NULL';
       END IF;
+
+      /*
+       * The assistant's two queues, guarded the same way and for the same
+       * reason: this file runs on a migrate-from-zero, before the migrations
+       * that create these tables. Each later migration creates its own
+       * indexes, so skipping here loses nothing.
+       */
+      IF to_regclass('public.assistant_replies') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE assistant_replies
+                   DROP CONSTRAINT IF EXISTS assistant_replies_enterprise_fk';
+        EXECUTE 'ALTER TABLE assistant_replies
+                   ADD CONSTRAINT assistant_replies_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_due_idx
+                   ON assistant_replies (COALESCE(next_attempt_at, created_at), id)
+                   WHERE status IN (''pending'',''failed'')';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_conversation_idx
+                   ON assistant_replies (enterprise_id, conversation_id, id DESC)';
+      END IF;
+
+      IF to_regclass('public.model_calls') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE model_calls
+                   DROP CONSTRAINT IF EXISTS model_calls_enterprise_fk';
+        EXECUTE 'ALTER TABLE model_calls
+                   ADD CONSTRAINT model_calls_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_enterprise_idx
+                   ON model_calls (enterprise_id, created_at DESC, id DESC)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS model_calls_failure_idx
+                   ON model_calls (provider, created_at DESC)
+                   WHERE status = ''failed''';
+      END IF;
     END
     $do$;
   `);

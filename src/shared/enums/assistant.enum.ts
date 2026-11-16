@@ -28,3 +28,26 @@ export enum AssistantReplyStatus {
   /** Given up on: attempts exhausted, or a failure that will not change. */
   Unavailable = 'unavailable',
 }
+
+/**
+ * Why a model was called.
+ *
+ * RECORDED BECAUSE THE ANSWER CHANGES WHAT THE SPEND MEANS. A reply sent
+ * automatically and a draft a colleague asked for cost the same and are not
+ * the same thing: one is the platform spending money on its own initiative,
+ * the other is somebody choosing to. "What is this bill" cannot be answered
+ * without telling them apart.
+ */
+export enum ModelCallPurpose {
+  /** The assistant answering a customer by itself. */
+  AutoReply = 'auto_reply',
+  /** A colleague pressed "draft with AI". */
+  Draft = 'draft',
+  /** Describing a photo, video or voice note before its link dies. */
+  MediaDescription = 'media_description',
+}
+
+export enum ModelCallStatus {
+  Ok = 'ok',
+  Failed = 'failed',
+}
