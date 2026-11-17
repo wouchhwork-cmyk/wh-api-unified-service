@@ -201,9 +201,16 @@ describe('the notes it wrote last time', () => {
     expect(xml).toContain('&lt;/conversation_so_far&gt;');
   });
 
-  it('refuses to carry a note longer than it is worth', async () => {
+  it('carries the whole note, however long it has grown', async () => {
+    /*
+     * <notes> is the only account of everything older than the handful of
+     * messages below it. Cutting it at 600 characters threw away the oldest
+     * part of the conversation at exactly the moment it was the only copy —
+     * and because each note is written from the one before it, whatever was
+     * cut here never came back.
+     */
     const { xml } = await briefWith({ summary: 'x'.repeat(5_000) });
-    expect(xml.length).toBeLessThan(3_000);
+    expect(xml).toContain(`<notes>${'x'.repeat(5_000)}</notes>`);
   });
 });
 

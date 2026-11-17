@@ -5,16 +5,12 @@ import { MessageRepository, type MessageRow } from '@/database/repositories/mess
 import type { ConversationRow } from '@/database/repositories/conversation.repository';
 import { ChatService, type ChatAnswer } from '@/modules/ai/chat.service';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
-import {
-  CHATBOT_CONTEXT_MESSAGES,
-  CHATBOT_MESSAGE_CHARS,
-  CHATBOT_SUMMARY_CHARS,
-  CHAT_MAX_TURNS,
-} from '@/shared/constants';
+import { CHATBOT_CONTEXT_MESSAGES, CHAT_MAX_TURNS } from '@/shared/constants';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { tagTurn } from '@/modules/ai/prompts';
 import { ConversationBriefService } from './conversation-brief.service';
 import { replyCapFor, shapeReply } from './reply-format';
+import { renderTurnText } from './turn-text';
 import { InboxService } from './inbox.service';
 
 export interface DraftedReply extends ChatAnswer {
@@ -317,77 +313,13 @@ export class ChatbotService {
   }
 
   /**
-   * The message as the model should read it: what was typed, plus what was
-   * sent that nobody can open any more.
+   * The message as the model should read it.
    *
-   * A photo whose CDN link expired is the ordinary case on this platform, and
-   * its description is the only record that survives — so it is folded into
-   * the text rather than left out, which is what makes "what did they send
-   * me?" answerable six months later.
+   * ONE LINE, because the body of this lived here and a second copy lived in
+   * the replay — and the two drifted. See turn-text.ts.
    */
   private textOf(message: MessageRow, described: readonly AnalysisResultRow[]): string {
-    const parts: string[] = [];
-    const body = message.body?.trim() ?? '';
-    if (body.length > 0) parts.push(body.slice(0, CHATBOT_MESSAGE_CHARS));
-
-    for (const analysis of described) {
-      const summary = analysis.summary?.trim() ?? '';
-      const transcript = analysis.transcript?.trim() ?? '';
-      const detail = [summary, transcript].filter((value) => value.length > 0).join(' — ');
-      /*
-       * WHOLE, NOT TRIMMED. The link died days ago, so these words are the
-       * only record of what somebody sent — and they are in front of the
-       * model precisely when it is being asked about them. A cut at four
-       * hundred characters lost a wedding invitation's date and venue,
-       * which were the two things anybody would have asked about.
-       */
-      if (detail.length > 0) parts.push(`[media: ${detail}]`);
-    }
-
-    /*
-     * A REACTION IS A REPLY WITHOUT WORDS, and it was being thrown away.
-     *
-     * Somebody who answers a message with a heart has responded — often
-     * instead of typing — and a thread that drops it reads as though they
-     * went quiet. It also changes what to say next: thanking somebody who
-     * already said thanks with an emoji is the assistant talking past them.
-     */
-    const reaction = this.reactionOn(message);
-    if (reaction) parts.push(`[reaction: ${reaction}]`);
-
-    /*
-     * THE NOTES WE WROTE AT THE TIME, on the message they were written with.
-     *
-     * The latest set is carried in <context> for everything before the
-     * window; these are what each reply understood as it was sent, which is
-     * how the model sees its own understanding change rather than only where
-     * it ended up.
-     */
-    const notes = this.notesOn(message);
-    if (notes) parts.push(`[notes: ${notes.slice(0, CHATBOT_SUMMARY_CHARS)}]`);
-
-    return parts.join('\n').trim();
-  }
-
-  /** What somebody reacted with, when they reacted rather than wrote. */
-  private reactionOn(message: MessageRow): string | null {
-    const reaction = (message.metadata as { reaction?: unknown } | undefined)?.reaction;
-    if (!reaction || typeof reaction !== 'object') return null;
-
-    const { emoji, name } = reaction as { emoji?: unknown; name?: unknown };
-    const mark = typeof emoji === 'string' && emoji.length > 0 ? emoji : null;
-    const word = typeof name === 'string' && name.length > 0 && name !== 'other' ? name : null;
-    if (!mark && !word) return null;
-    return [mark, word].filter((value) => value !== null).join(' ');
-  }
-
-  /** The summary this reply was sent with, when it carried one. */
-  private notesOn(message: MessageRow): string | null {
-    const assistant = (message.metadata as { assistant?: unknown } | undefined)?.assistant;
-    if (!assistant || typeof assistant !== 'object') return null;
-
-    const summary = (assistant as { summary?: unknown }).summary;
-    return typeof summary === 'string' && summary.trim().length > 0 ? summary.trim() : null;
+    return renderTurnText(message, described);
   }
 
   private describedAttachments(message: MessageRow, thread: ThreadRead): AnalysisResultRow[] {

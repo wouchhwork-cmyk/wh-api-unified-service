@@ -710,15 +710,27 @@ export const CHAT_MAX_TURN_CHARS = 8_000;
  */
 export const CHATBOT_CONTEXT_MESSAGES = 10;
 
-/**
- * How long the assistant's running notes may be.
+/*
+ * THE NOTES ARE NO LONGER CUT TO A LENGTH, and the constant that cut them is
+ * gone rather than raised.
  *
- * REWRITTEN, NEVER APPENDED, and this is the arithmetic that makes that
- * true. A note that only grows ends up costing more than the messages it
- * replaced — and the whole point of keeping it is that it costs less. The
- * prompt asks for brevity; this is what happens when it is not given.
+ * It was 600 characters, applied in four places — including at the moment
+ * the note was STORED, which is the one trim that cannot be undone: every
+ * note is written from the note before it, so a sentence lost at write time
+ * is lost from every note that follows.
+ *
+ * The comment here used to read "REWRITTEN, NEVER APPENDED", and that was
+ * the design: a note that only grows costs more than the messages it
+ * replaces. It was also the bug. Rewriting from a ten-message window meant
+ * the notes only ever described the last ten messages — observed on a live
+ * thread, where a reply dropped every earlier entry and kept only the two
+ * about the video it had just been sent. The notes are the only memory that
+ * outlives the window, so they are cumulative now, and the prompt says so.
+ *
+ * That makes them grow, and that is a real cost accepted deliberately
+ * rather than one nobody noticed. It is tuned from model_calls when the
+ * shapes settle, not with a slice through the middle of a sentence.
  */
-export const CHATBOT_SUMMARY_CHARS = 600;
 
 /** How much of one message the assistant is shown, so a pasted essay cannot dominate. */
 export const CHATBOT_MESSAGE_CHARS = 1_500;

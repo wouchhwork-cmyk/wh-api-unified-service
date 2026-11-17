@@ -1330,10 +1330,34 @@ function toConversationSummary(
 function describedAs(
   attachment: AttachmentRow,
   analyses: ReadonlyMap<string, AnalysisResultRow>,
-): { summary: string | null; transcript: string | null; describedAt: Date | null } | null {
+): {
+  summary: string | null;
+  transcript: string | null;
+  visibleText: string | null;
+  scenes: string | null;
+  describedAt: Date | null;
+} | null {
   if (!attachment.mediaKey) return null;
   const row = analyses.get(attachment.mediaKey);
   if (!row || row.status !== MediaAnalysisStatus.Done) return null;
-  if (!row.summary && !row.transcript) return null;
-  return { summary: row.summary, transcript: row.transcript, describedAt: row.analyzedAt };
+  if (!row.summary && !row.transcript && !row.visibleText) return null;
+  return {
+    summary: row.summary,
+    /*
+     * HEARD AND READ, SEPARATELY. One `transcript` held "everything said or
+     * written", and a model asked for one field merges them — a wedding
+     * invitation came back with its printed text filed as background audio.
+     * A reader of this thread needs to know whether a date was spoken aloud
+     * or printed on the card, and so does anything built on top of it.
+     *
+     * Additive: `transcript` keeps its name and its place, so a client that
+     * only knows about it is unaffected. It now means sound alone, which is
+     * narrower than it was — descriptions written before today still hold
+     * whatever the old single field held.
+     */
+    transcript: row.transcript,
+    visibleText: row.visibleText,
+    scenes: row.scenes,
+    describedAt: row.analyzedAt,
+  };
 }

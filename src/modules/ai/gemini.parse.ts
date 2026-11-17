@@ -29,6 +29,8 @@ export function parseMediaDescription(raw: unknown): MediaDescription {
   return {
     summary: text.trim().slice(0, 4000),
     transcript: null,
+    visibleText: null,
+    scenes: null,
     language: null,
     readable: true,
   };

@@ -161,6 +161,8 @@ describe('the media analysis ledger', () => {
       const settled = await analyses.markDone(claimed.id, 'worker-a', {
         summary: 'A plate of fries.',
         transcript: null,
+        visibleText: null,
+        scenes: null,
         language: null,
         model: 'gemini-2.5-flash-lite',
         promptVersion: 1,
@@ -185,6 +187,8 @@ describe('the media analysis ledger', () => {
       const settled = await analyses.markDone(claimed.id, 'worker-b', {
         summary: 'written by the wrong worker',
         transcript: null,
+        visibleText: null,
+        scenes: null,
         language: null,
         model: 'm',
         promptVersion: 1,
@@ -272,6 +276,8 @@ describe('the media analysis ledger', () => {
       await analyses.markDone(claimed!.id, 'worker-a', {
         summary: 'x',
         transcript: null,
+        visibleText: null,
+        scenes: null,
         language: null,
         model: 'gemini-2.5-flash-lite',
         promptVersion: 1,

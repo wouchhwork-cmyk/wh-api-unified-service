@@ -11,11 +11,7 @@ import { ChatService } from '@/modules/ai/chat.service';
 import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import { ChatError } from '@/modules/ai/chat.errors';
 import { AuditAction, AuditEntityType, AuditStatus, ConversationStatus } from '@/shared/enums';
-import {
-  ASSISTANT_REPLY_MEDIA_WAIT_MS,
-  ASSISTANT_REPLY_RETRY_BASE_MS,
-  CHATBOT_SUMMARY_CHARS,
-} from '@/shared/constants';
+import { ASSISTANT_REPLY_MEDIA_WAIT_MS, ASSISTANT_REPLY_RETRY_BASE_MS } from '@/shared/constants';
 import { ChatbotService, type DraftedReply } from './chatbot.service';
 import { InboxService } from './inbox.service';
 
@@ -365,7 +361,15 @@ export class AutoReplyService {
        * reads the most recent set and starts from there rather than from
        * however much of the thread happens to fit in the window.
        */
-      ...(draft.summary ? { summary: draft.summary.slice(0, CHATBOT_SUMMARY_CHARS) } : {}),
+      /*
+       * STORED WHOLE. This cut the note to 600 characters BEFORE writing it,
+       * which is the one place a trim is unrecoverable: every later note is
+       * written from this one, so a sentence lost here is lost from every
+       * note that follows. The notes are cumulative now and will grow; what
+       * they cost is a question for the model_calls ledger, not for a slice
+       * that silently deletes the middle of a sentence.
+       */
+      ...(draft.summary ? { summary: draft.summary } : {}),
       /*
        * WHICH CALL PRODUCED IT, so "why did it say that" is a link from the
        * message rather than a hunt through a list. The prompt itself is

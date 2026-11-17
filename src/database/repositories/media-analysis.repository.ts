@@ -22,7 +22,12 @@ export interface AnalysisResultRow {
   readonly mediaKey: string;
   readonly status: MediaAnalysisStatus;
   readonly summary: string | null;
+  /** Sound only: speech, lyrics, notable noise. Never on-screen writing. */
   readonly transcript: string | null;
+  /** Writing only: anything legible in the frame. Never speech. */
+  readonly visibleText: string | null;
+  /** A video shot by shot, tying picture to on-screen words to sound. */
+  readonly scenes: string | null;
   /** The language the media was spoken or written in, when it had one. */
   readonly language: string | null;
   readonly model: string | null;
@@ -154,6 +159,8 @@ export class MediaAnalysisRepository extends QueueLedgerRepository {
     result: {
       summary: string | null;
       transcript: string | null;
+      visibleText: string | null;
+      scenes: string | null;
       language: string | null;
       model: string;
       promptVersion: number;
@@ -167,6 +174,7 @@ export class MediaAnalysisRepository extends QueueLedgerRepository {
           SET status = $3, summary = $4, transcript = $5, language = $6,
               model = $7, prompt_version = $8, input_tokens = $9,
               output_tokens = $10, total_tokens = $11, analyzed_at = now(),
+              visible_text = $12, scenes = $13,
               failure_code = NULL, failure_reason = NULL,
               lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL
         WHERE id = $1 AND lease_owner = $2
@@ -183,6 +191,8 @@ export class MediaAnalysisRepository extends QueueLedgerRepository {
         result.inputTokens,
         result.outputTokens,
         result.totalTokens,
+        result.visibleText,
+        result.scenes,
       ],
     );
     return rows.length > 0;
@@ -213,7 +223,8 @@ export class MediaAnalysisRepository extends QueueLedgerRepository {
   async findByKeys(enterpriseId: number, keys: readonly string[]): Promise<AnalysisResultRow[]> {
     if (keys.length === 0) return [];
     return this.query<AnalysisResultRow>(
-      `SELECT media_key AS "mediaKey", status, summary, transcript, language, model,
+      `SELECT media_key AS "mediaKey", status, summary, transcript,
+              visible_text AS "visibleText", scenes, language, model,
               analyzed_at AS "analyzedAt", failure_code AS "failureCode"
          FROM media_analyses
         WHERE enterprise_id = $1 AND media_key = ANY($2::varchar[]) AND is_deleted = false`,

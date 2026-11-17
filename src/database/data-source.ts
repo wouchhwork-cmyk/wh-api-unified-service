@@ -45,6 +45,7 @@ import { CustomerMetadataSplit1760900000000 } from './migrations/1760900000000-C
 import { AiQueueGaugeIndexes1761000000000 } from './migrations/1761000000000-AiQueueGaugeIndexes';
 import { ModelCallByMessage1761100000000 } from './migrations/1761100000000-ModelCallByMessage';
 import { RepairTruncatedDescriptions1761200000000 } from './migrations/1761200000000-RepairTruncatedDescriptions';
+import { MediaHeardAndRead1761300000000 } from './migrations/1761300000000-MediaHeardAndRead';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -135,6 +136,7 @@ export function buildDataSourceOptions(
       AiQueueGaugeIndexes1761000000000,
       ModelCallByMessage1761100000000,
       RepairTruncatedDescriptions1761200000000,
+      MediaHeardAndRead1761300000000,
     ],
     migrationsTableName: 'schema_migrations',
 

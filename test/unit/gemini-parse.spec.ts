@@ -20,6 +20,8 @@ describe('reading the model’s description', () => {
     expect(result).toEqual({
       summary: 'A plate of fries.',
       transcript: null,
+      visibleText: null,
+      scenes: null,
       language: null,
       readable: true,
     });

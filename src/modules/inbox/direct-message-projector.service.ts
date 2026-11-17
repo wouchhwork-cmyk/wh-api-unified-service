@@ -415,6 +415,57 @@ export class DirectMessageProjectorService {
         ? await this.messages.findIdByPlatformMessageId(enterpriseId, message.reply_to.mid)
         : null;
 
+      /*
+       * THE PARENT NEVER ARRIVED, SO GO AND ASK FOR IT.
+       *
+       * A reply naming a message we do not hold means one of two things: Meta
+       * delivered them out of order and the parent is moments away, or the
+       * parent's webhook was dropped and nothing will ever bring it. The two
+       * look identical here, and the second one used to be permanent — the
+       * reply sat for ever saying "answering something we cannot show you",
+       * because the only repair was somebody noticing and pressing resync.
+       *
+       * Both cases are served by the same walk, and it is the one the orphan
+       * `message_edit` path already uses: re-read this thread, project what
+       * is missing, and `adoptOrphanReplies` links this reply to its parent
+       * the moment the parent lands. Out-of-order delivery costs one
+       * redundant walk that finds nothing new; a lost delivery is repaired
+       * without anybody being told to look.
+       *
+       * ENQUEUED IN THIS TRANSACTION, so the request to go looking commits
+       * with the message that needs it or not at all — the same rule every
+       * other outbound thing here follows.
+       *
+       * ASKED ONCE PER PARENT. Meta serves only the newest 20 messages of a
+       * thread, so a parent older than that can never be recovered, and
+       * every later reply to it would otherwise queue another walk.
+       */
+      const orphanedParentMid =
+        message.reply_to?.mid && parentMessageId === null ? message.reply_to.mid : null;
+
+      if (orphanedParentMid) {
+        platformFacts.replyParentRecoveryRequested = true;
+
+        const alreadyAsked = await this.messages.hasRequestedParentRecovery(
+          enterpriseId,
+          conversation.id,
+          orphanedParentMid,
+        );
+        if (!alreadyAsked) {
+          const queued = await this.syncJobs.enqueueIfAbsent({
+            enterpriseId,
+            channelId,
+            jobKind: SyncJobKind.ResyncConversation,
+            triggerKind: SyncTriggerKind.Repair,
+            targetPlatformId: senderId,
+          });
+          this.logger.info(
+            { enterpriseId, channelId, conversationId: conversation.id, queued },
+            'a reply named a message we never received — resync queued to fetch it',
+          );
+        }
+      }
+
       const inserted = await this.messages.insertInbound({
         enterpriseId,
         conversationId: conversation.id,
@@ -659,6 +710,65 @@ export class DirectMessageProjectorService {
         };
       }
 
+      /*
+       * EVERYTHING META SENT ABOUT OUR OWN MESSAGE, not just the fact that we
+       * sent it.
+       *
+       * This stored a bare `{ recoveredFromPlatform: true }` and threw the
+       * rest of the payload away — including `reply_to`. So a reply the
+       * business typed in the Instagram app answering one particular customer
+       * message was stored as a loose line: half the conversation threaded
+       * and half of it flat, with no way to tell afterwards which, because
+       * the platform id that would have allowed a later repair was discarded
+       * at the same moment.
+       *
+       * The inbound path has kept these facts all along. There was never a
+       * reason for this one not to.
+       */
+      const platformFacts: Record<string, unknown> = message
+        ? { ...buildPlatformFacts(message, event, false), recoveredFromPlatform: true }
+        : { recoveredFromPlatform: true };
+
+      /*
+       * WHAT WE WERE ANSWERING, resolved the same way the inbound path does
+       * it — and `is_self_reply` is false here, because a message of ours
+       * answering the customer is answering THEM.
+       */
+      const parentMessageId = message?.reply_to?.mid
+        ? await this.messages.findIdByPlatformMessageId(enterpriseId, message.reply_to.mid)
+        : null;
+
+      /*
+       * AND THE SAME REPAIR, for the same reason. A message of ours can
+       * answer one of theirs whose webhook was dropped just as easily as the
+       * other way round — see the inbound path for why one walk serves both
+       * the out-of-order case and the genuinely lost one, and why it is asked
+       * at most once per lost parent.
+       */
+      if (message?.reply_to?.mid && parentMessageId === null) {
+        const orphanedParentMid = message.reply_to.mid;
+        platformFacts.replyParentRecoveryRequested = true;
+
+        const alreadyAsked = await this.messages.hasRequestedParentRecovery(
+          enterpriseId,
+          conversation.id,
+          orphanedParentMid,
+        );
+        if (!alreadyAsked) {
+          const queued = await this.syncJobs.enqueueIfAbsent({
+            enterpriseId,
+            channelId,
+            jobKind: SyncJobKind.ResyncConversation,
+            triggerKind: SyncTriggerKind.Repair,
+            targetPlatformId: customerScopedId,
+          });
+          this.logger.info(
+            { enterpriseId, channelId, conversationId: conversation.id, queued },
+            'a message we sent named one we never received — resync queued to fetch it',
+          );
+        }
+      }
+
       const inserted = await this.messages.insertRecoveredOutbound({
         enterpriseId,
         conversationId: conversation.id,
@@ -669,7 +779,8 @@ export class DirectMessageProjectorService {
         body: message?.text ?? null,
         platformSentAt: event.timestamp ? new Date(event.timestamp) : null,
         hasAttachments: media.attachments.length > 0,
-        metadata: { recoveredFromPlatform: true },
+        metadata: platformFacts,
+        parentMessageId,
       });
 
       // Lost a race with another worker projecting the same echo.
@@ -861,7 +972,7 @@ export class DirectMessageProjectorService {
       enterpriseId,
       channelId,
       jobKind: SyncJobKind.ResyncConversation,
-      triggerKind: SyncTriggerKind.Scheduled,
+      triggerKind: SyncTriggerKind.Repair,
       targetPlatformId: senderId,
     });
 

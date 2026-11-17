@@ -16,7 +16,20 @@ import {
 
 export interface MediaDescription {
   readonly summary: string | null;
+  /**
+   * SOUND ONLY. Speech, lyrics and notable noise, with what is in front
+   * marked off from what is behind it.
+   *
+   * Kept apart from `visibleText` because merging them loses the one fact a
+   * reader needs most: whether a date was SAID or PRINTED. A wedding
+   * invitation came back with its whole printed text filed as background
+   * audio, so everything downstream was told the venue was something heard.
+   */
   readonly transcript: string | null;
+  /** WRITING ONLY. Anything legible in the frame, verbatim, in its script. */
+  readonly visibleText: string | null;
+  /** A video walked through shot by shot: picture, on-screen words, sound. */
+  readonly scenes: string | null;
   /** What language was spoken or written in it, when any was. */
   readonly language: string | null;
   readonly readable: boolean;

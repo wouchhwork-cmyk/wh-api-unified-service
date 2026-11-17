@@ -43,9 +43,25 @@ export class MediaAnalysis extends BaseEntity {
   @Column({ type: 'text', nullable: true })
   summary!: string | null;
 
-  /** Speech, caption or on-image text, verbatim. Null when there was none. */
+  /**
+   * SOUND ONLY, verbatim: speech, lyrics, notable noise. Null when silent.
+   *
+   * This used to be "speech, caption or on-image text" — one field for both
+   * — and a model asked for one field merges them every time. A wedding
+   * invitation video came back with its printed text filed as background
+   * audio, so everything reading this row was told the venue was something
+   * somebody had said.
+   */
   @Column({ type: 'text', nullable: true })
   transcript!: string | null;
+
+  /** WRITING ONLY, verbatim and in its own script. Null when nothing is written. */
+  @Column({ type: 'text', nullable: true })
+  visibleText!: string | null;
+
+  /** A video shot by shot: what is seen, written on screen, and heard. */
+  @Column({ type: 'text', nullable: true })
+  scenes!: string | null;
 
   /**
    * The language of that speech or writing, as an English name.

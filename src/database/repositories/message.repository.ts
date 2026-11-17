@@ -565,13 +565,23 @@ export class MessageRepository extends BaseRepository {
     platformSentAt: Date | null;
     hasAttachments?: boolean;
     metadata?: Record<string, unknown>;
+    /**
+     * What this message of ours answered, when it answered one in
+     * particular.
+     *
+     * The inbound path has had this since replies were threaded; this one
+     * did not, so a reply the business typed in the Instagram app was stored
+     * as a loose message however plainly it answered something. Half the
+     * conversation threaded and half of it flat.
+     */
+    parentMessageId?: number | null;
   }): Promise<{ id: number; refId: string } | null> {
     const { rows } = await this.mutate<{ id: number; ref_id: string }>(
       `INSERT INTO messages
          (enterprise_id, conversation_id, direction, customer_id, inbound_event_id,
           platform_message_id, message_kind, body, platform_sent_at, status,
-          is_read, has_attachments, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12::jsonb)
+          is_read, has_attachments, metadata, parent_message_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12::jsonb, $13)
        ON CONFLICT (enterprise_id, platform_message_id) WHERE platform_message_id IS NOT NULL
        DO NOTHING
        RETURNING id, ref_id`,
@@ -588,6 +598,7 @@ export class MessageRepository extends BaseRepository {
         MessageStatus.Delivered,
         input.hasAttachments ?? false,
         JSON.stringify(input.metadata ?? {}),
+        input.parentMessageId ?? null,
       ],
     );
     const row = rows[0];
@@ -622,6 +633,43 @@ export class MessageRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), parentId, parentPlatformMessageId],
     );
     return affected;
+  }
+
+  /**
+   * Whether this thread has already gone looking for a parent it never
+   * received.
+   *
+   * THE BOUND ON A REPAIR THAT CANNOT SUCCEED. A reply naming a message we
+   * do not hold queues a resync to go and fetch it — but Meta serves only
+   * the newest 20 messages of a thread, so a parent older than that can
+   * never be recovered. Without this, every further reply to that same dead
+   * parent would queue another walk and spend another Graph call to learn
+   * the same thing.
+   *
+   * Keyed on the PARENT, not on the thread: a second lost delivery in the
+   * same conversation is a different fact and deserves its own attempt.
+   *
+   * Scoped to one conversation, so this reads a thread rather than the
+   * table, and it only runs at all on the rare path where a parent is
+   * genuinely missing.
+   */
+  async hasRequestedParentRecovery(
+    enterpriseId: number,
+    conversationId: number,
+    parentPlatformMessageId: string,
+  ): Promise<boolean> {
+    const rows = await this.query<{ one: number }>(
+      `SELECT 1 AS one
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.metadata->>'replyToPlatformMessageId' = $3
+          AND (m.metadata ? 'replyParentRecoveryRequested')
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, parentPlatformMessageId],
+    );
+    return rows.length > 0;
   }
 
   /**
@@ -1164,35 +1212,91 @@ export class MessageRepository extends BaseRepository {
       `SELECT m.metadata->'assistant'->>'summary' AS summary,
               m.id AS "messageId",
               /*
-               * HOW MUCH HAS HAPPENED SINCE, which decides whether the
-               * window is wide enough to meet them.
+               * HOW DEEP THE WINDOW MUST REACH to show everything these
+               * notes have not read — a DEPTH, not a count of what came
+               * after.
                *
                * The notes only advance when the assistant writes a reply. A
                * business answering from the Instagram app writes messages
                * nothing here summarises — fine while they are still in the
                * window, and a permanent hole the moment they scroll out of
-               * it. Counting them is what lets the caller widen rather than
-               * answer around a gap it cannot see.
+               * it.
+               *
+               * WHY NOT a plain later.id > m.id, which is what this was. That
+               * assumes a message's id and its place in the conversation
+               * agree, and for a RECOVERED message they do not: a delivery
+               * Meta dropped is fetched later and stored with a new, higher
+               * id but its ORIGINAL timestamp, so it lands back in the
+               * middle of the thread. Counted by id it looks like the newest
+               * thing that happened; read by time it is already outside the
+               * window. Observed on a live thread: a customer message
+               * recovered 25 minutes late sat one position past the edge of
+               * every window afterwards and was never summarised at all.
+               *
+               * So this measures from the OLDEST message the notes have not
+               * seen — oldest by where it sits, not by when it arrived — to
+               * the newest. That is exactly how many messages must be shown
+               * for nothing to be missed, and for an ordinary new message it
+               * is the same small number as before.
                */
-              (SELECT count(*) FROM messages later
-                WHERE later.enterprise_id = m.enterprise_id
-                  AND later.conversation_id = m.conversation_id
-                  AND later.is_deleted = false
-                  AND later.is_internal_note = false
-                  AND later.id > m.id
-                  /*
-                   * A HOLDING LINE COVERS ITSELF. "Let me take a look at
-                   * that" and the fallback apology are fixed strings from a
-                   * settings row — no model saw them and there is nothing in
-                   * them to summarise, so counting them as unsummarised
-                   * would widen the window to go back and read sentences
-                   * this service wrote without thinking about them.
-                   *
-                   * They still appear in the transcript, which is the point:
-                   * the assistant has to see that it already said it.
-                   */
-                  AND NOT (later.metadata->'assistant' ? 'hold')
-                  AND NOT (later.metadata->'assistant' ? 'fallback')) AS uncovered
+              (SELECT count(*) FROM messages depth
+                WHERE depth.enterprise_id = m.enterprise_id
+                  AND depth.conversation_id = m.conversation_id
+                  AND depth.is_deleted = false
+                  AND depth.is_internal_note = false
+                  AND COALESCE(depth.platform_sent_at, depth.created_at) >= COALESCE(
+                    (SELECT min(COALESCE(u.platform_sent_at, u.created_at))
+                       FROM messages u
+                      WHERE u.enterprise_id = m.enterprise_id
+                        AND u.conversation_id = m.conversation_id
+                        AND u.is_deleted = false
+                        AND u.is_internal_note = false
+                        /*
+                         * STORED after the notes were, whatever its own
+                         * timestamp says. That is what "these notes cannot
+                         * have read it" actually means, and it is true of a
+                         * recovered message whose timestamp is older than
+                         * the notes themselves.
+                         *
+                         * BY ID, NOT BY created_at. Ids are monotonic, and
+                         * created_at is timestamptz(3) — two rows written in
+                         * the same millisecond carry the same value, so a
+                         * message stored immediately after the notes
+                         * compared equal and was counted as covered. Caught
+                         * by its own test, which asked for a depth of 5 and
+                         * got 0.
+                         *
+                         * So the ID answers "did this arrive after the notes"
+                         * and the SORT KEY answers "how far back does it
+                         * sit". Using one for both is what made the original
+                         * version of this miss recovered messages entirely.
+                         */
+                        AND u.id > m.id
+                        /*
+                         * A HOLDING LINE COVERS ITSELF. "Let me take a look
+                         * at that" and the fallback apology are fixed
+                         * strings from a settings row — no model saw them
+                         * and there is nothing in them to summarise, so
+                         * treating them as unsummarised would widen the
+                         * window to go back and read sentences this service
+                         * wrote without thinking about them.
+                         *
+                         * They still appear in the transcript, which is the
+                         * point: the assistant has to see it already said it.
+                         */
+                        /*
+                         * COALESCED, and this is not defensive noise.
+                         * metadata->'assistant' is NULL on everything the
+                         * assistant did not write, and NOT (NULL ? 'hold')
+                         * is NULL rather than true — so a bare NOT silently
+                         * dropped every customer message from this count.
+                         * The widening it feeds could then only ever be
+                         * triggered by our own replies, which are the one
+                         * kind of message that is never unsummarised.
+                         */
+                        AND NOT COALESCE(u.metadata->'assistant' ? 'hold', false)
+                        AND NOT COALESCE(u.metadata->'assistant' ? 'fallback', false)),
+                    'infinity'::timestamptz)) AS uncovered
          FROM messages m
         WHERE m.enterprise_id = $1
           AND m.conversation_id = $2
@@ -1218,6 +1322,14 @@ export class MessageRepository extends BaseRepository {
    * Order is NOT promised: the caller holds the sequence the ids were
    * recorded in, which is the real order, and a query that re-sorted them
    * would quietly disagree with it.
+   *
+   * SELECTS WHAT THE PROMPT RENDERS, which is the whole point of the method
+   * and is what it did not do. It left out `metadata` and the parent, so a
+   * replay rebuilt every turn without its reaction, without the assistant's
+   * own notes, and without the `re:` marker saying what it answered — a
+   * prompt the model never saw, shown to somebody asking what the model saw.
+   * Every one of those also moved the fingerprint, so a thread with notes in
+   * it reported as drifted on every reply.
    */
   async findByRefIds(enterpriseId: number, refIds: readonly string[]): Promise<MessageRow[]> {
     if (refIds.length === 0) return [];
@@ -1226,8 +1338,13 @@ export class MessageRepository extends BaseRepository {
               m.direction, m.body, m.message_kind AS "messageKind", m.status,
               m.is_internal_note AS "isInternalNote",
               m.has_attachments AS "hasAttachments",
-              m.created_at AS "createdAt"
+              m.created_at AS "createdAt",
+              m.metadata,
+              pm.ref_id AS "parentRefId"
          FROM messages m
+         LEFT JOIN messages pm ON pm.id = m.parent_message_id
+                              AND pm.enterprise_id = m.enterprise_id
+                              AND pm.is_deleted = false
         WHERE m.enterprise_id = $1
           AND m.ref_id = ANY($2::uuid[])
           AND m.is_deleted = false`,

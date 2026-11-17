@@ -509,6 +509,54 @@ describe('conversation resync jobs', () => {
     expect(stored[0]?.metadata.replyToPlatformMessageId).toBeUndefined();
   });
 
+  /** The projector, wired to real repositories and a model that never runs. */
+  function newProjector(): DirectMessageProjectorService {
+    return new DirectMessageProjectorService(
+      new CustomerRepository(db),
+      new ConversationRepository(db),
+      new MessageRepository(db),
+      new MessageAttachmentRepository(db),
+      syncJobs,
+      new TransactionManager(db, silentLogger()),
+      silentLogger(),
+      stubMediaAnalysis(),
+    );
+  }
+
+  /**
+   * One inbound message from BOB, optionally answering a given platform id.
+   *
+   * CARRIES A HANDLE on purpose. A live webhook for a customer we have never
+   * seen queues a resync of its own, to go and learn their name — the same
+   * job kind for the same person, which `enqueueIfAbsent` then collapses
+   * with any repair. That collapse is wanted (one walk serves both) and it
+   * is pinned by its own case below; everything else here would be testing
+   * it by accident.
+   */
+  async function projectReply(
+    projector: DirectMessageProjectorService,
+    mid: string,
+    replyToMid: string | null,
+  ): Promise<{ projected: boolean }> {
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+      [enterpriseId, channelId, `evt-${mid}`],
+    );
+
+    return projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: BOB, username: 'bob_the_customer' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682694662,
+      message: {
+        mid,
+        text: 'Hehee',
+        ...(replyToMid ? { reply_to: { mid: replyToMid, is_self_reply: true } } : {}),
+      },
+    });
+  }
+
   it('keeps the reply readable when the parent was never delivered', async () => {
     /*
      * A reply to a message whose webhook Meta dropped. The link cannot be made
@@ -562,6 +610,150 @@ describe('conversation resync jobs', () => {
     expect(stored[0]?.parent_message_id).toBeNull();
     expect(stored[0]?.metadata.replyToPlatformMessageId).toBe('NEVER_ARRIVED');
     expect(stored[0]?.metadata.replyIsSelfReply).toBe(true);
+  });
+
+  it('goes and asks Instagram for a parent that never arrived', async () => {
+    /*
+     * THE REPAIR THAT USED TO NEED A HUMAN.
+     *
+     * A reply naming a message we do not hold means one of two things: Meta
+     * delivered them out of order and the parent is moments away, or the
+     * parent's webhook was dropped and nothing will ever bring it. They look
+     * identical at this point, and the second used to be permanent — the
+     * reply sat for ever saying "answering something we cannot show you",
+     * because the only repair was somebody noticing and pressing resync.
+     *
+     * One walk serves both: it re-reads the thread, and adoptOrphanReplies
+     * links the reply the moment the parent lands.
+     */
+    const projector = newProjector();
+    await projectReply(projector, 'ORPHAN_ASKS', 'NEVER_ARRIVED_1');
+
+    const jobs: { job_kind: string; trigger_kind: string; target_platform_id: string }[] =
+      await db.query(
+        `SELECT job_kind, trigger_kind, target_platform_id FROM sync_jobs
+          WHERE enterprise_id = $1 AND is_deleted = false`,
+        [enterpriseId],
+      );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.job_kind).toBe(SyncJobKind.ResyncConversation);
+    // Scoped to the one person, not a walk of the whole account.
+    expect(jobs[0]?.target_platform_id).toBe(BOB);
+    /*
+     * REPAIR, not `scheduled`. sync_jobs is where somebody looks to answer
+     * "why did we call Meta at 2am", and a lost delivery is worth
+     * investigating where the clock coming round is not.
+     */
+    expect(jobs[0]?.trigger_kind).toBe(SyncTriggerKind.Repair);
+  });
+
+  it('stores the reply itself either way, rather than holding it back', async () => {
+    // The reply is a real message somebody sent. Whatever we do about its
+    // parent, it has to appear in the thread now.
+    const projector = newProjector();
+    const outcome = await projectReply(projector, 'ORPHAN_STILL_STORED', 'NEVER_ARRIVED_2');
+
+    expect(outcome.projected).toBe(true);
+    const stored: { parent_message_id: number | null; metadata: Record<string, unknown> }[] =
+      await db.query(
+        `SELECT parent_message_id, metadata FROM messages
+          WHERE platform_message_id = 'ORPHAN_STILL_STORED'`,
+      );
+    expect(stored[0]?.parent_message_id).toBeNull();
+    expect(stored[0]?.metadata.replyToPlatformMessageId).toBe('NEVER_ARRIVED_2');
+    expect(stored[0]?.metadata.replyParentRecoveryRequested).toBe(true);
+  });
+
+  it('asks once per lost parent, however many replies pile onto it', async () => {
+    /*
+     * THE BOUND ON A REPAIR THAT CANNOT SUCCEED. Meta serves only the newest
+     * 20 messages of a thread, so a parent older than that can never be
+     * recovered — and without this every further reply to it would queue
+     * another walk and spend another Graph call to learn the same thing.
+     */
+    const projector = newProjector();
+    await projectReply(projector, 'ORPHAN_A', 'NEVER_ARRIVED_3');
+
+    // The first walk finishes having found nothing, freeing the live slot.
+    await db.query(`UPDATE sync_jobs SET status = $1 WHERE enterprise_id = $2`, [
+      SyncJobStatus.Completed,
+      enterpriseId,
+    ]);
+
+    await projectReply(projector, 'ORPHAN_B', 'NEVER_ARRIVED_3');
+
+    const jobs: { id: string }[] = await db.query(
+      `SELECT id FROM sync_jobs WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(1);
+  });
+
+  it('spends one walk when a stranger’s first message also names a lost parent', async () => {
+    /*
+     * Two reasons to re-read the same thread at the same moment: this person
+     * is new and has no name, and the message they sent answers one we never
+     * received. Both want the same walk of the same thread, so they must
+     * collapse into a single Graph call rather than queue two.
+     */
+    const projector = newProjector();
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message','stranger','{}') RETURNING id`,
+      [enterpriseId, channelId],
+    );
+    await projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      // No name and no username: a live webhook for somebody never seen.
+      sender: { id: '5555555555555555' },
+      recipient: { id: 'IG_1' },
+      timestamp: 1788682694662,
+      message: {
+        mid: 'STRANGER_REPLY',
+        text: 'Hehee',
+        reply_to: { mid: 'NEVER_ARRIVED_6', is_self_reply: true },
+      },
+    });
+
+    const jobs: { id: string }[] = await db.query(
+      `SELECT id FROM sync_jobs WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(1);
+  });
+
+  it('asks again for a different lost parent, which is a different fact', async () => {
+    const projector = newProjector();
+    await projectReply(projector, 'ORPHAN_C', 'NEVER_ARRIVED_4');
+    await db.query(`UPDATE sync_jobs SET status = $1 WHERE enterprise_id = $2`, [
+      SyncJobStatus.Completed,
+      enterpriseId,
+    ]);
+    await projectReply(projector, 'ORPHAN_D', 'NEVER_ARRIVED_5');
+
+    const jobs: { id: string }[] = await db.query(
+      `SELECT id FROM sync_jobs WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(2);
+  });
+
+  it('asks for nothing when the parent is one we already hold', async () => {
+    const projector = newProjector();
+    // The parent first, so the reply below resolves against it.
+    await projectReply(projector, 'THE_PARENT', null);
+    await projectReply(projector, 'THE_CHILD', 'THE_PARENT');
+
+    const jobs: { id: string }[] = await db.query(
+      `SELECT id FROM sync_jobs WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(0);
+
+    const stored: { parent_message_id: string | null }[] = await db.query(
+      `SELECT parent_message_id FROM messages WHERE platform_message_id = 'THE_CHILD'`,
+    );
+    expect(stored[0]?.parent_message_id).not.toBeNull();
   });
 
   it('links a reply that was stored before the message it answers', async () => {
@@ -762,6 +954,103 @@ describe('conversation resync jobs', () => {
         WHERE m.platform_message_id = 'THEIR_REPLY'`,
     );
     expect(linked[0]?.body).toBe('tell me man');
+  });
+
+  /** One message from the business, as the platform echoes it back to us. */
+  async function projectOurs(
+    projector: DirectMessageProjectorService,
+    mid: string,
+    replyToMid: string | null,
+  ): Promise<{ projected: boolean }> {
+    const rows: { id: string }[] = await db.query(
+      `INSERT INTO inbound_events
+         (enterprise_id, channel_id, source_kind, platform, event_type, dedup_key, payload)
+       VALUES ($1,$2,'webhook','instagram','direct_message',$3,'{}') RETURNING id`,
+      [enterpriseId, channelId, `evt-${mid}`],
+    );
+
+    return projector.project(enterpriseId, channelId, Platform.Instagram, Number(rows[0]?.id), {
+      sender: { id: 'IG_1' },
+      recipient: { id: BOB },
+      timestamp: 1788682694662,
+      message: {
+        mid,
+        text: 'typed in the app',
+        is_echo: true,
+        ...(replyToMid ? { reply_to: { mid: replyToMid, is_self_reply: false } } : {}),
+      },
+    });
+  }
+
+  it('threads a message the business typed in the Instagram app', async () => {
+    /*
+     * HALF THE CONVERSATION WAS BEING THREADED.
+     *
+     * The inbound path has resolved `reply_to` since replies were threaded.
+     * This one stored a bare `{ recoveredFromPlatform: true }` and discarded
+     * the rest of the payload — so a colleague answering one particular
+     * message from the Instagram app produced a loose line, and the platform
+     * id that would have allowed a later repair was thrown away in the same
+     * moment.
+     */
+    const projector = newProjector();
+    await projectReply(projector, 'THEIR_QUESTION', null);
+    await projectOurs(projector, 'OUR_ANSWER', 'THEIR_QUESTION');
+
+    const rows: { parent_body: string | null }[] = await db.query(
+      `SELECT p.body AS parent_body
+         FROM messages m JOIN messages p ON p.id = m.parent_message_id
+        WHERE m.platform_message_id = 'OUR_ANSWER'`,
+    );
+    expect(rows[0]?.parent_body).toBe('Hehee');
+  });
+
+  it('keeps what Meta said about our own message, not just that we sent it', async () => {
+    const projector = newProjector();
+    await projectOurs(projector, 'OUR_ORPHAN', 'THEIRS_NEVER_ARRIVED');
+
+    const rows: { metadata: Record<string, unknown> }[] = await db.query(
+      `SELECT metadata FROM messages WHERE platform_message_id = 'OUR_ORPHAN'`,
+    );
+    // Still marked as recovered rather than sent from here...
+    expect(rows[0]?.metadata.recoveredFromPlatform).toBe(true);
+    // ...and the link it named is kept, so the repair below has something to
+    // resolve against once the parent lands.
+    expect(rows[0]?.metadata.replyToPlatformMessageId).toBe('THEIRS_NEVER_ARRIVED');
+  });
+
+  it('goes and asks for a message of THEIRS that we never received', async () => {
+    /*
+     * The mirror of the inbound case, and just as real: the business answers
+     * something in the app, and the customer message it answers is one whose
+     * webhook was dropped. Nothing went looking, because this path did not
+     * even keep the id of what was missing.
+     */
+    const projector = newProjector();
+    await projectOurs(projector, 'OUR_REPLY_TO_LOST', 'THEIRS_NEVER_ARRIVED_2');
+
+    const jobs: { trigger_kind: string; target_platform_id: string }[] = await db.query(
+      `SELECT trigger_kind, target_platform_id FROM sync_jobs
+        WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.trigger_kind).toBe(SyncTriggerKind.Repair);
+    // Keyed on the CUSTOMER, who is the recipient on one of our messages —
+    // scoping this walk by the sender would ask Meta about our own account.
+    expect(jobs[0]?.target_platform_id).toBe(BOB);
+  });
+
+  it('asks for nothing when our message answers one we already hold', async () => {
+    const projector = newProjector();
+    await projectReply(projector, 'THEIR_QUESTION_2', null);
+    await projectOurs(projector, 'OUR_ANSWER_2', 'THEIR_QUESTION_2');
+
+    const jobs: { id: string }[] = await db.query(
+      `SELECT id FROM sync_jobs WHERE enterprise_id = $1 AND is_deleted = false`,
+      [enterpriseId],
+    );
+    expect(jobs).toHaveLength(0);
   });
 
   it('ignores an echo of a message we already hold', async () => {

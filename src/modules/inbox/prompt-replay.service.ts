@@ -17,7 +17,7 @@ import {
   tagTurn,
 } from '@/modules/ai/prompts';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
-import { CHATBOT_MESSAGE_CHARS, CHATBOT_SUMMARY_CHARS } from '@/shared/constants';
+import { renderTurnText } from './turn-text';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { ConversationBriefService } from './conversation-brief.service';
 
@@ -208,17 +208,15 @@ export class PromptReplayService {
         }
       }
 
-      const parts: string[] = [];
-      const body = message.body?.trim() ?? '';
-      if (body.length > 0) parts.push(body.slice(0, CHATBOT_MESSAGE_CHARS));
-      for (const row of described) {
-        const detail = [row?.summary?.trim() ?? '', row?.transcript?.trim() ?? '']
-          .filter((value) => value.length > 0)
-          .join(' — ');
-        if (detail.length > 0) parts.push(`[media: ${detail}]`);
-      }
-
-      const text = parts.join('\n').trim();
+      /*
+       * THE SAME RENDERER THE LIVE PATH USES. This was a second copy, and it
+       * had already lost the reaction, the notes and — through a query that
+       * never selected them — the parent a message answers. See turn-text.ts.
+       */
+      const text = renderTurnText(
+        message,
+        described.filter((row): row is NonNullable<typeof row> => row !== undefined),
+      );
       if (text.length === 0) continue;
 
       turns.push({
@@ -281,8 +279,7 @@ export class PromptReplayService {
   ): Promise<string | null> {
     const oldest = refs[0];
     if (!oldest) return null;
-    const summary = await this.messages.summaryBeforeRef(enterpriseId, conversationId, oldest);
-    return summary ? summary.slice(0, CHATBOT_SUMMARY_CHARS) : null;
+    return this.messages.summaryBeforeRef(enterpriseId, conversationId, oldest);
   }
 
   /** What is known to have moved since, in terms somebody can act on. */

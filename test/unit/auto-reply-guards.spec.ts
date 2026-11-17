@@ -513,14 +513,23 @@ describe('automatic reply: what it writes down for next time', () => {
     expect(sent.assistant.summary).toBe('They asked about opening hours; told them 9 to 9.');
   });
 
-  it('refuses to carry notes longer than they are worth', async () => {
+  it('stores the notes whole, however long they have grown', async () => {
+    /*
+     * THE ONE TRIM THAT CANNOT BE UNDONE, and it used to happen here.
+     *
+     * This cut the notes to 600 characters BEFORE writing them, and every
+     * later note is written from this one — so a sentence lost at write time
+     * is lost from every note that follows it, for ever. The notes are
+     * cumulative now and will grow; what they cost is a question for the
+     * model_calls ledger, not for a slice through the middle of a sentence.
+     */
     const { service, replyAsAssistant, claim } = serviceWith({
       draft: { summary: 'x'.repeat(5_000) },
     });
     await service.attempt(claim, 'worker-a');
 
     const sent = replyAsAssistant.mock.calls[0]?.[1] as { assistant: { summary: string } };
-    expect(sent.assistant.summary.length).toBe(600);
+    expect(sent.assistant.summary.length).toBe(5_000);
   });
 
   it('writes nothing down when the model offered nothing', async () => {

@@ -183,6 +183,101 @@ describe('reading the notes at a message', () => {
     expect(await messages.notesAsOf(enterpriseId, conversationId, elsewhere.id)).toBeNull();
   });
 
+  /**
+   * How far back the window has to reach to show everything the notes have
+   * not read.
+   *
+   * TWO WAYS THIS WAS SILENTLY WRONG, neither of which throws:
+   *
+   *   1. It counted `later.id > notes.id`, which assumes a message's id and
+   *      its place in the conversation agree. For a RECOVERED message they
+   *      do not — a delivery Meta dropped is fetched later and stored with a
+   *      new, higher id but its ORIGINAL timestamp, so it lands back in the
+   *      middle of the thread. Counted by id it looks like the newest thing
+   *      that happened; read by time it is already outside the window.
+   *
+   *   2. The hold/fallback exclusions were a bare NOT over a JSONB key that
+   *      is NULL on every message the assistant did not write — and
+   *      `NOT (NULL ? 'hold')` is NULL, not true. So every CUSTOMER message
+   *      was dropped from the count, and the widening this feeds could only
+   *      ever be triggered by our own replies, which are the one kind of
+   *      message that is never unsummarised.
+   */
+  describe('how far back the window must reach', () => {
+    async function withNotes(body: string, notes: string) {
+      return addMessage(enterpriseId, conversationId, 'outbound', body, notes);
+    }
+
+    it('counts the customer’s messages, which a bare NOT silently dropped', async () => {
+      await withNotes('we are open', 'the notes');
+      await addMessage(enterpriseId, conversationId, 'inbound', 'and on Sunday?', null);
+      await addMessage(enterpriseId, conversationId, 'inbound', 'hello?', null);
+
+      const latest = await messages.latestAssistantSummary(enterpriseId, conversationId);
+      expect(latest?.uncovered).toBe(2);
+    });
+
+    it('is zero when the notes have read everything', async () => {
+      await addMessage(enterpriseId, conversationId, 'inbound', 'are you open?', null);
+      await withNotes('we are', 'the notes');
+
+      const latest = await messages.latestAssistantSummary(enterpriseId, conversationId);
+      expect(latest?.uncovered).toBe(0);
+    });
+
+    it('ignores a holding line, which summarises nothing', async () => {
+      const first = await withNotes('we are open', 'the notes');
+      // A fixed string from a settings row. No model saw it, so counting it
+      // would widen the window to re-read a sentence nobody thought about.
+      await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, message_kind, body, status, metadata)
+         VALUES ($1,$2,'outbound','text','Let me take a look at that…','sent',
+                 '{"assistant":{"hold":true}}'::jsonb)`,
+        [enterpriseId, conversationId],
+      );
+      expect(first.id).toBeGreaterThan(0);
+
+      const latest = await messages.latestAssistantSummary(enterpriseId, conversationId);
+      expect(latest?.uncovered).toBe(0);
+    });
+
+    it('reaches back to a message recovered into the middle of the thread', async () => {
+      /*
+       * THE CASE THAT COUNTING BY ID CANNOT SEE. The repair fetches a
+       * delivery Meta dropped and stores it with its real timestamp, so it
+       * sits where it actually happened — behind everything already in the
+       * window. Observed live: a customer message recovered 25 minutes late
+       * sat one position past the edge of every window afterwards, and was
+       * never summarised at all.
+       */
+      await addMessage(enterpriseId, conversationId, 'inbound', 'oldest', null);
+      await addMessage(enterpriseId, conversationId, 'inbound', 'older', null);
+      await withNotes('answering those', 'the notes');
+      await addMessage(enterpriseId, conversationId, 'inbound', 'newest', null);
+
+      // Recovered now, but it happened before everything above.
+      const recovered: { id: string }[] = await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, message_kind, body, status,
+            platform_sent_at, metadata)
+         VALUES ($1,$2,'inbound','text','the one Meta dropped','delivered',
+                 now() - interval '1 hour', '{"recoveredFromPlatform":true}'::jsonb)
+         RETURNING id`,
+        [enterpriseId, conversationId],
+      );
+      expect(recovered[0]?.id).toBeDefined();
+
+      const latest = await messages.latestAssistantSummary(enterpriseId, conversationId);
+      /*
+       * Not 2 ("how many arrived since") but the DEPTH from the recovered
+       * message's own position to the newest — which is everything in the
+       * thread, because it sits behind all of it.
+       */
+      expect(latest?.uncovered).toBe(5);
+    });
+  });
+
   describe('where the notes begin', () => {
     it('names the first message that carries them', async () => {
       await addMessage(enterpriseId, conversationId, 'inbound', 'hello', null);

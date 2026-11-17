@@ -35,6 +35,16 @@ export enum SyncTriggerKind {
   Scheduled = 'scheduled',
   Manual = 'manual',
   Reconnect = 'reconnect',
+  /**
+   * A webhook we never received, noticed because a later one referred to it.
+   *
+   * Its own kind rather than `Scheduled`, which is what these used to be
+   * labelled: nothing scheduled them, and sync_jobs is where somebody looks
+   * to answer "why did we call Meta at 2am". A repair says a delivery was
+   * lost; a scheduled job says the clock came round. Those are different
+   * facts about the platform and only one of them is worth investigating.
+   */
+  Repair = 'repair',
 }
 
 export enum SyncJobStatus {

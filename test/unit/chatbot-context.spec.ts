@@ -400,7 +400,15 @@ describe('everything a turn carries', () => {
     );
   });
 
-  it('refuses notes longer than they are worth', async () => {
+  it('carries the notes back in whole, however long they have grown', async () => {
+    /*
+     * These were cut to 600 characters on the way in, which is the same loss
+     * the storage trim caused by another route: the model rewrites its notes
+     * from the ones it is shown, so a cut here deletes history from the next
+     * set just as surely. They are cumulative now — see the summary rule in
+     * chat-reply.prompt.ts — and a cumulative note that is truncated before
+     * the model reads it cannot stay cumulative.
+     */
     const { service, reply } = serviceWith({
       messages: [
         message(1, {
@@ -412,7 +420,7 @@ describe('everything a turn carries', () => {
     await service.draftReply(1, 'conv-ref');
 
     const text = (reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text ?? '';
-    expect(text.length).toBeLessThan(1_200);
+    expect(text).toContain(`[notes: ${'x'.repeat(5_000)}]`);
   });
 });
 

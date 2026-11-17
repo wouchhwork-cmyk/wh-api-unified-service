@@ -201,6 +201,8 @@ export class MediaAnalysisService {
          */
         summary: outcome.description.summary,
         transcript: outcome.description.transcript,
+        visibleText: outcome.description.visibleText,
+        scenes: outcome.description.scenes,
         language: outcome.description.language,
         model: outcome.model,
         promptVersion: instruction.version,
