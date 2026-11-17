@@ -514,6 +514,15 @@ describe('the shared inbox', () => {
        * will follow up.
        */
       'handoff',
+      /*
+       * Whether "what had it understood when this went out?" has an answer
+       * at this message. A flag, not the notes: they are a paragraph each,
+       * a reader opens one at a time, and shipping every one of them with
+       * every page would pay for prose nobody asked to see. False on
+       * anything the customer sent — the notes are what the assistant knew
+       * when WE last spoke.
+       */
+      'hasNotes',
       // Hidden by US on the platform — Instagram never announces it, so this
       // flag is ours to keep.
       'hiddenOnPlatform',
@@ -569,6 +578,131 @@ describe('the shared inbox', () => {
     // Null for an ordinary message; an object with refId, excerpt, direction
     // and isSelfReply when the customer answered one in particular.
     expect(message.replyTo).toBeNull();
+  });
+
+  describe('the notes behind one of our messages', () => {
+    /**
+     * Adds a reply of ours to a seeded thread, with or without notes on it.
+     * Returns its public id, which is the only id a client ever holds.
+     */
+    async function ourReply(
+      enterpriseRefId: string,
+      conversationRefId: string,
+      body: string,
+      notes: string | null,
+    ): Promise<string> {
+      const enterprise: { id: string }[] = await db.query(
+        `SELECT id FROM enterprises WHERE ref_id = $1`,
+        [enterpriseRefId],
+      );
+      const conversation: { id: string }[] = await db.query(
+        `SELECT id FROM conversations WHERE enterprise_id = $1 AND ref_id = $2`,
+        [enterprise[0]?.id, conversationRefId],
+      );
+      const metadata = notes === null ? {} : { assistant: { summary: notes } };
+      const message: { ref_id: string }[] = await db.query(
+        `INSERT INTO messages
+           (enterprise_id, conversation_id, direction, message_kind, body, status,
+            platform_sent_at, metadata)
+         VALUES ($1,$2,'outbound','text',$3,'sent', now(), $4::jsonb)
+         RETURNING ref_id`,
+        [enterprise[0]?.id, conversation[0]?.id, body, JSON.stringify(metadata)],
+      );
+      return message[0]?.ref_id as string;
+    }
+
+    it('answers with what the assistant had understood by that message', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const refId = await seedConversation(enterpriseRefId);
+      const replyRef = await ourReply(
+        enterpriseRefId,
+        refId,
+        'Sundays, 9 to 5.',
+        'They asked about Sunday hours; we said 9 to 5.',
+      );
+
+      const answer = await http()
+        .get(`/api/v1/conversations/${refId}/messages/${replyRef}/notes`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      expect(answer.body.data.notes).toContain('Sunday hours');
+      expect(answer.body.data.summarisedHere).toBe(true);
+      expect(answer.body.data.writtenByRefId).toBe(replyRef);
+      /*
+       * NOT ONE INTERNAL ID, the same rule the thread read lives under. These
+       * are bigints and belong to nobody outside this service.
+       */
+      expect(Object.keys(answer.body.data).sort()).toEqual([
+        'messageRefId',
+        'notes',
+        'summarisedHere',
+        'writtenAt',
+        'writtenByRefId',
+      ]);
+    });
+
+    it('carries the last notes forward, and says they have not read this message', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const refId = await seedConversation(enterpriseRefId);
+      const written = await ourReply(
+        enterpriseRefId,
+        refId,
+        'Sundays, 9 to 5.',
+        'They asked about Sunday hours.',
+      );
+      // Typed into Instagram by a colleague: nothing summarised it.
+      const manual = await ourReply(enterpriseRefId, refId, 'see you then!', null);
+
+      const answer = await http()
+        .get(`/api/v1/conversations/${refId}/messages/${manual}/notes`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      expect(answer.body.data.summarisedHere).toBe(false);
+      expect(answer.body.data.writtenByRefId).toBe(written);
+    });
+
+    it('marks only the messages that have an answer', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const refId = await seedConversation(enterpriseRefId);
+      const replyRef = await ourReply(enterpriseRefId, refId, 'Sundays, 9 to 5.', 'the notes');
+
+      const thread = await http()
+        .get(`/api/v1/conversations/${refId}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      const byRef = new Map<string, boolean>(
+        (thread.body.data.messages as { refId: string; hasNotes: boolean }[]).map((message) => [
+          message.refId,
+          message.hasNotes,
+        ]),
+      );
+      expect(byRef.get(replyRef)).toBe(true);
+      // The customer's question, which the seed puts in the same thread.
+      expect([...byRef.values()].filter((has) => has)).toHaveLength(1);
+    });
+
+    it('refuses a message from somebody else’s conversation', async () => {
+      const { ownerToken, enterpriseRefId } = await onboardedBusiness();
+      const mine = await seedConversation(enterpriseRefId, 'comment:mine');
+      const other = await seedConversation(enterpriseRefId, 'comment:other');
+      const elsewhere = await ourReply(enterpriseRefId, other, 'not yours', 'other notes');
+
+      await http()
+        .get(`/api/v1/conversations/${mine}/messages/${elsewhere}/notes`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(404);
+    });
+
+    it('refuses without a token at all', async () => {
+      const { enterpriseRefId } = await onboardedBusiness();
+      const refId = await seedConversation(enterpriseRefId);
+      const replyRef = await ourReply(enterpriseRefId, refId, 'hello', 'the notes');
+
+      await http().get(`/api/v1/conversations/${refId}/messages/${replyRef}/notes`).expect(401);
+    });
   });
 
   it('keeps our own ids out of the metadata bag it now exposes', async () => {

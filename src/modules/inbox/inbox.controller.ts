@@ -250,6 +250,7 @@ export class InboxController {
           row.platformMessageId !== null &&
             result.failedModerationCommentIds.has(row.platformMessageId),
           result.analysisByKey,
+          result.notesFromMessageId,
         ),
       ),
       /*
@@ -265,6 +266,30 @@ export class InboxController {
         hasMore: result.hasMore,
       },
     };
+  }
+
+  @Get(':refId/messages/:messageRefId/notes')
+  @RequireAnyPermission(...anyPermissionFor('view'))
+  @ApiOperation({
+    summary: "The assistant's running notes as they stood at one message",
+    description:
+      'What the assistant had understood about this conversation by the time this message was ' +
+      'sent. A reply it wrote carries notes of its own; a message typed into Instagram by the ' +
+      'business does not, and carries forward the last ones written — reported as ' +
+      '`summarisedHere: false` rather than presented as current. Fetched on demand because the ' +
+      'notes are prose and a reader opens one at a time; the thread read says which messages ' +
+      'have an answer via `hasNotes`.',
+  })
+  async messageNotes(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+    @Param('messageRefId') messageRefId: string,
+  ): Promise<unknown> {
+    return this.inbox.readNotesAsOf(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      RefIdParamSchema.parse(messageRefId),
+    );
   }
 
   @Post(':refId/messages/:messageRefId/moderate')
@@ -532,6 +557,7 @@ function toMessage(
   attachments: readonly AttachmentRow[],
   moderationFailed: boolean,
   analyses: ReadonlyMap<string, AnalysisResultRow>,
+  notesFromMessageId: number | null,
 ): Record<string, unknown> {
   return {
     refId: row.refId,
@@ -751,6 +777,24 @@ function toMessage(
      * prompt is not stored anywhere; this names the record that rebuilds it.
      */
     promptRef: row.isAutomated === true ? (row.assistantCallRef ?? null) : null,
+    /*
+     * WHETHER "the summary as of here" HAS AN ANSWER.
+     *
+     * Only on our own side of the thread: the notes are what the assistant
+     * knew when it last wrote, and the question a reader asks is "what did it
+     * know when it said THIS?" — which only makes sense about something we
+     * said. Not just automated replies, because a business answering from the
+     * Instagram app produces messages the notes trail behind, and seeing how
+     * far behind is the point.
+     *
+     * The notes themselves are NOT here — see readNotesAsOf for why they are
+     * fetched when somebody opens one rather than shipped with every page.
+     */
+    hasNotes:
+      row.direction === MessageDirection.Outbound &&
+      row.isInternalNote === false &&
+      notesFromMessageId !== null &&
+      row.id >= notesFromMessageId,
     /*
      * WHO WROTE IT, when a customer did. A comment thread carries several
      * different people, and without this the client drew every one of them as

@@ -1263,6 +1263,113 @@ export class MessageRepository extends BaseRepository {
     return rows[0]?.summary ?? null;
   }
   /**
+   * A message's internal id from its public one, scoped to its thread.
+   *
+   * Scoped to the CONVERSATION as well as the tenant, so a ref_id from
+   * another thread cannot be used to read this one's notes — the ref alone is
+   * unique, but "is it in the thread the caller named?" is a separate
+   * question and the one that keeps a reader inside the conversation they
+   * opened.
+   */
+  async findMessageIdByRef(
+    enterpriseId: number,
+    conversationId: number,
+    refId: string,
+  ): Promise<number | null> {
+    const rows = await this.query<{ id: string }>(
+      `SELECT m.id
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.ref_id = $3::uuid
+          AND m.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, refId],
+    );
+    const id = rows[0]?.id;
+    return id === undefined ? null : Number(id);
+  }
+
+  /**
+   * The running notes as they stood AT a given message, not before it.
+   *
+   * The sibling above (`summaryBeforeRef`) answers a different question and
+   * must stay separate: a replay rebuilds what the model was SHOWN, so it
+   * takes the notes that existed before the reply it is replaying. A reader
+   * asking "what did it know by here?" wants the opposite boundary — the
+   * notes that reply itself wrote are precisely the answer.
+   *
+   * `<=` therefore, and `ORDER BY id DESC LIMIT 1` to take the newest of the
+   * ones that qualify. Messages the business typed into Instagram carry no
+   * notes of their own and fall back to the last ones written, which is the
+   * honest answer: nothing has summarised what they said yet.
+   */
+  async notesAsOf(
+    enterpriseId: number,
+    conversationId: number,
+    messageId: number,
+  ): Promise<{ summary: string; refId: string; writtenAt: Date; isSameMessage: boolean } | null> {
+    const rows = await this.query<{
+      summary: string;
+      refId: string;
+      writtenAt: Date;
+      id: string;
+    }>(
+      `SELECT m.metadata->'assistant'->>'summary' AS summary,
+              m.ref_id AS "refId",
+              COALESCE(m.platform_sent_at, m.created_at) AS "writtenAt",
+              m.id
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.id <= $3
+          AND m.metadata->'assistant'->>'summary' IS NOT NULL
+        ORDER BY m.id DESC
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, messageId],
+    );
+
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      summary: row.summary,
+      refId: row.refId,
+      writtenAt: row.writtenAt,
+      isSameMessage: Number(row.id) === messageId,
+    };
+  }
+
+  /**
+   * The first message in a thread that carries notes.
+   *
+   * ONE QUERY FOR A WHOLE PAGE, rather than asking per message whether there
+   * is anything to show. Everything from this id onwards has notes as of it —
+   * the ones written there, or the ones written before and still standing —
+   * and everything earlier has none, because nothing had been summarised yet.
+   * That is the entire rule, and it lets the thread read mark the messages
+   * that can offer the control without a lateral join on a hot path.
+   */
+  async firstSummaryMessageId(
+    enterpriseId: number,
+    conversationId: number,
+  ): Promise<number | null> {
+    const rows = await this.query<{ id: string }>(
+      `SELECT m.id
+         FROM messages m
+        WHERE m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.metadata->'assistant'->>'summary' IS NOT NULL
+        ORDER BY m.id ASC
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId],
+    );
+    const id = rows[0]?.id;
+    return id === undefined ? null : Number(id);
+  }
+
+  /**
    * Full message ids for the shortened ones found in the assistant's notes.
    *
    * THE NOTES ARE REWRITTEN FROM THE NOTES BEFORE THEM, which makes a

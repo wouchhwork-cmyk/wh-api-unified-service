@@ -810,6 +810,37 @@ describe('one business cannot reach another', () => {
       expect(after[0]?.is_hidden_on_platform).toBe(false);
     });
 
+    it('cannot read the assistant’s notes on another business’s conversation', async () => {
+      /*
+       * The notes are the most revealing thing this product writes about a
+       * customer: a model's understanding of what somebody wants, in prose,
+       * held on another business's thread. The read is a GET with two public
+       * ids in the path and nothing in the body, which is the shape that is
+       * easiest to point at the wrong tenant.
+       */
+      await withInbox(acme);
+      const theirs = await seedConversation(rival);
+      const message: { ref_id: string }[] = await db.query(
+        `SELECT m.ref_id FROM messages m
+           JOIN conversations c ON c.id = m.conversation_id
+          WHERE c.ref_id = $1`,
+        [theirs],
+      );
+      // Notes on THEIR message, so the only thing standing between the two is
+      // the tenant check rather than an empty column.
+      await db.query(
+        `UPDATE messages SET metadata = jsonb_build_object(
+           'assistant', jsonb_build_object('summary', 'what we understand about their customer'))
+          WHERE ref_id = $1`,
+        [message[0]?.ref_id],
+      );
+
+      await http()
+        .get(`/api/v1/conversations/${theirs}/messages/${message[0]?.ref_id}/notes`)
+        .set(auth(acme.token))
+        .expect(404);
+    });
+
     it('cannot refresh attachments on another business’s conversation', async () => {
       await withInbox(acme);
       const theirs = await seedConversation(rival);

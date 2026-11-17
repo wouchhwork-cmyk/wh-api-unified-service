@@ -320,6 +320,15 @@ export class InboxService {
      * is therefore already a conversation of ours. Null in the ordinary case.
      */
     parentMention: { refId: string; subject: string | null } | null;
+    /**
+     * The first message in this thread that the assistant wrote notes at.
+     *
+     * Everything from there on can be asked "what was the summary as of
+     * here?" and get an answer; everything before it cannot, because nothing
+     * had summarised the conversation yet. One number for the page instead of
+     * a per-message lookup — see firstSummaryMessageId.
+     */
+    notesFromMessageId: number | null;
     nextCursor: string | null;
     hasMore: boolean;
   }> {
@@ -431,6 +440,17 @@ export class InboxService {
      * platform ids actually on it — and none at all for a thread that is not
      * comments, which is most of them.
      */
+    /*
+     * WHERE THE RUNNING NOTES BEGIN. One query, not one per message, and the
+     * summaries themselves are NOT loaded here: they are long, a reader opens
+     * at most one of them, and shipping every one of them on every thread
+     * read would pay for text nobody asked to see.
+     */
+    const notesFromMessageId = await this.messages.firstSummaryMessageId(
+      enterpriseId,
+      conversation.id,
+    );
+
     const failedModerationCommentIds =
       conversation.conversationKind === ConversationKind.CommentThread
         ? await this.outbound.findFailedModerationCommentIds(
@@ -449,9 +469,72 @@ export class InboxService {
       knownAuthors,
       parentMention,
       failedModerationCommentIds,
+      notesFromMessageId,
       nextCursor:
         hasMore && last ? encodeKeysetCursor(last.platformSentAt ?? last.createdAt, last.id) : null,
       hasMore,
+    };
+  }
+
+  /**
+   * The assistant's running notes as they stood at one particular message.
+   *
+   * WHY ON DEMAND RATHER THAN ON THE THREAD. The notes are a paragraph of
+   * prose per message and a reader opens one of them at a time, so loading
+   * every one of them into every thread read would multiply the payload for
+   * text almost nobody looks at. The thread says WHICH messages have an
+   * answer (`notesFromMessageId`); this fetches the answer when somebody asks
+   * for it.
+   *
+   * AT, NOT BEFORE. For a reply the assistant wrote, the notes it wrote with
+   * that reply are the answer — they are what it knew once it had read the
+   * message it was answering. For one the business typed into Instagram
+   * there are none of its own, and the last ones written still stand; that is
+   * reported rather than hidden, with `summarisedHere` false, because "the
+   * notes have not caught up with this message" is the honest state and an
+   * agent reading them should know it.
+   */
+  async readNotesAsOf(
+    enterpriseId: number,
+    conversationRefId: string,
+    messageRefId: string,
+  ): Promise<{
+    messageRefId: string;
+    notes: string;
+    /** Whether THIS message wrote them, or they were carried forward. */
+    summarisedHere: boolean;
+    /** The message that wrote them, which may be an earlier one. */
+    writtenByRefId: string;
+    writtenAt: Date;
+  }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'view');
+
+    const messageId = await this.messages.findMessageIdByRef(
+      enterpriseId,
+      conversation.id,
+      messageRefId,
+    );
+    if (messageId === null) throw new AppException(ErrorCode.MessageNotFound);
+
+    const notes = await this.messages.notesAsOf(enterpriseId, conversation.id, messageId);
+    /*
+     * NOT AN ERROR AND NOT AN EMPTY STRING. Nothing had summarised the
+     * conversation by this point — true of every message before the
+     * assistant's first reply, and of every thread it has never answered in.
+     * MessageNotFound would be a lie, so this says what is actually missing.
+     */
+    if (!notes) {
+      throw new AppException(ErrorCode.MessageNotFound, {
+        details: [{ field: 'notes', issue: 'nothing had been summarised by this message' }],
+      });
+    }
+
+    return {
+      messageRefId,
+      notes: notes.summary,
+      summarisedHere: notes.isSameMessage,
+      writtenByRefId: notes.refId,
+      writtenAt: notes.writtenAt,
     };
   }
 
