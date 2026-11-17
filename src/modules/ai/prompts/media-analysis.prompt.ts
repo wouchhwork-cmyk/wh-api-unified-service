@@ -87,11 +87,75 @@ export interface MediaDescriptionFields {
  */
 export function readMediaDescription(text: string): MediaDescriptionFields | null {
   const values = readContract(SHAPE, text);
-  if (!values) return null;
+  if (values) {
+    return {
+      summary: values.summary,
+      transcript: values.transcript,
+      language: values.language,
+      readable: values.readable,
+    };
+  }
+
+  /*
+   * AN ENVELOPE THAT NEVER CLOSED.
+   *
+   * The output cap is counted in tokens and a model cannot see where it will
+   * land, so a long transcript — a wedding invitation read out line by line
+   * — stops halfway through the JSON string it was writing. Nothing parses,
+   * and the caller's fallback keeps the whole raw blob AS the summary: a
+   * description that reads `{"summary": "A wedding video…", "transcript":`
+   * in the inbox, in the assistant's prompt, and in anything else that shows
+   * what a photo was.
+   *
+   * The fields were being written when it was cut off, so they are still
+   * the fields. They are pulled out by hand and kept — truncated, which is
+   * what they already were, rather than discarded or shown as machinery.
+   */
+  if (!text.trimStart().startsWith('{') && !text.includes('"summary"')) return null;
+
+  const summary = salvage(text, 'summary');
+  const transcript = salvage(text, 'transcript');
+  if (summary === null && transcript === null) return null;
+
   return {
-    summary: values.summary,
-    transcript: values.transcript,
-    language: values.language,
-    readable: values.readable,
+    summary,
+    transcript,
+    language: salvage(text, 'language'),
+    /* It described something, which is the only claim `readable` makes. */
+    readable: true,
   };
+}
+
+/**
+ * One string field out of an object that never finished.
+ *
+ * Deliberately forgiving about what follows: the value may end at a closing
+ * quote, or simply stop where the model ran out of room.
+ */
+function salvage(text: string, field: string): string | null {
+  const match = new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(text);
+  const found = match?.[1];
+  if (!found) return null;
+
+  /*
+   * UNESCAPED BY THE PARSER THAT WROTE THE ESCAPES, not by hand. A
+   * transcript carries newlines, quotes and — on anything written in an
+   * Indian language — \uXXXX sequences, and a handful of string replacements
+   * gets some of those right and leaves the rest on screen as `\u0964`.
+   * Wrapping it back in quotes hands the whole problem to JSON itself.
+   *
+   * A value cut off mid-escape ends in a lone backslash, which is not valid
+   * on its own; dropping it costs one character of a string that was
+   * already truncated.
+   */
+  for (const candidate of [found, found.replace(/\\+$/, '')]) {
+    try {
+      const parsed: unknown = JSON.parse(`"${candidate}"`);
+      if (typeof parsed === 'string' && parsed.trim().length > 0) return parsed.trim();
+    } catch {
+      /* Try the trimmed form, then give up on unescaping. */
+    }
+  }
+
+  return found.trim().length > 0 ? found.trim() : null;
 }

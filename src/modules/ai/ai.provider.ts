@@ -59,8 +59,6 @@ export interface ChatRequest {
   readonly instructions?: string;
   /** Overrides the provider's configured model for this one call. */
   readonly model?: string;
-  /** Overrides the provider's configured ceiling for this one call. */
-  readonly maxOutputTokens?: number;
   /**
    * The key to answer with, when it comes from somewhere other than the
    * environment — a console, today.

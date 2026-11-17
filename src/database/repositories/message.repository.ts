@@ -1179,7 +1179,20 @@ export class MessageRepository extends BaseRepository {
                   AND later.conversation_id = m.conversation_id
                   AND later.is_deleted = false
                   AND later.is_internal_note = false
-                  AND later.id > m.id) AS uncovered
+                  AND later.id > m.id
+                  /*
+                   * A HOLDING LINE COVERS ITSELF. "Let me take a look at
+                   * that" and the fallback apology are fixed strings from a
+                   * settings row — no model saw them and there is nothing in
+                   * them to summarise, so counting them as unsummarised
+                   * would widen the window to go back and read sentences
+                   * this service wrote without thinking about them.
+                   *
+                   * They still appear in the transcript, which is the point:
+                   * the assistant has to see that it already said it.
+                   */
+                  AND NOT (later.metadata->'assistant' ? 'hold')
+                  AND NOT (later.metadata->'assistant' ? 'fallback')) AS uncovered
          FROM messages m
         WHERE m.enterprise_id = $1
           AND m.conversation_id = $2
@@ -1248,5 +1261,48 @@ export class MessageRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), conversationId, beforeRefId],
     );
     return rows[0]?.summary ?? null;
+  }
+  /**
+   * Full message ids for the shortened ones found in the assistant's notes.
+   *
+   * THE NOTES ARE REWRITTEN FROM THE NOTES BEFORE THEM, which makes a
+   * shortened id self-propagating: the model copies what it already wrote,
+   * and an instruction added today cannot reach into text stored yesterday.
+   * Telling it harder fixes the next note and none of the existing ones.
+   *
+   * A short id is a PREFIX of a real one, so this is a lookup rather than a
+   * request. Scoped to the conversation the notes belong to, which is also
+   * what makes the prefixes safe to resolve: eight hex characters are not
+   * unique across a platform, and are overwhelmingly unique inside one
+   * thread.
+   *
+   * AMBIGUITY IS LEFT ALONE. Two messages matching one prefix means the
+   * notes do not say which, and substituting either would invent a citation
+   * that looks checkable and points at the wrong message — worse than the
+   * short id it replaced.
+   */
+  async expandMessageRefs(
+    enterpriseId: number,
+    conversationId: number,
+    prefixes: readonly string[],
+  ): Promise<Map<string, string>> {
+    if (prefixes.length === 0) return new Map();
+
+    const rows = await this.query<{ prefix: string; refId: string; matches: string }>(
+      `SELECT p.prefix,
+              min(m.ref_id::text) AS "refId",
+              count(*) AS matches
+         FROM unnest($3::text[]) AS p(prefix)
+         JOIN messages m
+           ON m.enterprise_id = $1
+          AND m.conversation_id = $2
+          AND m.is_deleted = false
+          AND m.ref_id::text LIKE p.prefix || '%'
+        GROUP BY p.prefix
+       HAVING count(*) = 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, [...prefixes]],
+    );
+
+    return new Map(rows.map((row) => [row.prefix, row.refId]));
   }
 }

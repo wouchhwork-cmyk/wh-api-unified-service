@@ -165,7 +165,6 @@ export function loadConfiguration(): Configuration {
       model: env.OPENAI_MODEL,
       timeoutMs: env.OPENAI_TIMEOUT_MS,
       maxRetries: env.OPENAI_MAX_RETRIES,
-      maxOutputTokens: env.OPENAI_MAX_OUTPUT_TOKENS,
       reasoningEffort: env.OPENAI_REASONING_EFFORT,
       storeResponses: env.OPENAI_STORE_RESPONSES,
     },

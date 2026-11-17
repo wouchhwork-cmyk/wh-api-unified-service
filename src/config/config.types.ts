@@ -124,8 +124,6 @@ export interface OpenAiConfig {
   /** Per attempt. The SDK retries beneath it, so the client bounds the total. */
   readonly timeoutMs: number;
   readonly maxRetries: number;
-  /** The ceiling on one reply, thinking included — reasoning tokens bill as output. */
-  readonly maxOutputTokens: number;
   /** `none` through `max`; empty means the field is not sent at all. */
   readonly reasoningEffort: ReasoningEffortSetting;
   /**

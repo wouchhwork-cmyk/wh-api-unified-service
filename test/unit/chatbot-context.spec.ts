@@ -49,10 +49,14 @@ function serviceWith(
   const brief = { build } as unknown as ConversationBriefService;
 
   const latestAssistantSummary = vi.fn().mockResolvedValue(null);
+  const expandMessageRefs = vi.fn().mockResolvedValue(new Map());
   /* { summary, messageId, uncovered } — `uncovered` is how much has happened
    * since the notes were written, which decides whether the window is
    * wide enough to reach them. */
-  const messages = { latestAssistantSummary } as unknown as MessageRepository;
+  const messages = {
+    latestAssistantSummary,
+    expandMessageRefs,
+  } as unknown as MessageRepository;
 
   const reply = vi.fn().mockResolvedValue({
     text: 'drafted',
@@ -74,6 +78,7 @@ function serviceWith(
     reply,
     build,
     latestAssistantSummary,
+    expandMessageRefs,
     inbox: inbox as unknown as { readThread: ReturnType<typeof vi.fn> },
   };
 }
@@ -468,5 +473,61 @@ describe('when the notes and the window do not meet', () => {
     await service.draftReply(1, 'conv-ref');
 
     expect(inbox.readThread).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A note is rewritten from the note before it, so a shortened id copies
+ * itself forward every reply — and a rule added to the prompt today cannot
+ * reach text stored yesterday. The ids are repaired by lookup rather than
+ * by asking the model to behave.
+ */
+describe('repairing the ids in its own notes', () => {
+  const withNotes = (summary: string) => {
+    const made = serviceWith({ messages: [message(1)] });
+    made.latestAssistantSummary.mockResolvedValueOnce({ summary, messageId: 5, uncovered: 1 });
+    return made;
+  };
+
+  it('writes a shortened id back out in full', async () => {
+    const { service, build, expandMessageRefs } = withNotes(
+      'id 569ef515 - they asked for their name.',
+    );
+    expandMessageRefs.mockResolvedValueOnce(
+      new Map([['569ef515', '569ef515-36e6-41b4-bb6a-1da02164bba4']]),
+    );
+    await service.draftReply(1, 'conv-ref');
+
+    expect(build.mock.calls[0]?.[0]).toMatchObject({
+      summary: 'id 569ef515-36e6-41b4-bb6a-1da02164bba4 - they asked for their name.',
+    });
+  });
+
+  it('only looks up what actually looks shortened', async () => {
+    const { service, expandMessageRefs } = withNotes(
+      'id 569ef515 and id 0d7e0f8c-0898-4441-9588-d37cf0a1e774 both matter.',
+    );
+    await service.draftReply(1, 'conv-ref');
+
+    /* The full one is already full; asking about it would be a lookup for
+     * nothing and a chance to mangle it. */
+    expect(expandMessageRefs.mock.calls[0]?.[2]).toEqual(['569ef515']);
+  });
+
+  it('leaves an id it cannot resolve exactly as it was', async () => {
+    /* A citation pointing at the wrong message is worse than one pointing
+     * at nothing, because it looks checkable. */
+    const { service, build, expandMessageRefs } = withNotes('id deadbeef - something.');
+    expandMessageRefs.mockResolvedValueOnce(new Map());
+    await service.draftReply(1, 'conv-ref');
+
+    expect(build.mock.calls[0]?.[0]).toMatchObject({ summary: 'id deadbeef - something.' });
+  });
+
+  it('asks nothing of the database when the notes carry no ids', async () => {
+    const { service, expandMessageRefs } = withNotes('They are chasing an order.');
+    await service.draftReply(1, 'conv-ref');
+
+    expect(expandMessageRefs).not.toHaveBeenCalled();
   });
 });

@@ -659,18 +659,23 @@ export const MEDIA_ANALYSIS_RETRY_BASE_MS = 60_000;
  */
 export const MEDIA_ANALYSIS_ALLOWED_MIME_PREFIXES = ['image/', 'audio/', 'video/'] as const;
 
-/**
- * The most a description may cost in output tokens.
+/*
+ * NO OUTPUT CEILING IS SENT, on any call, to any provider — and the absence
+ * is deliberate rather than an oversight waiting to be tidied up.
  *
- * A real one measured 108. Four hundred is generous room for a wordy image
- * and still a CEILING — the output column is the expensive one
- * ($2.50/M against $0.30/M for input) and it is charged "including thinking
- * tokens", so it is the half that can run away without anybody noticing.
+ * There was one: 400 tokens on a media description, 700 on a reply. A cap is
+ * counted in tokens and a model cannot see where it will land, so a wedding
+ * invitation read out line by line stopped mid-string — the JSON never
+ * closed, nothing parsed, and the raw envelope was stored as the
+ * description. Both readers salvage a truncated envelope now, but salvaging
+ * a cut transcript still loses its end, and the end is where the date and
+ * the venue are.
  *
- * A cap is better than a plea in the prompt: an instruction to be brief is
- * advice the model may ignore, this is arithmetic it cannot.
+ * Output is the expensive half and this is a real cost decision, not a free
+ * one: it is left off until the prompts and the shapes settle, and tuned
+ * then against what calls actually cost rather than against a guess. The
+ * model_calls ledger is what that tuning will be done from.
  */
-export const MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS = 400;
 
 /**
  * How much conversation goes to the model in one call.
@@ -689,23 +694,6 @@ export const CHAT_MAX_TURNS = 40;
 
 /** One turn's text. Comfortably longer than anything a person types at once. */
 export const CHAT_MAX_TURN_CHARS = 8_000;
-
-/**
- * The ceiling on one chat reply, whichever provider writes it.
- *
- * A property of the FEATURE rather than of a vendor: what bounds a reply is
- * how long a reply should be. Output is the expensive half everywhere, and on
- * the providers that think before answering it is charged for thinking nobody
- * ever sees — so a ceiling is the only instruction that is arithmetic rather
- * than a request.
- *
- * RAISED FOR THE ENVELOPE. The reply now comes back inside a JSON object
- * carrying the language, the intent and whether a person is needed, and
- * those keys are output tokens like any other. A cap that did not account
- * for them would be spent on the envelope and run out mid-sentence — which
- * is recoverable, but recovering is not the same as not needing to.
- */
-export const CHAT_MAX_OUTPUT_TOKENS = 700;
 
 /**
  * How much of a thread the assistant is shown.
@@ -734,9 +722,6 @@ export const CHATBOT_SUMMARY_CHARS = 600;
 
 /** How much of one message the assistant is shown, so a pasted essay cannot dominate. */
 export const CHATBOT_MESSAGE_CHARS = 1_500;
-
-/** How much of a media description is worth carrying into a reply. */
-export const CHATBOT_MEDIA_CHARS = 400;
 
 /** How many links and contacts of a business profile go into the context. */
 export const CHATBOT_PROFILE_ENTRIES = 8;

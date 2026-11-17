@@ -87,7 +87,7 @@ export class OpenAiClient implements ChatProvider {
    */
   async chat(request: ChatRequest): Promise<ChatReply> {
     const client = this.sdk(request.apiKey);
-    const { model, maxOutputTokens, reasoningEffort, storeResponses } = this.config.openai;
+    const { model, reasoningEffort, storeResponses } = this.config.openai;
     const turns = this.checked(request.turns);
     const chosenModel = request.model?.trim() || model;
     const instructions = request.instructions?.trim() ?? '';
@@ -118,7 +118,6 @@ export class OpenAiClient implements ChatProvider {
            *   - THINKING IS OFF by default. Reasoning tokens bill as output
            *     at five times the input rate and are never shown to anyone.
            */
-          max_output_tokens: request.maxOutputTokens ?? maxOutputTokens,
           input: turns.map((turn) => ({ role: turn.role, content: turn.text })),
           ...(instructions.length > 0 ? { instructions } : {}),
           ...(effort ? { reasoning: { effort } } : {}),

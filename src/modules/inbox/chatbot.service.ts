@@ -7,7 +7,6 @@ import { ChatService, type ChatAnswer } from '@/modules/ai/chat.service';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
 import {
   CHATBOT_CONTEXT_MESSAGES,
-  CHATBOT_MEDIA_CHARS,
   CHATBOT_MESSAGE_CHARS,
   CHATBOT_SUMMARY_CHARS,
   CHAT_MAX_TURNS,
@@ -44,6 +43,17 @@ type ThreadRead = {
   attachmentsByMessageId: ReadonlyMap<number, AttachmentRow[]>;
   analysisByKey: ReadonlyMap<string, AnalysisResultRow>;
 };
+
+/**
+ * A hex run short enough to be a truncated id, and not a piece of a whole
+ * one.
+ *
+ * The hyphen guards on both sides are the load-bearing part: the final
+ * segment of a UUID is twelve hex characters with a word boundary either
+ * side, so a pattern anchored only on boundaries offers a complete id its
+ * own tail to "expand".
+ */
+const SHORT_ID = /(?<![0-9a-f-])([0-9a-f]{6,12})(?![0-9a-f-])/gi;
 
 /**
  * A reply, drafted from everything we already hold about a conversation.
@@ -216,13 +226,28 @@ export class ChatbotService {
 
     const shown = turns.slice(-CHAT_MAX_TURNS);
 
+    /*
+     * THE NOTES ARE REPAIRED BEFORE THEY GO BACK IN.
+     *
+     * A note is rewritten from the note before it, so a shortened id copies
+     * itself forward every reply — and a rule added to the prompt today
+     * cannot reach text stored yesterday. Expanding them here fixes the
+     * history as well as the next one, and does it by looking the id up
+     * rather than by asking the model to behave.
+     */
+    const summary = await this.withFullIds(
+      enterpriseId,
+      thread.conversation.id,
+      notes?.summary ?? null,
+    );
+
     const brief = await this.brief.build({
       enterpriseId,
       conversation: thread.conversation,
       shownMessages: shown.length,
       mediaLanguages,
       hasMedia: mediaDescriptions > 0,
-      summary: notes?.summary ?? null,
+      summary,
     });
 
     const answer = await this.chat.reply(shown, {
@@ -254,6 +279,44 @@ export class ChatbotService {
   }
 
   /**
+   * The same notes, with every shortened id written out in full.
+   *
+   * WHY THE IDS ARE SHORT AT ALL: the examples in an older prompt showed
+   * them that way, and a model follows the shape it is shown over the rule
+   * it is told. Those notes are stored text now, and every reply copies
+   * them forward.
+   *
+   * A short id is a PREFIX of a real one, so this is a lookup. Anything
+   * that does not resolve, or resolves to more than one message, is left
+   * exactly as it was: a citation that points at the wrong message is worse
+   * than one that points at nothing, because it looks checkable.
+   */
+  private async withFullIds(
+    enterpriseId: number,
+    conversationId: number,
+    summary: string | null,
+  ): Promise<string | null> {
+    if (!summary) return null;
+
+    /*
+     * Hex runs that are too short to be an id AND are not a piece of one.
+     *
+     * A word boundary is not enough: `0d7e0f8c-0898-4441-9588-d37cf0a1e774`
+     * ends in a twelve-character run with a boundary on both sides, so a
+     * full id offered up its own tail as something to expand. The guard has
+     * to exclude a neighbouring hyphen on either side, not just after.
+     */
+    const shortened = [...summary.matchAll(SHORT_ID)].map((match) => match[1]!.toLowerCase());
+    const unique = [...new Set(shortened)];
+    if (unique.length === 0) return summary;
+
+    const full = await this.messages.expandMessageRefs(enterpriseId, conversationId, unique);
+    if (full.size === 0) return summary;
+
+    return summary.replace(SHORT_ID, (match) => full.get(match.toLowerCase()) ?? match);
+  }
+
+  /**
    * The message as the model should read it: what was typed, plus what was
    * sent that nobody can open any more.
    *
@@ -271,7 +334,14 @@ export class ChatbotService {
       const summary = analysis.summary?.trim() ?? '';
       const transcript = analysis.transcript?.trim() ?? '';
       const detail = [summary, transcript].filter((value) => value.length > 0).join(' — ');
-      if (detail.length > 0) parts.push(`[media: ${detail.slice(0, CHATBOT_MEDIA_CHARS)}]`);
+      /*
+       * WHOLE, NOT TRIMMED. The link died days ago, so these words are the
+       * only record of what somebody sent — and they are in front of the
+       * model precisely when it is being asked about them. A cut at four
+       * hundred characters lost a wedding invitation's date and venue,
+       * which were the two things anybody would have asked about.
+       */
+      if (detail.length > 0) parts.push(`[media: ${detail}]`);
     }
 
     /*

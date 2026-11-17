@@ -10,10 +10,14 @@ import { CHAT_MAX_TURNS, CHAT_MAX_TURN_CHARS } from '@/shared/constants';
  * The assertions about the REQUEST are the point of the file. Every one of
  * them is a cost or a privacy decision that is invisible at the call site and
  * silent when it regresses: a dropped `store: false` leaves a customer's
- * conversation on OpenAI's servers for a month and nothing fails, a lost
- * output cap bills for thinking nobody reads, and a `tools` array that
- * creeps in is a per-call charge on top of tokens. None of that shows up in
- * a response.
+ * conversation on OpenAI's servers for a month and nothing fails, and a
+ * `tools` array that creeps in is a per-call charge on top of tokens. None
+ * of that shows up in a response.
+ *
+ * NO OUTPUT CAP is sent, deliberately. A ceiling truncates the JSON the
+ * prompt contract asks for, and a half-written envelope costs the tokens
+ * that produced it and buys a reply nothing can parse. The assertion below
+ * holds that absence, so a cap cannot drift back in unnoticed.
  */
 const OPENAI = {
   enabled: true,
@@ -21,7 +25,6 @@ const OPENAI = {
   model: 'gpt-6-luna',
   timeoutMs: 30_000,
   maxRetries: 2,
-  maxOutputTokens: 600,
   reasoningEffort: 'none' as const,
   storeResponses: false,
 };
@@ -76,7 +79,6 @@ describe('OpenAiClient request', () => {
 
     const sent = create.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(sent.store).toBe(false);
-    expect(sent.max_output_tokens).toBe(600);
     expect(sent.reasoning).toEqual({ effort: 'none' });
     expect(sent.instructions).toBe('be brief');
     expect(sent.model).toBe('gpt-6-luna');
@@ -84,6 +86,8 @@ describe('OpenAiClient request', () => {
     expect(sent.tools).toBeUndefined();
     expect(sent.previous_response_id).toBeUndefined();
     expect(sent.stream).toBeUndefined();
+    // No ceiling, so a long JSON envelope is never cut off mid-string.
+    expect(sent.max_output_tokens).toBeUndefined();
   });
 
   it('omits the reasoning field entirely when no effort is configured', async () => {
@@ -109,23 +113,13 @@ describe('OpenAiClient request', () => {
     ]);
   });
 
-  it('lets one call override the model and the cap without changing the next', async () => {
+  it('lets one call override the model without changing the next', async () => {
     const { client, create } = clientWith({});
-    await client.chat({
-      turns: [{ role: 'user', text: 'hi' }],
-      model: 'gpt-6.1-terra',
-      maxOutputTokens: 64,
-    });
+    await client.chat({ turns: [{ role: 'user', text: 'hi' }], model: 'gpt-6.1-terra' });
     await client.chat({ turns: [{ role: 'user', text: 'hi again' }] });
 
-    expect(create.mock.calls[0]?.[0]).toMatchObject({
-      model: 'gpt-6.1-terra',
-      max_output_tokens: 64,
-    });
-    expect(create.mock.calls[1]?.[0]).toMatchObject({
-      model: 'gpt-6-luna',
-      max_output_tokens: 600,
-    });
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ model: 'gpt-6.1-terra' });
+    expect(create.mock.calls[1]?.[0]).toMatchObject({ model: 'gpt-6-luna' });
   });
 });
 

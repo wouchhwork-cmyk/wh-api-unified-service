@@ -205,7 +205,6 @@ export const EnvSchema = z
      * — and REASONING TOKENS BILL AS OUTPUT: thinking we are charged for and
      * never see. The API's own minimum is 16.
      */
-    OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(16).max(4_000).default(600),
     /**
      * How hard the model thinks before answering: `none` through `max`.
      *

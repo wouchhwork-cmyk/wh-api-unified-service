@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 import { AppConfigService } from '@/config';
 import { withDeadline } from '@/shared/utils/deadline';
-import { CHAT_MAX_OUTPUT_TOKENS, MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS } from '@/shared/constants';
 import { MediaAnalysisError, MediaFailure } from './gemini.errors';
 import { ChatError, ChatFailure } from './chat.errors';
 import { outputTextOf, parseMediaDescription } from './gemini.parse';
@@ -150,7 +149,6 @@ export class GeminiClient implements ChatProvider {
            * instruction to be brief is advice a model may ignore, where this
            * is arithmetic it cannot.
            */
-          generation_config: { max_output_tokens: MEDIA_ANALYSIS_MAX_OUTPUT_TOKENS },
           input: [
             { type: 'text', text: input.prompt },
             {
@@ -234,9 +232,6 @@ export class GeminiClient implements ChatProvider {
            * chat feature's, because what bounds a reply is how long a reply
            * should be, not whose model wrote it.
            */
-          generation_config: {
-            max_output_tokens: request.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
-          },
           input: [{ type: 'text', text: renderTranscript(request) }],
         } as never),
         timeoutMs,

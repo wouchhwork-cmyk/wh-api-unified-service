@@ -17,11 +17,7 @@ import {
   tagTurn,
 } from '@/modules/ai/prompts';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
-import {
-  CHATBOT_MEDIA_CHARS,
-  CHATBOT_MESSAGE_CHARS,
-  CHATBOT_SUMMARY_CHARS,
-} from '@/shared/constants';
+import { CHATBOT_MESSAGE_CHARS, CHATBOT_SUMMARY_CHARS } from '@/shared/constants';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { ConversationBriefService } from './conversation-brief.service';
 
@@ -219,7 +215,7 @@ export class PromptReplayService {
         const detail = [row?.summary?.trim() ?? '', row?.transcript?.trim() ?? '']
           .filter((value) => value.length > 0)
           .join(' — ');
-        if (detail.length > 0) parts.push(`[media: ${detail.slice(0, CHATBOT_MEDIA_CHARS)}]`);
+        if (detail.length > 0) parts.push(`[media: ${detail}]`);
       }
 
       const text = parts.join('\n').trim();
