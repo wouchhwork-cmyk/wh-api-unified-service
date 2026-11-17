@@ -80,13 +80,7 @@ export class ChatbotService {
   async draftReply(enterpriseId: number, conversationRefId: string): Promise<DraftedReply> {
     return this.draftFrom(
       enterpriseId,
-      await this.inbox.readThread(
-        enterpriseId,
-        conversationRefId,
-        CHATBOT_CONTEXT_MESSAGES,
-        null,
-        null,
-      ),
+      (limit) => this.inbox.readThread(enterpriseId, conversationRefId, limit, null, null),
       /* A person pressed the button. The spend is theirs, not the
        * platform's, and the record has to be able to say so. */
       { purpose: ModelCallPurpose.Draft, messageId: null },
@@ -115,11 +109,7 @@ export class ChatbotService {
   ): Promise<DraftedReply> {
     return this.draftFrom(
       enterpriseId,
-      await this.inbox.readThreadForAssistant(
-        enterpriseId,
-        conversationRefId,
-        CHATBOT_CONTEXT_MESSAGES,
-      ),
+      (limit) => this.inbox.readThreadForAssistant(enterpriseId, conversationRefId, limit),
       /* The message it is answering, so a cost can be traced to its cause. */
       { purpose: ModelCallPurpose.AutoReply, messageId },
     );
@@ -128,9 +118,43 @@ export class ChatbotService {
   /** Everything after the read, which is identical whoever asked. */
   private async draftFrom(
     enterpriseId: number,
-    thread: ThreadRead,
+    read: (limit: number) => Promise<ThreadRead>,
     accounting: { purpose: ModelCallPurpose; messageId: number | null },
   ): Promise<DraftedReply> {
+    let thread = await read(CHATBOT_CONTEXT_MESSAGES);
+
+    /*
+     * ITS OWN QUERY, not something picked out of the thread above. The notes
+     * exist so the window can be short, which means the reply that wrote
+     * them is routinely outside it — ten messages in a row from one customer
+     * pushes the last answer out entirely, and that is exactly when the
+     * notes matter most.
+     */
+    const notes = await this.messages.latestAssistantSummary(enterpriseId, thread.conversation.id);
+
+    /*
+     * THE WINDOW MEETS THE NOTES, or there is a hole between them.
+     *
+     * Notes only advance when the assistant writes a reply. A business
+     * answering from the Instagram app writes messages nothing here
+     * summarises — harmless while they are still in the window, and a
+     * permanent gap the moment they scroll out of it: the assistant would
+     * answer knowing neither what was said nor that anything was.
+     *
+     * So the window is widened once, to cover everything the notes do not,
+     * and the reply it produces writes notes over the whole of it. Paid
+     * once, at the moment it matters, rather than a summarising call after
+     * every message a colleague sends by hand.
+     *
+     * CAPPED, because a conversation answered manually for a month would
+     * otherwise send a month of it. Past the cap the oldest are lost either
+     * way; this at least keeps the bill finite and the newest in view.
+     */
+    const uncovered = notes?.uncovered ?? 0;
+    if (uncovered > CHATBOT_CONTEXT_MESSAGES) {
+      thread = await read(Math.min(uncovered + 1, CHAT_MAX_TURNS));
+    }
+
     /*
      * Newest first out of the repository, because that is what a reader
      * pages through. A model reads a conversation the way it happened.
@@ -192,25 +216,13 @@ export class ChatbotService {
 
     const shown = turns.slice(-CHAT_MAX_TURNS);
 
-    /*
-     * ITS OWN QUERY, not something picked out of the thread above. The notes
-     * exist so the window can be short, which means the reply that wrote
-     * them is routinely outside it — ten messages in a row from one customer
-     * pushes the last answer out entirely, and that is exactly when the
-     * notes matter most.
-     */
-    const summary = await this.messages.latestAssistantSummary(
-      enterpriseId,
-      thread.conversation.id,
-    );
-
     const brief = await this.brief.build({
       enterpriseId,
       conversation: thread.conversation,
       shownMessages: shown.length,
       mediaLanguages,
       hasMedia: mediaDescriptions > 0,
-      summary,
+      summary: notes?.summary ?? null,
     });
 
     const answer = await this.chat.reply(shown, {

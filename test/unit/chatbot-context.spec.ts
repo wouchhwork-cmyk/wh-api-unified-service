@@ -49,6 +49,9 @@ function serviceWith(
   const brief = { build } as unknown as ConversationBriefService;
 
   const latestAssistantSummary = vi.fn().mockResolvedValue(null);
+  /* { summary, messageId, uncovered } — `uncovered` is how much has happened
+   * since the notes were written, which decides whether the window is
+   * wide enough to reach them. */
   const messages = { latestAssistantSummary } as unknown as MessageRepository;
 
   const reply = vi.fn().mockResolvedValue({
@@ -71,6 +74,7 @@ function serviceWith(
     reply,
     build,
     latestAssistantSummary,
+    inbox: inbox as unknown as { readThread: ReturnType<typeof vi.fn> },
   };
 }
 
@@ -260,7 +264,11 @@ describe('what it remembers from before the window', () => {
 
   it('hands them to the brief to carry forward', async () => {
     const { service, build, latestAssistantSummary } = serviceWith({ messages: [message(1)] });
-    latestAssistantSummary.mockResolvedValueOnce('They are chasing order 4471.');
+    latestAssistantSummary.mockResolvedValueOnce({
+      summary: 'They are chasing order 4471.',
+      messageId: 10,
+      uncovered: 2,
+    });
     await service.draftReply(1, 'conv-ref');
 
     expect(build.mock.calls[0]?.[0]).toMatchObject({
@@ -400,5 +408,65 @@ describe('everything a turn carries', () => {
 
     const text = (reply.mock.calls[0]?.[0] as { text: string }[])[0]?.text ?? '';
     expect(text.length).toBeLessThan(1_200);
+  });
+});
+
+/**
+ * A message the assistant did not write is a message nothing summarised.
+ *
+ * Notes only advance when the assistant replies. A business answering from
+ * the Instagram app writes messages that nothing here covers — harmless
+ * while they are still in the window, and a permanent gap the moment they
+ * scroll out of it: the assistant would answer knowing neither what was
+ * said nor that anything was.
+ */
+describe('when the notes and the window do not meet', () => {
+  it('reads the ordinary window when the notes reach it', async () => {
+    const { service, latestAssistantSummary, inbox } = serviceWith({ messages: [message(1)] });
+    latestAssistantSummary.mockResolvedValueOnce({
+      summary: 'Covered up to here.',
+      messageId: 10,
+      uncovered: 3,
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    /* One read, at the usual size: nothing is missing. */
+    expect(inbox.readThread).toHaveBeenCalledTimes(1);
+    expect(inbox.readThread.mock.calls[0]?.[2]).toBe(10);
+  });
+
+  it('widens once to cover what nobody summarised', async () => {
+    const { service, latestAssistantSummary, inbox } = serviceWith({ messages: [message(1)] });
+    latestAssistantSummary.mockResolvedValueOnce({
+      summary: 'Covered up to here.',
+      messageId: 10,
+      /* A colleague answered by hand twenty-five times since. */
+      uncovered: 25,
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    expect(inbox.readThread).toHaveBeenCalledTimes(2);
+    expect(inbox.readThread.mock.calls[1]?.[2]).toBe(26);
+  });
+
+  it('will not send a month of conversation to cover a month of it', async () => {
+    const { service, latestAssistantSummary, inbox } = serviceWith({ messages: [message(1)] });
+    latestAssistantSummary.mockResolvedValueOnce({
+      summary: 'Covered up to here.',
+      messageId: 10,
+      uncovered: 5_000,
+    });
+    await service.draftReply(1, 'conv-ref');
+
+    /* Past the cap the oldest are lost either way; this keeps the bill
+     * finite and the newest in view. */
+    expect(inbox.readThread.mock.calls[1]?.[2]).toBe(40);
+  });
+
+  it('reads once when there are no notes at all', async () => {
+    const { service, inbox } = serviceWith({ messages: [message(1)] });
+    await service.draftReply(1, 'conv-ref');
+
+    expect(inbox.readThread).toHaveBeenCalledTimes(1);
   });
 });

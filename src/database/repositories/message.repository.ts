@@ -1155,9 +1155,31 @@ export class MessageRepository extends BaseRepository {
   async latestAssistantSummary(
     enterpriseId: number,
     conversationId: number,
-  ): Promise<string | null> {
-    const rows = await this.query<{ summary: string | null }>(
-      `SELECT m.metadata->'assistant'->>'summary' AS summary
+  ): Promise<{ summary: string; messageId: number; uncovered: number } | null> {
+    const rows = await this.query<{
+      summary: string;
+      messageId: string;
+      uncovered: string;
+    }>(
+      `SELECT m.metadata->'assistant'->>'summary' AS summary,
+              m.id AS "messageId",
+              /*
+               * HOW MUCH HAS HAPPENED SINCE, which decides whether the
+               * window is wide enough to meet them.
+               *
+               * The notes only advance when the assistant writes a reply. A
+               * business answering from the Instagram app writes messages
+               * nothing here summarises — fine while they are still in the
+               * window, and a permanent hole the moment they scroll out of
+               * it. Counting them is what lets the caller widen rather than
+               * answer around a gap it cannot see.
+               */
+              (SELECT count(*) FROM messages later
+                WHERE later.enterprise_id = m.enterprise_id
+                  AND later.conversation_id = m.conversation_id
+                  AND later.is_deleted = false
+                  AND later.is_internal_note = false
+                  AND later.id > m.id) AS uncovered
          FROM messages m
         WHERE m.enterprise_id = $1
           AND m.conversation_id = $2
@@ -1167,7 +1189,14 @@ export class MessageRepository extends BaseRepository {
         LIMIT 1`,
       [this.requireEnterprise(enterpriseId), conversationId],
     );
-    return rows[0]?.summary ?? null;
+
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      summary: row.summary,
+      messageId: Number(row.messageId),
+      uncovered: Number(row.uncovered),
+    };
   }
   /**
    * Messages by their public ids, for rebuilding a window that has since
