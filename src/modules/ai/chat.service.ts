@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '@/config';
+import { WireCaptureService } from './wire-capture.service';
 import { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
 import {
   AI_PROVIDER_IDS,
@@ -53,6 +54,21 @@ export interface ChatReplyOptions {
   readonly context?: string;
   /** The inbound message being answered, when there is one. */
   readonly messageId?: number | null;
+  /**
+   * What this service can be asked to do, rendered. Absent means no tools:
+   * the model is not shown a section it cannot use, and cannot ask for one.
+   */
+  readonly tools?: string;
+  /** What the tools it asked for returned. Only from the second round on. */
+  readonly toolResults?: string;
+  /**
+   * Which pass of the tool loop this is, for the capture file alone.
+   *
+   * 0 is the opening ask. Nothing about the call changes with it — it exists
+   * so four exchanges that produced one reply can be read back in order
+   * instead of as four unrelated calls a second apart.
+   */
+  readonly round?: number;
 }
 
 export interface ChatAnswer extends ChatReply {
@@ -68,6 +84,16 @@ export interface ChatAnswer extends ChatReply {
   readonly silent: boolean;
   /** Its notes on the conversation, for the next reply to start from. */
   readonly summary: string | null;
+  /**
+   * A tool it wants run before it answers, as it asked for it.
+   *
+   * Unchecked here: which arguments are legal depends on which tool was
+   * named, and that belongs with the registry rather than with the client
+   * that opened the envelope.
+   */
+  readonly tool: Record<string, unknown> | null;
+  /** The row id of this call, so a tool can be filed against what asked for it. */
+  readonly callId: number;
   /** The record of this call, so a reply can be traced back to its prompt. */
   readonly callRef: string;
   /** Whether it answered in the shape it was asked for. */
@@ -128,6 +154,7 @@ export class ChatService {
     private readonly config: AppConfigService,
     private readonly cipher: TokenCipherService,
     private readonly calls: ModelCallRepository,
+    private readonly wire: WireCaptureService,
   ) {}
 
   /**
@@ -299,6 +326,8 @@ export class ChatService {
     const instructions = buildChatReplyPrompt({
       businessPrompt: settings.prompt,
       context: options.context ?? '',
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolResults ? { toolResults: options.toolResults } : {}),
     });
 
     const call = await this.calls.begin({
@@ -323,6 +352,8 @@ export class ChatService {
         ...(apiKey ? { apiKey } : {}),
         instructions,
         model: settings.model,
+        /* Off in every ordinary environment, so nothing extra is built. */
+        ...(this.wire.enabled ? { captureWire: true } : {}),
       });
     } catch (error) {
       /*
@@ -368,6 +399,31 @@ export class ChatService {
       reply.model,
     );
 
+    /*
+     * AFTER THE LEDGER, and never in front of it. Writing a debug file is
+     * not allowed to delay the row that says a paid call happened, and the
+     * capture is awaited only so a test can read it back deterministically
+     * — it swallows its own failures either way.
+     */
+    await this.wire.record(
+      {
+        callRef: call.refId,
+        enterpriseId: options.enterpriseId,
+        at: new Date(startedAt).toISOString(),
+        purpose: options.purpose,
+        provider: reply.provider,
+        model: reply.model,
+        messageId: options.messageId ?? null,
+        round: options.round ?? 0,
+        durationMs,
+        request: null,
+        response: null,
+        parsed: fields,
+        usage: reply.usage,
+      },
+      reply.wire,
+    );
+
     return {
       ...reply,
       text: fields.text,
@@ -377,7 +433,9 @@ export class ChatService {
       silent: fields.silent,
       summary: fields.summary,
       structured: fields.structured,
+      tool: fields.tool,
       callRef: call.refId,
+      callId: call.id,
       promptVersion: settings.version,
     };
   }

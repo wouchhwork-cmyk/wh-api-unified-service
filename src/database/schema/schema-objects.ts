@@ -660,6 +660,46 @@ export async function applyPostTableObjects(
     `CREATE INDEX customers_name_trgm_idx ON customers USING gin (display_name gin_trgm_ops)`,
   );
 
+  /*
+   * Who is waiting for a person, and who the assistant has been told to be
+   * quiet with — per CHANNEL, which is why it is its own table.
+   *
+   * GUARDED ON THE TABLE, because this file runs on both paths and the
+   * migration that creates it is newer than this file's first version.
+   *
+   * BOTH INDEXES ARE PARTIAL. The unique one is the grain itself: one row
+   * per person per connected account. The other answers "who is waiting", which is a
+   * handful of rows out of every customer a business has ever spoken to.
+   */
+  await run(`
+      DO $$
+      BEGIN
+        IF to_regclass('public.customer_assistant_states') IS NOT NULL THEN
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     DROP CONSTRAINT IF EXISTS customer_assistant_states_enterprise_fk';
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     ADD CONSTRAINT customer_assistant_states_enterprise_fk
+                     FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     DROP CONSTRAINT IF EXISTS customer_assistant_states_customer_fk';
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     ADD CONSTRAINT customer_assistant_states_customer_fk
+                     FOREIGN KEY (customer_id, enterprise_id) REFERENCES customers (id, enterprise_id)';
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     DROP CONSTRAINT IF EXISTS customer_assistant_states_channel_fk';
+          EXECUTE 'ALTER TABLE customer_assistant_states
+                     ADD CONSTRAINT customer_assistant_states_channel_fk
+                     FOREIGN KEY (channel_id) REFERENCES channels (id)';
+          EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS customer_assistant_states_uniq
+                     ON customer_assistant_states (enterprise_id, customer_id, channel_id)
+                     WHERE is_deleted = false';
+          EXECUTE 'CREATE INDEX IF NOT EXISTS customer_assistant_states_waiting_idx
+                     ON customer_assistant_states (enterprise_id, needs_human_since DESC)
+                     WHERE needs_human = true AND is_deleted = false';
+        END IF;
+      END $$;
+    `);
+
   // --- customer identifiers ---------------------------------------------
   await run(`
       CREATE INDEX customer_identifiers_customer_idx
@@ -818,6 +858,43 @@ export async function applyPostTableObjects(
                    ON assistant_replies (lease_expires_at) WHERE status = ''in_flight''';
         EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_replies_unavailable_idx
                    ON assistant_replies (settled_at DESC) WHERE status = ''unavailable''';
+      END IF;
+
+      /*
+       * The assistant's tools: what it asked this service to do, and the one
+       * thing those asks promise somebody. Guarded like everything else
+       * here, because this file runs before the migration that creates them.
+       */
+      IF to_regclass('public.assistant_tool_calls') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE assistant_tool_calls
+                   DROP CONSTRAINT IF EXISTS assistant_tool_calls_enterprise_fk';
+        EXECUTE 'ALTER TABLE assistant_tool_calls
+                   ADD CONSTRAINT assistant_tool_calls_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_tool_calls_thread_idx
+                   ON assistant_tool_calls (enterprise_id, conversation_id, created_at DESC, id DESC)
+                   WHERE is_deleted = false';
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS assistant_tool_calls_ref_uniq
+                   ON assistant_tool_calls (ref_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS assistant_tool_calls_usage_idx
+                   ON assistant_tool_calls (enterprise_id, tool_name, outcome, created_at DESC)
+                   WHERE is_deleted = false';
+      END IF;
+
+      IF to_regclass('public.callback_requests') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE callback_requests
+                   DROP CONSTRAINT IF EXISTS callback_requests_enterprise_fk';
+        EXECUTE 'ALTER TABLE callback_requests
+                   ADD CONSTRAINT callback_requests_enterprise_fk
+                   FOREIGN KEY (enterprise_id) REFERENCES enterprises (id)';
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS callback_requests_ref_uniq
+                   ON callback_requests (ref_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS callback_requests_open_idx
+                   ON callback_requests (enterprise_id, created_at)
+                   WHERE is_deleted = false AND status = ''requested''';
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS callback_requests_one_open_uniq
+                   ON callback_requests (enterprise_id, conversation_id)
+                   WHERE is_deleted = false AND status = ''requested''';
       END IF;
 
       IF to_regclass('public.customer_platform_profiles') IS NOT NULL THEN

@@ -74,6 +74,19 @@ export interface ConversationRow {
   readonly customerDisplayName: string | null;
   readonly customerAvatarUrl: string | null;
   /**
+   * The two switches a colleague can throw on this person.
+   *
+   * CARRIED ON THE THREAD, not fetched separately. An agent reading a
+   * conversation is exactly who decides a human is needed or that the
+   * assistant should be quiet while they type — so the controls belong where
+   * they are already looking, and the join that answers them is one this
+   * query already makes.
+   */
+  readonly customerNeedsHuman: boolean;
+  readonly customerNeedsHumanReason: string | null;
+  readonly customerAutomationPaused: boolean;
+  readonly customerAutomationResumesAt: Date | null;
+  /**
    * What the platform said about this person: whether they follow the
    * business, whether they are verified, how many followers.
    *
@@ -242,6 +255,12 @@ export class ConversationRepository extends BaseRepository {
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId",
+              COALESCE(ast.needs_human, false) AS "customerNeedsHuman",
+              ast.needs_human_reason AS "customerNeedsHumanReason",
+              (ast.automation_paused_at IS NOT NULL
+                AND (ast.automation_resumes_at IS NULL
+                     OR ast.automation_resumes_at > now())) AS "customerAutomationPaused",
+              ast.automation_resumes_at AS "customerAutomationResumesAt",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
@@ -255,6 +274,19 @@ export class ConversationRepository extends BaseRepository {
                */
               NULLIF(TRIM(CONCAT_WS(' ', ai.first_name, ai.last_name)), '') AS "assignedToName"
          FROM conversations cv
+         /*
+          * The two assistant switches for this person IN THIS INBOX. Per
+          * channel, so a flag raised on one connected account never shows
+          * against another — see customer_assistant_states.
+          *
+          * LEFT, because a row exists only where somebody changed
+          * something: missing is the ordinary state, not an error.
+          */
+         LEFT JOIN customer_assistant_states ast
+                ON ast.customer_id = cv.customer_id
+               AND ast.channel_id = cv.channel_id
+               AND ast.enterprise_id = cv.enterprise_id
+               AND ast.is_deleted = false
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
          ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
@@ -381,6 +413,12 @@ export class ConversationRepository extends BaseRepository {
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId",
+              COALESCE(ast.needs_human, false) AS "customerNeedsHuman",
+              ast.needs_human_reason AS "customerNeedsHumanReason",
+              (ast.automation_paused_at IS NOT NULL
+                AND (ast.automation_resumes_at IS NULL
+                     OR ast.automation_resumes_at > now())) AS "customerAutomationPaused",
+              ast.automation_resumes_at AS "customerAutomationResumesAt",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
@@ -394,6 +432,19 @@ export class ConversationRepository extends BaseRepository {
                */
               NULLIF(TRIM(CONCAT_WS(' ', ai.first_name, ai.last_name)), '') AS "assignedToName"
          FROM conversations cv
+         /*
+          * The two assistant switches for this person IN THIS INBOX. Per
+          * channel, so a flag raised on one connected account never shows
+          * against another — see customer_assistant_states.
+          *
+          * LEFT, because a row exists only where somebody changed
+          * something: missing is the ordinary state, not an error.
+          */
+         LEFT JOIN customer_assistant_states ast
+                ON ast.customer_id = cv.customer_id
+               AND ast.channel_id = cv.channel_id
+               AND ast.enterprise_id = cv.enterprise_id
+               AND ast.is_deleted = false
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
          ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
@@ -591,11 +642,30 @@ export class ConversationRepository extends BaseRepository {
               cv.unread_count AS "unreadCount", cv.message_count AS "messageCount",
               cv.last_message_at AS "lastMessageAt", cv.last_inbound_at AS "lastInboundAt",
               cu.ref_id AS "customerRefId",
+              COALESCE(ast.needs_human, false) AS "customerNeedsHuman",
+              ast.needs_human_reason AS "customerNeedsHumanReason",
+              (ast.automation_paused_at IS NOT NULL
+                AND (ast.automation_resumes_at IS NULL
+                     OR ast.automation_resumes_at > now())) AS "customerAutomationPaused",
+              ast.automation_resumes_at AS "customerAutomationResumesAt",
               COALESCE(cu.display_name, cpp.display_name) AS "customerDisplayName",
               COALESCE(cu.avatar_url, cpp.avatar_url) AS "customerAvatarUrl",
               COALESCE(cpp.metadata, '{}'::jsonb) AS "customerProfile",
               cv.assigned_to_employee_id AS "assignedToEmployeeId"
          FROM conversations cv
+         /*
+          * The two assistant switches for this person IN THIS INBOX. Per
+          * channel, so a flag raised on one connected account never shows
+          * against another — see customer_assistant_states.
+          *
+          * LEFT, because a row exists only where somebody changed
+          * something: missing is the ordinary state, not an error.
+          */
+         LEFT JOIN customer_assistant_states ast
+                ON ast.customer_id = cv.customer_id
+               AND ast.channel_id = cv.channel_id
+               AND ast.enterprise_id = cv.enterprise_id
+               AND ast.is_deleted = false
          LEFT JOIN customers cu ON cu.id = cv.customer_id
                                AND cu.enterprise_id = cv.enterprise_id
          ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: 'cv.customer_identifier_id' })}
@@ -604,5 +674,121 @@ export class ConversationRepository extends BaseRepository {
       [this.requireEnterprise(enterpriseId), id],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * Every OTHER thread this business has had with the same person.
+   *
+   * WHY IT IS NOT "MORE HISTORY". `get_earlier_messages` reaches further back in
+   * ONE conversation; this reaches sideways into the others, and they are
+   * different questions with different answers. Measured on a live record:
+   * one customer, 32 conversations — 26 mentions, 5 comment threads, and the
+   * single direct message the assistant was looking at. Thirty-one threads
+   * it could not see, and it said so out loud: "I don't have access to
+   * personal history."
+   *
+   * ONE QUERY, NOT ONE PER THREAD. The notes excerpt comes from a LATERAL
+   * against the newest summarised message in each conversation, so a list of
+   * twenty costs one round trip rather than twenty-one.
+   *
+   * SCOPED TO THIS CUSTOMER BY THE CALLER, never by an id a model supplies.
+   * The same rule `get_customer_details` follows: with no id to pass there
+   * is nothing to point somewhere else.
+   */
+  async otherConversationsFor(input: {
+    enterpriseId: number;
+    customerId: number;
+    /** The one they are in now, left out of its own list. */
+    excludeConversationId: number;
+    limit: number;
+  }): Promise<
+    {
+      refId: string;
+      conversationKind: string;
+      status: string;
+      subject: string | null;
+      postCaption: string | null;
+      postUrl: string | null;
+      messageCount: number;
+      lastMessageAt: Date | null;
+      notes: string | null;
+      /** What was actually said last, for the short threads that have no notes. */
+      lastMessage: string | null;
+      lastMessageFrom: string | null;
+      lastMessageHadMedia: boolean;
+    }[]
+  > {
+    const rows = await this.query<{
+      refId: string;
+      conversationKind: string;
+      status: string;
+      subject: string | null;
+      postCaption: string | null;
+      postUrl: string | null;
+      messageCount: string;
+      lastMessageAt: Date | null;
+      notes: string | null;
+      lastMessage: string | null;
+      lastMessageFrom: string | null;
+      lastMessageHadMedia: boolean | null;
+    }>(
+      `SELECT cv.ref_id AS "refId",
+              cv.conversation_kind AS "conversationKind",
+              cv.status,
+              cv.subject,
+              p.caption AS "postCaption",
+              p.permalink_url AS "postUrl",
+              cv.message_count AS "messageCount",
+              cv.last_message_at AS "lastMessageAt",
+              notes.summary AS "notes",
+              latest.body AS "lastMessage",
+              latest.direction AS "lastMessageFrom",
+              latest.has_attachments AS "lastMessageHadMedia"
+         FROM conversations cv
+         LEFT JOIN posts p ON p.id = cv.post_id AND p.enterprise_id = cv.enterprise_id
+         LEFT JOIN LATERAL (
+           SELECT m.metadata->'assistant'->>'summary' AS summary
+             FROM messages m
+            WHERE m.conversation_id = cv.id
+              AND m.is_deleted = false
+              AND m.metadata->'assistant'->>'summary' IS NOT NULL
+            ORDER BY COALESCE(m.platform_sent_at, m.created_at) DESC, m.id DESC
+            LIMIT 1
+         ) notes ON true
+         /*
+          * THE LAST THING SAID, because most of these threads are too short
+          * to have notes at all. A mention is frequently one message — and
+          * measured live, none of this customer's 26 mentions had ever been
+          * summarised, so a list built on notes alone would have shown 26
+          * blank rows.
+          */
+         LEFT JOIN LATERAL (
+           SELECT m.body, m.direction, m.has_attachments
+             FROM messages m
+            WHERE m.conversation_id = cv.id AND m.is_deleted = false
+            ORDER BY COALESCE(m.platform_sent_at, m.created_at) DESC, m.id DESC
+            LIMIT 1
+         ) latest ON true
+        WHERE cv.enterprise_id = $1
+          AND cv.customer_id = $2
+          AND cv.id <> $3
+          AND cv.is_deleted = false
+        -- Newest first: what they said last week answers more than what they
+        -- said in March, and the cap bites from the far end.
+        ORDER BY cv.last_message_at DESC NULLS LAST, cv.id DESC
+        LIMIT $4`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.customerId,
+        input.excludeConversationId,
+        input.limit,
+      ],
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      messageCount: Number(row.messageCount),
+      lastMessageHadMedia: row.lastMessageHadMedia === true,
+    }));
   }
 }

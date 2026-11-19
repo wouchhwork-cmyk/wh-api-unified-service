@@ -69,6 +69,27 @@ export interface SystemPromptLayers {
   readonly messageFormat?: string;
   /** The facts assembled for this one call, already tagged. Empty when none. */
   readonly context?: string;
+  /**
+   * What this service can be asked to DO, rendered. Ours. Empty when none.
+   *
+   * AFTER the context on purpose. A tool is only worth reaching for when
+   * what is already known does not answer the question — so the model reads
+   * what it has before it reads what it could go and get, and the rule
+   * about not looking up what is already in front of it lands against a
+   * section it has just finished reading.
+   */
+  readonly tools?: string;
+  /**
+   * What came back from the tools it asked for on the previous turn.
+   *
+   * ONLY ON A SECOND OR LATER ROUND, and kept out of <context> because the
+   * two are different kinds of thing: the context is what we already knew,
+   * this is what was fetched DURING this answer at the model's own request.
+   * The difference matters when a lookup fails — "we hold no number for
+   * them" and "the lookup errored" lead to different replies, and only one
+   * of them is a fact about the customer.
+   */
+  readonly toolResults?: string;
   /** The rendered output contract. Ours, and always last. */
   readonly output: string;
 }
@@ -99,8 +120,14 @@ const BUSINESS_NOTE =
  * than in a section.
  */
 function precedenceSection(hasContext: boolean): string {
+  /*
+   * TOOL RESULTS RANK WITH THE CONTEXT, because they are the same kind of
+   * claim: something this service looked up and handed over. A business
+   * prompt cannot contradict one any more than it can contradict a stored
+   * opening hour.
+   */
   const order = hasContext
-    ? 'output, rules, context, business_instructions'
+    ? 'output, rules, context and tool_results, business_instructions'
     : 'output, rules, business_instructions';
   const lines = [
     '<precedence>',
@@ -158,6 +185,12 @@ export function composeSystemPrompt(layers: SystemPromptLayers): string {
   if (messageFormat.length > 0) sections.push(messageFormat);
 
   if (context.length > 0) sections.push(`<context>\n${context}\n</context>`);
+
+  const tools = layers.tools?.trim() ?? '';
+  if (tools.length > 0) sections.push(tools);
+
+  const toolResults = layers.toolResults?.trim() ?? '';
+  if (toolResults.length > 0) sections.push(toolResults);
 
   sections.push(layers.output.trim());
 

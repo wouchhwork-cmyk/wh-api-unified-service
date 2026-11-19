@@ -97,31 +97,38 @@ export class OpenAiClient implements ChatProvider {
      */
     const effort = reasoningEffort === '' ? null : reasoningEffort;
 
+    /*
+     * BUILT ONCE AND SENT, so the captured request is the object that
+     * actually went out rather than a second one assembled to look like it.
+     * A copy that drifts from what was sent is worse than no copy at all.
+     */
+    const body = {
+      model: chosenModel,
+      /*
+       * SENT EXPLICITLY, because their default is the dangerous one:
+       * omit it and OpenAI keeps the response for at least 30 days.
+       */
+      store: storeResponses,
+      /*
+       * NOTHING IS ASKED FOR THAT IS NOT NEEDED:
+       *
+       *   - NO `tools`. Web search is billed per call on top of tokens,
+       *     and a declaration is tokens on every request besides. A chat
+       *     that needs the web is a different feature, decided by the
+       *     service, not a default of the transport.
+       *   - NO stored response, so no history accrues against us.
+       *   - THINKING IS OFF by default. Reasoning tokens bill as output
+       *     at five times the input rate and are never shown to anyone.
+       */
+      input: turns.map((turn) => ({ role: turn.role, content: turn.text })),
+      ...(instructions.length > 0 ? { instructions } : {}),
+      ...(effort ? { reasoning: { effort } } : {}),
+    };
+
     let raw: unknown;
     try {
       raw = await withDeadline(
-        client.responses.create({
-          model: chosenModel,
-          /*
-           * SENT EXPLICITLY, because their default is the dangerous one:
-           * omit it and OpenAI keeps the response for at least 30 days.
-           */
-          store: storeResponses,
-          /*
-           * NOTHING IS ASKED FOR THAT IS NOT NEEDED:
-           *
-           *   - NO `tools`. Web search is billed per call on top of tokens,
-           *     and a declaration is tokens on every request besides. A chat
-           *     that needs the web is a different feature, decided by the
-           *     service, not a default of the transport.
-           *   - NO stored response, so no history accrues against us.
-           *   - THINKING IS OFF by default. Reasoning tokens bill as output
-           *     at five times the input rate and are never shown to anyone.
-           */
-          input: turns.map((turn) => ({ role: turn.role, content: turn.text })),
-          ...(instructions.length > 0 ? { instructions } : {}),
-          ...(effort ? { reasoning: { effort } } : {}),
-        }),
+        client.responses.create(body),
         this.totalBudgetMs(),
         () =>
           new ChatError(
@@ -144,7 +151,8 @@ export class OpenAiClient implements ChatProvider {
       );
     }
 
-    return parseChatReply(raw, chosenModel, this.id);
+    const reply = parseChatReply(raw, chosenModel, this.id);
+    return request.captureWire ? { ...reply, wire: { request: body, response: raw } } : reply;
   }
 
   /**

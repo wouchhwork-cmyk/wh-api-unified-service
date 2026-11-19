@@ -1,5 +1,14 @@
 import { AuditService } from '@/modules/audit/audit.service';
-import { AuditAction, AuditEntityType, AuditStatus } from '@/shared/enums';
+import {
+  AuditAction,
+  AuditEntityType,
+  AuditStatus,
+  IdentifierKind,
+  IdentifierSource,
+  IdentifierVerificationStatus,
+} from '@/shared/enums';
+import { cleanContact } from '@/shared/utils/normalize';
+import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { SyncJobRepository } from '@/database/repositories/sync-job.repository';
@@ -39,6 +48,9 @@ export class CatalogueService {
     private readonly audit: AuditService,
     private readonly channels: ChannelRepository,
     private readonly syncJobs: SyncJobRepository,
+    /* For the one column that settles what country a bare national number
+     * belongs to. See `cleanContact`. */
+    private readonly enterprises: EnterpriseRepository,
     @InjectPinoLogger(CatalogueService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -149,6 +161,39 @@ export class CatalogueService {
     return page(rows, limit, (row) => encodeKeysetCursor(row.lastSeenAt, row.id));
   }
   /**
+   * One customer, with every fact kept beside where it came from.
+   *
+   * FOR CHECKING, which is a different job from the directory. A list needs
+   * one name per row and resolves it; somebody opening a record wants to
+   * know whether that name was typed by a colleague, supplied by the
+   * platform, or recorded by the assistant from something the customer
+   * said — and which of their contact details anybody has actually
+   * verified.
+   *
+   * The tool calls come with it, bounded, because they are the audit trail
+   * for the half of this record the assistant wrote. "Why does it say her
+   * number is this" is answered by the row that recorded it and the message
+   * it cited.
+   */
+  async readCustomer(
+    enterpriseId: number,
+    refId: string,
+  ): Promise<{
+    /* NonNullable: the not-found case throws below, so a caller never has
+     * to re-check what this already refused to return. */
+    customer: NonNullable<Awaited<ReturnType<CustomerRepository['fullProfile']>>>;
+    identifiers: Awaited<ReturnType<CustomerRepository['allIdentifiers']>>;
+  }> {
+    const customer = await this.customers.fullProfile(enterpriseId, refId);
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
+
+    return {
+      customer,
+      identifiers: await this.customers.allIdentifiers(enterpriseId, customer.id),
+    };
+  }
+
+  /**
    * Sets the name this business gives somebody.
    *
    * THE HALF THAT WINS. A customer's name resolves ours-then-the-platform's,
@@ -192,6 +237,176 @@ export class CatalogueService {
     });
 
     return changed.after;
+  }
+
+  /**
+   * The country this business stated for itself, as a one-item list.
+   *
+   * A LIST BECAUSE `cleanContact` DISTINGUISHES NONE FROM ONE, and those are
+   * genuinely different answers: one country settles what a bare number is
+   * without asking anybody, and none means the question has to be put. The
+   * business has exactly one country today — see the entity for why — so
+   * this is always one item or none.
+   */
+  private async businessCountries(enterpriseId: number): Promise<string[]> {
+    const country = await this.enterprises.countryById(enterpriseId);
+    return country ? [country] : [];
+  }
+
+  /**
+   * Puts a contact detail on a customer's record, or changes one.
+   *
+   * THE SAME CLEANING THE ASSISTANT GETS, deliberately. `cleanContact` is
+   * shared with `record_customer_details` so a number added here and the
+   * same number recorded from a chat produce the SAME row — otherwise the
+   * uniqueness `identifier_value` exists to provide is not uniqueness, and
+   * one person quietly becomes two records.
+   *
+   * ADDED BY A COLLEAGUE IS STILL UNVERIFIED. Somebody typing a number into
+   * a form has not checked it either; they have copied it from somewhere.
+   * The source says a person at this business entered it, which is a
+   * stronger claim than a customer saying it in a chat and a weaker one
+   * than anybody having confirmed it works.
+   *
+   * REPLACING IS RELEASE-THEN-ADD, in that order, so a typo being corrected
+   * does not leave both the old and the new on the record. The old value is
+   * released rather than deleted — see `releaseIdentifier`.
+   */
+  async setCustomerContact(
+    enterpriseId: number,
+    refId: string,
+    input: {
+      kind: IdentifierKind;
+      value: string;
+      country?: string | null | undefined;
+      /** The existing value this one replaces. Absent means add a new one. */
+      replaces?: string | null | undefined;
+    },
+  ): Promise<{ kind: IdentifierKind; value: string; replaced: string | null }> {
+    const customer = await this.customers.fullProfile(enterpriseId, refId);
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
+
+    const clean = cleanContact({
+      kind: input.kind,
+      value: input.value,
+      stated: input.country,
+      /* The country this business stated for itself — a declaration, not a
+       * guess, which is what lets a bare number through without the form
+       * having to ask. */
+      operatesIn:
+        input.kind === IdentifierKind.Email ? [] : await this.businessCountries(enterpriseId),
+    });
+    if (!clean.ok) {
+      throw new AppException(
+        clean.problem === 'needs_country'
+          ? ErrorCode.ContactNeedsCountry
+          : ErrorCode.ContactNotUsable,
+      );
+    }
+    const contact = clean.contact;
+
+    /*
+     * CHECKED BEFORE, NOT AFTER. The insert is ON CONFLICT DO NOTHING,
+     * which is right for a reply race and wrong for a form: a colleague
+     * would be told it worked and find nothing there. Worse, the row may
+     * belong to a DIFFERENT customer, and silently doing nothing hides two
+     * records claiming one person.
+     */
+    const owner = await this.customers.identifierOwner(enterpriseId, input.kind, contact.canonical);
+    if (owner !== null && owner !== customer.id) throw new AppException(ErrorCode.ContactTaken);
+
+    /* Released FIRST, so correcting a typo cannot leave both on the record.
+     * A replacement that is really the same value after cleaning would
+     * otherwise release the row it is about to re-add. */
+    let replaced: string | null = null;
+    if (input.replaces && input.replaces !== contact.canonical) {
+      const gone = await this.customers.releaseIdentifier({
+        enterpriseId,
+        customerId: customer.id,
+        identifierKind: input.kind,
+        identifierValue: input.replaces,
+      });
+      if (!gone) throw new AppException(ErrorCode.ContactNotFound);
+      replaced = input.replaces;
+    }
+
+    await this.customers.linkIdentifier({
+      enterpriseId,
+      customerId: customer.id,
+      identifierKind: input.kind,
+      identifierValue: contact.canonical,
+      identifierValueRaw: input.value.trim(),
+      ...(contact.mobile ? { mobile: contact.mobile } : {}),
+      source: IdentifierSource.AgentEntered,
+      verification: IdentifierVerificationStatus.Unverified,
+    });
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Customer,
+      entityId: customer.id,
+      enterpriseId,
+      status: AuditStatus.Success,
+      /* THE VALUE IS THE POINT OF THE CHANGE, so it is recorded — this trail
+       * is how "why does her record say this number" gets answered, and a
+       * row saying only "a contact changed" answers nothing. */
+      metadata: {
+        kind: input.kind,
+        value: contact.canonical,
+        replaced,
+        /* Which country it was read as, always — not a flag saying whether
+         * anybody guessed, because nobody guesses any more. */
+        country: contact.mobile?.countryCode ?? null,
+      },
+    });
+
+    return { kind: input.kind, value: contact.canonical, replaced };
+  }
+
+  /**
+   * Takes a contact detail off a record.
+   *
+   * CLEANED BEFORE IT IS MATCHED, because what the caller holds is what was
+   * stored — but a caller that rebuilt it from a form would send the typed
+   * shape, and matching on the raw string would silently remove nothing.
+   */
+  async removeCustomerContact(
+    enterpriseId: number,
+    refId: string,
+    input: { kind: IdentifierKind; value: string },
+  ): Promise<{ kind: IdentifierKind; value: string }> {
+    const customer = await this.customers.fullProfile(enterpriseId, refId);
+    if (!customer) throw new AppException(ErrorCode.CustomerNotFound);
+
+    const clean = cleanContact({
+      kind: input.kind,
+      value: input.value,
+      operatesIn:
+        input.kind === IdentifierKind.Email ? [] : await this.businessCountries(enterpriseId),
+    });
+    /* Falls back to the raw string on purpose: removing is matching, and a
+     * value that cannot be cleaned may still be sitting on the record from
+     * before it was cleaned at all. */
+    const value = clean.ok ? clean.contact.canonical : input.value.trim();
+
+    const gone = await this.customers.releaseIdentifier({
+      enterpriseId,
+      customerId: customer.id,
+      identifierKind: input.kind,
+      identifierValue: value,
+    });
+    if (!gone) throw new AppException(ErrorCode.ContactNotFound);
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Customer,
+      entityId: customer.id,
+      enterpriseId,
+      status: AuditStatus.Success,
+      metadata: { kind: input.kind, removed: value },
+    });
+
+    return { kind: input.kind, value };
   }
 }
 

@@ -1,11 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import { InboxService } from '@/modules/inbox/inbox.service';
+import type { CustomerRepository } from '@/database/repositories/customer.repository';
 import { ChatbotService } from '@/modules/inbox/chatbot.service';
 import { RequestContext } from '@/shared/context';
 import { ErrorCode } from '@/shared/errors';
 import type { ChatService } from '@/modules/ai/chat.service';
 import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
 import type { MessageRepository } from '@/database/repositories/message.repository';
+
+/** Nobody waiting, nothing resolved — the ordinary state. */
+function noAssistantState(): CustomerRepository {
+  return {
+    assistantState: vi.fn().mockResolvedValue({
+      needsHuman: false,
+      needsHumanReason: null,
+      needsHumanSince: null,
+      resolvedAt: null,
+      paused: false,
+      resumesAt: null,
+    }),
+  } as unknown as CustomerRepository;
+}
 
 /**
  * The regression that stopped the first automatic reply ever sent.
@@ -171,7 +186,17 @@ describe('which door the chatbot uses', () => {
       latestAssistantSummary: vi.fn().mockResolvedValue(null),
     } as unknown as MessageRepository;
     return {
-      chatbot: new ChatbotService(inbox as never, brief, messages, chat),
+      /* No tool is ever asked for in these cases, so a runner that would
+       * throw if reached is the right stub: it proves the path is not
+       * entered rather than quietly standing in for one. */
+      chatbot: new ChatbotService(
+        inbox as never,
+        brief,
+        messages,
+        chat,
+        noTools(),
+        noAssistantState(),
+      ),
       inbox,
     };
   }
@@ -200,3 +225,19 @@ describe('which door the chatbot uses', () => {
     expect(inbox.readThread).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A runner that must not be reached.
+ *
+ * These cases are about the window and the context, and none of their
+ * fixtures asks for a tool — so a stub that throws proves the loop was not
+ * entered, where a stub returning something would hide a reply that asked
+ * for one by accident.
+ */
+function noTools() {
+  return {
+    run: () => {
+      throw new Error('no tool should have been asked for here');
+    },
+  } as never;
+}

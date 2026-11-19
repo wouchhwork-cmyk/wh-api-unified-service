@@ -6,6 +6,7 @@ import { TransactionManager } from '@/database/transaction/transaction.manager';
 import { AuditAction, AuditEntityType } from '@/shared/enums';
 import {
   SUPPORTED_CURRENCIES,
+  SUPPORTED_COUNTRIES,
   SUGGESTED_LINK_LABELS,
   SUPPORTED_TIMEZONES,
   type UpdateBusinessSettingsInput,
@@ -36,6 +37,13 @@ export interface EnterpriseSummary {
   readonly timezone: string | null;
   /** NULL = this business has not chosen one yet. */
   readonly currencyCode: string | null;
+  /**
+   * Where the business operates, ISO 3166-1 alpha-2.
+   *
+   * NEVER NULL, unlike the two above: it decides what a bare phone number
+   * means, and there is no safe reading of "no country".
+   */
+  readonly country: string;
   readonly status: string;
 }
 
@@ -70,11 +78,14 @@ export class EnterprisesService {
   settingsOptions(): {
     timezones: readonly string[];
     currencies: readonly string[];
+    /* Named as well as coded: "IN" is not something somebody scans a list for. */
+    countries: readonly { code: string; name: string }[];
     linkLabels: readonly string[];
   } {
     return {
       timezones: SUPPORTED_TIMEZONES,
       currencies: SUPPORTED_CURRENCIES,
+      countries: SUPPORTED_COUNTRIES,
       /*
        * SUGGESTIONS, unlike the two above, and the difference is worth saying
        * out loud: a timezone outside that list is REFUSED, a link label
@@ -120,6 +131,9 @@ export class EnterprisesService {
         changes: {
           timezone: { from: before.timezone, to: updated.timezone },
           currencyCode: { from: before.currencyCode, to: updated.currencyCode },
+          /* Worth a trail of its own: changing it changes what every bare
+           * phone number recorded afterwards is taken to mean. */
+          country: { from: before.country, to: updated.country },
           /* Recorded whether or not it moved, like the other two: "it was not
            * changed in this edit" is part of what an audit row answers. */
           displayName: { from: before.displayName, to: updated.displayName },
@@ -158,6 +172,7 @@ export class EnterprisesService {
         snapshot: {
           timezone: updated.timezone,
           currencyCode: updated.currencyCode,
+          country: updated.country,
           displayName: updated.displayName,
           about: updated.about,
           links: updated.links,
@@ -177,6 +192,7 @@ export class EnterprisesService {
         slug: updated.slug,
         timezone: updated.timezone,
         currencyCode: updated.currencyCode,
+        country: updated.country,
         status: updated.status,
       };
     });
@@ -202,6 +218,7 @@ export class EnterprisesService {
       slug: enterprise.slug,
       timezone: enterprise.timezone,
       currencyCode: enterprise.currencyCode,
+      country: enterprise.country,
       status: enterprise.status,
     };
   }

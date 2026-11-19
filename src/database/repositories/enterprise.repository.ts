@@ -52,6 +52,9 @@ export class EnterpriseRepository extends BaseRepository {
     input: {
       timezone: string | null;
       currencyCode: string | null;
+      /* ISO 3166-1 alpha-2. Required: see the contract for why it has no
+       * null. It decides what a bare phone number means. */
+      country?: string | undefined;
       /** Absent = leave it alone. `null` = clear it. The two differ. */
       displayName?: string | null | undefined;
       about?: string | null | undefined;
@@ -67,6 +70,9 @@ export class EnterpriseRepository extends BaseRepository {
       {
         timezone: input.timezone,
         currencyCode: input.currencyCode,
+        /* Spread in on the same terms as the optional fields below: a caller
+         * that says nothing about the country leaves it alone. */
+        ...(input.country !== undefined ? { country: input.country } : {}),
         /*
          * OMITTED RATHER THAN SET TO UNDEFINED. TypeORM treats a key holding
          * `undefined` as "do not touch", which happens to be the behaviour
@@ -104,6 +110,22 @@ export class EnterpriseRepository extends BaseRepository {
       [id],
     );
     return rows[0]?.status ?? null;
+  }
+
+  /**
+   * The business's own country, as ISO 3166-1 alpha-2.
+   *
+   * ONE COLUMN, for the same reason `statusById` is one column: this is read
+   * on a reply path to settle what country a bare national number belongs to,
+   * and hydrating a whole business row to read two characters would be a
+   * strange thing to do on every phone number a customer types.
+   */
+  async countryById(id: number): Promise<string | null> {
+    const rows = await this.query<{ country: string }>(
+      `SELECT country FROM enterprises WHERE id = $1 AND is_deleted = false LIMIT 1`,
+      [id],
+    );
+    return rows[0]?.country ?? null;
   }
 
   async findById(id: number): Promise<Enterprise | null> {

@@ -3,6 +3,9 @@ import { InjectPinoLogger, type PinoLogger } from 'nestjs-pino';
 import { AuditService } from '@/modules/audit/audit.service';
 import { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
 import { MessageRepository } from '@/database/repositories/message.repository';
+import { CustomerRepository } from '@/database/repositories/customer.repository';
+import { promisedAPerson } from './promised-a-person';
+import { reconcileNotes } from './running-notes';
 import {
   AssistantReplyRepository,
   type ClaimedReply,
@@ -29,6 +32,15 @@ const Skip = {
   WaitingForMedia: 'waiting_for_media',
   /** The model read it and decided nothing needed saying. */
   NothingToSay: 'nothing_to_say',
+  /**
+   * A colleague has this customer and the assistant is to be quiet.
+   *
+   * ITS OWN REASON, not folded into Closed. "We deliberately said nothing
+   * because a person is handling it" and "the thread is shut" are different
+   * facts, and somebody reading the audit a week later needs to tell them
+   * apart — one is the feature working, the other may be a bug.
+   */
+  Paused: 'automation_paused_for_customer',
 } as const;
 
 type SkipReason = (typeof Skip)[keyof typeof Skip];
@@ -76,6 +88,8 @@ export class AutoReplyService {
     private readonly media: MediaAnalysisService,
     private readonly replies: AssistantReplyRepository,
     private readonly audit: AuditService,
+    /* For the one flag that makes a handoff finishable. See where it is set. */
+    private readonly customers: CustomerRepository,
     @InjectPinoLogger(AutoReplyService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -222,6 +236,25 @@ export class AutoReplyService {
     }
 
     /*
+     * A COLLEAGUE IS TALKING TO THIS PERSON. Checked before anything is
+     * drafted, because the point of a pause is that nothing is sent — and a
+     * draft that is paid for and thrown away is a bill for silence.
+     *
+     * BEFORE THE OVERTAKEN CHECK, deliberately: a colleague typing replies
+     * by hand is exactly what makes a conversation move on, so the two would
+     * race and the audit would record whichever won rather than the reason
+     * that mattered.
+     */
+    if (context.automationPaused) {
+      await this.record(enterpriseId, messageId, AuditStatus.Success, {
+        skipped: Skip.Paused,
+        conversationRefId: context.conversationRefId,
+      });
+      await this.replies.markSkipped(claimed.id, leaseOwner, Skip.Paused);
+      return;
+    }
+
+    /*
      * SOMEBODY ELSE GOT THERE FIRST. An agent may have answered while this
      * was queued, or the customer may have sent three more messages. Either
      * way this message is no longer the end of the conversation, and
@@ -330,6 +363,43 @@ export class AutoReplyService {
     }
 
     /*
+     * WHICH NOTES TO KEEP — the model's new ones, or the ones it was given.
+     *
+     * The notes are the only memory of anything older than the window, so a
+     * reply that rewrites them badly does not lose a turn, it deletes
+     * history. Watched on gpt-6-luna: 62 anchored message ids handed in,
+     * one handed back. See `reconcileNotes` for why the test is the ids and
+     * not the length — compaction is legitimate and forgetting is not.
+     *
+     * READ FRESH rather than taken from the draft: this is the authority
+     * for what was last stored, and the draft was assembled before the
+     * model answered.
+     */
+    const previousNotes = await this.messages.latestAssistantSummary(
+      enterpriseId,
+      context.conversationId,
+    );
+    const notes = reconcileNotes(
+      previousNotes?.summary ?? null,
+      draft.summary,
+      /* Anything read back out of an older reply this turn, folded in here
+       * rather than left to the model to remember. */
+      draft.recoveredNotes ?? [],
+    );
+    if (notes.collapsed) {
+      this.logger.warn(
+        {
+          enterpriseId,
+          conversationRefId: context.conversationRefId,
+          idsBefore: notes.idsBefore,
+          idsAfter: notes.idsAfter,
+          model: draft.model,
+        },
+        'the reply tried to drop most of its own notes; kept the previous ones',
+      );
+    }
+
+    /*
      * WHAT WROTE IT, carried into both the message row and the audit row the
      * send path writes. One object, one source: a trail that says `system`
      * without naming the model and the instruction version answers "not a
@@ -369,7 +439,11 @@ export class AutoReplyService {
        * they cost is a question for the model_calls ledger, not for a slice
        * that silently deletes the middle of a sentence.
        */
-      ...(draft.summary ? { summary: draft.summary } : {}),
+      ...(notes.notes ? { summary: notes.notes } : {}),
+      /* Said in the record, because a reply whose notes were refused is a
+       * reply that tried to forget the conversation — and that is worth
+       * being able to count rather than infer. */
+      ...(notes.collapsed ? { notesCollapsed: true } : {}),
       /*
        * WHICH CALL PRODUCED IT, so "why did it say that" is a link from the
        * message rather than a hunt through a list. The prompt itself is
@@ -420,7 +494,66 @@ export class AutoReplyService {
       'assistant replied automatically',
     );
 
-    if (draft.handoff) {
+    /*
+     * A PROMISE THE MODEL FORGOT TO RECORD IS STILL A PROMISE.
+     *
+     * Watched live: "Hello! A colleague will be with you shortly to help
+     * sort this out." went out with `handoff` null. The customer was told
+     * somebody was coming; the system recorded that nobody was needed; no
+     * flag appeared in any inbox, and nobody was ever going to arrive.
+     *
+     * The prompt forbids this and lost — as it lost on the opposite case,
+     * where a handoff was set and the promise then repeated forever. Both
+     * are the sentence and the field disagreeing, so the agreement is
+     * enforced here rather than asked for.
+     *
+     * RAISED RATHER THAN STRIPPED. Those words have already been sent and
+     * the business now owes that person a colleague whatever the model
+     * meant by it. A flag somebody glances at and clears costs a moment;
+     * the other way round, the customer waits for somebody who was never
+     * told.
+     */
+    const promised = promisedAPerson(draft.text);
+    const handoffReason =
+      draft.handoff ??
+      (promised
+        ? 'the assistant told them a colleague would be in touch without flagging it'
+        : null);
+
+    if (handoffReason) {
+      /*
+       * RAISED AS STATE, not only as a log line.
+       *
+       * This used to be a warning and nothing else, which meant a handoff
+       * could not be seen, acted on or ended. The assistant would promise a
+       * colleague, nobody could tell it one had come, and it promised the
+       * same colleague again on the next message, and the next. A flag a
+       * person can clear is what makes the promise finishable.
+       *
+       * FAILURE HERE DOES NOT FAIL THE REPLY. The customer has already been
+       * answered; losing the flag is bad and is not a reason to make a
+       * delivered reply look like a failed one.
+       */
+      if (context.customerId !== null && context.channelId !== null) {
+        await this.customers
+          .setNeedsHuman({
+            enterpriseId,
+            customerId: context.customerId,
+            /* Against THIS inbox. A handoff raised on one account says
+             * nothing about the other accounts they also write to. */
+            channelId: context.channelId,
+            needsHuman: true,
+            reason: handoffReason.slice(0, 500),
+            messageId,
+          })
+          .catch((error: unknown) => {
+            this.logger.error(
+              { err: error, enterpriseId, messageId },
+              'could not record that this customer needs a person',
+            );
+          });
+      }
+
       /*
        * WARN, because this one has a person waiting at the end of it. The
        * assistant has answered and said a colleague will follow up; from
@@ -431,7 +564,11 @@ export class AutoReplyService {
           enterpriseId,
           conversationRefId: context.conversationRefId,
           messageRefId: sent.messageRefId,
-          reason: draft.handoff,
+          reason: handoffReason,
+          /* Said apart from the reason: a promise it did not flag is a
+           * different event from a handoff it asked for, and somebody
+           * reading these later needs to count them separately. */
+          promisedWithoutFlagging: draft.handoff === null && promised,
         },
         'assistant asked for a person to take this conversation over',
       );
@@ -579,6 +716,45 @@ export class AutoReplyService {
    * IT NEVER RAISES. This runs because something already went wrong; a
    * failure here would replace a recorded fault with an unrecorded one.
    */
+  /**
+   * Puts an automatic apology in front of a person.
+   *
+   * THE REASON IS WRITTEN FOR A COLLEAGUE, not a customer: it says the
+   * assistant never answered and names what stopped it, because "the model
+   * timed out" and "it refused to help" need completely different follow-up
+   * and only one of them is the customer's problem.
+   *
+   * SWALLOWS ITS OWN FAILURES. The apology has already been sent; losing
+   * the flag is bad, and turning a delivered message into a failed attempt
+   * is worse — the worker would send a second apology on top of the first.
+   */
+  private async flagFallbackForAPerson(
+    enterpriseId: number,
+    messageId: number,
+    reason: string | null,
+  ): Promise<void> {
+    try {
+      const context = await this.messages.assistantContextFor(enterpriseId, messageId);
+      if (!context?.customerId || context.channelId === null) return;
+
+      await this.customers.setNeedsHuman({
+        enterpriseId,
+        customerId: context.customerId,
+        channelId: context.channelId,
+        needsHuman: true,
+        reason: `the assistant could not answer and an automatic apology was sent instead${
+          reason ? ` — ${reason}` : ''
+        }. Nobody has looked at what they asked.`.slice(0, 500),
+        messageId,
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, enterpriseId, messageId },
+        'sent the fallback but could not flag it for a person',
+      );
+    }
+  }
+
   private async sendFallback(
     enterpriseId: number,
     messageId: number,
@@ -606,6 +782,24 @@ export class AutoReplyService {
         internalNote: false,
         assistant: { fallback: true, inReplyToMessageId: messageId },
       });
+      /*
+       * AN APOLOGY IS A PROMISE TOO, so somebody has to be told.
+       *
+       * The fallback says "I'll get back to you shortly" in the business's
+       * name, and until now that went to a log line and nowhere else: the
+       * customer was left waiting on an undertaking nobody was tracking,
+       * and the only trace was a WARN in a file.
+       *
+       * Watched tonight — four of these went out across a provider
+       * slowdown and a rate limit, every one of them a person told they
+       * would be got back to, and no queue anywhere containing them.
+       *
+       * RESOLVED HERE rather than threaded through both call sites: this
+       * is the rare failure path, so one extra lookup costs nothing and
+       * keeps the callers as they are.
+       */
+      await this.flagFallbackForAPerson(enterpriseId, messageId, reason);
+
       await this.record(enterpriseId, messageId, AuditStatus.Failure, {
         skipped: Skip.Failed,
         fallbackSent: true,

@@ -22,6 +22,31 @@ export const FieldKind = {
   Text: 'string',
   OptionalText: 'string | null',
   Flag: 'boolean',
+  /**
+   * A nested object, or null.
+   *
+   * ADDED FOR TOOL CALLS, where the arguments are a shape of their own and
+   * every alternative is worse. A JSON string inside a JSON string makes a
+   * model escape quotes twice and it gets the second level wrong often
+   * enough to matter; a flat prefix per argument turns every new tool into a
+   * contract change. This keeps the asking and the reading in one place,
+   * which is the whole reason this file exists.
+   *
+   * Passed through UNVALIDATED by `readContract` on purpose: what belongs
+   * inside depends on which tool was named, and that is a decision the
+   * registry makes with the tool's own shape in hand.
+   */
+  Json: 'object | null',
+  /**
+   * A whole number, or null.
+   *
+   * Added for tool arguments that are counts — "how many messages either
+   * side of this one". Declared rather than taken as text because the
+   * BOUNDS are the point: a count a model picks is a count that can be 500,
+   * and the difference between asking for text and asking for a number is
+   * where that gets caught.
+   */
+  Count: 'number | null',
 } as const;
 
 export type FieldKind = (typeof FieldKind)[keyof typeof FieldKind];
@@ -50,7 +75,13 @@ export type ContractShape = Readonly<Record<string, ContractField>>;
 
 /** A read of one answer: every declared field, typed by the kind declared. */
 export type ContractValues<S extends ContractShape> = {
-  readonly [K in keyof S]: S[K]['kind'] extends typeof FieldKind.Flag ? boolean : string | null;
+  readonly [K in keyof S]: S[K]['kind'] extends typeof FieldKind.Flag
+    ? boolean
+    : S[K]['kind'] extends typeof FieldKind.Json
+      ? Record<string, unknown> | null
+      : S[K]['kind'] extends typeof FieldKind.Count
+        ? number | null
+        : string | null;
 };
 
 /**
@@ -105,11 +136,19 @@ export function readContract<S extends ContractShape>(
   const object = objectIn(text);
   if (!object) return null;
 
-  const values: Record<string, string | boolean | null> = {};
+  const values: Record<string, string | boolean | number | Record<string, unknown> | null> = {};
   for (const [name, field] of Object.entries(shape)) {
     const raw = object[name];
     if (field.kind === FieldKind.Flag) {
       values[name] = typeof raw === 'boolean' ? raw : (field.whenMissing ?? true);
+      continue;
+    }
+    if (field.kind === FieldKind.Json) {
+      values[name] = objectOrNull(raw);
+      continue;
+    }
+    if (field.kind === FieldKind.Count) {
+      values[name] = countOrNull(raw);
       continue;
     }
     values[name] = textOrNull(raw);
@@ -139,6 +178,34 @@ function objectIn(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A nested object, or null for anything else.
+ *
+ * An ARRAY is not an object here. A model handed "an object or null" will
+ * occasionally send `[]`, and `typeof [] === 'object'` would let it through
+ * to a caller reading named keys off it — which finds nothing and reports no
+ * arguments rather than a malformed answer.
+ */
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * A whole number, or null.
+ *
+ * A NUMERIC STRING COUNTS. Asked for a number a model will send `"3"` often
+ * enough that refusing it would be refusing a correct answer over quoting.
+ * Anything that is not finite is null rather than NaN, which would survive
+ * every comparison downstream and fail none of them.
+ */
+function countOrNull(value: unknown): number | null {
+  const parsed =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value.trim()) : NaN;
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
 }
 
 function textOrNull(value: unknown): string | null {

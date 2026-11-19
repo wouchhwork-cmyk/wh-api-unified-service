@@ -234,19 +234,25 @@ export class GeminiClient implements ChatProvider {
     const { timeoutMs, storeInteractions, model } = this.config.gemini;
     const chosenModel = request.model?.trim() || model;
 
+    /*
+     * BUILT ONCE AND SENT, so the captured request is the object that
+     * actually went out rather than a second one assembled to look like it.
+     */
+    const body = {
+      model: chosenModel,
+      store: storeInteractions,
+      /*
+       * Gemini has no separate chat budget of its own: the cap is the
+       * chat feature's, because what bounds a reply is how long a reply
+       * should be, not whose model wrote it.
+       */
+      input: [{ type: 'text', text: renderTranscript(request) }],
+    };
+
     let raw: unknown;
     try {
       raw = await withDeadline(
-        ai.interactions.create({
-          model: chosenModel,
-          store: storeInteractions,
-          /*
-           * Gemini has no separate chat budget of its own: the cap is the
-           * chat feature's, because what bounds a reply is how long a reply
-           * should be, not whose model wrote it.
-           */
-          input: [{ type: 'text', text: renderTranscript(request) }],
-        } as never),
+        ai.interactions.create(body as never),
         timeoutMs,
         () =>
           new ChatError(
@@ -272,6 +278,7 @@ export class GeminiClient implements ChatProvider {
 
     const usage = this.usageOf(raw);
     return {
+      ...(request.captureWire ? { wire: { request: body, response: raw } } : {}),
       text,
       usage: {
         ...usage,

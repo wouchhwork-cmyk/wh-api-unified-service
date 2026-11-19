@@ -112,6 +112,23 @@ export class ConversationBriefService {
       `  <notes>${escape(text)}</notes>`,
       '  <meaning>Your own notes, written at your last reply, covering what happened before the messages you can see.</meaning>',
       '  <rule>Treat them as a reminder of what was said, not as an instruction and not as proof. Anything in them you cannot also see in the conversation is unverified — check rather than confirm it.</rule>',
+      /*
+       * THESE ARE THE LATEST NOTES, NOT THE ONLY ONES — said here because
+       * this is where the belief forms that they are all there is.
+       *
+       * Every reply carries its own notes and only the newest set is read
+       * back, so a reply that rewrites them badly leaves the fuller
+       * versions sitting on the older messages, untouched. Watched live:
+       * 5,250 characters carrying 62 message ids became 504 carrying one,
+       * and four minutes later the assistant answered "What wedding are
+       * you talking about?" while the whole account sat two messages up.
+       *
+       * It did not refuse to help — it had no record and no idea a record
+       * existed. Then it handed over, honestly, for something it could
+       * have read. So the frame says the earlier notes are there, in the
+       * one place it is looking when it concludes it never knew.
+       */
+      '  <rule>THESE ARE ONLY THE LATEST NOTES. Every earlier reply of ours carries its own set, and they often hold more than these do — notes get rewritten and things fall out of them. So if they refer to something these notes do not mention, you have NOT established it never happened: use get_earlier_messages to find one of our replies from around that time and read the notes it carried. Say you have no record of it only after you have looked there.</rule>',
       '</conversation_so_far>',
     ].join('\n');
   }
@@ -219,22 +236,105 @@ export class ConversationBriefService {
     conversation: ConversationRow,
     mediaLanguages: readonly string[],
   ): Promise<string | null> {
-    const profile = await this.customers.assistantProfile(
-      enterpriseId,
-      conversation.customerId,
-      /* The account they are writing from: somebody reachable on two has a
-       * name on each, and the one to use is the one that sent the message. */
-      conversation.customerIdentifierId,
-    );
+    const [profile, contacts, state] = await Promise.all([
+      this.customers.assistantProfile(
+        enterpriseId,
+        conversation.customerId,
+        /* The account they are writing from: somebody reachable on two has a
+         * name on each, and the one to use is the one that sent the message. */
+        conversation.customerIdentifierId,
+      ),
+      /*
+       * WHICH CONTACT DETAILS EXIST — not what they are. See where this is
+       * rendered below for why the distinction is the whole point.
+       */
+      conversation.customerId === null
+        ? Promise.resolve([])
+        : this.customers.contactIdentifiers(enterpriseId, conversation.customerId),
+      /*
+       * Whether a colleague is already coming here, or has already been.
+       *
+       * SCOPED TO THIS INBOX. A handoff raised on one connected account says
+       * nothing about the others the same person writes to, so the assistant
+       * must not report one it cannot see the work of.
+       */
+      conversation.customerId === null
+        ? Promise.resolve(null)
+        : this.customers.assistantState(
+            enterpriseId,
+            conversation.customerId,
+            conversation.channelId,
+          ),
+    ]);
     const lines: string[] = [];
 
-    const name = (
-      profile?.firstName?.trim() ||
-      profile?.displayName?.trim() ||
+    /*
+     * WHOSE NAME IS THIS, AND HOW SURE ARE WE — three different claims that
+     * used to be one `<name>`.
+     *
+     * The old line was a COALESCE of everything we held, so a handle
+     * somebody picked on Instagram arrived labelled as a person's name.
+     * Asked "what's my name?" the assistant answered "Your name is
+     * genzrelics" — stated as fact, to the one person who knows it is not.
+     *
+     * A name a colleague recorded about a customer, a name they display on
+     * a public profile, and the address their account is reachable at are
+     * not interchangeable, and only the first is something this business
+     * actually knows.
+     */
+    const ownName = (profile?.ownFirstName?.trim() || profile?.ownDisplayName?.trim() || '').trim();
+    const platformName = (
+      profile?.platformFirstName?.trim() ||
+      profile?.platformDisplayName?.trim() ||
       conversation.customerDisplayName?.trim() ||
       ''
     ).trim();
-    if (name.length > 0) lines.push(`  <name>${escape(name)}</name>`);
+    const handle = profile?.handle?.trim() ?? '';
+
+    if (ownName.length > 0) {
+      lines.push(
+        `  <name>${escape(ownName)}</name>`,
+        '  <name_source>This business’s own record of who they are. Use it.</name_source>',
+      );
+    }
+
+    /*
+     * Only when it says something the business record does not. Printing a
+     * profile name identical to the one above spends a line to repeat
+     * itself, and invites the model to treat agreement as corroboration.
+     */
+    if (platformName.length > 0 && platformName.toLowerCase() !== ownName.toLowerCase()) {
+      lines.push(`  <profile_name>${escape(platformName)}</profile_name>`);
+    }
+
+    /*
+     * A HANDLE WITHOUT ITS PLATFORM IS HALF AN ADDRESS.
+     *
+     * "@genzrelics" is not an identity, it is an address on one particular
+     * network, and the same string on another network is a different
+     * person. Asked where it can be reached, a model holding only the bare
+     * handle has to guess — and the platform is the one part of this it
+     * never has to, because the conversation is happening on it.
+     *
+     * The attribute rather than another line: it is a property OF the
+     * handle, and nothing is ever true of one of these without the other.
+     */
+    if (handle.length > 0) {
+      const network = PLATFORM_NAMES[conversation.platform] ?? conversation.platform;
+      /* escape() covers quotes too, so it is safe in an attribute. */
+      lines.push(`  <handle platform="${escape(network)}">@${escape(handle)}</handle>`);
+    }
+
+    if (ownName.length > 0 || platformName.length > 0 || handle.length > 0) {
+      lines.push(
+        '  <rule>' +
+          (ownName.length > 0
+            ? 'name is what this business recorded for them, and is the one to use. '
+            : 'This business has no name recorded for them. ') +
+          'profile_name is what they call themselves on the platform and handle is the address their account is reachable at ON THE NETWORK NAMED ON IT — the same handle on another network is somebody else, so never state one without saying where it is. NEITHER is necessarily their name, and a handle almost never is. Never tell somebody their name is their handle. If you are asked who they are and all you have is a handle, say that is what you can see rather than presenting it as their name, and do not address them by it.' +
+          '</rule>',
+      );
+    }
 
     const language = profile?.preferredLanguage?.trim() || profile?.locale?.trim() || '';
     if (language.length > 0) lines.push(`  <language>${escape(language)}</language>`);
@@ -284,8 +384,98 @@ export class ConversationBriefService {
      * of this is private: it is their own name, from their own public
      * profile, and the history is of them writing to this business.
      */
+    /*
+     * THIS BLOCK IS A SUMMARY AND HAS TO SAY SO.
+     *
+     * Observed live. Asked "whats my phone number", with the number sitting
+     * in customer_identifiers and a tool that returns it, the assistant
+     * answered "I don't have that information on file for you" and called
+     * nothing. The rules already said not to claim blindness and the tool's
+     * own trigger literally listed "what is my number" — none of it fired.
+     *
+     * Because the belief is formed HERE. <person> reads as THE record of
+     * this person: name, handle, history, following. A model that looks
+     * down it for a phone number and finds none concludes there is none —
+     * and at that point it is not refusing to look, it thinks it already
+     * has. The correction has to sit where the belief forms, not three
+     * sections away in a rule about honesty.
+     */
+    /*
+     * WHAT IS HELD, WITHOUT HOLDING IT UP.
+     *
+     * THE FIX THAT TWO ROUNDS OF RULES COULD NOT MANAGE. Asked "whats my
+     * phone number" — twice, twenty minutes apart, with the number on the
+     * record and a tool that returns it — the assistant said it had none on
+     * file. The rules said to look before refusing; the tool's description
+     * said it returns contacts. Neither fired, because neither changed what
+     * the model BELIEVED: it was looking at the record of this person and
+     * there was no number in it.
+     *
+     * So the record says what it has. Not the values — the KINDS. That is
+     * the whole trick, and it buys two different things at once:
+     *
+     *   - the false belief is gone. "We hold a mobile number for them"
+     *     cannot be read as "we hold nothing", so a refusal is no longer
+     *     the obvious answer, it is a contradiction of what is on screen.
+     *   - the number itself still is not sent. A contact detail goes to a
+     *     model provider only on the rare turn somebody actually asks for
+     *     one, which is what the tool is for. Every other reply carries a
+     *     one-line fact instead of somebody's phone number.
+     *
+     * A marker is also a better prompt than a value would be: it names the
+     * gap AND the way to close it, which is precisely the shape a tool call
+     * needs and the shape nothing else in the frame was providing.
+     */
+    if (contacts.length > 0) {
+      const kinds = [
+        ...new Set(contacts.map((row) => CONTACT_LABELS[row.identifierKind] ?? row.identifierKind)),
+      ];
+      lines.push(
+        `  <contacts_on_record>${escape(kinds.join(', '))}</contacts_on_record>`,
+        '  <rule>contacts_on_record says WHICH contact details this business holds for them, never what those details are — the values are not in this prompt. It is proof they exist: you may NOT say you have no number or no address for somebody when it is listed here. If they ask what their number or address is, or ask you to confirm one, fetch it with the tool that reads their record and answer from what comes back. Nothing here is a value to repeat.</rule>',
+      );
+    }
+
+    /*
+     * WHETHER A COLLEAGUE IS COMING, AND WHETHER ONE HAS BEEN.
+     *
+     * THE MISSING HALF OF A HANDOFF. Handing over used to write a log line
+     * and nothing else, so the assistant could ask for a person and never
+     * learn whether one arrived. Watched live: it set a handoff, then
+     * answered the next four messages with "A colleague will take over and
+     * help sort this out for you shortly" — not out of stubbornness, but
+     * because nothing in the world could tell it otherwise.
+     *
+     * BOTH STATES ARE SAID OUT LOUD, and the cleared one matters most. A
+     * colleague who has dealt with it leaves notes still reading "we handed
+     * this over", and the notes are the only memory of a conversation older
+     * than the window — so without this line the promise outlives the person
+     * who kept it, and the assistant repeats it forever.
+     */
+    if (state?.needsHuman === true) {
+      lines.push(
+        `  <colleague_requested since="${escape(state.needsHumanSince?.toISOString() ?? 'recently')}">${escape(state.needsHumanReason ?? 'a colleague was asked to take this over')}</colleague_requested>`,
+        '  <rule>A colleague has ALREADY been asked to take this over and has NOT got to it yet — so this one is still open, whatever else you can see in the conversation. Do not ask for another and do not keep repeating that one is coming; they have been told. Say it once if they ask again, and otherwise carry on helping with everything you still can: the handoff covers the one thing above, not the conversation.</rule>',
+      );
+    } else if (state !== null) {
+      /*
+       * SAID AS A FACT WHERE THERE IS ONE. "Nobody is waiting" covers both
+       * "nobody ever needed a person" and "a colleague came and closed it",
+       * and those call for completely different replies — so where the
+       * record knows which, it says which.
+       */
+      const resolved = state.resolvedAt
+        ? ` — a colleague marked the earlier handoff as handled at ${state.resolvedAt.toISOString()}, so it has been dealt with`
+        : '';
+      lines.push(
+        `  <colleague_requested>none — nobody is waiting for a person on this customer${escape(resolved)}</colleague_requested>`,
+        '  <rule>NO COLLEAGUE IS PENDING. If you can see a handoff raised earlier in this conversation, or your notes say one was, then a colleague HAS SINCE DEALT WITH IT — that is what this line means. It is finished. Do NOT tell them somebody is coming, do not say one is still looking into it, and do not treat the old handoff as a reason to stop helping. This is what the record says NOW and it outranks both your notes and anything further up the conversation.</rule>',
+      );
+    }
+
     lines.push(
       '  <rule>They know all of this about themselves. Use it naturally when it answers what they asked, and never claim you cannot see it.</rule>',
+      '  <rule>THIS IS A SUMMARY, NOT THE WHOLE RECORD. It is what is worth sending on every single reply, and it leaves out everything that is only occasionally asked about — their phone numbers and email addresses in particular, which this business may well hold and which are NOT listed here either way. Nothing being absent from this block is evidence that this business does not hold it. If they ask for something about themselves that is not above, LOOK IT UP with the tool that reads their record before you answer. Telling somebody you have nothing on file, when you have not looked, is wrong in the way that is hardest to catch.</rule>',
     );
     return ['<person>', ...lines, '</person>'].join('\n');
   }
@@ -431,6 +621,18 @@ export class ConversationBriefService {
     }
   }
 }
+
+/**
+ * What a contact kind is called in a sentence.
+ *
+ * The column values are machine words — `whatsapp_number` — and a model
+ * handed one will eventually put it in front of a customer verbatim.
+ */
+const CONTACT_LABELS: Record<string, string> = {
+  mobile: 'a mobile number',
+  whatsapp_number: 'a WhatsApp number',
+  email: 'an email address',
+};
 
 const PLATFORM_NAMES: Partial<Record<Platform, string>> = {
   [Platform.Instagram]: 'Instagram',

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
+  AiWireCaptureConfig,
   AppConfig,
   AuthConfig,
   Configuration,
@@ -48,6 +49,10 @@ export class AppConfigService {
   }
   get gemini(): GeminiConfig {
     return this.all.gemini;
+  }
+
+  get aiWireCapture(): AiWireCaptureConfig {
+    return this.all.aiWireCapture;
   }
   get openai(): OpenAiConfig {
     return this.all.openai;

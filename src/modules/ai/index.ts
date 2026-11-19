@@ -3,6 +3,7 @@ export * from './gemini.client';
 export * from './gemini.errors';
 export * from './media-analysis.service';
 export * from './chat.service';
+export * from './wire-capture.service';
 export * from './model-router.service';
 export * from './openai.client';
 export * from './ai.provider';

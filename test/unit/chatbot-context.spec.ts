@@ -1,10 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { CustomerRepository } from '@/database/repositories/customer.repository';
 import { ChatbotService } from '@/modules/inbox/chatbot.service';
 import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { ChatService } from '@/modules/ai/chat.service';
 import type { ConversationBriefService } from '@/modules/inbox/conversation-brief.service';
 import type { MessageRepository } from '@/database/repositories/message.repository';
 import { ConversationKind, MediaAnalysisStatus, MessageDirection } from '@/shared/enums';
+
+/** Nobody waiting, nothing resolved — the ordinary state. */
+function resolvedAt(at: Date): CustomerRepository {
+  return {
+    assistantState: vi.fn().mockResolvedValue({
+      needsHuman: false,
+      needsHumanReason: null,
+      needsHumanSince: null,
+      resolvedAt: at,
+      paused: false,
+      resumesAt: null,
+    }),
+  } as unknown as CustomerRepository;
+}
+
+function noAssistantState(): CustomerRepository {
+  return {
+    assistantState: vi.fn().mockResolvedValue({
+      needsHuman: false,
+      needsHumanReason: null,
+      needsHumanSince: null,
+      resolvedAt: null,
+      paused: false,
+      resumesAt: null,
+    }),
+  } as unknown as CustomerRepository;
+}
 
 /**
  * What the model is shown, which is the whole of this feature.
@@ -31,6 +59,8 @@ function serviceWith(
     analysisByKey: Map<string, unknown>;
   }>,
   answer: Record<string, unknown> = {},
+  /* Only the assistant-state stub varies; everything else is fixed. */
+  over: { customers?: CustomerRepository } = {},
 ) {
   const inbox = {
     readThread: vi.fn().mockResolvedValue({
@@ -74,7 +104,14 @@ function serviceWith(
   });
   const chat = { reply } as unknown as ChatService;
   return {
-    service: new ChatbotService(inbox, brief, messages, chat),
+    service: new ChatbotService(
+      inbox,
+      brief,
+      messages,
+      chat,
+      noTools(),
+      over.customers ?? noAssistantState(),
+    ),
     reply,
     build,
     latestAssistantSummary,
@@ -537,5 +574,64 @@ describe('repairing the ids in its own notes', () => {
     await service.draftReply(1, 'conv-ref');
 
     expect(expandMessageRefs).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A runner that must not be reached.
+ *
+ * These cases are about the window and the context, and none of their
+ * fixtures asks for a tool — so a stub that throws proves the loop was not
+ * entered, where a stub returning something would hide a reply that asked
+ * for one by accident.
+ */
+function noTools() {
+  return {
+    run: () => {
+      throw new Error('no tool should have been asked for here');
+    },
+  } as never;
+}
+
+/**
+ * What a person did, written into the conversation where they did it.
+ *
+ * A colleague marking a handoff handled is an event in this thread as surely
+ * as a message is, and it used to leave no trace the assistant could read —
+ * so the only way to know was to infer it from a flag being absent elsewhere
+ * in the frame. It inferred wrong, repeatedly, and went on promising a
+ * colleague who had already been.
+ *
+ * STATED RATHER THAN FETCHED. The service holds this already; making the
+ * model spend a paid round discovering it would be charging for a fact we
+ * have in hand.
+ */
+describe('a colleague closing a handoff', () => {
+  it('says so in the conversation itself', async () => {
+    const { service, reply } = serviceWith(
+      {},
+      {},
+      {
+        customers: resolvedAt(new Date('2026-11-19T18:41:00Z')),
+      },
+    );
+
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { text: string }[];
+    const line = turns.map((turn) => turn.text).join('\n');
+    expect(line).toContain('marked the handoff as handled');
+    expect(line).toContain('do not tell them one is coming');
+  });
+
+  it('says nothing when no handoff was ever closed', async () => {
+    // A customer who never needed a person must not read as one whose
+    // escalation was resolved — that would invent a colleague's work.
+    const { service, reply } = serviceWith({});
+
+    await service.draftReply(1, 'conv-ref');
+
+    const turns = reply.mock.calls[0]?.[0] as { text: string }[];
+    expect(turns.map((turn) => turn.text).join('\n')).not.toContain('marked the handoff');
   });
 });

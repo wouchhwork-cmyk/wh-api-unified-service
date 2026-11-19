@@ -97,6 +97,32 @@ export const TimezoneSchema = z
  */
 export const SUPPORTED_CURRENCIES: readonly string[] = Intl.supportedValuesOf('currency');
 
+/**
+ * Every country a business can say it operates in.
+ *
+ * FROM THE PLATFORM'S OWN REGION DATA rather than a list kept here: the set
+ * of countries changes, and a hand-maintained copy goes stale silently —
+ * the first symptom being a business unable to pick where it actually is.
+ *
+ * SORTED BY NAME, not by code, because that is how somebody scans a picker.
+ */
+export const SUPPORTED_COUNTRIES: readonly { code: string; name: string }[] = (() => {
+  const names = new Intl.DisplayNames(['en'], { type: 'region' });
+  const codes: string[] = [];
+  /* A..Z x A..Z, filtered to the ones the runtime actually names. A code
+   * with no name is a reserved or retired region, not a country. */
+  for (let a = 65; a <= 90; a += 1) {
+    for (let b = 65; b <= 90; b += 1) {
+      const code = String.fromCharCode(a, b);
+      const name = names.of(code);
+      if (name && name !== code) codes.push(code);
+    }
+  }
+  return codes
+    .map((code) => ({ code, name: names.of(code) ?? code }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+})();
+
 const CURRENCIES = new Set(SUPPORTED_CURRENCIES);
 
 /**
@@ -362,6 +388,38 @@ export const UpdateBusinessSettingsSchema = z.strictObject({
    * being handed a default nobody picked.
    */
   currencyCode: CurrencyCodeSchema.nullable(),
+  /**
+   * Where the business operates, as ISO 3166-1 alpha-2.
+   *
+   * SETTABLE HERE BECAUSE IT DECIDES WHAT A PHONE NUMBER IS. "8888888888"
+   * is a valid mobile in several countries and a different person in each,
+   * so something has to supply the missing country — and this is the
+   * business saying it, which is the only answer that is not a guess. It
+   * was set once at signup and nothing could change it afterwards, which
+   * made a business that moved, or got it wrong on the way in, stuck with
+   * numbers read as the wrong country's.
+   *
+   * NOT NULLABLE, unlike timezone and currency. There is no sensible "no
+   * country": without one, every bare number a customer types has to be
+   * refused, so the field always holds the business's own answer.
+   *
+   * ONE COUNTRY, deliberately — see docs/future-implementations.md for the
+   * multi-country design and why currency and timezone have to move with it.
+   */
+  /*
+   * OPTIONAL ON THE WIRE even though the column is not nullable. This body
+   * is a full restatement, and adding a required field to it would reject
+   * every client that has not been updated yet — including the settings
+   * form as it stands. Absent means "I am not changing the country", which
+   * is what every existing caller means.
+   */
+  country: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .length(2)
+    .regex(/^[A-Z]{2}$/, 'expected a two-letter country code such as IN or GB')
+    .optional(),
   /**
    * What the business says about itself, in its own words.
    *

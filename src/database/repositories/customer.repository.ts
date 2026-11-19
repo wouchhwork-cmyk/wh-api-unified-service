@@ -54,6 +54,27 @@ export interface CustomerDirectoryRow {
   readonly lastSeenAt: Date | null;
   readonly status: string;
   readonly isBlocked: boolean;
+  /**
+   * Somebody is waiting for a person on this one.
+   *
+   * ON THE LIST, not only on the record. A flag you have to open thirty
+   * customers to find is a flag nobody acts on.
+   */
+  /**
+   * Waiting for a person on AT LEAST ONE of their inboxes.
+   *
+   * Both switches are per channel; a directory row is per person. A list
+   * answers "is there anything here", and the conversation answers where.
+   */
+  readonly needsHuman: boolean;
+  /**
+   * The assistant is quiet on at least one of their inboxes.
+   *
+   * ON THE LIST for the reason `needsHuman` is: a pause nobody can see is a
+   * pause nobody lifts, and an assistant silently off looks exactly like one
+   * that is broken.
+   */
+  readonly automationPaused: boolean;
 }
 
 /**
@@ -82,8 +103,33 @@ export interface OwnIdentity {
 }
 
 export interface AssistantCustomerRow {
-  readonly displayName: string | null;
-  readonly firstName: string | null;
+  /**
+   * WHERE A NAME CAME FROM, KEPT APART — and this used to be one COALESCE.
+   *
+   * Collapsed, the assistant cannot tell a name this business recorded from
+   * a handle somebody picked on Instagram, so it states a handle as a fact
+   * about a person: asked "what's my name?", it answered "Your name is
+   * genzrelics". That is not their name, nobody told us it was, and the
+   * customer is the one person who knows it is wrong.
+   *
+   * The two are genuinely different claims. Ours was typed by a colleague
+   * about a customer; the platform's is what they call themselves in public,
+   * and the handle is not even that — it is an address.
+   */
+  readonly ownDisplayName: string | null;
+  readonly ownFirstName: string | null;
+  readonly platformDisplayName: string | null;
+  readonly platformFirstName: string | null;
+  /** The @handle on the account this conversation is with. An address. */
+  readonly handle: string | null;
+  /**
+   * What the platform says about them — follows, verified, follower count.
+   *
+   * The raw bag rather than named columns: it is written by whatever last
+   * learned something, a missing key means "we were not told" rather than
+   * "no", and naming them here would make every new signal a migration.
+   */
+  readonly platformMetadata: Record<string, unknown> | null;
   readonly preferredLanguage: string | null;
   readonly locale: string | null;
   readonly conversationCount: number;
@@ -434,7 +480,29 @@ export class CustomerRepository extends BaseRepository {
                   AND cv.customer_id = cu.id
                   AND cv.is_deleted = false)  AS "conversationCount",
               cu.first_seen_at AS "firstSeenAt", cu.last_seen_at AS "lastSeenAt",
-              cu.status, (cu.blocked_at IS NOT NULL) AS "isBlocked"
+              cu.status, (cu.blocked_at IS NOT NULL) AS "isBlocked",
+              /*
+               * WAITING SOMEWHERE, AND QUIET SOMEWHERE. Both switches are per
+               * connected account and a directory row is per person, so these
+               * say only that AT LEAST ONE of their inboxes has a flag on it.
+               * That is what a list is for; which inbox, and the buttons to
+               * do anything about it, live with the conversation.
+               *
+               * EXISTS rather than a join: one row is enough to answer each,
+               * and joining would multiply a customer by their channels.
+               */
+              EXISTS (SELECT 1 FROM customer_assistant_states st
+                       WHERE st.enterprise_id = cu.enterprise_id
+                         AND st.customer_id = cu.id
+                         AND st.needs_human = true
+                         AND st.is_deleted = false) AS "needsHuman",
+              EXISTS (SELECT 1 FROM customer_assistant_states st
+                       WHERE st.enterprise_id = cu.enterprise_id
+                         AND st.customer_id = cu.id
+                         AND st.automation_paused_at IS NOT NULL
+                         AND (st.automation_resumes_at IS NULL
+                              OR st.automation_resumes_at > now())
+                         AND st.is_deleted = false) AS "automationPaused"
          FROM customers cu
          ${platformIdentityJoin({ customer: 'cu', as: 'cpp' })}
         WHERE cu.enterprise_id = $1
@@ -740,12 +808,48 @@ export class CustomerRepository extends BaseRepository {
     customerId: number;
     identifierKind: IdentifierKind;
     identifierValue: string;
+    /**
+     * WHERE IT CAME FROM, and therefore how much it can be trusted.
+     *
+     * Defaulted to what every existing caller means — a handle the platform
+     * handed us, which we saw ourselves. A phone number somebody TYPED IN A
+     * CHAT is a different thing entirely: nobody checked it, the person who
+     * gave it may have mistyped it, and recording it as verified would let
+     * it be used for exactly the things verification is supposed to gate.
+     */
+    source?: IdentifierSource;
+    verification?: IdentifierVerificationStatus;
+    /**
+     * EXACTLY WHAT ARRIVED, when that differs from the canonical form.
+     *
+     * `identifier_value` is the normalised value every index and lookup
+     * uses; this column is what the human actually wrote, kept for display
+     * and for support. They were written from the same variable until a
+     * customer typed "8888 8888 88" in a chat and both columns got it
+     * verbatim — so the stored number matched no lookup, and the raw
+     * column recorded nothing the canonical one did not.
+     *
+     * Absent means the two are the same, which is the ordinary case for a
+     * platform-scoped id.
+     */
+    identifierValueRaw?: string | undefined;
+    /**
+     * The decomposition, for a phone number.
+     *
+     * THE SCHEMA HAS ALWAYS HAD THESE THREE COLUMNS and this method has
+     * always left them null. They are not decoration: +1 covers twenty
+     * territories, so the country is NOT recoverable from the number, and
+     * agents search by the national part because that is how locals write
+     * it. See `normalizeMobile`, which produces all four together.
+     */
+    mobile?: { countryCode: string; callingCode: string; nationalNumber: string } | undefined;
   }): Promise<boolean> {
     const { affected } = await this.mutate(
       `INSERT INTO customer_identifiers
          (enterprise_id, customer_id, identifier_kind, identifier_value, identifier_value_raw,
+          country_code, calling_code, national_number,
           is_primary, verification_status, source, first_seen_at, last_seen_at, status)
-       VALUES ($1, $2, $3, $4, $4, false, $5, $6, now(), now(), 'active')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $10, now(), now(), 'active')
        ON CONFLICT (enterprise_id, identifier_kind, identifier_value)
          WHERE status = 'active' AND is_deleted = false
        DO NOTHING
@@ -758,8 +862,12 @@ export class CustomerRepository extends BaseRepository {
         input.customerId,
         input.identifierKind,
         input.identifierValue,
-        IdentifierVerificationStatus.Verified,
-        IdentifierSource.Platform,
+        input.identifierValueRaw ?? input.identifierValue,
+        input.mobile?.countryCode ?? null,
+        input.mobile?.callingCode ?? null,
+        input.mobile?.nationalNumber ?? null,
+        input.verification ?? IdentifierVerificationStatus.Verified,
+        input.source ?? IdentifierSource.Platform,
       ],
     );
     return affected > 0;
@@ -826,18 +934,496 @@ export class CustomerRepository extends BaseRepository {
     customerIdentifierId: number | null = null,
   ): Promise<AssistantCustomerRow | null> {
     const rows = await this.query<AssistantCustomerRow>(
-      `SELECT COALESCE(cu.display_name, cpp.display_name) AS "displayName",
-              COALESCE(cu.first_name, cpp.first_name) AS "firstName",
+      `SELECT cu.display_name AS "ownDisplayName",
+              cu.first_name AS "ownFirstName",
+              cpp.display_name AS "platformDisplayName",
+              cpp.first_name AS "platformFirstName",
+              handle.identifier_value AS "handle",
+              cpp.metadata AS "platformMetadata",
               cu.preferred_language AS "preferredLanguage", cu.locale,
               cu.conversation_count AS "conversationCount"
          FROM customers cu
          ${platformIdentityJoin({ customer: 'cu', as: 'cpp', preferIdentifier: '$3' })}
+         /*
+          * THE @HANDLE, which is an address rather than a name and has to be
+          * offered as one. Newest first so a rename wins, and only the kinds
+          * that actually hold a handle — an Instagram user id is an opaque
+          * scoped number nobody would ever be called.
+          */
+         LEFT JOIN LATERAL (
+           SELECT ci.identifier_value
+             FROM customer_identifiers ci
+            WHERE ci.enterprise_id = cu.enterprise_id
+              AND ci.customer_id = cu.id
+              AND ci.identifier_kind = ANY($4::varchar[])
+              AND ci.is_deleted = false
+            ORDER BY ci.updated_at DESC, ci.id DESC
+            LIMIT 1
+         ) handle ON true
         WHERE cu.enterprise_id = $1 AND cu.id = $2 AND cu.is_deleted = false
         LIMIT 1`,
-      [this.requireEnterprise(enterpriseId), customerId, customerIdentifierId],
+      [
+        this.requireEnterprise(enterpriseId),
+        customerId,
+        customerIdentifierId,
+        [...HANDLE_IDENTIFIER_KINDS],
+      ],
     );
     return rows[0] ?? null;
   }
+  /**
+   * Everything this business holds about one customer, for somebody
+   * checking it.
+   *
+   * WHOSE EACH FACT IS, kept apart all the way through. The directory
+   * resolves a single name because a list needs one; this is the page
+   * somebody opens to find out whether a name came from a colleague, from
+   * the platform, or from the assistant recording what a customer said —
+   * and collapsing the three is exactly what makes that unanswerable.
+   */
+  async fullProfile(
+    enterpriseId: number,
+    refId: string,
+  ): Promise<{
+    id: number;
+    refId: string;
+    ownDisplayName: string | null;
+    ownFirstName: string | null;
+    ownLastName: string | null;
+    platformDisplayName: string | null;
+    platformFirstName: string | null;
+    platformLastName: string | null;
+    avatarUrl: string | null;
+    platformMetadata: Record<string, unknown> | null;
+    preferredLanguage: string | null;
+    locale: string | null;
+    firstSource: string | null;
+    conversationCount: number;
+    firstSeenAt: Date | null;
+    lastSeenAt: Date | null;
+    status: string | null;
+  } | null> {
+    const rows = await this.query<{
+      id: string;
+      refId: string;
+      ownDisplayName: string | null;
+      ownFirstName: string | null;
+      ownLastName: string | null;
+      platformDisplayName: string | null;
+      platformFirstName: string | null;
+      platformLastName: string | null;
+      avatarUrl: string | null;
+      platformMetadata: Record<string, unknown> | null;
+      preferredLanguage: string | null;
+      locale: string | null;
+      firstSource: string | null;
+      conversationCount: number;
+      firstSeenAt: Date | null;
+      lastSeenAt: Date | null;
+      status: string | null;
+    }>(
+      `SELECT cu.id, cu.ref_id AS "refId",
+              cu.display_name AS "ownDisplayName",
+              cu.first_name AS "ownFirstName",
+              cu.last_name AS "ownLastName",
+              cpp.display_name AS "platformDisplayName",
+              cpp.first_name AS "platformFirstName",
+              cpp.last_name AS "platformLastName",
+              COALESCE(cu.avatar_url, cpp.avatar_url) AS "avatarUrl",
+              cpp.metadata AS "platformMetadata",
+              cu.preferred_language AS "preferredLanguage",
+              cu.locale, cu.first_source AS "firstSource",
+              cu.conversation_count AS "conversationCount",
+              cu.first_seen_at AS "firstSeenAt", cu.last_seen_at AS "lastSeenAt",
+              cu.status
+         FROM customers cu
+         ${platformIdentityJoin({ customer: 'cu', as: 'cpp' })}
+        WHERE cu.enterprise_id = $1 AND cu.ref_id = $2::uuid AND cu.is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), refId],
+    );
+
+    const row = rows[0];
+    return row
+      ? {
+          ...row,
+          id: Number(row.id),
+          conversationCount: Number(row.conversationCount),
+        }
+      : null;
+  }
+
+  /**
+   * Every way this customer is known or reachable, with where it came from.
+   *
+   * ALL KINDS, unlike `contactIdentifiers` — somebody verifying a record
+   * wants to see the platform ids and handles too, because "which account
+   * is this" is half of what they are checking. The source and the
+   * verification come back with each, which is the whole point: a number
+   * the assistant recorded from a chat and one a colleague confirmed are
+   * the same string and not the same fact.
+   */
+  /**
+   * Takes a contact detail off a customer's record.
+   *
+   * RELEASED, NOT DELETED. The row stays with `released_at` set and its
+   * status changed, because "this number was on their record until Tuesday"
+   * is a fact somebody will need — a colleague who rang it, a message sent
+   * to it — and a DELETE makes that unanswerable. It also frees the value:
+   * the partial unique index covers active rows only, so the same number can
+   * later be added to whoever actually owns it.
+   *
+   * PLATFORM IDS ARE NOT RELEASABLE HERE. A scoped id or a handle is how a
+   * conversation is addressed, not a detail somebody typed, and removing one
+   * would orphan the thread rather than tidy a record. The caller passes the
+   * kind and this refuses anything that is not a contact.
+   */
+  /**
+   * Whether a person is waiting here, and whether the assistant has been
+   * told to be quiet here.
+   *
+   * SCOPED TO A CHANNEL, because both switches are. A colleague who pauses
+   * the assistant to type to somebody on one account has said nothing about
+   * the other accounts that person also writes to.
+   *
+   * A MISSING ROW IS THE ORDINARY STATE, not an error: nobody waiting, the
+   * assistant answering. Rows exist only where somebody changed something,
+   * so the overwhelming majority of customers never have one.
+   *
+   * THE PAUSE IS DECIDED IN SQL. "Paused" is two columns and the clock — a
+   * resume time already past means it has come back — and a caller
+   * rebuilding that would eventually get it right in one place and wrong in
+   * another.
+   */
+  async assistantState(
+    enterpriseId: number,
+    customerId: number,
+    channelId: number,
+  ): Promise<{
+    needsHuman: boolean;
+    needsHumanReason: string | null;
+    needsHumanSince: Date | null;
+    /** When a colleague last marked a handoff here as handled. */
+    resolvedAt: Date | null;
+    paused: boolean;
+    resumesAt: Date | null;
+  }> {
+    const rows = await this.query<{
+      needsHuman: boolean;
+      needsHumanReason: string | null;
+      needsHumanSince: Date | null;
+      resolvedAt: Date | null;
+      paused: boolean;
+      resumesAt: Date | null;
+    }>(
+      `SELECT needs_human AS "needsHuman",
+              needs_human_reason AS "needsHumanReason",
+              needs_human_since AS "needsHumanSince",
+              needs_human_resolved_at AS "resolvedAt",
+              (automation_paused_at IS NOT NULL
+                AND (automation_resumes_at IS NULL OR automation_resumes_at > now())) AS "paused",
+              automation_resumes_at AS "resumesAt"
+         FROM customer_assistant_states
+        WHERE enterprise_id = $1 AND customer_id = $2 AND channel_id = $3
+          AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), customerId, channelId],
+    );
+    return (
+      rows[0] ?? {
+        needsHuman: false,
+        needsHumanReason: null,
+        needsHumanSince: null,
+        resolvedAt: null,
+        paused: false,
+        resumesAt: null,
+      }
+    );
+  }
+
+  /**
+   * Records that somebody needs a person here, or that one has been.
+   *
+   * UPSERT, because the row may not exist: a customer gets one the first
+   * time anybody changes anything about them on a channel.
+   *
+   * RAISING DOES NOT RESET THE CLOCK. `needs_human_since` is how long they
+   * have waited, which is the only urgency there is — an assistant that
+   * re-raises on every message would keep moving it to now, so the longest
+   * wait would always read as the newest.
+   */
+  async setNeedsHuman(input: {
+    enterpriseId: number;
+    customerId: number;
+    channelId: number;
+    needsHuman: boolean;
+    reason?: string | null;
+    messageId?: number | null;
+    /** Who marked it handled, when a person did. */
+    resolvedByEmployeeId?: number | null;
+  }): Promise<void> {
+    await this.mutate(
+      `INSERT INTO customer_assistant_states
+         (enterprise_id, customer_id, channel_id, needs_human, needs_human_reason,
+          needs_human_since, needs_human_message_id)
+       /*
+        * EVERY PARAMETER IS CAST. Postgres infers a parameter's type from
+        * where it is used, and inside a CASE whose arms are a parameter and
+        * NULL there is nothing to infer from — so it
+        * falls back to text and the insert fails with "column is of type
+        * bigint but expression is of type text". Caught in testing, where
+        * the reply went out and the flag silently did not.
+        */
+       VALUES ($1, $2, $3, $4,
+               CASE WHEN $4 THEN $5::text ELSE NULL END,
+               CASE WHEN $4 THEN now() ELSE NULL END,
+               CASE WHEN $4 THEN $6::bigint ELSE NULL END)
+       ON CONFLICT (enterprise_id, customer_id, channel_id) WHERE is_deleted = false
+       DO UPDATE SET
+         needs_human = EXCLUDED.needs_human,
+         needs_human_reason = CASE WHEN EXCLUDED.needs_human
+           THEN COALESCE(EXCLUDED.needs_human_reason, customer_assistant_states.needs_human_reason)
+           ELSE NULL END,
+         -- COALESCE keeps the original time across a re-raise.
+         needs_human_since = CASE WHEN EXCLUDED.needs_human
+           THEN COALESCE(customer_assistant_states.needs_human_since, now())
+           ELSE NULL END,
+         needs_human_message_id = CASE WHEN EXCLUDED.needs_human
+           THEN COALESCE(EXCLUDED.needs_human_message_id, customer_assistant_states.needs_human_message_id)
+           ELSE NULL END,
+         /*
+          * STAMPED ONLY ON THE TRANSITION FROM RAISED TO CLEARED, so it
+          * records a colleague actually closing something rather than every
+          * write that happens to set the flag false. Kept through a later
+          * raise: "a previous one was closed" is worth knowing, and the live
+          * one is described by needs_human_since beside it.
+          */
+         needs_human_resolved_at = CASE
+           WHEN NOT EXCLUDED.needs_human AND customer_assistant_states.needs_human
+             THEN now()
+           ELSE customer_assistant_states.needs_human_resolved_at END,
+         needs_human_resolved_by = CASE
+           WHEN NOT EXCLUDED.needs_human AND customer_assistant_states.needs_human
+             THEN $7::bigint
+           ELSE customer_assistant_states.needs_human_resolved_by END,
+         updated_at = now()`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.customerId,
+        input.channelId,
+        input.needsHuman,
+        input.reason ?? null,
+        input.messageId ?? null,
+        input.resolvedByEmployeeId ?? null,
+      ],
+    );
+  }
+
+  /**
+   * Stops or restarts the assistant for one person on one channel.
+   *
+   * `resumesAt` is optional and is the thing that stops a pause becoming
+   * permanent by being forgotten.
+   */
+  async setAutomationPause(input: {
+    enterpriseId: number;
+    customerId: number;
+    channelId: number;
+    paused: boolean;
+    byEmployeeId?: number | null;
+    resumesAt?: Date | null;
+  }): Promise<void> {
+    await this.mutate(
+      `INSERT INTO customer_assistant_states
+         (enterprise_id, customer_id, channel_id,
+          automation_paused_at, automation_paused_by, automation_resumes_at)
+       /* Cast for the reason setNeedsHuman casts — see the note there. */
+       VALUES ($1, $2, $3,
+               CASE WHEN $4 THEN now() ELSE NULL END,
+               CASE WHEN $4 THEN $5::bigint ELSE NULL END,
+               CASE WHEN $4 THEN $6::timestamptz ELSE NULL END)
+       ON CONFLICT (enterprise_id, customer_id, channel_id) WHERE is_deleted = false
+       DO UPDATE SET
+         -- COALESCE so re-pausing an already paused one keeps the time it
+         -- actually started, which is what somebody reading it wants.
+         automation_paused_at = CASE WHEN $4
+           THEN COALESCE(customer_assistant_states.automation_paused_at, now())
+           ELSE NULL END,
+         automation_paused_by = CASE WHEN $4 THEN $5::bigint ELSE NULL END,
+         automation_resumes_at = CASE WHEN $4 THEN $6::timestamptz ELSE NULL END,
+         updated_at = now()`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.customerId,
+        input.channelId,
+        input.paused,
+        input.byEmployeeId ?? null,
+        input.resumesAt ?? null,
+      ],
+    );
+  }
+
+  async releaseIdentifier(input: {
+    enterpriseId: number;
+    customerId: number;
+    identifierKind: IdentifierKind;
+    identifierValue: string;
+  }): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE customer_identifiers
+          SET status = 'released', released_at = now(), updated_at = now()
+        WHERE enterprise_id = $1 AND customer_id = $2
+          AND identifier_kind = $3 AND identifier_value = $4
+          AND status = 'active' AND is_deleted = false
+        RETURNING id`,
+      [
+        this.requireEnterprise(input.enterpriseId),
+        input.customerId,
+        input.identifierKind,
+        input.identifierValue,
+      ],
+    );
+    return affected > 0;
+  }
+
+  /**
+   * Whether this value is already on somebody ELSE's record here.
+   *
+   * ASKED BEFORE A COLLEAGUE IS TOLD THEIR CHANGE WORKED. The insert is
+   * `ON CONFLICT DO NOTHING`, which is right for the assistant — a race
+   * between two replies must not fail one of them — but on a form it means
+   * a colleague types a number, gets a success, and finds it absent. Worse,
+   * the conflicting row may belong to a different customer entirely, and
+   * silently doing nothing hides that two records are claiming one person.
+   */
+  async identifierOwner(
+    enterpriseId: number,
+    identifierKind: IdentifierKind,
+    identifierValue: string,
+  ): Promise<number | null> {
+    const rows = await this.query<{ customerId: string }>(
+      `SELECT customer_id AS "customerId"
+         FROM customer_identifiers
+        WHERE enterprise_id = $1 AND identifier_kind = $2 AND identifier_value = $3
+          AND status = 'active' AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), identifierKind, identifierValue],
+    );
+    return rows[0] ? Number(rows[0].customerId) : null;
+  }
+
+  async allIdentifiers(
+    enterpriseId: number,
+    customerId: number,
+  ): Promise<
+    {
+      identifierKind: string;
+      identifierValue: string;
+      verificationStatus: string;
+      source: string;
+      isPrimary: boolean;
+      firstSeenAt: Date | null;
+    }[]
+  > {
+    return this.query(
+      `SELECT identifier_kind AS "identifierKind",
+              identifier_value AS "identifierValue",
+              verification_status AS "verificationStatus",
+              source, is_primary AS "isPrimary",
+              first_seen_at AS "firstSeenAt"
+         FROM customer_identifiers
+        WHERE enterprise_id = $1 AND customer_id = $2
+          AND status = 'active' AND is_deleted = false
+        ORDER BY is_primary DESC, identifier_kind ASC, id ASC`,
+      [this.requireEnterprise(enterpriseId), customerId],
+    );
+  }
+
+  /**
+   * How to reach them, where they have told us.
+   *
+   * EMAILS AND NUMBERS ONLY. The other identifier kinds are platform ids
+   * and handles — an address for a conversation, not for a person — and the
+   * assistant asking "how do I reach them" means the second.
+   *
+   * The verification status comes back with each, because it decides what
+   * may be done with it: a number somebody typed into a chat is not a
+   * number anybody checked, and the difference is the whole reason the
+   * column exists.
+   */
+  async contactIdentifiers(
+    enterpriseId: number,
+    customerId: number,
+  ): Promise<{ identifierKind: string; identifierValue: string; verificationStatus: string }[]> {
+    return this.query(
+      `SELECT identifier_kind AS "identifierKind",
+              identifier_value AS "identifierValue",
+              verification_status AS "verificationStatus"
+         FROM customer_identifiers
+        WHERE enterprise_id = $1 AND customer_id = $2
+          AND identifier_kind = ANY($3::varchar[])
+          AND status = 'active' AND is_deleted = false
+        ORDER BY is_primary DESC, updated_at DESC, id DESC`,
+      [
+        this.requireEnterprise(enterpriseId),
+        customerId,
+        [IdentifierKind.Mobile, IdentifierKind.Email, IdentifierKind.WhatsAppNumber],
+      ],
+    );
+  }
+
+  /**
+   * Records what a customer said about themselves, from inside a
+   * conversation.
+   *
+   * BY ROW ID, unlike `setOwnIdentity`, which is the console's door and
+   * takes the public ref. This one is reached from a conversation that
+   * already holds the customer, and routing it through a ref lookup would
+   * be a second query to arrive where we already are.
+   *
+   * IT WRITES THE SAME COLUMNS THE CONSOLE WRITES, deliberately. "The name
+   * this business holds" is one fact with one home, whether a colleague
+   * typed it or a customer said it — a parallel set of "what the assistant
+   * thinks" columns would be two answers to one question and no way to
+   * choose. Who said so is answered by the tool ledger, which carries the
+   * message it was learned from.
+   *
+   * ABSENT MEANS DO NOT TOUCH. Each field is COALESCEd onto its own
+   * current value, so recording a phone number cannot blank a name that
+   * was never mentioned. There is no way to CLEAR a field from here, and
+   * that is deliberate: clearing is a correction, and corrections belong to
+   * the people who can see the whole record.
+   */
+  async setDeclaredIdentity(
+    enterpriseId: number,
+    customerId: number,
+    fields: {
+      displayName?: string | undefined;
+      firstName?: string | undefined;
+      lastName?: string | undefined;
+      preferredLanguage?: string | undefined;
+    },
+  ): Promise<boolean> {
+    const { affected } = await this.mutate(
+      `UPDATE customers
+          SET display_name = COALESCE($3, display_name),
+              first_name = COALESCE($4, first_name),
+              last_name = COALESCE($5, last_name),
+              preferred_language = COALESCE($6, preferred_language),
+              updated_at = now()
+        WHERE enterprise_id = $1 AND id = $2 AND is_deleted = false`,
+      [
+        this.requireEnterprise(enterpriseId),
+        customerId,
+        fields.displayName ?? null,
+        fields.firstName ?? null,
+        fields.lastName ?? null,
+        fields.preferredLanguage ?? null,
+      ],
+    );
+    return affected > 0;
+  }
+
   /**
    * The name THIS BUSINESS gives somebody.
    *

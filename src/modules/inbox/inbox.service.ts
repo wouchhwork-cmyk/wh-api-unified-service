@@ -1473,6 +1473,120 @@ export class InboxService {
   }
 
   /**
+   * Flags that somebody needs a person here, or that one has dealt with it.
+   *
+   * ON THE CONVERSATION because that is what knows both halves: who the
+   * person is, and which inbox this is. Both switches are per channel, and
+   * asking a client to supply a channel id would mean exposing one.
+   *
+   * THE BUTTON THAT ENDS A HANDOFF. The assistant raises this by itself and,
+   * until there was a way to lower it, the promise never finished: it kept
+   * telling a customer a colleague was coming because nothing could tell it
+   * one had. Clearing it is read by the assistant on its very next reply,
+   * where it is told plainly that nobody is pending and that its own notes
+   * saying otherwise are out of date.
+   */
+  async setNeedsHuman(
+    enterpriseId: number,
+    conversationRefId: string,
+    input: { needsHuman: boolean; reason?: string | null; actorEmployeeId?: number | null },
+  ): Promise<{ needsHuman: boolean }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'manage');
+    if (conversation.customerId === null) {
+      throw new AppException(ErrorCode.CustomerNotFound);
+    }
+
+    await this.customers.setNeedsHuman({
+      enterpriseId,
+      customerId: conversation.customerId,
+      channelId: conversation.channelId,
+      needsHuman: input.needsHuman,
+      reason: input.reason ?? null,
+      /* Who closed it, so the assistant can be told it was closed rather
+       * than left to infer it from the flag being absent. */
+      resolvedByEmployeeId: input.actorEmployeeId ?? null,
+    });
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Conversation,
+      entityId: conversation.id,
+      enterpriseId,
+      /* Who said this was handled and when is the first question asked when
+       * a customer says nobody ever got back to them. */
+      changes: {
+        needsHuman: { to: input.needsHuman },
+        reason: { to: input.reason ?? null },
+        by: { to: input.actorEmployeeId ?? null },
+      },
+    });
+
+    await this.conversations.notifyChanged({
+      enterpriseId,
+      conversationRefId: conversation.refId,
+      conversationKind: conversation.conversationKind,
+      kind: 'status',
+    });
+
+    return { needsHuman: input.needsHuman };
+  }
+
+  /**
+   * Stops the assistant talking to this person in this inbox, or starts it
+   * again.
+   *
+   * SO A COLLEAGUE CAN TAKE OVER AND TYPE. Before this the only choices were
+   * letting the assistant answer over somebody mid-conversation, or turning
+   * it off for the whole business to deal with one customer.
+   *
+   * PER CHANNEL, so pausing while you type on one account leaves the
+   * assistant answering everywhere else the same person writes.
+   */
+  async setAutomationPause(
+    enterpriseId: number,
+    conversationRefId: string,
+    input: { paused: boolean; resumesAt?: Date | null; actorEmployeeId?: number | null },
+  ): Promise<{ paused: boolean; resumesAt: string | null }> {
+    const conversation = await this.requireConversation(enterpriseId, conversationRefId, 'manage');
+    if (conversation.customerId === null) {
+      throw new AppException(ErrorCode.CustomerNotFound);
+    }
+
+    await this.customers.setAutomationPause({
+      enterpriseId,
+      customerId: conversation.customerId,
+      channelId: conversation.channelId,
+      paused: input.paused,
+      byEmployeeId: input.actorEmployeeId ?? null,
+      resumesAt: input.resumesAt ?? null,
+    });
+
+    await this.audit.record({
+      action: AuditAction.Updated,
+      entityType: AuditEntityType.Conversation,
+      entityId: conversation.id,
+      enterpriseId,
+      changes: {
+        automationPaused: { to: input.paused },
+        resumesAt: { to: input.resumesAt?.toISOString() ?? null },
+        by: { to: input.actorEmployeeId ?? null },
+      },
+    });
+
+    await this.conversations.notifyChanged({
+      enterpriseId,
+      conversationRefId: conversation.refId,
+      conversationKind: conversation.conversationKind,
+      kind: 'status',
+    });
+
+    return {
+      paused: input.paused,
+      resumesAt: input.paused ? (input.resumesAt?.toISOString() ?? null) : null,
+    };
+  }
+
+  /**
    * Hides, unhides or deletes one comment on a post we own.
    *
    * OWNERSHIP OF THE POST IS THE WHOLE PERMISSION, and it is checked here

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentScopedActor, RequirePermission } from '@/shared/decorators';
 import { Permission } from '@/shared/enums';
@@ -6,6 +6,8 @@ import { paginated, type Paginated } from '@/shared/contracts/envelope';
 import type { ScopedActorContext } from '@/shared/context';
 import {
   CustomerDirectoryQuerySchema,
+  CustomerContactSchema,
+  CustomerContactRemovalSchema,
   CustomerIdentityUpdateSchema,
   PostFeedQuerySchema,
 } from '@/shared/contracts/catalogue/catalogue.contract';
@@ -83,6 +85,30 @@ export class CatalogueController {
       hasMore: result.hasMore,
     });
   }
+  @Get('customers/:refId')
+  @RequirePermission(Permission.CustomersView)
+  @ApiOperation({
+    summary: 'One customer, with every fact beside where it came from',
+    description:
+      'For checking a record rather than listing them. The directory resolves a single name ' +
+      'because a list needs one; this keeps them apart — what a colleague typed, what the ' +
+      'platform supplied, and what the assistant recorded from something the customer said are ' +
+      'three different claims, and only the first is something this business decided. Each way ' +
+      'of reaching them comes with its source and whether anybody verified it: a number the ' +
+      'assistant took from a chat and one a colleague confirmed are the same string and not the ' +
+      'same fact.',
+  })
+  async customer(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refId: string,
+  ): Promise<unknown> {
+    const read = await this.catalogue.readCustomer(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+    );
+    return toCustomerDetail(read);
+  }
+
   @Patch('customers/:refId')
   @RequirePermission(Permission.CustomersManage)
   @ApiOperation({
@@ -102,6 +128,68 @@ export class CatalogueController {
       actor.enterpriseId,
       RefIdParamSchema.parse(refId),
       CustomerIdentityUpdateSchema.parse(body),
+    );
+  }
+
+  /**
+   * Adds a phone number or email address to a record, or corrects one.
+   *
+   * ONE ENDPOINT FOR BOTH, because they are one action from where the
+   * person doing it stands: `replaces` names the value being corrected and
+   * the old one is released in the same call. Two endpoints would let a
+   * form add the new value, fail to remove the old, and leave a record
+   * carrying a number that was already known to be wrong.
+   */
+  @Post('customers/:refId/contacts')
+  @RequirePermission(Permission.CustomersManage)
+  @ApiOperation({
+    summary: 'Add or correct a customer’s phone number or email',
+    description:
+      'Cleaned by the same code the assistant uses, so a number typed here and the same number ' +
+      'recorded from a chat become one record rather than two: stored in full international ' +
+      'form with its country, an email lower-cased. A bare national number is read as this ' +
+      'business’s own country and the response says so. Saved UNVERIFIED — somebody typing a ' +
+      'number has copied it from somewhere, not checked it. Send `replaces` with the existing ' +
+      'value to correct one; the old value is released, not deleted, so it stays answerable ' +
+      'who was reachable there and when.',
+  })
+  async addCustomerContact(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.catalogue.setCustomerContact(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      CustomerContactSchema.parse(body),
+    );
+  }
+
+  /**
+   * Takes one off the record.
+   *
+   * POST RATHER THAN DELETE because what identifies the row is a value, not
+   * an id we are willing to publish — and a DELETE carrying a body is a
+   * thing proxies and clients disagree about.
+   */
+  @Post('customers/:refId/contacts/remove')
+  @RequirePermission(Permission.CustomersManage)
+  @ApiOperation({
+    summary: 'Take a phone number or email off a customer’s record',
+    description:
+      'Released rather than deleted: the row stays with the date it stopped applying, because ' +
+      '"this number was on their record until Tuesday" is a question somebody will ask. The ' +
+      'value is freed for whoever actually owns it.',
+  })
+  async removeCustomerContact(
+    @CurrentScopedActor() actor: ScopedActorContext,
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    return this.catalogue.removeCustomerContact(
+      actor.enterpriseId,
+      RefIdParamSchema.parse(refId),
+      CustomerContactRemovalSchema.parse(body),
     );
   }
 }
@@ -185,5 +273,103 @@ function toCustomerSummary(row: CustomerDirectoryRow): Record<string, unknown> {
     lastSeenAt: row.lastSeenAt,
     status: row.status,
     isBlocked: row.isBlocked,
+    /*
+     * Waiting for a person SOMEWHERE. Both switches are per channel, and a
+     * directory row is per person — so this says only that at least one of
+     * their inboxes has a flag on it, which is exactly what a list is for.
+     * Which inbox, and the buttons to do anything about it, live where the
+     * conversation does.
+     */
+    needsHuman: row.needsHuman,
+    automationPaused: row.automationPaused,
+  };
+}
+
+/**
+ * One customer's whole record, for somebody checking it.
+ *
+ * NAMED BY WHERE EACH PART CAME FROM. A name this business typed and a name
+ * read off a public profile are different claims about a person, and a
+ * record that collapses them cannot answer "who says so" — which is the
+ * question somebody opening this is usually here to ask.
+ */
+function toCustomerDetail(read: {
+  customer: {
+    refId: string;
+    ownDisplayName: string | null;
+    ownFirstName: string | null;
+    ownLastName: string | null;
+    platformDisplayName: string | null;
+    platformFirstName: string | null;
+    platformLastName: string | null;
+    avatarUrl: string | null;
+    platformMetadata: Record<string, unknown> | null;
+    preferredLanguage: string | null;
+    locale: string | null;
+    firstSource: string | null;
+    conversationCount: number;
+    firstSeenAt: Date | null;
+    lastSeenAt: Date | null;
+    status: string | null;
+  };
+  identifiers: {
+    identifierKind: string;
+    identifierValue: string;
+    verificationStatus: string;
+    source: string;
+    isPrimary: boolean;
+    firstSeenAt: Date | null;
+  }[];
+}): Record<string, unknown> {
+  const customer = read.customer;
+  const platform = customer.platformMetadata ?? {};
+  const flag = (key: string): boolean | null =>
+    typeof platform[key] === 'boolean' ? platform[key] : null;
+
+  return {
+    refId: customer.refId,
+    names: {
+      business: {
+        displayName: customer.ownDisplayName,
+        firstName: customer.ownFirstName,
+        lastName: customer.ownLastName,
+      },
+      platform: {
+        displayName: customer.platformDisplayName,
+        firstName: customer.platformFirstName,
+        lastName: customer.platformLastName,
+      },
+    },
+    avatarUrl: customer.avatarUrl,
+    preferredLanguage: customer.preferredLanguage,
+    locale: customer.locale,
+    firstSource: customer.firstSource,
+    conversationCount: customer.conversationCount,
+    firstSeenAt: customer.firstSeenAt,
+    lastSeenAt: customer.lastSeenAt,
+    status: customer.status,
+    /*
+     * ABSENT STAYS ABSENT. A missing key means the platform has not told us,
+     * which is not the same as no — and a false here would be this business
+     * asserting something about somebody's own account.
+     */
+    platformSignals: {
+      followsUs: flag('followsUs'),
+      weFollowThem: flag('weFollowThem'),
+      isVerified: flag('isVerified'),
+      followerCount: typeof platform.followerCount === 'number' ? platform.followerCount : null,
+      fetchedAt: typeof platform.profileFetchedAt === 'string' ? platform.profileFetchedAt : null,
+    },
+    identifiers: read.identifiers.map((row) => ({
+      kind: row.identifierKind,
+      value: row.identifierValue,
+      verificationStatus: row.verificationStatus,
+      /* Said as a boolean as well, because "verified" is the one bit a
+       * reader acts on and `verificationStatus` carries four values. */
+      verified: row.verificationStatus === 'verified',
+      source: row.source,
+      isPrimary: row.isPrimary,
+      firstSeenAt: row.firstSeenAt,
+    })),
   };
 }

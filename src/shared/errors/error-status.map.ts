@@ -38,6 +38,11 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, HttpStatus>> = {
   [ErrorCode.ConnectionNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.ChannelNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.CustomerNotFound]: HttpStatus.NOT_FOUND,
+  [ErrorCode.ContactNotUsable]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [ErrorCode.ContactNeedsCountry]: HttpStatus.UNPROCESSABLE_ENTITY,
+  /* 409: the value is fine, somebody else has it. */
+  [ErrorCode.ContactTaken]: HttpStatus.CONFLICT,
+  [ErrorCode.ContactNotFound]: HttpStatus.NOT_FOUND,
   [ErrorCode.RewardProgramNotFound]: HttpStatus.NOT_FOUND,
   /* 409, not 404: it exists and you can still read it. It just cannot move. */
   [ErrorCode.RewardProgramArchived]: HttpStatus.CONFLICT,
@@ -171,6 +176,11 @@ export const ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.ConnectionNotFound]: 'Connection not found.',
   [ErrorCode.ChannelNotFound]: 'Channel not found.',
   [ErrorCode.CustomerNotFound]: 'Customer not found.',
+  [ErrorCode.ContactNotUsable]: 'That does not look like a usable phone number or email address.',
+  [ErrorCode.ContactNeedsCountry]:
+    'Which country is that number in? The same digits belong to different people in different countries, so it is never assumed. Pick a country, or enter the number with its country code.',
+  [ErrorCode.ContactTaken]: 'Another customer of this business already has that contact detail.',
+  [ErrorCode.ContactNotFound]: 'That contact detail is not on this customer’s record.',
   [ErrorCode.ConversationNotFound]: 'Conversation not found.',
   [ErrorCode.ConversationResyncUnsupported]:
     'Only a message thread can be re-read from the platform.',

@@ -2,18 +2,43 @@ import { Injectable } from '@nestjs/common';
 import type { AnalysisResultRow } from '@/database/repositories/media-analysis.repository';
 import type { AttachmentRow } from '@/database/repositories/message-attachment.repository';
 import { MessageRepository, type MessageRow } from '@/database/repositories/message.repository';
+import { CustomerRepository } from '@/database/repositories/customer.repository';
 import type { ConversationRow } from '@/database/repositories/conversation.repository';
 import { ChatService, type ChatAnswer } from '@/modules/ai/chat.service';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
-import { CHATBOT_CONTEXT_MESSAGES, CHAT_MAX_TURNS } from '@/shared/constants';
+import {
+  CHATBOT_CONTEXT_MESSAGES,
+  CHAT_MAX_TOOL_CALLS,
+  CHAT_MAX_TOOL_ROUNDS,
+  CHAT_MAX_TURNS,
+} from '@/shared/constants';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { tagTurn } from '@/modules/ai/prompts';
+import {
+  renderHandoffSecondThought,
+  renderToolResults,
+  ToolName,
+  renderToolsSection,
+  readRequestedTool,
+  ToolOutcome,
+  ToolRunnerService,
+  TOOL_SPECS,
+  type ToolRun,
+} from '@/modules/ai/tools';
 import { ConversationBriefService } from './conversation-brief.service';
 import { replyCapFor, shapeReply } from './reply-format';
 import { renderTurnText } from './turn-text';
 import { InboxService } from './inbox.service';
 
 export interface DraftedReply extends ChatAnswer {
+  /**
+   * Notes read out of older replies during this turn, via get_one_message.
+   *
+   * The service merges these into the notes it stores. See `reconcileNotes`:
+   * a recovery the model forgets to carry forward is a question answered
+   * once and lost again.
+   */
+  readonly recoveredNotes?: readonly string[];
   /**
    * What the model was actually given, in counts.
    *
@@ -74,6 +99,9 @@ export class ChatbotService {
     private readonly brief: ConversationBriefService,
     private readonly messages: MessageRepository,
     private readonly chat: ChatService,
+    private readonly tools: ToolRunnerService,
+    /* For the one fact a colleague's button leaves behind. */
+    private readonly customers: CustomerRepository,
   ) {}
 
   /**
@@ -167,6 +195,8 @@ export class ChatbotService {
      */
     const ordered = [...thread.messages].reverse();
     const turns: ChatTurn[] = [];
+    /* When each turn happened, so an event can be placed among them. */
+    const turnTimes: Date[] = [];
     const mediaLanguages: string[] = [];
     let mediaDescriptions = 0;
 
@@ -196,6 +226,9 @@ export class ChatbotService {
       const text = this.textOf(message, described);
       if (text.length === 0) continue;
 
+      /* Kept beside the turn so an event can be placed among them by when
+       * it happened rather than simply appended. */
+      turnTimes.push(message.platformSentAt ?? message.createdAt);
       turns.push({
         role: message.direction === MessageDirection.Inbound ? 'user' : 'assistant',
         /*
@@ -218,6 +251,33 @@ export class ChatbotService {
           replyTo: message.parentRefId,
         }),
       });
+    }
+
+    /*
+     * WHAT A PERSON DID, WRITTEN INTO THE CONVERSATION WHERE THEY DID IT.
+     *
+     * A colleague marking a handoff handled is an event in this thread as
+     * surely as a message is — but it left no trace the assistant could
+     * read, so the only way to know was to infer it from a flag being
+     * absent somewhere else in the frame. It inferred wrong, repeatedly,
+     * and went on promising a colleague who had already been.
+     *
+     * FREE, AND THAT IS THE POINT. The alternative is the model asking a
+     * tool what happened, which is a paid call on every conversation that
+     * has ever been escalated — to learn a fact this service already holds
+     * and can simply state. Nothing here costs a round trip.
+     *
+     * PLACED IN TIME rather than appended, because WHEN it happened is
+     * most of what it means: a resolution before the customer's last three
+     * messages says something very different from one after them.
+     */
+    const resolution = await this.handoffResolutionLine(enterpriseId, thread.conversation);
+    if (resolution) {
+      /* The first message sent after it; the end of the window if none. */
+      const at = turnTimes.findIndex((time) => time.getTime() > resolution.at.getTime());
+      const where = at === -1 ? turns.length : at;
+      turns.splice(where, 0, { role: 'assistant', text: resolution.text });
+      turnTimes.splice(where, 0, resolution.at);
     }
 
     const shown = turns.slice(-CHAT_MAX_TURNS);
@@ -246,15 +306,179 @@ export class ChatbotService {
       summary,
     });
 
-    const answer = await this.chat.reply(shown, {
+    /*
+     * THE TOOL LOOP.
+     *
+     * The model answers, and may instead ask for something to be looked up
+     * or done. When it does, nothing is sent: the tool runs, the result goes
+     * back in a section of its own, and it is asked again. It may ask twice
+     * — look something up, record what it learned, then answer — and then it
+     * has to speak.
+     *
+     * BOUNDED IN TWO DIRECTIONS, because one is not enough. Rounds stop the
+     * back-and-forth; a total stops the bill, since a model allowed several
+     * tools per round could spend far more than three calls inside three
+     * rounds. Both ceilings are reached by answering with what it has, which
+     * is always possible: a tool is an improvement on an answer, never a
+     * prerequisite for one.
+     */
+    const toolsOffered = renderToolsSection(TOOL_SPECS);
+    const runs: ToolRun[] = [];
+    /*
+     * WHAT WAS ASKED FOR, tracked beside what came back and kept in step
+     * with it by index.
+     *
+     * Matching on the runner's returned `tool` instead would work today
+     * and only because the runner happens to echo the request back — a
+     * detail of its return shape that nothing promises and a refactor
+     * would quietly break, taking the repeat guard with it. A test written
+     * with a plainer stub caught exactly that.
+     */
+    const asked: string[] = [];
+    let answer = await this.chat.reply(shown, {
       enterpriseId,
       purpose: accounting.purpose,
       messageId: accounting.messageId,
       context: brief.xml,
+      tools: toolsOffered,
+      round: 0,
     });
+
+    /*
+     * HANDING OVER WITHOUT HAVING LOOKED COSTS ONE MORE ROUND.
+     *
+     * WATCHED REPEATEDLY, and it is the cheapest wrong answer available to
+     * it. Asked "when is the wedding?", with the date recoverable from the
+     * notes an earlier reply carried, it set a handoff — "requires
+     * colleague intervention" — and called nothing. Setting a flag and
+     * writing one line is less work than a lookup, and the cost lands on a
+     * colleague rather than on the model.
+     *
+     * The frame already told it to look: the tool said THE FIRST PLACE TO
+     * LOOK, the notes block said these are only the latest notes, and the
+     * rules said a handoff does not answer the question in front of you.
+     * All three were in that prompt. Instructions have now lost this
+     * argument often enough that the loop makes the point instead.
+     *
+     * ONCE, AND ONLY WHEN NOTHING WAS LOOKED AT. A handoff after a tool
+     * has run is a considered one — it looked and could not finish — and
+     * it goes straight through. This only catches the reflex.
+     */
+    if (
+      runs.length === 0 &&
+      readRequestedTool(answer.tool) === null &&
+      (answer.handoff ?? '').trim().length > 0
+    ) {
+      answer = await this.chat.reply(shown, {
+        enterpriseId,
+        purpose: accounting.purpose,
+        messageId: accounting.messageId,
+        context: brief.xml,
+        tools: toolsOffered,
+        toolResults: renderHandoffSecondThought(),
+        round: 0,
+      });
+    }
+
+    for (let round = 1; round <= CHAT_MAX_TOOL_ROUNDS; round += 1) {
+      const requested = readRequestedTool(answer.tool);
+      if (!requested) break;
+
+      /*
+       * THE SAME CALL TWICE IS REFUSED, and this is not a theoretical
+       * guard.
+       *
+       * Observed on the first live use: told "this business already records
+       * them as X, so the name was NOT changed", the model asked for the
+       * identical write again, read the identical answer, and asked a
+       * third time — burning the whole budget and three paid calls to be
+       * told the same thing three times. The tools section already says
+       * not to; a model that has just been disappointed by a result reads
+       * "try again" into it anyway.
+       *
+       * Refused DETERMINISTICALLY rather than asked, because a rule a
+       * model can talk itself out of is not a bound. The note says what
+       * actually happened — it already ran, here is what it said — so the
+       * next turn has somewhere to go other than repeating itself.
+       */
+      const signature = `${requested.name}:${JSON.stringify(requested.args)}`;
+      const seenAt = asked.indexOf(signature);
+      const already = seenAt === -1 ? undefined : runs[seenAt];
+
+      /*
+       * REFUSED RATHER THAN RUN once the budget is gone, and the model is
+       * told which — "you have used them up" is something it can answer
+       * around, where silence looks like a tool that returned nothing.
+       */
+      const run = already
+        ? {
+            tool: requested,
+            outcome: ToolOutcome.Refused,
+            data: already.data,
+            note: `you already ran ${requested.name} with exactly these arguments on this answer and it said: ${already.note ?? 'see the result above'}. It will not say anything different. Answer with what you have.`,
+            durationMs: 0,
+          }
+        : runs.length >= CHAT_MAX_TOOL_CALLS
+          ? {
+              tool: requested,
+              outcome: ToolOutcome.Refused,
+              data: null,
+              note: 'no more tool calls are available on this answer. Answer with what you have.',
+              durationMs: 0,
+            }
+          : await this.tools.run(requested, {
+              enterpriseId,
+              conversationId: thread.conversation.id,
+              customerId: thread.conversation.customerId,
+              customerIdentifierId: thread.conversation.customerIdentifierId ?? null,
+              messageId: accounting.messageId,
+              modelCallId: answer.callId,
+              round,
+            });
+
+      asked.push(signature);
+      runs.push(run);
+
+      answer = await this.chat.reply(shown, {
+        enterpriseId,
+        purpose: accounting.purpose,
+        messageId: accounting.messageId,
+        context: brief.xml,
+        tools: toolsOffered,
+        /*
+         * WHETHER IT HANDED OVER ON THE TURN THAT ASKED. The model cannot
+         * see that turn any more, and a handoff decided before the lookup
+         * is exactly the decision these results should re-open.
+         */
+        toolResults: renderToolResults(runs, (answer.handoff ?? '').trim().length > 0),
+        round,
+      });
+    }
+
+    /*
+     * IT NEVER GOT TO AN ANSWER. Out of rounds with a tool call still on
+     * the table means the last reply is empty — it was asking, not
+     * speaking — and sending an empty message is sending nothing while
+     * recording that we answered. Handed to a colleague instead, which is
+     * what the assistant does with everything else it cannot finish.
+     */
+    const stillAsking = readRequestedTool(answer.tool) !== null;
 
     return {
       ...answer,
+      ...(stillAsking && !answer.handoff
+        ? { handoff: 'it kept asking for tools and never answered' }
+        : {}),
+      /*
+       * NOTES READ BACK OUT OF OLDER REPLIES THIS TURN.
+       *
+       * Handed on so the service can fold them into what gets stored. The
+       * tool result already asks the model to carry a recovery forward and
+       * it does not: watched live, it used recovered notes to answer and
+       * then wrote notes keeping one of the sixty-two anchors it had just
+       * been given. We know what came back, so nothing needs asking.
+       */
+      recoveredNotes: recoveredNotesFrom(runs),
       /*
        * SHAPED AFTER THE MODEL, NEVER INSTEAD OF IT. The prompt asks for a
        * short plain message and this is what happens when it is not given
@@ -318,6 +542,41 @@ export class ChatbotService {
    * ONE LINE, because the body of this lived here and a second copy lived in
    * the replay — and the two drifted. See turn-text.ts.
    */
+  /**
+   * The line that says a person dealt with the escalation, and when.
+   *
+   * WRITTEN INTO THE CONVERSATION rather than fetched by a tool. The
+   * service already knows this — a colleague pressed the button and the
+   * resolution is stamped on the row — so making the model spend a paid
+   * round discovering it would be charging for a fact we are holding.
+   *
+   * ONLY WHEN IT IS SETTLED. While a handoff is still open the frame says
+   * so in <colleague_requested>, and a line claiming it was dealt with
+   * would contradict it.
+   */
+  private async handoffResolutionLine(
+    enterpriseId: number,
+    conversation: { customerId: number | null; channelId: number },
+  ): Promise<{ at: Date; text: string } | null> {
+    if (conversation.customerId === null) return null;
+
+    const state = await this.customers.assistantState(
+      enterpriseId,
+      conversation.customerId,
+      conversation.channelId,
+    );
+    if (state.needsHuman || !state.resolvedAt) return null;
+
+    return {
+      at: state.resolvedAt,
+      text:
+        '[what happened here: a COLLEAGUE at this business picked this up and marked the ' +
+        'handoff as handled. A real person dealt with it at this point in the conversation. ' +
+        'Nobody is waiting for a colleague now — do not tell them one is coming, and do not ' +
+        'treat the earlier escalation as still open.]',
+    };
+  }
+
   private textOf(message: MessageRow, described: readonly AnalysisResultRow[]): string {
     return renderTurnText(message, described);
   }
@@ -333,4 +592,24 @@ export class ChatbotService {
     }
     return found;
   }
+}
+
+/**
+ * The notes an older reply carried, as this turn's lookups returned them.
+ *
+ * READ OFF THE TOOL RESULTS rather than re-queried: `get_one_message`
+ * returns `notes_at_the_time` for our own replies, so the recovery has
+ * already happened and this only collects it.
+ */
+function recoveredNotesFrom(runs: readonly ToolRun[]): string[] {
+  const found: string[] = [];
+  for (const run of runs) {
+    if (run.tool.name !== ToolName.OneMessage) continue;
+    const rows = Array.isArray(run.data) ? run.data : [];
+    for (const row of rows) {
+      const notes = (row as { notes_at_the_time?: unknown }).notes_at_the_time;
+      if (typeof notes === 'string' && notes.trim().length > 0) found.push(notes.trim());
+    }
+  }
+  return found;
 }

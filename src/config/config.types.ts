@@ -114,6 +114,17 @@ export type ReasoningEffortSetting =
   | 'xhigh'
   | 'max';
 
+/**
+ * Keeping the exact bodies of a model call, for somebody debugging one.
+ *
+ * See `AI_WIRE_CAPTURE_ENABLED`: off by default, refused in prod.
+ */
+export interface AiWireCaptureConfig {
+  readonly enabled: boolean;
+  readonly dir: string;
+  readonly maxFiles: number;
+}
+
 export interface OpenAiConfig {
   /** Off means no call is made and no key is needed. */
   readonly enabled: boolean;
@@ -159,6 +170,7 @@ export interface Configuration {
   readonly worker: WorkerConfig;
   readonly meta: MetaConfig;
   readonly gemini: GeminiConfig;
+  readonly aiWireCapture: AiWireCaptureConfig;
   readonly openai: OpenAiConfig;
   readonly otp: OtpConfig;
   readonly platformAdmin: PlatformAdminConfig;

@@ -7,6 +7,7 @@ import { MessageRepository } from '@/database/repositories/message.repository';
 import { ConversationRepository } from '@/database/repositories/conversation.repository';
 import { MediaAnalysisRepository } from '@/database/repositories/media-analysis.repository';
 import { MessageAttachmentRepository } from '@/database/repositories/message-attachment.repository';
+import { WireCaptureService, type CapturedCall } from '@/modules/ai/wire-capture.service';
 import { ChatService } from '@/modules/ai/chat.service';
 import { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
 import {
@@ -18,6 +19,7 @@ import {
 } from '@/modules/ai/prompts';
 import type { ChatTurn } from '@/modules/ai/ai.provider';
 import { renderTurnText } from './turn-text';
+import { renderToolsSection, TOOL_SPECS } from '@/modules/ai/tools';
 import { MediaAnalysisStatus, MessageDirection, ModelCallPurpose } from '@/shared/enums';
 import { ConversationBriefService } from './conversation-brief.service';
 
@@ -91,7 +93,42 @@ export class PromptReplayService {
     private readonly brief: ConversationBriefService,
     private readonly chat: ChatService,
     private readonly media: MediaAnalysisService,
+    private readonly wire: WireCaptureService,
   ) {}
+
+  /** Whether this environment keeps the bodies at all. */
+  get wireCaptured(): boolean {
+    return this.wire.enabled;
+  }
+
+  /**
+   * Every exchange that produced one reply, in order.
+   *
+   * ONE REPLY IS NO LONGER ONE CALL. With tools in the loop it can be four:
+   * ask, run a tool, ask again with the result, answer. Each is its own
+   * model call with its own ref, and the message row keeps only the LAST
+   * one — so following the chain from there leads backwards into nothing.
+   *
+   * ASKED BY CALL, ANSWERED BY MESSAGE. A caller has the ref of the call
+   * that wrote the reply, because that is what the message row carries.
+   * What they want is every call that was made ABOUT THE SAME INBOUND
+   * MESSAGE, which is the thing all four rounds have in common. The lookup
+   * is tenant-scoped at the call, and again inside the capture.
+   */
+  async wireForCall(enterpriseId: number, callRefId: string): Promise<CapturedCall[]> {
+    if (!this.wire.enabled) return [];
+
+    const call = await this.calls.findByRef(enterpriseId, callRefId);
+    if (!call) return [];
+
+    /* A call about no message in particular — a media description — is its
+     * own whole exchange and there is nothing to group it with. */
+    if (call.messageId === null) {
+      const one = await this.wire.read(enterpriseId, callRefId);
+      return one ? [one] : [];
+    }
+    return this.wire.readForMessage(enterpriseId, call.messageId);
+  }
 
   /**
    * The recent calls, as a reader of the trail needs them.
@@ -258,7 +295,26 @@ export class PromptReplayService {
         ).xml
       : '';
 
-    const instructions = buildChatReplyPrompt({ businessPrompt: settings.prompt, context });
+    /*
+     * THE TOOLS GO BACK IN, or every replay of a reply made since they
+     * existed reports as drifted.
+     *
+     * The fingerprint is taken over the whole instruction, and the live
+     * path now puts a <tools> section in it. Rebuilding without one
+     * produces a different prompt by definition — so the drift warning
+     * would fire on every single reply, which is the same as it firing on
+     * none: a signal that is always on teaches a reader to ignore it.
+     *
+     * The section is rendered from the specs as they stand TODAY, which is
+     * a real limit and the honest one to have: a tool added or reworded
+     * since the call will show as drift, because the prompt genuinely did
+     * change. That is what the drift note is for.
+     */
+    const instructions = buildChatReplyPrompt({
+      businessPrompt: settings.prompt,
+      context,
+      tools: renderToolsSection(TOOL_SPECS),
+    });
     /* One rendering, used for both reading and checking: a second one could
      * differ from the first and the hash would be of neither. */
     const rendered = canonicalPrompt({ instructions, turns });

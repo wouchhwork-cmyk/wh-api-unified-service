@@ -15,6 +15,7 @@ import { Conversation } from './conversation.entity';
 import { CustomerEngagement } from './customer-engagement.entity';
 import { CustomerIdentifier } from './customer-identifier.entity';
 import { Customer } from './customer.entity';
+import { CustomerAssistantState } from './customer-assistant-state.entity';
 import { EnterpriseFeature } from './enterprise-feature.entity';
 import { EnterpriseEmployee } from './enterprise-employee.entity';
 import { Enterprise } from './enterprise.entity';
@@ -24,6 +25,8 @@ import { InboundEvent } from './inbound-event.entity';
 import { EmployeeRole } from './employee-role.entity';
 import { ProviderApiUsage } from './provider-api-usage.entity';
 import { MediaAnalysis } from './media-analysis.entity';
+import { AssistantToolCall } from './assistant-tool-call.entity';
+import { CallbackRequest } from './callback-request.entity';
 import { AssistantReply } from './assistant-reply.entity';
 import { CustomerPlatformProfile } from './customer-platform-profile.entity';
 import { ModelCall } from './model-call.entity';
@@ -61,6 +64,7 @@ export { Conversation } from './conversation.entity';
 export { CustomerEngagement } from './customer-engagement.entity';
 export { CustomerIdentifier } from './customer-identifier.entity';
 export { Customer } from './customer.entity';
+export { CustomerAssistantState } from './customer-assistant-state.entity';
 export { EnterpriseFeature } from './enterprise-feature.entity';
 export { EnterpriseEmployee } from './enterprise-employee.entity';
 export { Enterprise } from './enterprise.entity';
@@ -96,6 +100,8 @@ export { RewardEntitlement } from './reward-entitlement.entity';
 
 /** The array TypeORM is configured with. */
 export * from './media-analysis.entity';
+export * from './assistant-tool-call.entity';
+export * from './callback-request.entity';
 export * from './platform-setting.entity';
 
 export const ENTITIES = [
@@ -105,6 +111,7 @@ export const ENTITIES = [
   CustomerEngagement,
   CustomerIdentifier,
   Customer,
+  CustomerAssistantState,
   EnterpriseFeature,
   EnterpriseEmployee,
   Enterprise,
@@ -114,6 +121,8 @@ export const ENTITIES = [
   EmployeeRole,
   ProviderApiUsage,
   MediaAnalysis,
+  AssistantToolCall,
+  CallbackRequest,
   AssistantReply,
   CustomerPlatformProfile,
   ModelCall,

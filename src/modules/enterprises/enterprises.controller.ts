@@ -100,7 +100,13 @@ export class EnterprisesController {
       '"IST" is claimed by three countries, so neither can be stored. Currencies are checked ' +
       'against the list rather than a three-letter shape, which used to accept "XYZ".',
   })
-  settingsOptions(): { timezones: readonly string[]; currencies: readonly string[] } {
+  settingsOptions(): {
+    timezones: readonly string[];
+    currencies: readonly string[];
+    /* Code and name both: a picker is scanned by name, stored by code. */
+    countries: readonly { code: string; name: string }[];
+    linkLabels: readonly string[];
+  } {
     return this.enterprisesService.settingsOptions();
   }
 

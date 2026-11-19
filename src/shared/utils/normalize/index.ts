@@ -1,3 +1,4 @@
+export * from './contact.normalize';
 export * from './email.normalize';
 export * from './mobile.normalize';
 export * from './patterns';

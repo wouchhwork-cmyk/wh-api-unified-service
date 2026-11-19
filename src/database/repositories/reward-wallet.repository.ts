@@ -418,6 +418,65 @@ export class RewardWalletRepository extends BaseRepository {
   }
 
   /** A statement. Newest first, with a stable tiebreaker built into the key. */
+  /**
+   * How a customer's balance got to where it is, in plain terms.
+   *
+   * WRITTEN FROM A LIVE FAILURE. Asked for a balance the assistant gave one,
+   * correctly. Asked "how i earned the 2520 points? Can you tell day or
+   * order wise" it said it could not check and handed over — while the whole
+   * ledger sat here, one join from the rule that granted each entry.
+   *
+   * ACROSS ALL THEIR WALLETS, because a customer has a balance, not a
+   * wallet: being asked to name which wallet before being told how they
+   * earned anything is a question nobody can answer about themselves.
+   *
+   * THE RULE AND PROGRAMME COME WITH IT. "10 points" means nothing; "10
+   * points for sending us a message, under Diwali Loyalty" is the answer
+   * they asked for, and resolving it per row afterwards would be the N+1
+   * this join exists to avoid.
+   */
+  async listCustomerEntries(
+    enterpriseId: number,
+    customerId: number,
+    limit: number,
+  ): Promise<
+    {
+      entryKind: string;
+      amount: number;
+      balanceAfter: number;
+      occurredAtUtc: Date;
+      reasonCode: string | null;
+      triggerKind: string | null;
+      programName: string | null;
+      walletKind: string;
+      currencyCode: string | null;
+    }[]
+  > {
+    return this.query(
+      `SELECT e.entry_kind AS "entryKind", e.amount, e.balance_after AS "balanceAfter",
+              e.occurred_at_utc AS "occurredAtUtc", e.reason_code AS "reasonCode",
+              r.trigger_kind AS "triggerKind",
+              p.name AS "programName",
+              w.wallet_kind AS "walletKind", w.currency_code AS "currencyCode"
+         FROM reward_ledger_entries e
+         JOIN reward_wallets w
+           ON w.id = e.wallet_id AND w.enterprise_id = e.enterprise_id
+         LEFT JOIN reward_rules r
+           ON r.id = e.rule_id AND r.enterprise_id = e.enterprise_id
+         LEFT JOIN reward_programs p
+           ON p.id = r.program_id AND p.enterprise_id = e.enterprise_id
+        WHERE e.enterprise_id = $1
+          AND w.customer_id = $2
+          AND w.account_kind = 'customer'
+          AND w.is_deleted = false
+        -- Newest first: "how did I get here" is read backwards from now, and
+        -- the cap has to bite on the oldest rather than the most relevant.
+        ORDER BY e.id DESC
+        LIMIT $3`,
+      [this.requireEnterprise(enterpriseId), customerId, limit],
+    );
+  }
+
   async listEntries(
     enterpriseId: number,
     walletId: number,

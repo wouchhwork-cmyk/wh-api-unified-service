@@ -46,6 +46,10 @@ import { AiQueueGaugeIndexes1761000000000 } from './migrations/1761000000000-AiQ
 import { ModelCallByMessage1761100000000 } from './migrations/1761100000000-ModelCallByMessage';
 import { RepairTruncatedDescriptions1761200000000 } from './migrations/1761200000000-RepairTruncatedDescriptions';
 import { MediaHeardAndRead1761300000000 } from './migrations/1761300000000-MediaHeardAndRead';
+import { AssistantToolCalls1761400000000 } from './migrations/1761400000000-AssistantToolCalls';
+import { CustomerHandoffAndPause1761600000000 } from './migrations/1761600000000-CustomerHandoffAndPause';
+import { AssistantStatePerChannel1761700000000 } from './migrations/1761700000000-AssistantStatePerChannel';
+import { HandoffResolution1761800000000 } from './migrations/1761800000000-HandoffResolution';
 import { SnakeNamingStrategy } from './naming.strategy';
 // Side-effect import: registers the int8 parser before any connection opens.
 import './pg-types';
@@ -137,6 +141,10 @@ export function buildDataSourceOptions(
       ModelCallByMessage1761100000000,
       RepairTruncatedDescriptions1761200000000,
       MediaHeardAndRead1761300000000,
+      AssistantToolCalls1761400000000,
+      CustomerHandoffAndPause1761600000000,
+      AssistantStatePerChannel1761700000000,
+      HandoffResolution1761800000000,
     ],
     migrationsTableName: 'schema_migrations',
 

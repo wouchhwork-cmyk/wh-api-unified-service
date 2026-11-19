@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { CustomerRepository } from '@/database/repositories/customer.repository';
-import { IdentifierKind, Platform } from '@/shared/enums';
+import {
+  IdentifierKind,
+  IdentifierSource,
+  IdentifierVerificationStatus,
+  Platform,
+} from '@/shared/enums';
 import {
   createTestDataSource,
   returningRows,
@@ -129,10 +134,28 @@ describe('a customer name and the platform it came from', () => {
     });
   });
 
+  /**
+   * WHICH NAME WINS — and, since the assistant started being told, WHOSE IT
+   * IS.
+   *
+   * `assistantProfile` used to COALESCE the two into one `displayName`,
+   * which answered "what do we call them" and destroyed "who says so". The
+   * assistant cannot tell a name a colleague recorded from a handle
+   * somebody picked on Instagram, so it stated the second as a fact about a
+   * person: asked "what's my name?", it answered "Your name is genzrelics".
+   *
+   * The precedence below is unchanged — ours outranks theirs, and the
+   * account they are writing from outranks another platform's. It is now
+   * expressed by which FIELD is populated rather than by which value
+   * survived a COALESCE.
+   */
   describe('which name wins', () => {
     it('falls back to the platform when this business holds none', async () => {
       await apply();
-      await expect(resolved()).resolves.toMatchObject({ displayName: 'Insta Name' });
+      await expect(resolved()).resolves.toMatchObject({
+        ownDisplayName: null,
+        platformDisplayName: 'Insta Name',
+      });
     });
 
     /**
@@ -145,7 +168,16 @@ describe('a customer name and the platform it came from', () => {
       await ourName('What We Call Them');
       await apply({ displayName: 'Platform Would Overwrite' });
 
-      await expect(resolved()).resolves.toMatchObject({ displayName: 'What We Call Them' });
+      /*
+       * Both are returned now, and that is the point: ours is the one to
+       * use, and theirs is still worth seeing — a customer whose profile
+       * says something different from our record is a fact about the
+       * conversation, not noise to discard.
+       */
+      await expect(resolved()).resolves.toMatchObject({
+        ownDisplayName: 'What We Call Them',
+        platformDisplayName: 'Platform Would Overwrite',
+      });
     });
 
     it('shows the name from the account they are writing from', async () => {
@@ -158,10 +190,10 @@ describe('a customer name and the platform it came from', () => {
 
       await expect(
         customers.assistantProfile(enterpriseId, customerId, facebookId),
-      ).resolves.toMatchObject({ displayName: 'Facebook Name' });
+      ).resolves.toMatchObject({ platformDisplayName: 'Facebook Name' });
       await expect(
         customers.assistantProfile(enterpriseId, customerId, instagramId),
-      ).resolves.toMatchObject({ displayName: 'Insta Name' });
+      ).resolves.toMatchObject({ platformDisplayName: 'Insta Name' });
     });
 
     it('takes the freshest when no account is named', async () => {
@@ -174,7 +206,61 @@ describe('a customer name and the platform it came from', () => {
 
       await expect(
         customers.assistantProfile(enterpriseId, customerId, null),
-      ).resolves.toMatchObject({ displayName: 'Facebook Name' });
+      ).resolves.toMatchObject({ platformDisplayName: 'Facebook Name' });
+    });
+  });
+
+  /**
+   * The record as somebody CHECKING it sees it.
+   *
+   * The directory resolves one name because a list needs one. This is the
+   * page opened to find out whether that name was typed by a colleague,
+   * supplied by the platform, or recorded by the assistant from something
+   * the customer said — and collapsing the three is exactly what makes
+   * that unanswerable.
+   */
+  describe('the whole record, fact by fact', () => {
+    it('keeps the two names apart instead of resolving them', async () => {
+      await apply();
+      await ourName('What We Call Them');
+
+      const full = await customers.fullProfile(enterpriseId, await refOf());
+
+      expect(full?.ownDisplayName).toBe('What We Call Them');
+      expect(full?.platformDisplayName).toBe('Insta Name');
+    });
+
+    it('returns every way they are known, with who says so', async () => {
+      /*
+       * A number a colleague confirmed and one the assistant took from a
+       * sentence in a chat are the same digits and not the same fact. The
+       * source and the verification are what tell them apart, and they are
+       * the reason this read exists.
+       */
+      await customers.linkIdentifier({
+        enterpriseId,
+        customerId,
+        identifierKind: IdentifierKind.Mobile,
+        identifierValue: '9876543210',
+        source: IdentifierSource.SelfDeclared,
+        verification: IdentifierVerificationStatus.Unverified,
+      });
+
+      const rows = await customers.allIdentifiers(enterpriseId, customerId);
+      const mobile = rows.find((row) => row.identifierKind === String(IdentifierKind.Mobile));
+
+      expect(mobile?.identifierValue).toBe('9876543210');
+      expect(mobile?.source).toBe('self_declared');
+      expect(mobile?.verificationStatus).toBe('unverified');
+      // And the platform id is there too: "which account is this" is half
+      // of what somebody checking a record is checking.
+      expect(rows.length).toBeGreaterThan(1);
+    });
+
+    it('will not hand one business another business’s record', async () => {
+      await apply();
+      const rival = await seedEnterprise(db, 'Rival Reader', 'rival-reader');
+      expect(await customers.fullProfile(rival, await refOf())).toBeNull();
     });
   });
 
@@ -253,7 +339,9 @@ describe('a customer name and the platform it came from', () => {
       });
 
       expect(changed?.after.displayName).toBe('What We Call Them');
-      await expect(resolved()).resolves.toMatchObject({ displayName: 'What We Call Them' });
+      await expect(resolved()).resolves.toMatchObject({
+        ownDisplayName: 'What We Call Them',
+      });
     });
 
     it('reports what it replaced, not what was asked for', async () => {
@@ -288,7 +376,11 @@ describe('a customer name and the platform it came from', () => {
       await customers.setOwnIdentity(enterpriseId, await refOf(), { displayName: 'Mistake' });
       await customers.setOwnIdentity(enterpriseId, await refOf(), { displayName: null });
 
-      await expect(resolved()).resolves.toMatchObject({ displayName: 'Platform Name' });
+      /* Cleared means handed back: ours is null again and theirs stands. */
+      await expect(resolved()).resolves.toMatchObject({
+        ownDisplayName: null,
+        platformDisplayName: 'Platform Name',
+      });
     });
 
     it('refuses a customer belonging to another business', async () => {

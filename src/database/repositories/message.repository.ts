@@ -781,6 +781,18 @@ export class MessageRepository extends BaseRepository {
     status: ConversationStatus;
     messagesSince: number;
     pendingMedia: number;
+    /** Who it is talking to, so the two switches below can be read. */
+    customerId: number | null;
+    /** Which inbox this is, which is what the switches are scoped to. */
+    channelId: number | null;
+    /**
+     * A colleague has taken this person over and the assistant is to be
+     * quiet. Evaluated in SQL so "resumes at" being in the past is already
+     * accounted for.
+     */
+    automationPaused: boolean;
+    /** Somebody is already waiting for a person on this customer. */
+    needsHuman: boolean;
   } | null> {
     const rows = await this.query<{
       conversationId: number;
@@ -788,6 +800,10 @@ export class MessageRepository extends BaseRepository {
       status: ConversationStatus;
       messagesSince: string;
       pendingMedia: string;
+      customerId: string | null;
+      channelId: string | null;
+      automationPaused: boolean | null;
+      needsHuman: boolean | null;
     }>(
       `SELECT c.id       AS "conversationId",
               c.ref_id   AS "conversationRefId",
@@ -820,12 +836,49 @@ export class MessageRepository extends BaseRepository {
                   -- what is missing before reading this, so missing means
                   -- "about to be described" rather than "never".
                   AND (ma.media_key IS NULL
-                       OR ma.status IN ('pending', 'in_flight', 'failed'))) AS "pendingMedia"
+                       OR ma.status IN ('pending', 'in_flight', 'failed'))) AS "pendingMedia",
+              cu.id AS "customerId",
+              c.channel_id AS "channelId",
+              /*
+               * READ HERE RATHER THAN IN A SECOND QUERY. This runs for every
+               * inbound message on a customer-facing path, and the two
+               * switches are one join away from a row it already has — so
+               * asking separately would be an extra round trip per message
+               * to read two booleans.
+               *
+               * THE PAUSE IS DECIDED IN SQL. "Paused" is two columns and the
+               * clock: a resume time in the past means it has already come
+               * back, and a caller rebuilding that would eventually get it
+               * right in one place and wrong in another.
+               */
+              (st.automation_paused_at IS NOT NULL
+                AND (st.automation_resumes_at IS NULL
+                     OR st.automation_resumes_at > now())) AS "automationPaused",
+              COALESCE(st.needs_human, false) AS "needsHuman"
          FROM messages m
          JOIN conversations c
            ON c.id = m.conversation_id
           AND c.enterprise_id = m.enterprise_id
           AND c.is_deleted = false
+         /* LEFT: a conversation can exist before its customer is resolved,
+          * and a missing customer must not hide the message. */
+         LEFT JOIN customers cu
+           ON cu.id = c.customer_id
+          AND cu.enterprise_id = c.enterprise_id
+          AND cu.is_deleted = false
+         /*
+          * SCOPED TO THIS CHANNEL. Both switches are per inbox — a colleague
+          * who paused the assistant to type on one account has said nothing
+          * about the other accounts the same person writes to.
+          *
+          * LEFT, because a row exists only where somebody changed something:
+          * missing is the ordinary state, not an error.
+          */
+         LEFT JOIN customer_assistant_states st
+           ON st.customer_id = c.customer_id
+          AND st.channel_id = c.channel_id
+          AND st.enterprise_id = c.enterprise_id
+          AND st.is_deleted = false
         WHERE m.id = $2 AND m.enterprise_id = $1 AND m.is_deleted = false`,
       [this.requireEnterprise(enterpriseId), messageId],
     );
@@ -838,6 +891,11 @@ export class MessageRepository extends BaseRepository {
       /* Postgres counts come back as strings through the driver. */
       messagesSince: Number(row.messagesSince),
       pendingMedia: Number(row.pendingMedia),
+      customerId: row.customerId === null ? null : Number(row.customerId),
+      channelId: row.channelId === null ? null : Number(row.channelId),
+      /* A conversation with no customer row cannot be paused by one. */
+      automationPaused: row.automationPaused === true,
+      needsHuman: row.needsHuman === true,
     };
   }
 
@@ -1244,8 +1302,20 @@ export class MessageRepository extends BaseRepository {
                   AND depth.conversation_id = m.conversation_id
                   AND depth.is_deleted = false
                   AND depth.is_internal_note = false
-                  AND COALESCE(depth.platform_sent_at, depth.created_at) >= COALESCE(
-                    (SELECT min(COALESCE(u.platform_sent_at, u.created_at))
+                  /*
+                   * COMPARED ON THE WHOLE SORT KEY, id included — the same
+                   * tuple every keyset in this file pages on.
+                   *
+                   * On the timestamp alone, two rows written in the same
+                   * millisecond tie, and >= then counts the notes-bearing
+                   * message itself as unsummarised. Harmless in effect, a
+                   * window one wider than it needed to be, but it made the
+                   * number depend on how fast the inserts ran — which is a
+                   * test that fails one run in three and a figure nobody can
+                   * reason about.
+                   */
+                  AND (COALESCE(depth.platform_sent_at, depth.created_at), depth.id) >= COALESCE(
+                    (SELECT (COALESCE(u.platform_sent_at, u.created_at), u.id)
                        FROM messages u
                       WHERE u.enterprise_id = m.enterprise_id
                         AND u.conversation_id = m.conversation_id
@@ -1295,8 +1365,10 @@ export class MessageRepository extends BaseRepository {
                          * kind of message that is never unsummarised.
                          */
                         AND NOT COALESCE(u.metadata->'assistant' ? 'hold', false)
-                        AND NOT COALESCE(u.metadata->'assistant' ? 'fallback', false)),
-                    'infinity'::timestamptz)) AS uncovered
+                        AND NOT COALESCE(u.metadata->'assistant' ? 'fallback', false)
+                      ORDER BY COALESCE(u.platform_sent_at, u.created_at) ASC, u.id ASC
+                      LIMIT 1),
+                    ('infinity'::timestamptz, 0::bigint))) AS uncovered
          FROM messages m
         WHERE m.enterprise_id = $1
           AND m.conversation_id = $2
@@ -1405,6 +1477,95 @@ export class MessageRepository extends BaseRepository {
     );
     const id = rows[0]?.id;
     return id === undefined ? null : Number(id);
+  }
+
+  /**
+   * One message and, optionally, the ones around it — for the assistant
+   * going back for something its window no longer reaches.
+   *
+   * WINDOWED BY THE SAME SORT THE THREAD USES, not by id. A recovered
+   * delivery carries its original timestamp, so "the messages around this
+   * one" means around where it SITS, not around when it was stored —
+   * otherwise a repair drags a message from an hour ago into the middle of
+   * a conversation that has moved on.
+   *
+   * Two queries rather than a window function, and deliberately: the
+   * anchor's own sort key has to be known before "ten either side of it"
+   * means anything, and asking for it separately keeps both halves readable
+   * and both indexable on messages_thread_idx.
+   *
+   * Bounded by the caller. A model that may ask for context will ask for a
+   * lot of it, so the ceiling lives in the tool rather than here, where
+   * every caller would have to remember it.
+   */
+  async readAround(
+    enterpriseId: number,
+    conversationId: number,
+    refId: string,
+    window: { before: number; after: number },
+  ): Promise<MessageRow[]> {
+    const anchor = await this.query<{ sortedAt: Date; id: string }>(
+      `SELECT COALESCE(platform_sent_at, created_at) AS "sortedAt", id
+         FROM messages
+        WHERE enterprise_id = $1 AND conversation_id = $2
+          AND ref_id = $3::uuid AND is_deleted = false
+        LIMIT 1`,
+      [this.requireEnterprise(enterpriseId), conversationId, refId],
+    );
+    const at = anchor[0];
+    if (!at) return [];
+
+    /*
+     * THE ANCHOR IS ALWAYS INCLUDED, which is why the two sides are unioned
+     * rather than selected as one range: `before` and `after` are counts,
+     * and a range cannot express "ten of the rows below this point" without
+     * knowing how many there are.
+     */
+    return this.query<MessageRow>(
+      `WITH anchored AS (
+         SELECT $3::timestamptz AS at, $4::bigint AS id
+       ),
+       earlier AS (
+         SELECT m.id FROM messages m, anchored a
+          WHERE m.enterprise_id = $1 AND m.conversation_id = $2
+            AND m.is_deleted = false AND m.is_internal_note = false
+            AND (COALESCE(m.platform_sent_at, m.created_at), m.id) < (a.at, a.id)
+          ORDER BY COALESCE(m.platform_sent_at, m.created_at) DESC, m.id DESC
+          LIMIT $5
+       ),
+       later AS (
+         SELECT m.id FROM messages m, anchored a
+          WHERE m.enterprise_id = $1 AND m.conversation_id = $2
+            AND m.is_deleted = false AND m.is_internal_note = false
+            AND (COALESCE(m.platform_sent_at, m.created_at), m.id) > (a.at, a.id)
+          ORDER BY COALESCE(m.platform_sent_at, m.created_at) ASC, m.id ASC
+          LIMIT $6
+       )
+       SELECT m.id, m.ref_id AS "refId", m.conversation_id AS "conversationId",
+              m.direction, m.body, m.message_kind AS "messageKind", m.status,
+              m.is_internal_note AS "isInternalNote",
+              m.has_attachments AS "hasAttachments",
+              m.platform_sent_at AS "platformSentAt",
+              m.created_at AS "createdAt",
+              m.metadata,
+              pm.ref_id AS "parentRefId"
+         FROM messages m
+         LEFT JOIN messages pm ON pm.id = m.parent_message_id
+                              AND pm.enterprise_id = m.enterprise_id
+                              AND pm.is_deleted = false
+        WHERE m.enterprise_id = $1
+          AND m.id IN (SELECT id FROM earlier UNION ALL SELECT id FROM later UNION ALL SELECT $4)
+          AND m.is_deleted = false
+        ORDER BY COALESCE(m.platform_sent_at, m.created_at) ASC, m.id ASC`,
+      [
+        this.requireEnterprise(enterpriseId),
+        conversationId,
+        at.sortedAt,
+        Number(at.id),
+        window.before,
+        window.after,
+      ],
+    );
   }
 
   /**

@@ -20,3 +20,7 @@ coverage/
 .claude/.auto-resume.*
 .claude/RESUME-PENDING
 .claude/.session-heartbeat
+
+# Captured model request/response bodies (AI_WIRE_CAPTURE_DIR). Whole customer
+# conversations in plain text — never committed.
+var/

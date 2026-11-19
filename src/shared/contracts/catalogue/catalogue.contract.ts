@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MAX_PAGE_SIZE } from '@/shared/constants';
-import { PostKind, PostStatus, Platform } from '@/shared/enums';
+import { IdentifierKind, PostKind, PostStatus, Platform } from '@/shared/enums';
 
 /**
  * Every list input is bounded and allowlisted. `limit` is capped rather than
@@ -109,6 +109,107 @@ export const CustomerIdentityUpdateSchema = z
     message: 'nothing to change',
   });
 
+/**
+ * Which contact details a colleague may put on a record by hand.
+ *
+ * THREE KINDS, NOT EVERY KIND. The other identifier kinds are platform
+ * scoped ids and handles — how a conversation is addressed, not a detail
+ * anybody types — and letting a form write one would let somebody re-point
+ * a thread at the wrong person.
+ */
+export const ContactKindSchema = z.enum([
+  IdentifierKind.Mobile,
+  IdentifierKind.WhatsAppNumber,
+  IdentifierKind.Email,
+]);
+
+/**
+ * Adding or correcting one contact detail.
+ *
+ * THE VALUE IS DELIBERATELY LOOSE HERE. This checks it is a sane string;
+ * whether it is a real phone number is `cleanContact`'s job, and it needs
+ * the country to say. A zod regex for phone numbers would reject valid ones
+ * and accept nonsense, and would be a SECOND opinion about what a number is
+ * — which is exactly how the stored shape drifts from the assistant's.
+ */
+export const CustomerContactSchema = z
+  .object({
+    kind: ContactKindSchema,
+    value: z.string().trim().min(3).max(320),
+    /**
+     * ISO 3166-1 alpha-2, when somebody knows it. Omitted, a bare national
+     * number is read as belonging to this business's own country and the
+     * response says so.
+     */
+    country: z
+      .string()
+      .trim()
+      .length(2)
+      .regex(/^[A-Za-z]{2}$/, 'expected a two-letter country code')
+      .optional(),
+    /**
+     * The existing value being corrected, exactly as the record shows it.
+     * Absent means add; present means replace, which releases the old one.
+     */
+    replaces: z.string().trim().min(3).max(320).optional(),
+  })
+  .strict();
+
+/** Taking one off the record. */
+export const CustomerContactRemovalSchema = z
+  .object({
+    kind: ContactKindSchema,
+    value: z.string().trim().min(3).max(320),
+  })
+  .strict();
+
+/**
+ * Raising or clearing "somebody here needs a person".
+ *
+ * A REASON ONLY WHEN RAISING. Clearing is a colleague saying they have dealt
+ * with it, and attaching a reason to that would invite a second meaning for
+ * the same field.
+ */
+export const CustomerNeedsHumanSchema = z
+  .object({
+    needsHuman: z.boolean(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+/**
+ * Stopping the assistant for one person, or starting it again.
+ *
+ * `resumesAt` IS BOUNDED, not free. A pause measured in weeks is somebody
+ * forgetting rather than deciding, and an assistant silently off is
+ * indistinguishable from a broken one — so the far end is a day, and
+ * anything longer is a conversation to have about the business switch
+ * instead.
+ */
+export const CustomerAutomationPauseSchema = z
+  .object({
+    paused: z.boolean(),
+    /** ISO 8601. Omitted means until somebody turns it back on by hand. */
+    resumesAt: z
+      .string()
+      .datetime({ offset: true })
+      .optional()
+      .refine(
+        (value) => {
+          if (value === undefined) return true;
+          const at = new Date(value).getTime();
+          const day = 24 * 60 * 60 * 1000;
+          return at > Date.now() && at <= Date.now() + day;
+        },
+        { message: 'resumesAt must be in the future and within the next 24 hours' },
+      ),
+  })
+  .strict();
+
+export type CustomerNeedsHumanInput = z.infer<typeof CustomerNeedsHumanSchema>;
+export type CustomerAutomationPauseInput = z.infer<typeof CustomerAutomationPauseSchema>;
+export type CustomerContactInput = z.infer<typeof CustomerContactSchema>;
+export type CustomerContactRemoval = z.infer<typeof CustomerContactRemovalSchema>;
 export type CustomerIdentityUpdate = z.infer<typeof CustomerIdentityUpdateSchema>;
 export type PostFeedQuery = z.infer<typeof PostFeedQuerySchema>;
 export type CustomerDirectoryQuery = z.infer<typeof CustomerDirectoryQuerySchema>;

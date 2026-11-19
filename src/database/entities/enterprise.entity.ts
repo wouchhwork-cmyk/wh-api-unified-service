@@ -132,7 +132,20 @@ export class Enterprise extends PublicEntity {
   @Column({ type: 'varchar', length: 100, nullable: true })
   state!: string | null;
 
-  /** ISO 3166-1 alpha-2. */
+  /**
+   * ISO 3166-1 alpha-2, and the business has exactly one.
+   *
+   * IT SETTLES WHAT A BARE PHONE NUMBER IS. "8888888888" is a valid mobile
+   * in several countries and a different person in each, so something has to
+   * supply the country — and this is a thing the business stated, not a
+   * thing anybody guessed, which is the whole difference. See
+   * `cleanContact`.
+   *
+   * ONE, DELIBERATELY. A list of countries a business trades in would be
+   * more precise and would immediately raise which currency and which
+   * timezone apply to each — and those are single-valued here. One country
+   * keeps the three consistent.
+   */
   @Column({ type: 'varchar', length: 2, default: 'IN' })
   country!: string;
 

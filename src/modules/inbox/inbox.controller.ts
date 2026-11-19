@@ -33,6 +33,8 @@ import {
   ModerateCommentRequestSchema,
   ReplyRequestSchema,
   StatusRequestSchema,
+  NeedsHumanRequestSchema,
+  AutomationPauseRequestSchema,
   ThreadQuerySchema,
   type ReplyResponse,
 } from '@/shared/contracts/inbox/inbox.contract';
@@ -420,6 +422,64 @@ export class InboxController {
       RefIdParamSchema.parse(refId),
       parsed.status as ConversationStatus,
     );
+  }
+
+  /**
+   * Flags that somebody needs a person here, or that one has dealt with it.
+   *
+   * SCOPED TO THIS INBOX. Both switches are per connected account, so a flag
+   * raised on one never appears against another the same person writes to.
+   */
+  @Post(':refId/needs-human')
+  @RequireAnyPermission(...anyPermissionFor('manage'))
+  @ApiOperation({
+    summary: 'Flag this conversation as needing a person, or clear it',
+    description:
+      'The assistant sets this when it hands over. Clearing it tells the assistant, on its very ' +
+      'next reply, that nobody is waiting — without which it goes on promising a colleague who ' +
+      'has already been, because its running notes still say one was asked for. Applies to this ' +
+      'customer on this connected account only.',
+  })
+  async setNeedsHuman(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const parsed = NeedsHumanRequestSchema.parse(body);
+    return this.inbox.setNeedsHuman(actor.enterpriseId, RefIdParamSchema.parse(refId), {
+      needsHuman: parsed.needsHuman,
+      ...(parsed.reason === undefined ? {} : { reason: parsed.reason }),
+      actorEmployeeId: actor.employeeId,
+    });
+  }
+
+  /**
+   * Stops the assistant answering this person here, or starts it again.
+   *
+   * SO A COLLEAGUE CAN TAKE OVER AND TYPE without the assistant answering
+   * over them, and without turning it off for the whole business.
+   */
+  @Post(':refId/automation-pause')
+  @RequireAnyPermission(...anyPermissionFor('manage'))
+  @ApiOperation({
+    summary: 'Pause or resume the assistant for this conversation’s customer here',
+    description:
+      'While paused nothing is drafted and nothing is sent to that person ON THIS ACCOUNT, and ' +
+      'the skip is recorded as a deliberate pause rather than a failure. Their other inboxes are ' +
+      'unaffected. resumesAt is optional and capped at 24 hours: a pause nobody remembers to ' +
+      'lift is an assistant that is silently off, which looks exactly like one that is broken.',
+  })
+  async setAutomationPause(
+    @CurrentScopedActor() actor: ScopedActor,
+    @Param('refId') refId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const parsed = AutomationPauseRequestSchema.parse(body);
+    return this.inbox.setAutomationPause(actor.enterpriseId, RefIdParamSchema.parse(refId), {
+      paused: parsed.paused,
+      resumesAt: parsed.resumesAt === undefined ? null : new Date(parsed.resumesAt),
+      actorEmployeeId: actor.employeeId,
+    });
   }
 
   @Post(':refId/resync')
@@ -1214,6 +1274,11 @@ function toConversationSummary(
     customerDisplayName: string | null;
     customerAvatarUrl: string | null;
     customerProfile: Record<string, unknown>;
+    /* The two switches a colleague can throw. See where they are mapped. */
+    customerNeedsHuman?: boolean;
+    customerNeedsHumanReason?: string | null;
+    customerAutomationPaused?: boolean;
+    customerAutomationResumesAt?: Date | null;
     contextMetadata?: Record<string, unknown>;
     assignedToRefId: string | null;
     assignedToName: string | null;
@@ -1304,6 +1369,18 @@ function toConversationSummary(
           followsUs: row.customerProfile.followsUs ?? null,
           isVerified: row.customerProfile.isVerified ?? null,
           followerCount: row.customerProfile.followerCount ?? null,
+          /*
+           * THE TWO SWITCHES, here as well as on the customer record. The
+           * agent who decides a person is needed, or that the assistant
+           * should be quiet while they type, is reading the conversation
+           * when they decide it — so the state travels with the thread.
+           */
+          assistant: {
+            needsHuman: row.customerNeedsHuman === true,
+            needsHumanReason: row.customerNeedsHumanReason ?? null,
+            paused: row.customerAutomationPaused === true,
+            resumesAt: row.customerAutomationResumesAt ?? null,
+          },
         }
       : null,
     /*

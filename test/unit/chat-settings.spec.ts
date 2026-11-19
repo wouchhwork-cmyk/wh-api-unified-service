@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WireCaptureService } from '@/modules/ai/wire-capture.service';
 import { ChatService } from '@/modules/ai/chat.service';
 import type { ModelRouter } from '@/modules/ai/model-router.service';
 import type { PlatformSettingRepository } from '@/database/repositories/platform-setting.repository';
@@ -51,7 +52,10 @@ function serviceWith(stored: Record<string, unknown> | null, version = 3) {
   const settle = vi.fn().mockResolvedValue(undefined);
   const calls = { begin, settle } as unknown as ModelCallRepository;
   return {
-    service: new ChatService(settings, router, config, cipher, calls),
+    service: new ChatService(settings, router, config, cipher, calls, {
+      enabled: false,
+      record: vi.fn(),
+    } as unknown as WireCaptureService),
     chat,
     cipher,
     begin,

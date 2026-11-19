@@ -4,6 +4,7 @@ import type { ChatService } from '@/modules/ai/chat.service';
 import type { ChatbotService } from '@/modules/inbox/chatbot.service';
 import type { InboxService } from '@/modules/inbox/inbox.service';
 import type { EnterpriseRepository } from '@/database/repositories/enterprise.repository';
+import type { CustomerRepository } from '@/database/repositories/customer.repository';
 import type { MessageRepository } from '@/database/repositories/message.repository';
 import type { AuditService } from '@/modules/audit/audit.service';
 import type { MediaAnalysisService } from '@/modules/ai/media-analysis.service';
@@ -21,6 +22,7 @@ import { AuditStatus, ConversationStatus } from '@/shared/enums';
  * stays quiet in every case where it should.
  */
 function serviceWith(over: {
+  previousNotes?: { summary: string } | null;
   platformAutoReply?: boolean;
   businessOptedIn?: boolean;
   providerEnabled?: boolean;
@@ -58,10 +60,19 @@ function serviceWith(over: {
           status: ConversationStatus.Open,
           messagesSince: 0,
           pendingMedia: 0,
+          customerId: 3,
+          automationPaused: false,
+          needsHuman: false,
           ...over.context,
         },
   );
-  const messages = { messagesCarrying, assistantContextFor } as unknown as MessageRepository;
+  /* The notes last stored, which the reply's new ones are reconciled against. */
+  const latestAssistantSummary = vi.fn().mockResolvedValue(over.previousNotes ?? null);
+  const messages = {
+    messagesCarrying,
+    assistantContextFor,
+    latestAssistantSummary,
+  } as unknown as MessageRepository;
 
   const draftReplyForAutomation = over.draftFails
     ? vi.fn().mockRejectedValue(new Error('the model call failed'))
@@ -100,6 +111,8 @@ function serviceWith(over: {
   };
 
   const queueMissingFor = vi.fn().mockResolvedValue(0);
+  /* The flag that makes a handoff something a person can finish. */
+  const setNeedsHuman = vi.fn().mockResolvedValue(true);
 
   const service = new AutoReplyService(
     chat,
@@ -110,10 +123,12 @@ function serviceWith(over: {
     { queueMissingFor } as unknown as MediaAnalysisService,
     ledger as unknown as AssistantReplyRepository,
     { record } as unknown as AuditService,
+    { setNeedsHuman } as unknown as CustomerRepository,
     { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as PinoLogger,
   );
   return {
     service,
+    setNeedsHuman,
     draftReply: draftReplyForAutomation,
     replyAsAssistant,
     record,
@@ -590,5 +605,175 @@ describe('automatic reply: media nobody ever queued', () => {
 
     await service.attempt(claim, 'worker-a');
     expect(replyAsAssistant).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A colleague taking one customer over.
+ *
+ * WHY THIS GUARD EXISTS. Before it, a colleague answering somebody by hand
+ * had two options: let the assistant talk over them mid-conversation, or
+ * switch it off for the entire business to deal with one person.
+ */
+describe('while the assistant is paused for a customer', () => {
+  it('sends nothing', async () => {
+    const { service, replyAsAssistant, claim } = serviceWith({
+      context: { automationPaused: true },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(replyAsAssistant).not.toHaveBeenCalled();
+  });
+
+  it('does not pay for a draft it would throw away', async () => {
+    // The point of a pause is that nothing is sent. A draft that is billed
+    // and discarded is an invoice for silence.
+    const { service, draftReply, claim } = serviceWith({ context: { automationPaused: true } });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(draftReply).not.toHaveBeenCalled();
+  });
+
+  it('records it as a deliberate pause, not as a failure', async () => {
+    /*
+     * ITS OWN REASON. "We said nothing because a person is handling it" and
+     * "we could not answer" are different facts, and somebody reading the
+     * audit a week later has to tell them apart — one is the feature
+     * working and the other may be a bug.
+     */
+    const { service, record, ledger, claim } = serviceWith({ context: { automationPaused: true } });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(ledger.markSkipped).toHaveBeenCalledWith(
+      55,
+      'worker-a',
+      'automation_paused_for_customer',
+    );
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: AuditStatus.Success,
+        metadata: expect.objectContaining({ skipped: 'automation_paused_for_customer' }),
+      }),
+    );
+  });
+
+  it('is checked before the conversation looks overtaken', async () => {
+    /*
+     * A colleague typing replies by hand is exactly what makes a
+     * conversation move on, so the two guards would race — and the audit
+     * would record whichever won rather than the reason that mattered.
+     */
+    const { service, ledger, claim } = serviceWith({
+      context: { automationPaused: true, messagesSince: 4 },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(ledger.markSkipped).toHaveBeenCalledWith(
+      55,
+      'worker-a',
+      'automation_paused_for_customer',
+    );
+  });
+
+  it('answers normally once it is lifted', async () => {
+    const { service, replyAsAssistant, claim } = serviceWith({
+      context: { automationPaused: false },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(replyAsAssistant).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Making a handoff something a person can finish.
+ *
+ * It used to be a log line and nothing else, so the assistant could ask for
+ * a colleague and never learn whether one came — and went on promising the
+ * same colleague on every later message.
+ */
+describe('when it hands over', () => {
+  it('records that this customer is waiting for a person', async () => {
+    const { service, setNeedsHuman, claim } = serviceWith({
+      draft: { handoff: 'needs a refund decision' },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(setNeedsHuman).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerId: 3,
+        needsHuman: true,
+        reason: 'needs a refund decision',
+      }),
+    );
+  });
+
+  it('raises it when the reply promised a person but the field did not', async () => {
+    /*
+     * WATCHED LIVE. "Hello! A colleague will be with you shortly to help
+     * sort this out." went out with handoff null — the customer told
+     * somebody was coming, the system recording that nobody was needed, no
+     * flag anywhere, and nobody ever going to arrive.
+     *
+     * Those words have been sent and the business now owes that person a
+     * colleague whatever the model meant, so the flag is raised and
+     * somebody can glance at it and clear it.
+     */
+    const { service, setNeedsHuman, claim } = serviceWith({
+      draft: { handoff: null, text: 'Hello! A colleague will be with you shortly.' },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(setNeedsHuman).toHaveBeenCalledWith(
+      expect.objectContaining({
+        needsHuman: true,
+        reason: expect.stringContaining('without flagging it'),
+      }),
+    );
+  });
+
+  it('keeps the model’s own reason when it did flag one', async () => {
+    // The detector is a backstop, never a replacement: what the assistant
+    // said it could not do is better than anything inferred from the text.
+    const { service, setNeedsHuman, claim } = serviceWith({
+      draft: { handoff: 'wants a refund', text: 'A colleague will be with you shortly.' },
+    });
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(setNeedsHuman).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'wants a refund' }),
+    );
+  });
+
+  it('does not raise it when it answered by itself', async () => {
+    const { service, setNeedsHuman, claim } = serviceWith({});
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(setNeedsHuman).not.toHaveBeenCalled();
+  });
+
+  it('still counts the reply as sent when the flag cannot be written', async () => {
+    /*
+     * The customer has already been answered. Losing the flag is bad; making
+     * a delivered reply look like a failed one is worse, and would have the
+     * worker try to send it a second time.
+     */
+    const { service, setNeedsHuman, ledger, claim } = serviceWith({
+      draft: { handoff: 'needs a person' },
+    });
+    setNeedsHuman.mockRejectedValueOnce(new Error('database went away'));
+
+    await service.attempt(claim, 'worker-a');
+
+    expect(ledger.markSent).toHaveBeenCalled();
   });
 });

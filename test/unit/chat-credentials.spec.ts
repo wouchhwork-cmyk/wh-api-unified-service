@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ChatConsoleService } from '@/modules/platform/chat-console.service';
+import { WireCaptureService } from '@/modules/ai/wire-capture.service';
 import { ChatService } from '@/modules/ai/chat.service';
 import { TokenCipherService } from '@/shared/crypto';
 import type { ModelCallRepository } from '@/database/repositories/model-call.repository';
@@ -45,6 +46,7 @@ function consoleWith(stored: Record<string, unknown> = {}) {
     config,
     cipher,
     { record: vi.fn() } as unknown as ModelCallRepository,
+    { enabled: false, record: vi.fn() } as unknown as WireCaptureService,
   );
   return { service: new ChatConsoleService(settings, chat, cipher), chat, row, put };
 }

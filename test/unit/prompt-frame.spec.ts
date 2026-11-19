@@ -45,7 +45,7 @@ describe('the system frame', () => {
 
     expect(prompt.indexOf('<precedence>')).toBeGreaterThan(prompt.indexOf('<rules>'));
     expect(prompt.indexOf('<precedence>')).toBeLessThan(prompt.indexOf('<business_instructions'));
-    expect(prompt).toContain('output, rules, context, business_instructions');
+    expect(prompt).toContain('output, rules, context and tool_results, business_instructions');
   });
 
   it('names the two that cost something when they give way', () => {
@@ -304,6 +304,33 @@ describe('what the assistant writes down, and what it trusts', () => {
     expect(prompt()).toContain('the message does not exist yet');
   });
 
+  it('says a note of what happened is not a record of what was in it', () => {
+    /*
+     * SEEN LIVE, and the reason this rule exists. Asked "when was that
+     * wedding?", with notes saying only "they shared a wedding invitation
+     * video" and a window holding nothing about it, the model answered "The
+     * wedding is on November 30, 2026."
+     *
+     * That date was CORRECT, which is what makes it the dangerous kind: it
+     * was not anywhere in the prompt, so it was invented, and it looked
+     * exactly like the system working. The note named the message by id;
+     * one tool call would have read the date off the card.
+     */
+    expect(prompt()).toContain('A NOTE THAT SOMETHING HAPPENED IS NOT A RECORD OF WHAT WAS IN IT');
+    expect(prompt()).toContain('Never supply the detail from memory');
+  });
+
+  it('says to look before saying it cannot see something', () => {
+    /*
+     * The other half of the same pair of tests: asked "what was this image
+     * of?", it said it was not sure which image was meant. A refusal feels
+     * safe and is just as wrong when the answer was one lookup away — and
+     * worse in one respect, because nobody reviewing it will flag it.
+     */
+    expect(prompt()).toContain('BEFORE YOU SAY YOU DO NOT KNOW');
+    expect(prompt()).toContain('is only honest after you have looked');
+  });
+
   it('carries the notes forward rather than writing them again from the window', () => {
     /*
      * THE INSTRUCTION THAT LOST A CONVERSATION. This used to say the notes
@@ -389,5 +416,62 @@ describe('explaining the markers on each message', () => {
 
   it('forbids repeating the machinery to the customer', () => {
     expect(prompt()).toContain('NEVER repeat any part of a marker');
+  });
+});
+
+/**
+ * What the handoff field says it is.
+ *
+ * WRITTEN FROM A LIVE FAILURE WHERE A RULE LOST TO A DESCRIPTION. A number
+ * could not be saved, the assistant set handoff correctly, and then answered
+ * the next four messages with nothing but "A colleague will take over and
+ * help sort this out for you shortly" — including one that said "Ok put my
+ * email as jare@gg.com", which was one tool call away and had nothing to do
+ * with the number.
+ *
+ * A rule forbidding exactly that was already in the prompt, verbatim. It lost
+ * because the FIELD made handoff sound like a thing you say out loud, and
+ * nothing told the model the customer never sees it.
+ */
+describe('the handoff field', () => {
+  const frame = buildChatReplyPrompt({ businessPrompt: '', context: '' });
+
+  it('says the customer never sees it', () => {
+    expect(frame).toContain('THE CUSTOMER NEVER SEES IT');
+  });
+
+  it('says the reply must still do the work', () => {
+    expect(frame).toContain('setting it does not excuse you from answering');
+  });
+
+  it('names the failure, so the shape is recognisable', () => {
+    expect(frame).toContain('has thrown the turn away');
+  });
+});
+
+/**
+ * The promise and the flag, stated as one rule.
+ *
+ * IT USED TO BE ONE DIRECTION ONLY — "when you set handoff, say a colleague
+ * will pick it up" — which handed the model a sentence attached to a
+ * condition. Live, the sentence detached: it promised a colleague with
+ * handoff null, while <colleague_requested>none</> in the same prompt said
+ * not to. It was obeying this rule and had lost half of it.
+ */
+describe('promising a person', () => {
+  const frame = buildChatReplyPrompt({ businessPrompt: '', context: '' });
+
+  it('binds the sentence to the field in both directions', () => {
+    expect(frame).toContain('THE PROMISE AND THE FLAG GO TOGETHER OR NOT AT ALL');
+    expect(frame).toContain('you MUST set handoff in that same answer');
+  });
+
+  it('still says not to leave them with nothing when it escalates', () => {
+    // The half that was always there has to survive the fix.
+    expect(frame).toContain('never leave them with nothing because you escalated');
+  });
+
+  it('names what goes wrong, which is the part that makes it stick', () => {
+    expect(frame).toContain('promises somebody who will never be told');
   });
 });

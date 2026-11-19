@@ -42,6 +42,23 @@ export interface ChatUsage {
   readonly reasoningTokens: number | null;
 }
 
+/**
+ * One call's bodies, exactly as they crossed the wire.
+ *
+ * ONLY BUILT WHEN ASKED FOR. `request` is the object handed to the provider
+ * SDK, `response` is what it gave back before anything parsed it — the two
+ * things nothing else in this service keeps, and the only way to see what a
+ * model was really told and really said rather than what we rebuilt or
+ * extracted afterwards.
+ *
+ * NEVER CARRIES THE KEY. A request body holds the prompt and the model id;
+ * authentication lives on the SDK, not in here.
+ */
+export interface ChatWire {
+  readonly request: unknown;
+  readonly response: unknown;
+}
+
 export interface ChatReply {
   readonly text: string;
   readonly usage: ChatUsage;
@@ -50,6 +67,8 @@ export interface ChatReply {
   readonly model: string;
   /** Which provider actually answered — the one thing a caller cannot infer. */
   readonly provider: AiProviderId;
+  /** Present only when the request asked for it. See `ChatWire`. */
+  readonly wire?: ChatWire;
 }
 
 export interface ChatRequest {
@@ -67,6 +86,14 @@ export interface ChatRequest {
    * a ledger row. The client uses it to build an SDK and nothing else.
    */
   readonly apiKey?: string;
+  /**
+   * Hand back the exact bodies alongside the answer.
+   *
+   * A REQUEST-LEVEL SWITCH rather than a client-level one, so the decision
+   * stays with the service that knows whose conversation this is and
+   * whether anybody asked to watch it. Off, nothing extra is built.
+   */
+  readonly captureWire?: boolean;
 }
 
 /**

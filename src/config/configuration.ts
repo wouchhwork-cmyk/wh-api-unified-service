@@ -159,6 +159,11 @@ export function loadConfiguration(): Configuration {
       maxRetries: env.GEMINI_MAX_RETRIES,
       storeInteractions: env.GEMINI_STORE_INTERACTIONS,
     },
+    aiWireCapture: {
+      enabled: env.AI_WIRE_CAPTURE_ENABLED,
+      dir: env.AI_WIRE_CAPTURE_DIR,
+      maxFiles: env.AI_WIRE_CAPTURE_MAX_FILES,
+    },
     openai: {
       enabled: env.OPENAI_ENABLED,
       apiKey: env.OPENAI_API_KEY,

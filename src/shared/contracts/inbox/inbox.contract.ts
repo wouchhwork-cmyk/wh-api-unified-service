@@ -98,6 +98,46 @@ export const AssignRequestSchema = z
 export const StatusRequestSchema = z.object({ status: z.enum(ConversationStatus) }).strict();
 
 /**
+ * Raising or clearing "somebody here needs a person".
+ *
+ * A REASON ONLY WHEN RAISING. Clearing is a colleague saying they have dealt
+ * with it, and attaching a reason to that would give one field two meanings.
+ */
+export const NeedsHumanRequestSchema = z
+  .object({
+    needsHuman: z.boolean(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+/**
+ * Stopping the assistant for this person in this inbox, or starting it again.
+ *
+ * `resumesAt` IS BOUNDED, not free. A pause measured in weeks is somebody
+ * forgetting rather than deciding, and an assistant silently off is
+ * indistinguishable from a broken one — so the far end is a day, and
+ * anything longer is a conversation to have about the business switch.
+ */
+export const AutomationPauseRequestSchema = z
+  .object({
+    paused: z.boolean(),
+    /** ISO 8601. Omitted means until somebody turns it back on by hand. */
+    resumesAt: z
+      .string()
+      .datetime({ offset: true })
+      .optional()
+      .refine(
+        (value) => {
+          if (value === undefined) return true;
+          const at = new Date(value).getTime();
+          return at > Date.now() && at <= Date.now() + 24 * 60 * 60 * 1000;
+        },
+        { message: 'resumesAt must be in the future and within the next 24 hours' },
+      ),
+  })
+  .strict();
+
+/**
  * Marking a thread read takes no input, and says so.
  *
  * It was the one mutation with no schema at all, so any body was accepted and
@@ -124,3 +164,5 @@ export type ReplyResponse = z.infer<typeof ReplyResponseSchema>;
 export type ModerateCommentRequest = z.infer<typeof ModerateCommentRequestSchema>;
 export type AssignRequest = z.infer<typeof AssignRequestSchema>;
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
+export type NeedsHumanRequest = z.infer<typeof NeedsHumanRequestSchema>;
+export type AutomationPauseRequest = z.infer<typeof AutomationPauseRequestSchema>;

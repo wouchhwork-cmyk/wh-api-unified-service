@@ -69,6 +69,29 @@ export enum ErrorCode {
   ConnectionNotFound = 'CONNECTION_NOT_FOUND',
   ChannelNotFound = 'CHANNEL_NOT_FOUND',
   CustomerNotFound = 'CUSTOMER_NOT_FOUND',
+  /**
+   * The number or address could not be read as a real one.
+   *
+   * SEPARATE FROM ValidationFailed, which says a field was the wrong shape.
+   * This one passed the schema — it is a string of a sane length — and was
+   * then refused by the thing that actually knows what a phone number is.
+   * A caller showing "that is not a valid number" wants to say it against
+   * the field, not at the top of the form.
+   */
+  ContactNotUsable = 'CONTACT_NOT_USABLE',
+  /**
+   * The number may be fine; nobody said which country it is in.
+   *
+   * A SEPARATE CODE BECAUSE IT NEEDS A DIFFERENT THING DONE. "That is not a
+   * valid number" tells somebody to look at it again; this one tells them to
+   * pick a country, and a client that cannot tell the two apart shows the
+   * wrong message and the wrong control.
+   */
+  ContactNeedsCountry = 'CONTACT_NEEDS_COUNTRY',
+  /** Another customer of this business already holds it. */
+  ContactTaken = 'CONTACT_TAKEN',
+  /** Asked to change or remove one that is not on this record. */
+  ContactNotFound = 'CONTACT_NOT_FOUND',
 
   /* REWARD PROGRAMS. */
   RewardProgramNotFound = 'REWARD_PROGRAM_NOT_FOUND',

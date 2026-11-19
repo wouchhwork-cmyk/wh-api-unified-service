@@ -226,6 +226,35 @@ export const EnvSchema = z
      */
     OPENAI_STORE_RESPONSES: booleanish.default(false),
 
+    // --- The exchange with the model, kept verbatim ----------------------
+    /**
+     * Whether to keep the EXACT bodies of each model call on disk — what was
+     * sent, what came back, byte for byte.
+     *
+     * NOTHING ELSE KEEPS THEM. `model_calls` is metadata by design, and the
+     * replay endpoint REBUILDS a prompt from today's code, which answers
+     * "what would we send" rather than "what did we send". Neither shows the
+     * model's own raw answer, and with tools in the loop one reply is now up
+     * to four exchanges that nothing ties together.
+     *
+     * OFF BY DEFAULT AND REFUSED IN PROD, on the same terms as the two store
+     * switches above: these files are customers' conversations in full. This
+     * is a debugging instrument for a developer watching their own test
+     * traffic, not a retention policy.
+     */
+    AI_WIRE_CAPTURE_ENABLED: booleanish.default(false),
+    /**
+     * Where they go. Relative paths resolve against the working directory;
+     * the directory is created on first write.
+     */
+    AI_WIRE_CAPTURE_DIR: z.string().min(1).default('var/ai-wire'),
+    /**
+     * A HARD CEILING ON THE DIRECTORY, because an unbounded debug log on a
+     * developer's laptop is how a disk fills up overnight. The oldest files
+     * are deleted once the count passes this.
+     */
+    AI_WIRE_CAPTURE_MAX_FILES: positiveInt.default(500),
+
     // --- Verification delivery / OTP (backend-design.md §12) --------------
     /**
      * OFF means no provider is called and every issued code is the fixed
@@ -327,6 +356,20 @@ export const EnvSchema = z
         message:
           'OPENAI_STORE_RESPONSES must be set deliberately in prod: it leaves ' +
           'customer conversation content with OpenAI for at least 30 days',
+      });
+    }
+    /*
+     * REFUSED IN PRODUCTION. A capture file is the whole prompt and the whole
+     * answer, which is to say somebody's conversation sitting in plain text on
+     * a disk with no retention rule attached to it.
+     */
+    if (env.NODE_ENV === 'prod' && env.AI_WIRE_CAPTURE_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AI_WIRE_CAPTURE_ENABLED'],
+        message:
+          'AI_WIRE_CAPTURE_ENABLED writes whole prompts and answers — customer ' +
+          'conversation content — to disk, and must not be on in prod',
       });
     }
     // Meta config is only required when the integration is switched on, so a

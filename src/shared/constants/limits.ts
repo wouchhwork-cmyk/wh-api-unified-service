@@ -696,6 +696,110 @@ export const CHAT_MAX_TURNS = 40;
 export const CHAT_MAX_TURN_CHARS = 8_000;
 
 /**
+ * How many times one answer may stop to use a tool before it has to speak.
+ *
+ * A BOUND, because the loop is the model's to drive. It asks for a tool, is
+ * asked again with the result, and may ask for another — which is the whole
+ * point and also a shape that does not terminate on its own. A model that
+ * reads a disappointing result and tries the same thing again will do that
+ * for as long as it is allowed to, and every round is a paid call.
+ *
+ * Three is enough for the sequences that actually occur: look something up
+ * and answer; look something up, record what you learned, and answer. Past
+ * that it is going in circles, and the honest thing is to answer with what
+ * it has rather than keep spending.
+ */
+export const CHAT_MAX_TOOL_ROUNDS = 3;
+
+/**
+ * How many tool calls one conversation's answer may make in total.
+ *
+ * Rounds bound the back-and-forth; this bounds the bill. They are not the
+ * same limit — a model allowed several tools per round could spend far more
+ * than three calls inside three rounds.
+ */
+export const CHAT_MAX_TOOL_CALLS = 4;
+
+/** How many messages either side of one the assistant goes back for. */
+export const TOOL_MESSAGE_WINDOW_MAX = 10;
+
+/**
+ * The most of a conversation the assistant may pull back in one go.
+ *
+ * THE WINDOW IS TEN AND THIS IS A HUNDRED, which is the whole point: the
+ * ordinary reply pays for ten messages, and the rare one that has to go
+ * looking pays for more. Sending a hundred on every call to serve the one
+ * in fifty that needs them is the arithmetic this exists to avoid.
+ *
+ * A hundred is where it stops because past that the cost stops being worth
+ * it against simply handing over to a colleague, who can scroll.
+ */
+export const TOOL_HISTORY_MAX = 100;
+
+/** What it gets when it asks for more history without saying how much. */
+export const TOOL_HISTORY_DEFAULT = 20;
+
+/**
+ * How many OTHER conversations with the same person a lookup may return.
+ *
+ * A CEILING WITH A REASON. One live customer has 32 threads with one
+ * business — 26 of them mentions, most a single message. Returning all of
+ * them would spend a prompt on tags to answer a question about one, so the
+ * list is newest-first and bounded, and anything older is still reachable by
+ * asking again with a larger count.
+ */
+export const TOOL_OTHER_CONVERSATIONS_MAX = 20;
+export const TOOL_OTHER_CONVERSATIONS_DEFAULT = 5;
+
+/**
+ * How many issued rewards come back with a balance.
+ *
+ * Balances are few by nature — one per wallet kind — but entitlements
+ * accumulate, and a customer with two years of vouchers is not asking about
+ * the ones from 2024.
+ */
+export const TOOL_REWARD_ENTITLEMENTS_MAX = 10;
+
+/**
+ * How far back a "how did I earn these" question may be answered.
+ *
+ * FETCHED ONLY WHEN ASKED FOR. Most reward questions are "what have I got",
+ * and a balance plus a transaction history on every one of those is a
+ * paragraph nobody reads and tokens on every reply. The history is an
+ * argument the model passes when the customer actually asks how.
+ *
+ * Twenty-five is roughly a season of ordinary earning — enough to answer
+ * "when and what for" without turning one question into a statement.
+ */
+export const TOOL_REWARD_HISTORY_MAX = 25;
+
+/**
+ * How much of its own memory a reply may drop in one turn.
+ *
+ * MEASURED AS SURVIVING MESSAGE IDS, not as length, because compaction is
+ * legitimate and growing conversations will need it — the model may say the
+ * same things in fewer words whenever it likes, so long as the anchors
+ * survive. See `reconcileNotes` for the failure this exists to stop: 62 ids
+ * reduced to 1 in a single reply.
+ *
+ * 0.7 IS DELIBERATELY GENEROUS. The contract allows dropping an entry once
+ * it is "resolved, answered or superseded", and a turn that settles several
+ * threads at once should not be refused — losing up to three in ten is
+ * editing. Losing nine in ten is forgetting.
+ */
+export const NOTES_MIN_ID_RETENTION = 0.7;
+
+/**
+ * How many recovered entries may be folded back into the notes in one turn.
+ *
+ * A recovery can hand back a long history, and appending all of it on every
+ * turn would grow the notes without end. Eighty carries the live case — a
+ * reply that had dropped sixty-two anchors — with room to spare, and is
+ * still a bound.
+ */
+export const NOTES_MAX_RECOVERED_ENTRIES = 80;
+
+/**
  * How much of a thread the assistant is shown.
  *
  * HALVED ONCE THE ASSISTANT STARTED KEEPING NOTES. The window used to be the
